@@ -1,7 +1,36 @@
 //! Instrument profiles — loaded from JSON, no code changes needed to add instruments.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Errors that can occur when loading instrument profiles.
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileError {
+    #[error("failed to read profiles directory {path}: {source}")]
+    ReadDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to read profile {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse profile {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("no profiles loaded successfully. Errors:\n{}", errors.join("\n"))]
+    NoProfilesLoaded { errors: Vec<String> },
+    #[error("invalid profile name: {0}")]
+    InvalidName(String),
+    #[error("invalid profile data in {path}: {message}")]
+    InvalidProfile { path: PathBuf, message: String },
+}
 
 /// An instrument profile defining detection parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,10 +83,96 @@ pub struct TuningCorrection {
 
 impl InstrumentProfile {
     /// Load an instrument profile from a JSON file.
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let profile: Self = serde_json::from_str(&contents)?;
+    pub fn from_file(path: &Path) -> Result<Self, ProfileError> {
+        let contents = std::fs::read_to_string(path).map_err(|source| ProfileError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let profile: Self =
+            serde_json::from_str(&contents).map_err(|source| ProfileError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        // Semantic validation — reject well-typed but nonsensical profiles
+        if !profile.freq_min_hz.is_finite()
+            || !profile.freq_max_hz.is_finite()
+            || profile.freq_min_hz < 0.0
+            || profile.freq_max_hz < profile.freq_min_hz
+        {
+            return Err(ProfileError::InvalidProfile {
+                path: path.to_path_buf(),
+                message: format!(
+                    "invalid frequency range: min={}, max={}",
+                    profile.freq_min_hz, profile.freq_max_hz
+                ),
+            });
+        }
+
         Ok(profile)
+    }
+
+    /// Check if a detected frequency falls within this instrument's expected range.
+    pub fn is_in_frequency_range(&self, hz: f64) -> bool {
+        hz >= self.freq_min_hz && hz <= self.freq_max_hz
+    }
+}
+
+/// Loads all instrument profiles from a directory of JSON files.
+pub struct ProfileLoader;
+
+impl ProfileLoader {
+    /// Load all `.json` files from the given directory as `InstrumentProfile`s.
+    ///
+    /// Returns an error if the directory can't be read. Individual file parse
+    /// errors are collected — a single bad file won't prevent loading the rest.
+    pub fn load_all(dir: &Path) -> Result<Vec<InstrumentProfile>, ProfileError> {
+        let mut profiles = Vec::new();
+        let mut errors = Vec::new();
+
+        let entries = std::fs::read_dir(dir).map_err(|source| ProfileError::ReadDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) => {
+                    errors.push(format!("{}: {}", dir.display(), source));
+                    continue;
+                }
+            };
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                match InstrumentProfile::from_file(&path) {
+                    Ok(profile) => profiles.push(profile),
+                    Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+                }
+            }
+        }
+
+        if !errors.is_empty() && profiles.is_empty() {
+            return Err(ProfileError::NoProfilesLoaded { errors });
+        }
+
+        Ok(profiles)
+    }
+
+    /// Load a single profile by instrument name from a directory.
+    ///
+    /// Name must contain only ASCII alphanumerics, hyphens, or underscores.
+    pub fn load_by_name(dir: &Path, name: &str) -> Result<InstrumentProfile, ProfileError> {
+        let valid = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !valid {
+            return Err(ProfileError::InvalidName(name.to_string()));
+        }
+        let file_path = dir.join(format!("{}.json", name.to_lowercase()));
+        InstrumentProfile::from_file(&file_path)
     }
 }
 
