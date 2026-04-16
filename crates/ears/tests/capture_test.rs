@@ -67,7 +67,11 @@ fn audio_capture_opens_device() {
     let config = CaptureConfig::default();
     let capture = AudioCapture::new(config);
     // On CI this will fail with NoInputDevice — that's expected
-    assert!(capture.is_ok(), "Failed to open audio device: {:?}", capture.err());
+    assert!(
+        capture.is_ok(),
+        "Failed to open audio device: {:?}",
+        capture.err()
+    );
 }
 
 #[test]

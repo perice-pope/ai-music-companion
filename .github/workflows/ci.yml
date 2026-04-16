@@ -49,7 +49,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --deny warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
