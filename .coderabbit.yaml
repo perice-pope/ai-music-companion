@@ -1,0 +1,25 @@
+# CodeRabbit configuration
+# https://docs.coderabbit.ai/guides/configure-coderabbit
+reviews:
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        Review for: correctness, safety (no allocations in audio thread for crates/ears),
+        proper error handling (thiserror for libs, anyhow for app), and test coverage.
+        Flag any use of `unsafe` without a `// SAFETY:` comment.
+    - path: "apps/desktop/src/**"
+      instructions: |
+        Review for: strict TypeScript (no `any`), proper Zustand usage,
+        thin IPC layer (no heavy serialization), and accessibility.
+    - path: "profiles/**"
+      instructions: |
+        Validate JSON schema consistency with InstrumentProfile struct in crates/ears/src/profile.rs.
+chat:
+  auto_reply: true

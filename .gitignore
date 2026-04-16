@@ -1,0 +1,51 @@
+# Rust
+/target/
+**/target/
+Cargo.lock
+*.rs.bk
+
+# Node
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/WixTools/
+apps/desktop/src-tauri/icons/
+
+# Build artifacts
+*.dmg
+*.AppImage
+*.deb
+*.msi
+*.exe
+
+# Test & coverage
+coverage/
+*.lcov
+tarpaulin-report.html

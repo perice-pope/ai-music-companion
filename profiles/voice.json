@@ -1,0 +1,9 @@
+{
+  "name": "Soprano Voice",
+  "family": "voice",
+  "freq_min_hz": 250.0,
+  "freq_max_hz": 1050.0,
+  "vibrato_tolerance_cents": 35.0,
+  "attack_type": "breath",
+  "tuning_corrections": []
+}

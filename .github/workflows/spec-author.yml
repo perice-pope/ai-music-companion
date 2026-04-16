@@ -1,0 +1,39 @@
+name: Spec Author
+
+# Runs weekly or on-demand to generate the next story from the backlog
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 9am UTC
+  workflow_dispatch:       # Manual trigger
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-story:
+    name: Generate next story
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read architecture doc and backlog
+        id: context
+        run: |
+          echo "Architecture doc and story template are in the repo."
+          echo "This workflow is a placeholder — integrate with Claude API"
+          echo "to auto-generate the next story from the backlog."
+
+      # TODO: Replace with actual Claude API call to generate story
+      # The spec author agent reads:
+      #   - ai-music-companion-architecture.md
+      #   - Completed stories (closed issues)
+      #   - .github/ISSUE_TEMPLATE/story.md (template)
+      # And creates a new issue following the template.
+      - name: Placeholder
+        run: |
+          echo "Spec Author workflow ready for Claude API integration."
+          echo "When configured, this will:"
+          echo "  1. Read the architecture doc + completed stories"
+          echo "  2. Call Claude to generate the next story spec"
+          echo "  3. Open a GitHub issue with the spec"

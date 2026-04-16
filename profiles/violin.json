@@ -1,0 +1,9 @@
+{
+  "name": "Violin",
+  "family": "strings",
+  "freq_min_hz": 196.0,
+  "freq_max_hz": 3136.0,
+  "vibrato_tolerance_cents": 30.0,
+  "attack_type": "bowed",
+  "tuning_corrections": []
+}
