@@ -69,7 +69,11 @@ export default function PitchDisplay() {
         {/* Indicator */}
         <div
           className={`absolute top-0 h-full w-2 -translate-x-1/2 rounded-full ${
-            Math.abs(cents_deviation) <= 10 ? "bg-green-400" : "bg-yellow-400"
+            Math.abs(cents_deviation) <= 10
+              ? "bg-green-400"
+              : Math.abs(cents_deviation) <= 25
+                ? "bg-yellow-400"
+                : "bg-red-400"
           }`}
           style={{ left: `${meterPercent}%` }}
           data-testid="pitch-meter-indicator"
