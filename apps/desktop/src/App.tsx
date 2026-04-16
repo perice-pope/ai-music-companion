@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import InstrumentSelector from "./components/InstrumentSelector";
 import PitchDisplay from "./components/PitchDisplay";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 
@@ -51,6 +52,7 @@ function App() {
           </p>
         )}
       </div>
+      <InstrumentSelector />
       <PitchDisplay />
     </main>
   );

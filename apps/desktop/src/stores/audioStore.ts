@@ -17,6 +17,15 @@ export interface NoteInfo {
   frequency_hz: number;
 }
 
+/** An instrument available for selection. */
+export interface InstrumentInfo {
+  name: string;
+  family: string;
+  freqMinHz: number;
+  freqMaxHz: number;
+  emoji: string;
+}
+
 interface AudioState {
   /** Most recent audio event from the backend. */
   latestEvent: AudioEvent | null;
@@ -24,9 +33,12 @@ interface AudioState {
   currentNote: NoteInfo | null;
   /** Whether the audio capture is active. */
   isListening: boolean;
+  /** Currently selected instrument name, or null if none. */
+  selectedInstrument: string | null;
 
   setEvent: (event: AudioEvent) => void;
   setListening: (listening: boolean) => void;
+  setInstrument: (name: string) => void;
 }
 
 const NOTE_NAMES = [
@@ -65,10 +77,23 @@ export function frequencyToNote(hz: number): NoteInfo {
   };
 }
 
+/** Key used to persist the selected instrument in localStorage. */
+const INSTRUMENT_STORAGE_KEY = "ai-music-companion:selected-instrument";
+
+/** Load previously selected instrument from localStorage. */
+function loadSavedInstrument(): string | null {
+  try {
+    return localStorage.getItem(INSTRUMENT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export const useAudioStore = create<AudioState>((set) => ({
   latestEvent: null,
   currentNote: null,
   isListening: false,
+  selectedInstrument: loadSavedInstrument(),
 
   setEvent: (event: AudioEvent) => {
     const hz = event.pitch_hz;
@@ -80,4 +105,13 @@ export const useAudioStore = create<AudioState>((set) => ({
   },
 
   setListening: (listening: boolean) => set({ isListening: listening }),
+
+  setInstrument: (name: string) => {
+    try {
+      localStorage.setItem(INSTRUMENT_STORAGE_KEY, name);
+    } catch {
+      // localStorage may be unavailable in some environments
+    }
+    set({ selectedInstrument: name });
+  },
 }));
