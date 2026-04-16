@@ -128,3 +128,51 @@ fn nonexistent_directory_returns_error() {
     let result = ProfileLoader::load_all(Path::new("/nonexistent/path"));
     assert!(matches!(result, Err(ProfileError::ReadDir { .. })));
 }
+
+#[test]
+fn rejects_profile_with_inverted_frequency_range() {
+    let temp_dir = unique_temp_dir("inverted_freq");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let bad_profile = r#"{
+        "name": "Bad",
+        "family": "brass",
+        "freq_min_hz": 1000.0,
+        "freq_max_hz": 100.0,
+        "vibrato_tolerance_cents": 20.0,
+        "attack_type": "tongued"
+    }"#;
+    std::fs::write(temp_dir.join("bad.json"), bad_profile).unwrap();
+
+    let result = InstrumentProfile::from_file(&temp_dir.join("bad.json"));
+    assert!(
+        matches!(result, Err(ProfileError::InvalidProfile { .. })),
+        "Should reject freq_min > freq_max"
+    );
+
+    std::fs::remove_dir_all(&temp_dir).unwrap();
+}
+
+#[test]
+fn rejects_profile_with_negative_frequency() {
+    let temp_dir = unique_temp_dir("negative_freq");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let bad_profile = r#"{
+        "name": "Bad",
+        "family": "brass",
+        "freq_min_hz": -10.0,
+        "freq_max_hz": 1000.0,
+        "vibrato_tolerance_cents": 20.0,
+        "attack_type": "tongued"
+    }"#;
+    std::fs::write(temp_dir.join("bad.json"), bad_profile).unwrap();
+
+    let result = InstrumentProfile::from_file(&temp_dir.join("bad.json"));
+    assert!(
+        matches!(result, Err(ProfileError::InvalidProfile { .. })),
+        "Should reject negative frequency"
+    );
+
+    std::fs::remove_dir_all(&temp_dir).unwrap();
+}

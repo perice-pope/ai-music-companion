@@ -28,6 +28,8 @@ pub enum ProfileError {
     NoProfilesLoaded { errors: Vec<String> },
     #[error("invalid profile name: {0}")]
     InvalidName(String),
+    #[error("invalid profile data in {path}: {message}")]
+    InvalidProfile { path: PathBuf, message: String },
 }
 
 /// An instrument profile defining detection parameters.
@@ -91,6 +93,22 @@ impl InstrumentProfile {
                 path: path.to_path_buf(),
                 source,
             })?;
+
+        // Semantic validation — reject well-typed but nonsensical profiles
+        if !profile.freq_min_hz.is_finite()
+            || !profile.freq_max_hz.is_finite()
+            || profile.freq_min_hz < 0.0
+            || profile.freq_max_hz < profile.freq_min_hz
+        {
+            return Err(ProfileError::InvalidProfile {
+                path: path.to_path_buf(),
+                message: format!(
+                    "invalid frequency range: min={}, max={}",
+                    profile.freq_min_hz, profile.freq_max_hz
+                ),
+            });
+        }
+
         Ok(profile)
     }
 
@@ -117,7 +135,14 @@ impl ProfileLoader {
             source,
         })?;
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) => {
+                    errors.push(format!("{}: {}", dir.display(), source));
+                    continue;
+                }
+            };
             let path = entry.path();
 
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
