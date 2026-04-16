@@ -77,7 +77,10 @@ fn very_quiet_signal_yields_no_pitch() {
         .collect();
 
     let event = detector.detect(&samples);
-    assert!(event.pitch_hz.is_none(), "Sub-threshold signal should not detect");
+    assert!(
+        event.pitch_hz.is_none(),
+        "Sub-threshold signal should not detect"
+    );
 }
 
 #[test]
