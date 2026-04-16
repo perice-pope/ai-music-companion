@@ -106,7 +106,10 @@ fn phrases_are_serializable_to_json() {
     let parsed: brain::phrase::PhraseSummary = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.phrase_index, 0);
     assert_eq!(parsed.note_count, 3);
-    assert!((parsed.start_time - 0.0).abs() < 1e-9, "start_time mismatch");
+    assert!(
+        (parsed.start_time - 0.0).abs() < 1e-9,
+        "start_time mismatch"
+    );
     assert!(
         (parsed.pitch_stats.mean_hz - 440.0).abs() < 1.0,
         "mean_hz should be ~440, got {}",

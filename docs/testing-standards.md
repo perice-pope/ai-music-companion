@@ -217,7 +217,7 @@ it("handles null/undefined gracefully", () => { /* ... */ });
 
 Test names should describe the **scenario** and **expected outcome**:
 
-```
+```text
 // BAD
 test_serialization
 test_profile
