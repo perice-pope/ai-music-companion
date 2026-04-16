@@ -29,16 +29,14 @@ jobs:
         with:
           version: 9
 
-      - name: Install semantic-release
-        run: |
-          pnpm add -g \
-            semantic-release \
-            @semantic-release/git \
-            @semantic-release/changelog \
-            @semantic-release/github \
-            conventional-changelog-conventionalcommits
-
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: >
+          npx
+          -p semantic-release
+          -p @semantic-release/git
+          -p @semantic-release/changelog
+          -p @semantic-release/github
+          -p conventional-changelog-conventionalcommits
+          semantic-release
