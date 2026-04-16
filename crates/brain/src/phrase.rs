@@ -148,7 +148,7 @@ impl PhraseAggregator {
             // Check if there's been a silence gap since the last voiced event
             if let Some(last_time) = self.last_voiced_time {
                 let gap = event.timestamp_secs - last_time;
-                if gap >= self.config.silence_gap_secs && !self.current_phrase_events.is_empty() {
+                if gap > self.config.silence_gap_secs && !self.current_phrase_events.is_empty() {
                     // Close the current phrase before starting a new one
                     self.close_current_phrase();
                 }

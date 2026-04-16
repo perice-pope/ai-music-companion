@@ -170,3 +170,31 @@ fn default_config_works() {
     let agg = PhraseAggregator::new(PhraseConfig::default());
     assert!(agg.is_ok(), "Default config should be valid");
 }
+
+#[test]
+fn silence_gap_equal_to_threshold_does_not_split_phrase() {
+    let config = PhraseConfig {
+        silence_gap_secs: 0.3,
+        min_phrase_events: 2,
+    };
+    let mut agg = PhraseAggregator::new(config).unwrap();
+
+    // First voiced events
+    agg.push(&voiced(440.0, 0.7, 0.0));
+    agg.push(&voiced(442.0, 0.7, 0.1));
+
+    // Gap of exactly 0.3s (== threshold) — should NOT split
+    agg.push(&voiced(438.0, 0.7, 0.4));
+    agg.push(&voiced(440.0, 0.7, 0.45));
+
+    agg.flush();
+
+    let phrases = agg.phrases();
+    assert_eq!(
+        phrases.len(),
+        1,
+        "Gap exactly equal to threshold should NOT split — got {} phrases",
+        phrases.len()
+    );
+    assert_eq!(phrases[0].note_count, 4);
+}
