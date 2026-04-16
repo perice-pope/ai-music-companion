@@ -82,11 +82,10 @@ pub struct TuningCorrection {
 impl InstrumentProfile {
     /// Load an instrument profile from a JSON file.
     pub fn from_file(path: &Path) -> Result<Self, ProfileError> {
-        let contents =
-            std::fs::read_to_string(path).map_err(|source| ProfileError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let contents = std::fs::read_to_string(path).map_err(|source| ProfileError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let profile: Self =
             serde_json::from_str(&contents).map_err(|source| ProfileError::Parse {
                 path: path.to_path_buf(),
@@ -113,11 +112,10 @@ impl ProfileLoader {
         let mut profiles = Vec::new();
         let mut errors = Vec::new();
 
-        let entries =
-            std::fs::read_dir(dir).map_err(|source| ProfileError::ReadDir {
-                path: dir.to_path_buf(),
-                source,
-            })?;
+        let entries = std::fs::read_dir(dir).map_err(|source| ProfileError::ReadDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
 
         for entry in entries.flatten() {
             let path = entry.path();
