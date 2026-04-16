@@ -1,7 +1,34 @@
 //! Instrument profiles — loaded from JSON, no code changes needed to add instruments.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Errors that can occur when loading instrument profiles.
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileError {
+    #[error("failed to read profiles directory {path}: {source}")]
+    ReadDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to read profile {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse profile {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("no profiles loaded successfully. Errors:\n{}", errors.join("\n"))]
+    NoProfilesLoaded { errors: Vec<String> },
+    #[error("invalid profile name: {0}")]
+    InvalidName(String),
+}
 
 /// An instrument profile defining detection parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,9 +81,17 @@ pub struct TuningCorrection {
 
 impl InstrumentProfile {
     /// Load an instrument profile from a JSON file.
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let profile: Self = serde_json::from_str(&contents)?;
+    pub fn from_file(path: &Path) -> Result<Self, ProfileError> {
+        let contents =
+            std::fs::read_to_string(path).map_err(|source| ProfileError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let profile: Self =
+            serde_json::from_str(&contents).map_err(|source| ProfileError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })?;
         Ok(profile)
     }
 
@@ -74,15 +109,17 @@ impl ProfileLoader {
     ///
     /// Returns an error if the directory can't be read. Individual file parse
     /// errors are collected — a single bad file won't prevent loading the rest.
-    pub fn load_all(dir: &Path) -> anyhow::Result<Vec<InstrumentProfile>> {
+    pub fn load_all(dir: &Path) -> Result<Vec<InstrumentProfile>, ProfileError> {
         let mut profiles = Vec::new();
         let mut errors = Vec::new();
 
-        let entries = std::fs::read_dir(dir)
-            .map_err(|e| anyhow::anyhow!("Failed to read profiles directory {:?}: {}", dir, e))?;
+        let entries =
+            std::fs::read_dir(dir).map_err(|source| ProfileError::ReadDir {
+                path: dir.to_path_buf(),
+                source,
+            })?;
 
-        for entry in entries {
-            let entry = entry?;
+        for entry in entries.flatten() {
             let path = entry.path();
 
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
@@ -94,17 +131,26 @@ impl ProfileLoader {
         }
 
         if !errors.is_empty() && profiles.is_empty() {
-            anyhow::bail!(
-                "Failed to load any profiles. Errors:\n{}",
-                errors.join("\n")
-            );
+            return Err(ProfileError::NoProfilesLoaded { errors });
         }
 
         Ok(profiles)
     }
 
     /// Load a single profile by instrument name from a directory.
-    pub fn load_by_name(dir: &Path, name: &str) -> anyhow::Result<InstrumentProfile> {
+    ///
+    /// Name must contain only ASCII alphanumerics, hyphens, or underscores.
+    pub fn load_by_name(
+        dir: &Path,
+        name: &str,
+    ) -> Result<InstrumentProfile, ProfileError> {
+        let valid = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !valid {
+            return Err(ProfileError::InvalidName(name.to_string()));
+        }
         let file_path = dir.join(format!("{}.json", name.to_lowercase()));
         InstrumentProfile::from_file(&file_path)
     }

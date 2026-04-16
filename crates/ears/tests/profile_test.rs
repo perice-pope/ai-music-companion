@@ -1,15 +1,28 @@
-use ears::profile::{InstrumentProfile, ProfileLoader};
-use std::path::Path;
+use ears::profile::{InstrumentProfile, ProfileError, ProfileLoader};
+use std::path::{Path, PathBuf};
 
 /// Helper to get the profiles directory (repo root / profiles)
 fn profiles_dir() -> &'static Path {
-    // Tests run from the workspace root, so profiles/ is relative to that
     Path::new("profiles")
+}
+
+/// Create a unique temp directory for test isolation.
+fn unique_temp_dir(test_name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "{}_{}_{}",
+        test_name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }
 
 #[test]
 fn load_trumpet_profile_from_file() {
-    let profile = InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
+    let profile =
+        InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
     assert_eq!(profile.name, "Trumpet");
     assert_eq!(profile.freq_min_hz, 165.0);
     assert_eq!(profile.freq_max_hz, 1047.0);
@@ -21,7 +34,6 @@ fn load_trumpet_profile_from_file() {
 #[test]
 fn load_all_profiles_matches_file_count() {
     let profiles = ProfileLoader::load_all(profiles_dir()).unwrap();
-    // We have trumpet.json, voice.json, violin.json
     let json_count = std::fs::read_dir(profiles_dir())
         .unwrap()
         .filter(|e| {
@@ -48,60 +60,60 @@ fn load_by_name_missing_instrument_errors() {
 }
 
 #[test]
+fn load_by_name_rejects_path_traversal() {
+    let result = ProfileLoader::load_by_name(profiles_dir(), "../etc/passwd");
+    assert!(matches!(result, Err(ProfileError::InvalidName(_))));
+}
+
+#[test]
+fn load_by_name_rejects_empty_name() {
+    let result = ProfileLoader::load_by_name(profiles_dir(), "");
+    assert!(matches!(result, Err(ProfileError::InvalidName(_))));
+}
+
+#[test]
 fn malformed_json_returns_error() {
-    let temp_dir = std::env::temp_dir().join("profile_test_malformed");
+    let temp_dir = unique_temp_dir("malformed");
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     let bad_file = temp_dir.join("bad.json");
     std::fs::write(&bad_file, "{ not valid json }").unwrap();
 
     let result = InstrumentProfile::from_file(&bad_file);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(ProfileError::Parse { .. })));
 
-    // Cleanup
     std::fs::remove_dir_all(&temp_dir).unwrap();
 }
 
 #[test]
 fn load_all_with_malformed_file_still_loads_valid_ones() {
-    let temp_dir = std::env::temp_dir().join("profile_test_mixed");
+    let temp_dir = unique_temp_dir("mixed");
     std::fs::create_dir_all(&temp_dir).unwrap();
 
-    // Copy a valid profile
     std::fs::copy(
         profiles_dir().join("trumpet.json"),
         temp_dir.join("trumpet.json"),
     )
     .unwrap();
 
-    // Add a malformed file
     std::fs::write(temp_dir.join("broken.json"), "not json").unwrap();
 
     let profiles = ProfileLoader::load_all(&temp_dir).unwrap();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].name, "Trumpet");
 
-    // Cleanup
     std::fs::remove_dir_all(&temp_dir).unwrap();
 }
 
 #[test]
 fn frequency_range_check_trumpet() {
-    let profile = InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
+    let profile =
+        InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
 
-    // A4 (440 Hz) is within trumpet range
     assert!(profile.is_in_frequency_range(440.0));
-
-    // Middle C (261 Hz) is within trumpet range
     assert!(profile.is_in_frequency_range(261.6));
-
-    // Below trumpet range
     assert!(!profile.is_in_frequency_range(100.0));
-
-    // Above trumpet range
     assert!(!profile.is_in_frequency_range(2000.0));
-
-    // Exact boundaries
     assert!(profile.is_in_frequency_range(165.0));
     assert!(profile.is_in_frequency_range(1047.0));
 }
@@ -109,5 +121,5 @@ fn frequency_range_check_trumpet() {
 #[test]
 fn nonexistent_directory_returns_error() {
     let result = ProfileLoader::load_all(Path::new("/nonexistent/path"));
-    assert!(result.is_err());
+    assert!(matches!(result, Err(ProfileError::ReadDir { .. })));
 }
