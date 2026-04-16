@@ -186,7 +186,7 @@ impl PitchDetector {
         for tau in tau_min..=tau_max {
             if self.cmnd[tau] < self.config.threshold {
                 let mut min_tau = tau;
-                while min_tau + 1 <= tau_max && self.cmnd[min_tau + 1] < self.cmnd[min_tau] {
+                while min_tau < tau_max && self.cmnd[min_tau + 1] < self.cmnd[min_tau] {
                     min_tau += 1;
                 }
                 best_tau = Some(min_tau);
