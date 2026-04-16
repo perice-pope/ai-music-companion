@@ -1,9 +1,16 @@
 use ears::profile::{InstrumentProfile, ProfileError, ProfileLoader};
 use std::path::{Path, PathBuf};
 
-/// Helper to get the profiles directory (repo root / profiles)
-fn profiles_dir() -> &'static Path {
-    Path::new("profiles")
+/// Helper to get the profiles directory (workspace root / profiles).
+/// Uses CARGO_MANIFEST_DIR to find the crate, then walks up to the workspace root.
+fn profiles_dir() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // crates/ears/Cargo.toml -> go up two levels to workspace root
+    manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root not found")
+        .join("profiles")
 }
 
 /// Create a unique temp directory for test isolation.
@@ -32,8 +39,8 @@ fn load_trumpet_profile_from_file() {
 
 #[test]
 fn load_all_profiles_matches_file_count() {
-    let profiles = ProfileLoader::load_all(profiles_dir()).unwrap();
-    let json_count = std::fs::read_dir(profiles_dir())
+    let profiles = ProfileLoader::load_all(&profiles_dir()).unwrap();
+    let json_count = std::fs::read_dir(&profiles_dir())
         .unwrap()
         .filter(|e| {
             e.as_ref()
@@ -48,25 +55,25 @@ fn load_all_profiles_matches_file_count() {
 
 #[test]
 fn load_by_name_finds_trumpet() {
-    let profile = ProfileLoader::load_by_name(profiles_dir(), "trumpet").unwrap();
+    let profile = ProfileLoader::load_by_name(&profiles_dir(), "trumpet").unwrap();
     assert_eq!(profile.name, "Trumpet");
 }
 
 #[test]
 fn load_by_name_missing_instrument_errors() {
-    let result = ProfileLoader::load_by_name(profiles_dir(), "kazoo");
+    let result = ProfileLoader::load_by_name(&profiles_dir(), "kazoo");
     assert!(result.is_err());
 }
 
 #[test]
 fn load_by_name_rejects_path_traversal() {
-    let result = ProfileLoader::load_by_name(profiles_dir(), "../etc/passwd");
+    let result = ProfileLoader::load_by_name(&profiles_dir(), "../etc/passwd");
     assert!(matches!(result, Err(ProfileError::InvalidName(_))));
 }
 
 #[test]
 fn load_by_name_rejects_empty_name() {
-    let result = ProfileLoader::load_by_name(profiles_dir(), "");
+    let result = ProfileLoader::load_by_name(&profiles_dir(), "");
     assert!(matches!(result, Err(ProfileError::InvalidName(_))));
 }
 
