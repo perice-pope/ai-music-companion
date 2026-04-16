@@ -21,8 +21,7 @@ fn unique_temp_dir(test_name: &str) -> PathBuf {
 
 #[test]
 fn load_trumpet_profile_from_file() {
-    let profile =
-        InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
+    let profile = InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
     assert_eq!(profile.name, "Trumpet");
     assert_eq!(profile.freq_min_hz, 165.0);
     assert_eq!(profile.freq_max_hz, 1047.0);
@@ -107,8 +106,7 @@ fn load_all_with_malformed_file_still_loads_valid_ones() {
 
 #[test]
 fn frequency_range_check_trumpet() {
-    let profile =
-        InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
+    let profile = InstrumentProfile::from_file(&profiles_dir().join("trumpet.json")).unwrap();
 
     assert!(profile.is_in_frequency_range(440.0));
     assert!(profile.is_in_frequency_range(261.6));

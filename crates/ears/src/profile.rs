@@ -140,10 +140,7 @@ impl ProfileLoader {
     /// Load a single profile by instrument name from a directory.
     ///
     /// Name must contain only ASCII alphanumerics, hyphens, or underscores.
-    pub fn load_by_name(
-        dir: &Path,
-        name: &str,
-    ) -> Result<InstrumentProfile, ProfileError> {
+    pub fn load_by_name(dir: &Path, name: &str) -> Result<InstrumentProfile, ProfileError> {
         let valid = !name.is_empty()
             && name
                 .bytes()
