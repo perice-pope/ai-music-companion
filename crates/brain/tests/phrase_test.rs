@@ -102,17 +102,21 @@ fn phrases_are_serializable_to_json() {
     let phrase = &agg.phrases()[0];
     let json = serde_json::to_string_pretty(phrase).unwrap();
 
-    // Verify key fields are present in JSON
-    assert!(json.contains("\"phrase_index\""));
-    assert!(json.contains("\"start_time\""));
-    assert!(json.contains("\"pitch_stats\""));
-    assert!(json.contains("\"dynamics\""));
-    assert!(json.contains("\"stability\""));
-
-    // Round-trip
+    // Full round-trip: deserialize and verify all key fields
     let parsed: brain::phrase::PhraseSummary = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.phrase_index, 0);
     assert_eq!(parsed.note_count, 3);
+    assert!((parsed.start_time - 0.0).abs() < 1e-9, "start_time mismatch");
+    assert!(
+        (parsed.pitch_stats.mean_hz - 440.0).abs() < 1.0,
+        "mean_hz should be ~440, got {}",
+        parsed.pitch_stats.mean_hz
+    );
+    assert!(
+        parsed.stability > 0.9,
+        "stability should be high for identical pitches, got {}",
+        parsed.stability
+    );
 }
 
 #[test]

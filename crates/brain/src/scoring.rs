@@ -101,9 +101,37 @@ mod tests {
     }
 
     #[test]
-    fn note_score_serialization() {
+    fn note_score_serialization_roundtrip() {
         let score = score_note(0, -5.0, 15.0, &ScoringThresholds::default());
         let json = serde_json::to_string(&score).unwrap();
-        assert!(json.contains("\"verdict\":\"green\""));
+        let deserialized: NoteScore = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.note_index, 0);
+        assert!((deserialized.cents_deviation - (-5.0)).abs() < f64::EPSILON);
+        assert!((deserialized.timing_error_ms - 15.0).abs() < f64::EPSILON);
+        assert_eq!(deserialized.verdict, Verdict::Green);
+    }
+
+    #[test]
+    fn boundary_green_cents_exactly_at_threshold() {
+        let score = score_note(0, 15.0, 0.0, &ScoringThresholds::default());
+        assert_eq!(score.verdict, Verdict::Green);
+    }
+
+    #[test]
+    fn boundary_yellow_cents_exactly_at_threshold() {
+        let score = score_note(0, 30.0, 0.0, &ScoringThresholds::default());
+        assert_eq!(score.verdict, Verdict::Yellow);
+    }
+
+    #[test]
+    fn pitch_green_but_timing_red_yields_red() {
+        let score = score_note(0, 5.0, 200.0, &ScoringThresholds::default());
+        assert_eq!(score.verdict, Verdict::Red);
+    }
+
+    #[test]
+    fn timing_green_but_pitch_red_yields_red() {
+        let score = score_note(0, 50.0, 10.0, &ScoringThresholds::default());
+        assert_eq!(score.verdict, Verdict::Red);
     }
 }
