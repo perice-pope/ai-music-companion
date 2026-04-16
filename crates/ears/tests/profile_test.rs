@@ -68,7 +68,11 @@ fn load_all_with_malformed_file_still_loads_valid_ones() {
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     // Copy a valid profile
-    std::fs::copy(profiles_dir().join("trumpet.json"), temp_dir.join("trumpet.json")).unwrap();
+    std::fs::copy(
+        profiles_dir().join("trumpet.json"),
+        temp_dir.join("trumpet.json"),
+    )
+    .unwrap();
 
     // Add a malformed file
     std::fs::write(temp_dir.join("broken.json"), "not json").unwrap();
