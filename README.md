@@ -1,39 +1,84 @@
 # AI Music Companion
 
-An intelligent desktop practice companion for musicians — brass, voice, strings, woodwinds, and piano.
+**Real-time practice coaching for musicians.**
 
-Built with **Tauri 2.0** (Rust backend + React frontend) for sub-20ms latency real-time audio feedback.
+## Overview
+
+AI Music Companion is a desktop practice tool for brass, voice, strings, woodwinds, and piano players. It listens to your playing, tracks pitch and timing against a score, and delivers phrase-level coaching feedback -- all with sub-25ms mic-to-screen latency. Built with Tauri 2.0 (Rust backend, React frontend) so the audio-critical path stays in native code while the UI remains fast to iterate on.
 
 ## Architecture
 
-| Layer | What it does | Location |
-|-------|-------------|----------|
-| **Ears** | Mic/MIDI capture, pitch detection, onset detection | `crates/ears/` |
-| **Brain** | Score following, per-note scoring, practice planning | `crates/brain/` |
-| **Face** | Sheet music display, feedback UI, pitch meter | `apps/desktop/` |
+```
+  +-----------+      +-----------+      +-----------+
+  |   Ears    | ---> |   Brain   | ---> |   Face    |
+  | (capture) |      | (analysis)|      |   (UI)    |
+  +-----------+      +-----------+      +-----------+
+```
 
-## Quick start
+- **Ears** -- Audio capture and pitch/onset detection. Real-time thread with zero allocations.
+- **Brain** -- Score following, per-note scoring, phrase analysis, and AI coaching engine.
+- **Face** -- React UI with live pitch display, sheet music view, and practice feedback.
 
-```bash
-# In a GitHub Codespace (recommended) or local with Rust + Node installed:
-just ci          # Run full CI pipeline
-just dev         # Start the dev server
-just test        # Run all tests
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Rust, Tauri 2.0 |
+| Audio | cpal, ringbuf, YIN pitch detection |
+| Frontend | React, TypeScript, Tailwind CSS, Zustand |
+| AI Coaching | Claude / GPT-4 API (phrase-level feedback) |
+| Storage | SQLite (local), Supabase (cloud sync) |
+| CI/CD | GitHub Actions, semantic-release |
+
+## Project Status
+
+| Phase | Description | Status |
+|---|---|---|
+| 0 | Spike -- architecture validation | Complete |
+| 1 | Practice Companion MVP | In Progress |
+| 2 | Smart Import + Tone Quality | Planned |
+| 3 | Teacher Platform + Mobile | Planned |
+
+## Repository Layout
+
+```
+crates/ears/       -- Audio capture, pitch detection, onset detection
+crates/brain/      -- Score following, phrase analysis, coaching engine
+apps/desktop/      -- Tauri 2.0 shell + React/TypeScript frontend
+profiles/          -- JSON instrument profiles
+docs/              -- Testing guides, architecture docs
 ```
 
 ## Development
 
-- **Task runner:** [just](https://github.com/casey/just) — see `justfile` for all commands
-- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/)
-- **Package manager (frontend):** pnpm
-- **Cloud dev:** Open in GitHub Codespaces for zero-setup development
+```bash
+# Prerequisites: Rust stable, Node 20+, pnpm
 
-## Instrument profiles
+pnpm install                       # Frontend dependencies
+cargo build                        # Rust workspace
+cargo test --workspace             # Run all tests
+pnpm --filter desktop test         # Frontend tests
+```
 
-Each instrument is defined by a JSON profile in `profiles/`. Adding a new instrument = adding a JSON file. No code changes required.
+A [justfile](justfile) provides shortcuts for common workflows:
 
-## Project docs
+```bash
+just ci       # Full CI pipeline (fmt, clippy, test, audit, frontend lint+test+build)
+just test     # cargo test --workspace && pnpm test
+just lint     # cargo clippy --deny warnings && pnpm lint
+just fmt      # cargo fmt && pnpm format
+just bench    # Latency benchmarks (fails if >25ms budget exceeded)
+```
 
-- [Architecture](ai-music-companion-architecture.md)
-- [SDLC Automation Loop](sdlc-automation-loop.md)
-- [Claude Code Rules](CLAUDE.md)
+## Contributing
+
+- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `test:`, etc.)
+- `cargo clippy --deny warnings` must pass -- no exceptions
+- **Never allocate in the audio thread** (`crates/ears/` real-time path). No `Box::new`, no `Vec::push`, no `String::from` in the hot path.
+- Every acceptance criterion needs a corresponding test
+
+See [CLAUDE.md](CLAUDE.md) for the full set of coding conventions and project rules.
+
+## License
+
+This project is not yet licensed. A license will be added before public release.
