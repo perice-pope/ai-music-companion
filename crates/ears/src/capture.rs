@@ -6,7 +6,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use thiserror::Error;
 
