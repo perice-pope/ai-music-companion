@@ -8,8 +8,8 @@ fn a4_440hz_detected_accurately() {
         sample_rate: 44100,
         ..Default::default()
     };
-    let mut detector = PitchDetector::new(config);
-    let samples = generate_sine(440.0, 44100, detector.hop_size());
+    let mut detector = PitchDetector::new(config).unwrap();
+    let samples = generate_sine(440.0, 44100, detector.window_size());
 
     let event = detector.detect(&samples);
     let hz = event.pitch_hz.expect("Should detect A4");
@@ -27,8 +27,8 @@ fn low_e2_82hz_detected() {
         freq_min_hz: 60.0,
         ..Default::default()
     };
-    let mut detector = PitchDetector::new(config);
-    let samples = generate_sine(82.41, 44100, detector.hop_size());
+    let mut detector = PitchDetector::new(config).unwrap();
+    let samples = generate_sine(82.41, 44100, detector.window_size());
 
     let event = detector.detect(&samples);
     let hz = event.pitch_hz.expect("Should detect E2");
@@ -44,8 +44,8 @@ fn high_c6_1047hz_detected() {
         sample_rate: 44100,
         ..Default::default()
     };
-    let mut detector = PitchDetector::new(config);
-    let samples = generate_sine(1046.5, 44100, detector.hop_size());
+    let mut detector = PitchDetector::new(config).unwrap();
+    let samples = generate_sine(1046.5, 44100, detector.window_size());
 
     let event = detector.detect(&samples);
     let hz = event.pitch_hz.expect("Should detect C6");
@@ -58,8 +58,8 @@ fn high_c6_1047hz_detected() {
 #[test]
 fn silence_yields_no_pitch() {
     let config = PitchConfig::default();
-    let mut detector = PitchDetector::new(config);
-    let samples = vec![0.0f32; detector.hop_size()];
+    let mut detector = PitchDetector::new(config).unwrap();
+    let samples = vec![0.0f32; detector.window_size()];
 
     let event = detector.detect(&samples);
     assert!(event.pitch_hz.is_none());
@@ -69,9 +69,9 @@ fn silence_yields_no_pitch() {
 #[test]
 fn very_quiet_signal_yields_no_pitch() {
     let config = PitchConfig::default();
-    let mut detector = PitchDetector::new(config);
+    let mut detector = PitchDetector::new(config).unwrap();
     // Very quiet 440 Hz — below the silence gate
-    let samples: Vec<f32> = generate_sine(440.0, 44100, detector.hop_size())
+    let samples: Vec<f32> = generate_sine(440.0, 44100, detector.window_size())
         .into_iter()
         .map(|s| s * 0.001)
         .collect();
@@ -89,8 +89,8 @@ fn multiple_detections_advance_timestamp() {
         sample_rate: 44100,
         ..Default::default()
     };
-    let mut detector = PitchDetector::new(config);
-    let samples = generate_sine(440.0, 44100, detector.hop_size());
+    let mut detector = PitchDetector::new(config).unwrap();
+    let samples = generate_sine(440.0, 44100, detector.window_size());
 
     let e1 = detector.detect(&samples);
     let e2 = detector.detect(&samples);
@@ -103,12 +103,12 @@ fn multiple_detections_advance_timestamp() {
 #[test]
 fn different_frequencies_detected_differently() {
     let config = PitchConfig::default();
-    let mut detector = PitchDetector::new(config);
+    let mut detector = PitchDetector::new(config).unwrap();
 
-    let samples_a = generate_sine(440.0, 44100, detector.hop_size());
+    let samples_a = generate_sine(440.0, 44100, detector.window_size());
     let event_a = detector.detect(&samples_a);
 
-    let samples_e = generate_sine(329.63, 44100, detector.hop_size());
+    let samples_e = generate_sine(329.63, 44100, detector.window_size());
     let event_e = detector.detect(&samples_e);
 
     let hz_a = event_a.pitch_hz.expect("Should detect A4");
