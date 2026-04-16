@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Music Companion — Pitch Deck</title>
+<style>
+  /* ===== RESET & BASE ===== */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-deep:    #0B1120;
+    --bg-slide:   #0F172A;
+    --bg-card:    #1E293B;
+    --bg-card-alt:#162032;
+    --text:       #F1F5F9;
+    --text-dim:   #94A3B8;
+    --text-muted: #64748B;
+    --gold:       #F59E0B;
+    --gold-soft:  #FBBF24;
+    --blue:       #3B82F6;
+    --blue-soft:  #60A5FA;
+    --green:      #22C55E;
+    --red:        #EF4444;
+    --red-dim:    #6B2121;
+    --border:     rgba(148,163,184,0.12);
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  html {
+    font-family: var(--font);
+    background: var(--bg-deep);
+    color: var(--text);
+    scroll-snap-type: y mandatory;
+    overflow-y: scroll;
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body { background: var(--bg-deep); }
+
+  /* ===== SLIDE CONTAINER ===== */
+  .slide {
+    width: 100vw;
+    min-height: 100vh;
+    scroll-snap-align: start;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    padding: 60px 80px;
+  }
+
+  .slide-inner {
+    max-width: 1100px;
+    width: 100%;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ===== SLIDE COUNTER ===== */
+  .slide-number {
+    position: absolute;
+    bottom: 28px;
+    right: 40px;
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    font-variant-numeric: tabular-nums;
+    z-index: 10;
+  }
+
+  /* ===== TYPOGRAPHY ===== */
+  h1 {
+    font-size: clamp(2.8rem, 5vw, 4.2rem);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.5em;
+  }
+  h2 {
+    font-size: clamp(2rem, 3.5vw, 3rem);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    margin-bottom: 0.6em;
+  }
+  h3 {
+    font-size: clamp(1.25rem, 2vw, 1.6rem);
+    font-weight: 600;
+    line-height: 1.3;
+    margin-bottom: 0.5em;
+    color: var(--text);
+  }
+  .tagline {
+    font-size: clamp(1.2rem, 2.2vw, 1.7rem);
+    font-weight: 400;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 600;
+    color: var(--gold);
+    margin-bottom: 1rem;
+    display: block;
+  }
+
+  /* ===== BULLET LISTS ===== */
+  .bullets {
+    list-style: none;
+    padding: 0;
+  }
+  .bullets li {
+    position: relative;
+    padding-left: 1.6em;
+    margin-bottom: 1em;
+    font-size: clamp(1rem, 1.5vw, 1.2rem);
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+  .bullets li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.55em;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--gold);
+  }
+  .bullets.blue li::before { background: var(--blue); }
+
+  .bullets li strong { color: var(--text); font-weight: 600; }
+
+  /* ===== GRID LAYOUTS ===== */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 60px;
+    align-items: start;
+  }
+
+  /* ===== CARDS ===== */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+  }
+
+  /* ===== ACCENT BAR ===== */
+  .accent-bar {
+    width: 48px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--gold);
+    margin-bottom: 1.5rem;
+  }
+  .accent-bar.blue { background: var(--blue); }
+
+  /* ===== DECORATIVE ELEMENTS ===== */
+  .bg-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.15;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* ===== NAVIGATION HINT ===== */
+  .nav-hint {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    color: var(--text-muted);
+    opacity: 0.6;
+    z-index: 100;
+    letter-spacing: 0.5px;
+    transition: opacity 0.6s;
+    pointer-events: none;
+  }
+  .nav-hint.hidden { opacity: 0; }
+
+  /* ===== PROGRESS BAR ===== */
+  .progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--gold), var(--blue));
+    z-index: 200;
+    transition: width 0.35s ease;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* =========================================================
+     SLIDE 1 — TITLE
+     ========================================================= */
+  .slide-title {
+    text-align: center;
+    background: radial-gradient(ellipse at 50% 40%, #152042 0%, var(--bg-deep) 70%);
+  }
+  .slide-title h1 {
+    font-size: clamp(3.2rem, 6vw, 5.5rem);
+    background: linear-gradient(135deg, #FFFFFF 0%, #D4D4D8 50%, var(--gold-soft) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.3em;
+  }
+  .slide-title .tagline {
+    font-size: clamp(1.3rem, 2.4vw, 1.9rem);
+    color: var(--text-dim);
+    font-style: italic;
+    font-weight: 300;
+  }
+
+  /* Music staff decoration */
+  .staff-lines {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    max-width: 900px;
+    height: 200px;
+    opacity: 0.04;
+    z-index: 0;
+  }
+  .staff-lines .line {
+    position: absolute;
+    left: 5%;
+    right: 5%;
+    height: 2px;
+    background: white;
+    border-radius: 1px;
+  }
+  .staff-lines .line:nth-child(1) { top: 20%; }
+  .staff-lines .line:nth-child(2) { top: 35%; }
+  .staff-lines .line:nth-child(3) { top: 50%; }
+  .staff-lines .line:nth-child(4) { top: 65%; }
+  .staff-lines .line:nth-child(5) { top: 80%; }
+
+  /* Notes decoration */
+  .note {
+    position: absolute;
+    font-size: 3rem;
+    opacity: 0.06;
+    z-index: 0;
+    color: var(--gold);
+  }
+  .note.n1 { top: 15%; left: 8%; font-size: 4rem; transform: rotate(-15deg); }
+  .note.n2 { top: 25%; right: 12%; font-size: 2.5rem; transform: rotate(10deg); }
+  .note.n3 { bottom: 20%; left: 15%; font-size: 3.5rem; transform: rotate(5deg); }
+  .note.n4 { bottom: 30%; right: 8%; font-size: 3rem; transform: rotate(-8deg); }
+  .note.n5 { top: 60%; left: 5%; font-size: 2rem; transform: rotate(20deg); }
+
+  /* =========================================================
+     SLIDE 2-3 — PROBLEM SLIDES
+     ========================================================= */
+  .slide-problem { background: var(--bg-deep); }
+  .problem-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.6rem;
+    margin-bottom: 1.5rem;
+  }
+  .problem-icon.teacher { background: rgba(245,158,11,0.12); }
+  .problem-icon.student { background: rgba(59,130,246,0.12); }
+
+  /* =========================================================
+     SLIDE 4 — EDUCATION GAP
+     ========================================================= */
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 24px;
+    margin-top: 2rem;
+  }
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 24px;
+    text-align: center;
+  }
+  .stat-card .number {
+    font-size: clamp(2rem, 3vw, 2.8rem);
+    font-weight: 800;
+    color: var(--gold);
+    line-height: 1;
+    margin-bottom: 0.4em;
+  }
+  .stat-card .desc {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  /* =========================================================
+     SLIDE 5 — SOLUTION
+     ========================================================= */
+  .solution-features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    margin-top: 2.5rem;
+  }
+  .feature-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 28px;
+    transition: border-color 0.3s;
+  }
+  .feature-card:hover { border-color: rgba(245,158,11,0.3); }
+  .feature-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    margin-bottom: 1.2rem;
+  }
+  .feature-icon.a { background: rgba(245,158,11,0.12); }
+  .feature-icon.b { background: rgba(59,130,246,0.12); }
+  .feature-icon.c { background: rgba(34,197,94,0.12); }
+  .feature-card p {
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  /* =========================================================
+     SLIDE 6 — PRACTICE LOOP
+     ========================================================= */
+  .flow-steps {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-top: 2.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .flow-step {
+    flex: 1 1 0;
+    min-width: 160px;
+    max-width: 220px;
+    text-align: center;
+    position: relative;
+    padding: 0 12px;
+  }
+  .flow-step-num {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 2px solid var(--gold);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--gold);
+    margin: 0 auto 1rem;
+  }
+  .flow-step h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+  }
+  .flow-step p {
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    min-width: 30px;
+    padding-bottom: 2rem;
+  }
+
+  /* =========================================================
+     SLIDE 8 — COMPARISON TABLE
+     ========================================================= */
+  .comparison-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin-top: 2rem;
+    font-size: clamp(0.82rem, 1.1vw, 0.95rem);
+    table-layout: fixed;
+  }
+  .comparison-table thead th {
+    padding: 14px 10px;
+    text-align: center;
+    font-weight: 600;
+    font-size: clamp(0.8rem, 1vw, 0.92rem);
+    color: var(--text);
+    border-bottom: 2px solid var(--border);
+    white-space: normal;
+  }
+  .comparison-table thead th:first-child {
+    text-align: left;
+    width: 32%;
+  }
+  .comparison-table thead th.us {
+    color: var(--gold);
+    position: relative;
+  }
+  .comparison-table thead th.us::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 4px;
+    right: 4px;
+    height: 3px;
+    background: var(--gold);
+    border-radius: 0 0 3px 3px;
+  }
+  .comparison-table tbody td {
+    padding: 13px 10px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .comparison-table tbody td:first-child {
+    text-align: left;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .comparison-table tbody tr:last-child td { border-bottom: none; }
+  .comparison-table td.us-col {
+    background: rgba(245,158,11,0.04);
+  }
+  .check { color: var(--green); font-weight: 700; font-size: 1.1em; }
+  .cross { color: var(--text-muted); font-size: 1.1em; opacity: 0.5; }
+  .partial { color: var(--gold-soft); font-size: 0.85em; font-weight: 500; }
+
+  /* =========================================================
+     SLIDE 9 — INSTRUMENTS
+     ========================================================= */
+  .instrument-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 16px;
+    margin-top: 2rem;
+  }
+  .instrument-chip {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 16px;
+    text-align: center;
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--text);
+    transition: border-color 0.3s, transform 0.2s;
+  }
+  .instrument-chip:hover {
+    border-color: var(--gold);
+    transform: translateY(-2px);
+  }
+  .instrument-chip .inst-icon {
+    display: block;
+    font-size: 1.5rem;
+    margin-bottom: 0.4rem;
+  }
+
+  /* =========================================================
+     SLIDE 10 — TEACHER MULTIPLIER
+     ========================================================= */
+  .multiplier-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    margin-top: 2.5rem;
+  }
+  .m-stat {
+    text-align: center;
+  }
+  .m-stat .big {
+    font-size: clamp(2.4rem, 4vw, 3.6rem);
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 0.3em;
+  }
+  .m-stat .big.gold { color: var(--gold); }
+  .m-stat .big.blue { color: var(--blue); }
+  .m-stat .big.green { color: var(--green); }
+  .m-stat .context {
+    font-size: 1rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  /* =========================================================
+     SLIDE 11 — PRICING
+     ========================================================= */
+  .pricing-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    margin-top: 2.5rem;
+  }
+  .price-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 36px 28px;
+    text-align: center;
+    position: relative;
+    transition: border-color 0.3s, transform 0.2s;
+  }
+  .price-card:hover { transform: translateY(-3px); }
+  .price-card.featured {
+    border-color: var(--gold);
+    background: linear-gradient(180deg, rgba(245,158,11,0.06) 0%, var(--bg-card) 40%);
+  }
+  .price-card.featured::before {
+    content: 'Most Popular';
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--gold);
+    color: var(--bg-deep);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 4px 16px;
+    border-radius: 20px;
+  }
+  .price-tier {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 0.6rem;
+  }
+  .price-amount {
+    font-size: clamp(2rem, 3vw, 2.6rem);
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 0.2em;
+  }
+  .price-period {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin-bottom: 1.5rem;
+  }
+  .price-desc {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .price-amount .dollar { font-size: 0.6em; vertical-align: top; line-height: 1.8; }
+
+  /* =========================================================
+     SLIDE 12 — GO TO MARKET
+     ========================================================= */
+  .gtm-phases {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+    margin-top: 2rem;
+  }
+  .phase-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 24px;
+    position: relative;
+  }
+  .phase-num {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--gold);
+    margin-bottom: 0.6rem;
+  }
+  .phase-card h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+  }
+  .phase-card p {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* =========================================================
+     SLIDE 13 — TECHNOLOGY
+     ========================================================= */
+  .tech-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+    margin-top: 2rem;
+  }
+  .tech-item {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .tech-icon-wrap {
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+  }
+  .tech-icon-wrap.t1 { background: rgba(245,158,11,0.1); }
+  .tech-icon-wrap.t2 { background: rgba(59,130,246,0.1); }
+  .tech-icon-wrap.t3 { background: rgba(34,197,94,0.1); }
+  .tech-icon-wrap.t4 { background: rgba(168,85,247,0.1); }
+  .tech-item h4 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+    color: var(--text);
+  }
+  .tech-item p {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* =========================================================
+     SLIDE 14 — VISION TIMELINE
+     ========================================================= */
+  .vision-timeline {
+    margin-top: 2.5rem;
+    position: relative;
+    padding-left: 40px;
+  }
+  .vision-timeline::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: linear-gradient(180deg, var(--gold), var(--blue));
+    border-radius: 1px;
+  }
+  .vision-item {
+    position: relative;
+    margin-bottom: 2rem;
+    padding-left: 20px;
+  }
+  .vision-item:last-child { margin-bottom: 0; }
+  .vision-item::before {
+    content: '';
+    position: absolute;
+    left: -32px;
+    top: 6px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 3px solid var(--gold);
+    background: var(--bg-deep);
+  }
+  .vision-item:nth-child(2)::before { border-color: var(--blue-soft); }
+  .vision-item:nth-child(3)::before { border-color: var(--blue); }
+  .vision-item:nth-child(4)::before { border-color: #8B5CF6; }
+  .vision-item .phase-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--gold);
+    margin-bottom: 0.3rem;
+  }
+  .vision-item:nth-child(2) .phase-label { color: var(--blue-soft); }
+  .vision-item:nth-child(3) .phase-label { color: var(--blue); }
+  .vision-item:nth-child(4) .phase-label { color: #8B5CF6; }
+  .vision-item h4 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+    color: var(--text);
+  }
+  .vision-item p {
+    font-size: 1rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* =========================================================
+     SLIDE 15 — CTA
+     ========================================================= */
+  .slide-cta {
+    text-align: center;
+    background: radial-gradient(ellipse at 50% 60%, #1a2744 0%, var(--bg-deep) 70%);
+  }
+  .cta-button {
+    display: inline-block;
+    margin-top: 2rem;
+    padding: 18px 48px;
+    border-radius: 60px;
+    background: linear-gradient(135deg, var(--gold) 0%, #D97706 100%);
+    color: var(--bg-deep);
+    font-size: 1.15rem;
+    font-weight: 700;
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 24px rgba(245,158,11,0.25);
+  }
+  .cta-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(245,158,11,0.35);
+  }
+  .cta-email {
+    margin-top: 1.5rem;
+    font-size: 1.05rem;
+    color: var(--text-dim);
+  }
+  .cta-email a {
+    color: var(--blue-soft);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(96,165,250,0.3);
+  }
+  .cta-footer {
+    margin-top: 3rem;
+    font-size: 1.05rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* ===== QUOTE / PULL QUOTE ===== */
+  .pull-quote {
+    font-size: clamp(1.4rem, 2.4vw, 2rem);
+    font-weight: 300;
+    font-style: italic;
+    color: var(--text);
+    line-height: 1.5;
+    border-left: 3px solid var(--gold);
+    padding-left: 1.5rem;
+    margin: 2rem 0;
+    max-width: 700px;
+  }
+  .pull-quote.center {
+    border-left: none;
+    padding-left: 0;
+    text-align: center;
+    max-width: 800px;
+    margin: 2rem auto;
+  }
+
+  /* ===== FOOTNOTE ===== */
+  .footnote {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin-top: 2rem;
+    font-style: italic;
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 900px) {
+    .slide { padding: 40px 32px; }
+    .two-col { grid-template-columns: 1fr; gap: 32px; }
+    .solution-features { grid-template-columns: 1fr; }
+    .pricing-grid { grid-template-columns: 1fr; }
+    .multiplier-stats { grid-template-columns: 1fr; }
+    .gtm-phases { grid-template-columns: 1fr; }
+    .tech-grid { grid-template-columns: 1fr; }
+    .comparison-table { font-size: 0.8rem; }
+    .comparison-table thead th,
+    .comparison-table tbody td { padding: 10px 8px; }
+    .flow-steps { flex-direction: column; align-items: center; }
+    .flow-arrow { transform: rotate(90deg); min-width: unset; padding: 0; margin: 4px 0; }
+    .flow-step { max-width: 300px; }
+  }
+
+  /* ===== PRINT ===== */
+  @media print {
+    html { scroll-snap-type: none; }
+    .slide {
+      page-break-after: always;
+      page-break-inside: avoid;
+      min-height: 100vh;
+      padding: 40px;
+    }
+    .slide:last-child { page-break-after: auto; }
+    .progress-bar, .nav-hint, .slide-number { display: none; }
+    .bg-glow, .note, .staff-lines { display: none; }
+    body { background: white; color: #1a1a1a; }
+    .slide { background: white !important; }
+    h1, h2, h3, h4 { color: #1a1a1a !important; }
+    .tagline, .bullets li, p { color: #444 !important; }
+    .label { color: #b45309 !important; }
+    .card, .stat-card, .feature-card, .price-card, .phase-card, .instrument-chip {
+      background: #f8f8f8 !important;
+      border-color: #ddd !important;
+    }
+    .comparison-table tbody td, .comparison-table thead th {
+      border-color: #ddd !important;
+      color: #333 !important;
+    }
+    .pull-quote { color: #333 !important; border-left-color: #b45309 !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Progress bar -->
+<div class="progress-bar" id="progressBar" style="width: 0%;"></div>
+
+<!-- Nav hint -->
+<div class="nav-hint" id="navHint">Use arrow keys or scroll to navigate</div>
+
+<!-- ================================================================
+     SLIDE 1 — TITLE
+     ================================================================ -->
+<section class="slide slide-title" id="slide-1">
+  <!-- Decorative music staff -->
+  <div class="staff-lines">
+    <div class="line"></div>
+    <div class="line"></div>
+    <div class="line"></div>
+    <div class="line"></div>
+    <div class="line"></div>
+  </div>
+  <!-- Decorative notes -->
+  <div class="note n1">&#9835;</div>
+  <div class="note n2">&#9833;</div>
+  <div class="note n3">&#9834;</div>
+  <div class="note n4">&#9836;</div>
+  <div class="note n5">&#9839;</div>
+  <!-- Glow -->
+  <div class="bg-glow" style="width:600px;height:600px;top:20%;left:30%;background:var(--gold);"></div>
+  <div class="bg-glow" style="width:500px;height:500px;bottom:10%;right:20%;background:var(--blue);"></div>
+
+  <div class="slide-inner" style="text-align:center;">
+    <h1>AI Music Companion</h1>
+    <p class="tagline">Your private teacher, every time you practice.</p>
+  </div>
+  <div class="slide-number">1 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 2 — THE PROBLEM (TEACHERS)
+     ================================================================ -->
+<section class="slide slide-problem" id="slide-2">
+  <div class="bg-glow" style="width:500px;height:500px;top:-10%;right:-5%;background:var(--gold);opacity:0.08;"></div>
+  <div class="slide-inner">
+    <span class="label">The Problem</span>
+    <h2>Music teachers are stretched impossibly thin</h2>
+    <div class="two-col" style="margin-top:2rem;">
+      <div>
+        <ul class="bullets">
+          <li><strong>1 teacher, 60 to 200 students</strong> &mdash; the average band or orchestra program gives each student minutes of individual attention per week</li>
+          <li><strong>Zero visibility into home practice</strong> &mdash; "Did they actually practice, or just say they did?"</li>
+          <li><strong>National teacher shortage getting worse</strong> &mdash; fewer music education graduates every year, more unfilled positions</li>
+          <li><strong>Impossible to give individual feedback</strong> to every student every week at the level they deserve</li>
+        </ul>
+      </div>
+      <div class="card" style="display:flex;align-items:center;justify-content:center;text-align:center;min-height:240px;">
+        <div>
+          <div style="font-size:4.5rem;font-weight:800;color:var(--gold);line-height:1;">1 : 200</div>
+          <div style="font-size:1.1rem;color:var(--text-dim);margin-top:0.8rem;">Typical teacher-to-student ratio<br>in public school music programs</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">2 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 3 — THE PROBLEM (STUDENTS)
+     ================================================================ -->
+<section class="slide slide-problem" id="slide-3">
+  <div class="bg-glow" style="width:500px;height:500px;bottom:-10%;left:-5%;background:var(--blue);opacity:0.08;"></div>
+  <div class="slide-inner">
+    <span class="label">The Problem</span>
+    <h2>Practicing alone is frustrating &mdash; and expensive to fix</h2>
+    <div class="two-col" style="margin-top:2rem;">
+      <div>
+        <ul class="bullets blue">
+          <li><strong>No one to tell you what's wrong</strong> &mdash; students repeat mistakes for days without knowing it</li>
+          <li><strong>Private lessons cost $50&ndash;100 per hour</strong> &mdash; most families can't afford weekly sessions</li>
+          <li><strong>Existing apps kill the joy</strong> &mdash; glorified metronomes or robotic note-checkers that reduce music to right-or-wrong</li>
+          <li><strong>"I don't know what to work on"</strong> &mdash; students practice randomly without direction, wasting their limited time</li>
+        </ul>
+      </div>
+      <div class="card" style="min-height:240px;">
+        <div style="margin-bottom:1.5rem;">
+          <div style="font-size:3.5rem;font-weight:800;color:var(--blue);line-height:1;">$75</div>
+          <div style="font-size:1rem;color:var(--text-dim);margin-top:0.4rem;">Average cost of a single<br>private lesson</div>
+        </div>
+        <div>
+          <div style="font-size:3.5rem;font-weight:800;color:var(--red);line-height:1;">78%</div>
+          <div style="font-size:1rem;color:var(--text-dim);margin-top:0.4rem;">of student musicians quit<br>within the first two years</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">3 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 4 — THE EDUCATION GAP
+     ================================================================ -->
+<section class="slide" id="slide-4">
+  <div class="bg-glow" style="width:600px;height:600px;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--gold);opacity:0.06;"></div>
+  <div class="slide-inner">
+    <span class="label">The Opportunity</span>
+    <h2>The gap between measuring and <em style="color:var(--gold);font-style:normal;">teaching</em></h2>
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="number">$3.9B</div>
+        <div class="desc">Online music education market in 2025</div>
+      </div>
+      <div class="stat-card">
+        <div class="number">15%+</div>
+        <div class="desc">Annual growth rate and accelerating</div>
+      </div>
+      <div class="stat-card">
+        <div class="number">0</div>
+        <div class="desc">Tools that coach like a real teacher</div>
+      </div>
+    </div>
+    <div style="margin-top:2.5rem;max-width:800px;">
+      <ul class="bullets">
+        <li>Existing tools only check <strong>pitch, rhythm, and duration</strong> &mdash; the basics</li>
+        <li><strong>No tool assesses tone quality, dynamics, expression, or musicality</strong> &mdash; the things that actually matter</li>
+        <li>The gap: technology that actually <strong>listens</strong>, not just <strong>measures</strong></li>
+      </ul>
+    </div>
+  </div>
+  <div class="slide-number">4 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 5 — OUR SOLUTION
+     ================================================================ -->
+<section class="slide" id="slide-5">
+  <div class="bg-glow" style="width:500px;height:500px;top:10%;right:0;background:var(--blue);opacity:0.06;"></div>
+  <div class="slide-inner">
+    <span class="label">Our Solution</span>
+    <h2>A practice companion that listens<br>like your best teacher</h2>
+    <div class="solution-features">
+      <div class="feature-card">
+        <div class="feature-icon a">&#127911;</div>
+        <h3>Coaches in real time</h3>
+        <p>Tips and guidance between phrases &mdash; never interrupts your playing. Like a teacher sitting beside you, waiting for the right moment to speak.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon b">&#127926;</div>
+        <h3>Understands musicality</h3>
+        <p>Tone, expression, dynamics &mdash; not just "right or wrong notes." It hears the music the way a teacher hears it.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon c">&#128218;</div>
+        <h3>Remembers your journey</h3>
+        <p>Tracks your progress over weeks and months. Suggests what to work on next so every practice session counts.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">5 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 6 — HOW IT WORKS (STUDENT)
+     ================================================================ -->
+<section class="slide" id="slide-6">
+  <div class="slide-inner">
+    <span class="label">How It Works</span>
+    <h2>The practice loop</h2>
+    <p class="tagline" style="font-size:1.1rem;font-style:normal;">Five minutes to start. No setup. No cables. Just you and your instrument.</p>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="flow-step-num">1</div>
+        <h4>Open &amp; Pick</h4>
+        <p>Launch the app, choose your instrument. That's it.</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">2</div>
+        <h4>Play</h4>
+        <p>It listens through your mic and understands what you're playing.</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">3</div>
+        <h4>Get Coached</h4>
+        <p>Tips appear between phrases &mdash; gentle, specific, helpful.</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">4</div>
+        <h4>Review</h4>
+        <p>Finish and see your session recap &mdash; what went well, what to improve.</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">5</div>
+        <h4>Come Back</h4>
+        <p>Tomorrow it remembers and suggests what to practice next.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">6 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 7 — HOW IT WORKS (TEACHER)
+     ================================================================ -->
+<section class="slide" id="slide-7">
+  <div class="bg-glow" style="width:500px;height:500px;top:20%;left:-10%;background:var(--gold);opacity:0.06;"></div>
+  <div class="slide-inner">
+    <span class="label">For Teachers</span>
+    <h2>Your teaching assistant in every practice room</h2>
+    <div class="two-col" style="margin-top:2rem;">
+      <ul class="bullets">
+        <li><strong>See every student's practice activity</strong> at a glance &mdash; who practiced, how long, what they worked on</li>
+        <li><strong>Read session summaries</strong> without listening to recordings &mdash; save hours every week</li>
+        <li><strong>Spot struggling students</strong> before they fall behind &mdash; early intervention, not end-of-semester surprises</li>
+        <li><strong>Assign specific pieces or exercises</strong> and see results without collecting practice logs</li>
+      </ul>
+      <div class="card" style="display:flex;align-items:center;justify-content:center;">
+        <p class="pull-quote" style="border-left:none;margin:0;text-align:center;font-size:1.3rem;">
+          "It's like having a teaching assistant in every practice room &mdash; one who never calls in sick."
+        </p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">7 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 8 — COMPARISON
+     ================================================================ -->
+<section class="slide" id="slide-8">
+  <div class="slide-inner">
+    <span class="label">What Makes Us Different</span>
+    <h2>Not another note checker</h2>
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th class="us">AI Music<br>Companion</th>
+          <th>SmartMusic</th>
+          <th>Tonestro</th>
+          <th>Yousician</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Coaches like a teacher</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+        </tr>
+        <tr>
+          <td>Tone quality feedback</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+        </tr>
+        <tr>
+          <td>Brass, wind, voice &amp; strings</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="check">&#10003;</span></td>
+          <td><span class="partial">Partial</span></td>
+          <td><span class="partial">Guitar &amp; piano only</span></td>
+        </tr>
+        <tr>
+          <td>Teacher dashboard</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+        </tr>
+        <tr>
+          <td>Adaptive practice planning</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+        </tr>
+        <tr>
+          <td>Works offline</td>
+          <td class="us-col"><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+          <td><span class="check">&#10003;</span></td>
+          <td><span class="cross">&#10005;</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="slide-number">8 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 9 — INSTRUMENTS
+     ================================================================ -->
+<section class="slide" id="slide-9">
+  <div class="bg-glow" style="width:600px;height:600px;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--blue);opacity:0.05;"></div>
+  <div class="slide-inner" style="text-align:center;">
+    <span class="label">Instrument Support</span>
+    <h2>One app. Every instrument.</h2>
+    <div class="instrument-grid">
+      <div class="instrument-chip"><span class="inst-icon">&#127930;</span>Trumpet</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127930;</span>Trombone</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127930;</span>French Horn</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127930;</span>Tuba</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127925;</span>Flute</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127925;</span>Clarinet</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127927;</span>Saxophone</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127925;</span>Oboe</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127931;</span>Violin</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127931;</span>Viola</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127931;</span>Cello</div>
+      <div class="instrument-chip"><span class="inst-icon">&#127908;</span>Voice</div>
+    </div>
+    <p class="footnote" style="text-align:center;">Adding a new instrument is as simple as adding a profile. No engineering required.</p>
+  </div>
+  <div class="slide-number">9 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 10 — TEACHER MULTIPLIER
+     ================================================================ -->
+<section class="slide" id="slide-10">
+  <div class="bg-glow" style="width:500px;height:500px;top:20%;right:0;background:var(--gold);opacity:0.06;"></div>
+  <div class="slide-inner" style="text-align:center;">
+    <span class="label">The Teacher Multiplier</span>
+    <h2>One teacher. Hundreds of students.<br>Every one gets private-lesson quality feedback.</h2>
+    <div class="multiplier-stats">
+      <div class="m-stat">
+        <div class="big gold">60&ndash;200</div>
+        <div class="context">Students in a typical<br>band or orchestra program</div>
+      </div>
+      <div class="m-stat">
+        <div class="big blue">$75</div>
+        <div class="context">Average cost of a single<br>private lesson</div>
+      </div>
+      <div class="m-stat">
+        <div class="big green">~$6&ndash;8</div>
+        <div class="context">Per student per month<br>with AI Music Companion</div>
+      </div>
+    </div>
+    <p class="pull-quote center" style="margin-top:3rem;font-size:1.3rem;">
+      Not replacing teachers &mdash; extending them.
+    </p>
+  </div>
+  <div class="slide-number">10 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 11 — PRICING
+     ================================================================ -->
+<section class="slide" id="slide-11">
+  <div class="slide-inner" style="text-align:center;">
+    <span class="label">Pricing</span>
+    <h2>Simple. Affordable. Aligned with how schools budget.</h2>
+    <div class="pricing-grid">
+      <div class="price-card">
+        <div class="price-tier">Teacher</div>
+        <div class="price-amount">Free</div>
+        <div class="price-period">Always</div>
+        <div class="price-desc">Full access for teachers. Your distribution engine &mdash; because when a teacher adopts, their students follow.</div>
+      </div>
+      <div class="price-card featured">
+        <div class="price-tier">Student Semester Pass</div>
+        <div class="price-amount"><span class="dollar">$</span>29&ndash;39</div>
+        <div class="price-period">per semester (~$6&ndash;8/mo)</div>
+        <div class="price-desc">Everything a student needs. Coaching, progress tracking, session recaps, and personalized practice plans.</div>
+      </div>
+      <div class="price-card">
+        <div class="price-tier">School Site License</div>
+        <div class="price-amount">Custom</div>
+        <div class="price-period">20+ seats, semester billing</div>
+        <div class="price-desc">Volume pricing for programs. Teacher dashboard, admin tools, and dedicated onboarding support.</div>
+      </div>
+    </div>
+    <p class="footnote" style="text-align:center;">Semester-based billing &mdash; not monthly subscriptions. Aligns with how schools actually budget.</p>
+  </div>
+  <div class="slide-number">11 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 12 — GO TO MARKET
+     ================================================================ -->
+<section class="slide" id="slide-12">
+  <div class="bg-glow" style="width:500px;height:500px;bottom:-5%;left:-5%;background:var(--blue);opacity:0.06;"></div>
+  <div class="slide-inner">
+    <span class="label">Go to Market</span>
+    <h2>Teacher-led adoption, student-powered growth</h2>
+    <div class="gtm-phases">
+      <div class="phase-card">
+        <div class="phase-num">Phase 1 &mdash; Validate</div>
+        <h4>Free Semester Pilots</h4>
+        <p>Partner with 5&ndash;10 music programs for a free semester. Gather feedback, refine the experience, build case studies.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-num">Phase 2 &mdash; Evangelize</div>
+        <h4>Conference Circuit</h4>
+        <p>NAfME, state Music Educators Associations, NAMM. Demo at every booth. Teachers talk to teachers.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-num">Phase 3 &mdash; Scale</div>
+        <h4>Teacher as Distributor</h4>
+        <p>One teacher adoption = 60&ndash;200 student seats. The best distribution channel in education.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-num">Phase 4 &mdash; Expand</div>
+        <h4>Direct to Consumer</h4>
+        <p>Adult returners, self-directed learners, home-school families. The product speaks for itself.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">12 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 13 — TECHNOLOGY
+     ================================================================ -->
+<section class="slide" id="slide-13">
+  <div class="slide-inner">
+    <span class="label">The Technology</span>
+    <h2>Built for musicians, by musicians</h2>
+    <p class="tagline" style="font-size:1.1rem;font-style:normal;margin-bottom:2rem;">We obsessed over every detail so it feels effortless to use.</p>
+    <div class="tech-grid">
+      <div class="tech-item">
+        <div class="tech-icon-wrap t1">&#128187;</div>
+        <div>
+          <h4>Mac, Windows &amp; Linux</h4>
+          <p>Works on the computers your school already has. Mobile coming soon.</p>
+        </div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-icon-wrap t2">&#9889;</div>
+        <div>
+          <h4>Under 20 milliseconds</h4>
+          <p>From microphone to feedback &mdash; faster than you can blink. Feels instant.</p>
+        </div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-icon-wrap t3">&#9992;&#65039;</div>
+        <div>
+          <h4>Works completely offline</h4>
+          <p>Practice anywhere &mdash; no internet required. Perfect for rural schools and travel.</p>
+        </div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-icon-wrap t4">&#128274;</div>
+        <div>
+          <h4>Your data stays private</h4>
+          <p>Audio is processed on your device. Student data is never sold or shared. Ever.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">13 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 14 — VISION
+     ================================================================ -->
+<section class="slide" id="slide-14">
+  <div class="bg-glow" style="width:600px;height:600px;top:30%;right:-10%;background:var(--gold);opacity:0.05;"></div>
+  <div class="slide-inner">
+    <span class="label">Vision</span>
+    <h2>What if every student had a world-class<br>private teacher, every time they practiced?</h2>
+    <div class="vision-timeline">
+      <div class="vision-item">
+        <div class="phase-label">Now</div>
+        <h4>Individual Practice Companion</h4>
+        <p>Real-time coaching, progress tracking, and personalized practice plans for every student.</p>
+      </div>
+      <div class="vision-item">
+        <div class="phase-label">Next</div>
+        <h4>Import Any Music</h4>
+        <p>Take a photo of sheet music, share a link, or upload a file. The companion reads it and coaches you through it.</p>
+      </div>
+      <div class="vision-item">
+        <div class="phase-label">Then</div>
+        <h4>Teacher Platform</h4>
+        <p>Full student dashboards, curriculum integration, ensemble tracking, and parent communication.</p>
+      </div>
+      <div class="vision-item">
+        <div class="phase-label">Future</div>
+        <h4>Understands YOUR Sound</h4>
+        <p>Learns your unique tone and musical personality. Helps you develop your voice &mdash; not a generic one.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">14 / 15</div>
+</section>
+
+<!-- ================================================================
+     SLIDE 15 — CALL TO ACTION
+     ================================================================ -->
+<section class="slide slide-cta" id="slide-15">
+  <div class="bg-glow" style="width:700px;height:700px;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--gold);opacity:0.08;"></div>
+  <div class="bg-glow" style="width:500px;height:500px;top:60%;left:60%;transform:translate(-50%,-50%);background:var(--blue);opacity:0.06;"></div>
+  <div class="slide-inner" style="text-align:center;">
+    <span class="label">Join Us</span>
+    <h2 style="font-size:clamp(2.2rem,4vw,3.2rem);">Join our pilot program</h2>
+    <p class="tagline" style="font-size:1.15rem;font-style:normal;max-width:600px;margin:0 auto;">Free semester access for your studio or program.<br>Shape the product with your feedback.</p>
+    <a href="mailto:pilot@aimusiccompanion.com" class="cta-button">Get Started &mdash; Free Pilot</a>
+    <p class="cta-email">Or reach out directly: <a href="mailto:pilot@aimusiccompanion.com">pilot@aimusiccompanion.com</a></p>
+    <p class="cta-footer">Built by musicians who understand what practice really needs.</p>
+  </div>
+  <div class="slide-number">15 / 15</div>
+</section>
+
+<!-- ================================================================
+     JAVASCRIPT — KEYBOARD NAV & PROGRESS
+     ================================================================ -->
+<script>
+(function() {
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  const bar = document.getElementById('progressBar');
+  const hint = document.getElementById('navHint');
+
+  // Hide nav hint after first interaction
+  let hintVisible = true;
+  function hideHint() {
+    if (hintVisible) { hint.classList.add('hidden'); hintVisible = false; }
+  }
+
+  // Update progress bar based on scroll position
+  function updateProgress() {
+    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+    const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+    bar.style.width = pct + '%';
+  }
+
+  // Get current slide index
+  function currentSlideIndex() {
+    const scrollTop = window.scrollY;
+    let idx = 0;
+    slides.forEach(function(s, i) {
+      if (scrollTop >= s.offsetTop - window.innerHeight * 0.4) idx = i;
+    });
+    return idx;
+  }
+
+  // Navigate to slide
+  function goTo(i) {
+    if (i < 0) i = 0;
+    if (i >= total) i = total - 1;
+    slides[i].scrollIntoView({ behavior: 'smooth' });
+    hideHint();
+  }
+
+  // Keyboard navigation
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+      e.preventDefault();
+      goTo(currentSlideIndex() + 1);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'PageUp') {
+      e.preventDefault();
+      goTo(currentSlideIndex() - 1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      goTo(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      goTo(total - 1);
+    }
+  });
+
+  // Scroll listener for progress
+  window.addEventListener('scroll', function() {
+    updateProgress();
+    hideHint();
+  }, { passive: true });
+
+  // Initial state
+  updateProgress();
+})();
+</script>
+</body>
+</html>

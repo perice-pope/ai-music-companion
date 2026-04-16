@@ -1,10 +1,12 @@
 //! # Brain — Score following, scoring, and coaching
 //!
 //! This crate handles:
-//! - Score following (aligning played notes to sheet music)
+//! - Phrase aggregation (grouping audio events into musical phrases)
 //! - Per-note scoring (pitch, timing, dynamics, articulation)
+//! - Score following (aligning played notes to sheet music)
 //! - Adaptive practice planning (spaced repetition)
 
+pub mod phrase;
 pub mod scoring;
 
 #[cfg(test)]
