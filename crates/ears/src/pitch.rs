@@ -213,10 +213,7 @@ mod tests {
         let event = detector.detect(&samples);
         assert!(event.pitch_hz.is_some(), "Should detect pitch");
         let hz = event.pitch_hz.unwrap();
-        assert!(
-            (hz - 440.0).abs() < 5.0,
-            "Expected ~440 Hz, got {hz:.1} Hz"
-        );
+        assert!((hz - 440.0).abs() < 5.0, "Expected ~440 Hz, got {hz:.1} Hz");
         assert!(event.confidence > 0.8, "Confidence should be high");
     }
 
@@ -229,10 +226,7 @@ mod tests {
         let event = detector.detect(&samples);
         assert!(event.pitch_hz.is_some());
         let hz = event.pitch_hz.unwrap();
-        assert!(
-            (hz - 261.63).abs() < 5.0,
-            "Expected ~261.63 Hz, got {hz:.1} Hz"
-        );
+        assert!((hz - 261.63).abs() < 5.0, "Expected ~261.63 Hz, got {hz:.1} Hz");
     }
 
     #[test]
