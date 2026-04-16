@@ -7,6 +7,8 @@
 //! - Onset detection
 //! - Instrument profile loading
 
+pub mod capture;
+pub mod pitch;
 pub mod profile;
 
 /// Audio event emitted by the Ears layer to the Brain.
