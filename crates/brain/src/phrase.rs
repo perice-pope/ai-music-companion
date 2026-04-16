@@ -351,7 +351,10 @@ mod tests {
     #[test]
     fn hz_to_cents_octave() {
         let cents = hz_to_cents(220.0, 440.0);
-        assert!((cents - 1200.0).abs() < 0.01, "Octave should be 1200 cents, got {cents}");
+        assert!(
+            (cents - 1200.0).abs() < 0.01,
+            "Octave should be 1200 cents, got {cents}"
+        );
     }
 
     #[test]
@@ -366,13 +369,19 @@ mod tests {
         let a4 = 440.0;
         let a_sharp4 = 440.0 * 2.0_f64.powf(1.0 / 12.0);
         let cents = hz_to_cents(a4, a_sharp4);
-        assert!((cents - 100.0).abs() < 0.01, "Semitone should be 100 cents, got {cents}");
+        assert!(
+            (cents - 100.0).abs() < 0.01,
+            "Semitone should be 100 cents, got {cents}"
+        );
     }
 
     #[test]
     fn hz_to_cents_negative() {
         let cents = hz_to_cents(440.0, 220.0);
-        assert!((cents - (-1200.0)).abs() < 0.01, "Downward octave should be -1200 cents");
+        assert!(
+            (cents - (-1200.0)).abs() < 0.01,
+            "Downward octave should be -1200 cents"
+        );
     }
 
     #[test]
@@ -405,7 +414,12 @@ mod tests {
         agg.flush();
 
         let phrases = agg.phrases();
-        assert_eq!(phrases.len(), 2, "Should have 2 phrases, got {}", phrases.len());
+        assert_eq!(
+            phrases.len(),
+            2,
+            "Should have 2 phrases, got {}",
+            phrases.len()
+        );
         assert_eq!(phrases[0].phrase_index, 0);
         assert_eq!(phrases[1].phrase_index, 1);
         assert_eq!(phrases[0].note_count, 3);
@@ -522,7 +536,11 @@ mod tests {
         agg.push(&voiced_event(440.0, 0.8, 0.05));
         agg.flush();
 
-        assert_eq!(agg.phrases().len(), 0, "2-event phrase should be discarded with min=3");
+        assert_eq!(
+            agg.phrases().len(),
+            0,
+            "2-event phrase should be discarded with min=3"
+        );
     }
 
     // --- take_new_phrases drains correctly ---
