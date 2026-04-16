@@ -297,8 +297,8 @@ fn compute_stability(events: &[AudioEvent]) -> f64 {
         return 0.0;
     }
 
-    let variance: f64 = pitches.iter().map(|&p| (p - mean).powi(2)).sum::<f64>()
-        / pitches.len() as f64;
+    let variance: f64 =
+        pitches.iter().map(|&p| (p - mean).powi(2)).sum::<f64>() / pitches.len() as f64;
     let std_dev = variance.sqrt();
 
     // Coefficient of variation (ratio of std_dev to mean)
