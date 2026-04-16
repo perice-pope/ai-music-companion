@@ -7,6 +7,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue("pong"),
 }));
 
+// Mock Tauri event API
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
