@@ -59,6 +59,55 @@ impl InstrumentProfile {
         let profile: Self = serde_json::from_str(&contents)?;
         Ok(profile)
     }
+
+    /// Check if a detected frequency falls within this instrument's expected range.
+    pub fn is_in_frequency_range(&self, hz: f64) -> bool {
+        hz >= self.freq_min_hz && hz <= self.freq_max_hz
+    }
+}
+
+/// Loads all instrument profiles from a directory of JSON files.
+pub struct ProfileLoader;
+
+impl ProfileLoader {
+    /// Load all `.json` files from the given directory as `InstrumentProfile`s.
+    ///
+    /// Returns an error if the directory can't be read. Individual file parse
+    /// errors are collected — a single bad file won't prevent loading the rest.
+    pub fn load_all(dir: &Path) -> anyhow::Result<Vec<InstrumentProfile>> {
+        let mut profiles = Vec::new();
+        let mut errors = Vec::new();
+
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("Failed to read profiles directory {:?}: {}", dir, e))?;
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                match InstrumentProfile::from_file(&path) {
+                    Ok(profile) => profiles.push(profile),
+                    Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+                }
+            }
+        }
+
+        if !errors.is_empty() && profiles.is_empty() {
+            anyhow::bail!(
+                "Failed to load any profiles. Errors:\n{}",
+                errors.join("\n")
+            );
+        }
+
+        Ok(profiles)
+    }
+
+    /// Load a single profile by instrument name from a directory.
+    pub fn load_by_name(dir: &Path, name: &str) -> anyhow::Result<InstrumentProfile> {
+        let file_path = dir.join(format!("{}.json", name.to_lowercase()));
+        InstrumentProfile::from_file(&file_path)
+    }
 }
 
 #[cfg(test)]
