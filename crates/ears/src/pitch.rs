@@ -78,8 +78,7 @@ impl PitchDetector {
         }
 
         // Window needs at least 2 periods of the lowest frequency
-        let window_size =
-            (2.0 * config.sample_rate as f64 / config.freq_min_hz) as usize;
+        let window_size = (2.0 * config.sample_rate as f64 / config.freq_min_hz) as usize;
         let tau_min = (config.sample_rate as f64 / config.freq_max_hz) as usize;
         let tau_max = (config.sample_rate as f64 / config.freq_min_hz).ceil() as usize;
 
@@ -213,8 +212,13 @@ impl PitchDetector {
             let alpha = self.cmnd[best_tau - 1];
             let beta = self.cmnd[best_tau];
             let gamma = self.cmnd[best_tau + 1];
-            let adjustment = (alpha - gamma) / (2.0 * (alpha - 2.0 * beta + gamma));
-            best_tau as f64 + adjustment
+            let denom = 2.0 * (alpha - 2.0 * beta + gamma);
+            if denom.abs() > f64::EPSILON {
+                let adjustment = (alpha - gamma) / denom;
+                best_tau as f64 + adjustment
+            } else {
+                best_tau as f64
+            }
         } else {
             best_tau as f64
         };
