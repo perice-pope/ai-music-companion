@@ -1,5 +1,28 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useAudioStore, frequencyToNote } from "./audioStore";
+
+// Mock localStorage
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: vi.fn((key: string) => store[key] ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      store[key] = value;
+    }),
+    removeItem: vi.fn((key: string) => {
+      delete store[key];
+    }),
+    clear: vi.fn(() => {
+      store = {};
+    }),
+    get length() {
+      return Object.keys(store).length;
+    },
+    key: vi.fn((_index: number) => null),
+  };
+})();
+
+Object.defineProperty(window, "localStorage", { value: localStorageMock });
 
 describe("frequencyToNote", () => {
   it("converts A4 (440 Hz) correctly", () => {
@@ -33,10 +56,13 @@ describe("frequencyToNote", () => {
 
 describe("audioStore", () => {
   beforeEach(() => {
+    localStorageMock.clear();
+    vi.clearAllMocks();
     useAudioStore.setState({
       latestEvent: null,
       currentNote: null,
       isListening: false,
+      selectedInstrument: null,
     });
   });
 
@@ -45,6 +71,7 @@ describe("audioStore", () => {
     expect(state.latestEvent).toBeNull();
     expect(state.currentNote).toBeNull();
     expect(state.isListening).toBe(false);
+    expect(state.selectedInstrument).toBeNull();
   });
 
   it("setEvent updates latestEvent and derives note", () => {
@@ -82,5 +109,26 @@ describe("audioStore", () => {
 
     useAudioStore.getState().setListening(false);
     expect(useAudioStore.getState().isListening).toBe(false);
+  });
+
+  it("setInstrument updates selectedInstrument", () => {
+    useAudioStore.getState().setInstrument("Trumpet");
+    expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");
+  });
+
+  it("setInstrument persists to localStorage", () => {
+    useAudioStore.getState().setInstrument("Violin");
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "ai-music-companion:selected-instrument",
+      "Violin",
+    );
+  });
+
+  it("setInstrument can change selection", () => {
+    useAudioStore.getState().setInstrument("Trumpet");
+    expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");
+
+    useAudioStore.getState().setInstrument("Piano");
+    expect(useAudioStore.getState().selectedInstrument).toBe("Piano");
   });
 });
