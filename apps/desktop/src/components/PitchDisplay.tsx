@@ -38,7 +38,13 @@ export default function PitchDisplay() {
   const meterPercent = ((meterOffset + 50) / 100) * 100;
 
   return (
-    <div className="flex flex-col items-center gap-4" data-testid="pitch-display">
+    <div
+      className="flex flex-col items-center gap-4"
+      data-testid="pitch-display"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
       {/* Note name */}
       <div className="text-center">
         <span className={`text-6xl font-bold ${deviationColor(cents_deviation)}`}>

@@ -46,6 +46,9 @@ const NOTE_NAMES = [
 
 /** Convert a frequency in Hz to the nearest note name, octave, and cents deviation. */
 export function frequencyToNote(hz: number): NoteInfo {
+  if (!Number.isFinite(hz) || hz <= 0) {
+    throw new RangeError("frequencyToNote expects a finite, positive frequency");
+  }
   // A4 = 440 Hz = MIDI note 69
   const semitones = 12.0 * Math.log2(hz / 440.0);
   const midiNote = Math.round(semitones) + 69;
@@ -68,8 +71,11 @@ export const useAudioStore = create<AudioState>((set) => ({
   isListening: false,
 
   setEvent: (event: AudioEvent) => {
+    const hz = event.pitch_hz;
     const currentNote =
-      event.pitch_hz !== null ? frequencyToNote(event.pitch_hz) : null;
+      hz !== null && Number.isFinite(hz) && hz > 0
+        ? frequencyToNote(hz)
+        : null;
     set({ latestEvent: event, currentNote });
   },
 

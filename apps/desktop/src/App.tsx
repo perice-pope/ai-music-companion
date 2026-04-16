@@ -18,15 +18,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Subscribe to audio events from the Rust backend
-    const unlisten = listen<AudioEvent>("audio-event", (event) => {
-      setEvent(event.payload);
-    });
+    let isMounted = true;
+    let unsubscribe: (() => void) | null = null;
 
-    setListening(true);
+    (async () => {
+      try {
+        unsubscribe = await listen<AudioEvent>("audio-event", ({ payload }) => {
+          setEvent(payload);
+        });
+        if (isMounted) setListening(true);
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to audio-event:", err);
+        if (isMounted) setListening(false);
+      }
+    })();
 
     return () => {
-      unlisten.then((fn) => fn());
+      isMounted = false;
+      unsubscribe?.();
       setListening(false);
     };
   }, [setEvent, setListening]);
