@@ -11,6 +11,6 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ringbuf = "0.4"
-cpal = { version = "0.15", features = ["jack"] }
+cpal = "0.15"
 
 [dev-dependencies]
