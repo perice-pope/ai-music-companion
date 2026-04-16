@@ -7,6 +7,7 @@
 //! - Adaptive practice planning (spaced repetition)
 
 pub mod phrase;
+pub mod score;
 pub mod scoring;
 
 #[cfg(test)]
