@@ -9,14 +9,65 @@ use super::{
     ScoreNote, TimeSignature,
 };
 
-/// Parse a MusicXML string into a [`ScoreModel`].
+/// Parse a MusicXML string into a [`ScoreModel`], selecting the first `<part>`.
+///
+/// For multi-part scores, use [`parse_musicxml_str_part`] to choose a specific
+/// part.
 pub fn parse_musicxml_str(xml: &str) -> Result<ScoreModel, ScoreError> {
+    parse_musicxml_str_part(xml, 0)
+}
+
+/// List part names (from `<part-list><score-part><part-name>`) in document
+/// order. Names that are missing or empty are reported as "Part N" so the
+/// returned vector length always matches the number of `<part>` elements.
+pub fn list_parts(xml: &str) -> Result<Vec<String>, ScoreError> {
+    let doc = Document::parse(xml).map_err(|e| ScoreError::MusicXml(e.to_string()))?;
+    let root = doc.root_element();
+
+    // Map from score-part id -> part-name text
+    let mut id_to_name: Vec<(String, String)> = Vec::new();
+    if let Some(part_list) = find_descendant(&root, "part-list") {
+        for sp in part_list
+            .children()
+            .filter(|n| n.has_tag_name("score-part"))
+        {
+            let id = sp.attribute("id").unwrap_or("").to_string();
+            let name = find_descendant_text(&sp, "part-name").unwrap_or_default();
+            id_to_name.push((id, name));
+        }
+    }
+
+    let parts: Vec<Node> = root
+        .descendants()
+        .filter(|n| n.has_tag_name("part"))
+        .collect();
+
+    let mut names = Vec::with_capacity(parts.len());
+    for (idx, part) in parts.iter().enumerate() {
+        let id = part.attribute("id").unwrap_or("");
+        let name = id_to_name
+            .iter()
+            .find(|(pid, _)| pid == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default();
+        if name.is_empty() {
+            names.push(format!("Part {}", idx + 1));
+        } else {
+            names.push(name);
+        }
+    }
+
+    Ok(names)
+}
+
+/// Parse a MusicXML string, selecting the part at `part_index` (zero-based,
+/// in document order).
+pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreModel, ScoreError> {
     let doc = Document::parse(xml).map_err(|e| ScoreError::MusicXml(e.to_string()))?;
     let root = doc.root_element();
 
     let title = extract_title(&root);
     let composer = extract_composer(&root);
-    let instrument = extract_instrument(&root);
 
     let mut time_signature = TimeSignature::default();
     let mut key_signature = KeySignature::default();
@@ -25,16 +76,26 @@ pub fn parse_musicxml_str(xml: &str) -> Result<ScoreModel, ScoreError> {
     let mut measures = Vec::new();
     let mut current_dynamic: Option<Dynamic> = None;
 
-    // Find the first <part> element
-    let part = find_descendant(&root, "part");
-    let part = match part {
-        Some(p) => p,
-        None => {
-            return Err(ScoreError::MusicXml(
-                "no <part> element found".to_string(),
-            ))
-        }
-    };
+    // Collect ALL <part> elements (not just the first) so the caller can
+    // choose which part to practice in a multi-instrument score.
+    let parts: Vec<Node> = root
+        .descendants()
+        .filter(|n| n.has_tag_name("part"))
+        .collect();
+
+    if parts.is_empty() {
+        return Err(ScoreError::MusicXml(
+            "no <part> element found".to_string(),
+        ));
+    }
+
+    let part = parts
+        .get(part_index)
+        .ok_or(ScoreError::PartNotFound(part_index))?;
+
+    // Instrument name for the selected part (matches `id` attribute against
+    // `<score-part id="...">` in `<part-list>`).
+    let instrument = extract_instrument_for(&root, part.attribute("id"));
 
     for measure_node in part.children().filter(|n| n.has_tag_name("measure")) {
         let measure_number = measure_node
@@ -123,19 +184,56 @@ pub fn parse_musicxml_str(xml: &str) -> Result<ScoreModel, ScoreError> {
                 let (pitch_hz, midi_number) = if is_rest {
                     (0.0, 0)
                 } else if let Some(pitch_node) = find_descendant(&child, "pitch") {
-                    let step = find_descendant_text(&pitch_node, "step").unwrap_or_default();
-                    let octave = find_descendant_text(&pitch_node, "octave")
-                        .and_then(|s| s.parse::<i8>().ok())
-                        .unwrap_or(4);
-                    let alter = find_descendant_text(&pitch_node, "alter")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
+                    // A <pitch> child must provide a valid step and octave;
+                    // fabricating defaults (e.g. C4) when the data is missing
+                    // or malformed produces silently-wrong notes that are
+                    // worse than an error.
+                    let step_raw = find_descendant_text(&pitch_node, "step").ok_or_else(|| {
+                        ScoreError::MusicXml(format!(
+                            "missing <step> in pitch at measure {measure_number}"
+                        ))
+                    })?;
+                    let step = step_raw.to_uppercase();
+                    if !matches!(
+                        step.as_str(),
+                        "C" | "D" | "E" | "F" | "G" | "A" | "B"
+                    ) {
+                        return Err(ScoreError::MusicXml(format!(
+                            "invalid pitch step '{step_raw}' at measure {measure_number} \
+                             (expected one of C, D, E, F, G, A, B)"
+                        )));
+                    }
+
+                    let octave_str =
+                        find_descendant_text(&pitch_node, "octave").ok_or_else(|| {
+                            ScoreError::MusicXml(format!(
+                                "missing <octave> in pitch at measure {measure_number}"
+                            ))
+                        })?;
+                    let octave = octave_str.parse::<i8>().map_err(|_| {
+                        ScoreError::MusicXml(format!(
+                            "invalid octave '{octave_str}' at measure {measure_number}"
+                        ))
+                    })?;
+
+                    // <alter> is optional; defaults to 0 (natural). An
+                    // unparseable value IS an error (don't silently drop it).
+                    let alter = match find_descendant_text(&pitch_node, "alter") {
+                        None => 0.0,
+                        Some(s) => s.parse::<f64>().map_err(|_| {
+                            ScoreError::MusicXml(format!(
+                                "invalid alter '{s}' at measure {measure_number}"
+                            ))
+                        })?,
+                    };
 
                     let midi = pitch_to_midi(&step, octave, alter);
                     let hz = midi_to_hz(midi);
                     (hz, midi.round() as u8)
                 } else {
-                    (0.0, 0)
+                    return Err(ScoreError::MusicXml(format!(
+                        "note at measure {measure_number} has neither <pitch> nor <rest>"
+                    )));
                 };
 
                 notes.push(ScoreNote {
@@ -222,15 +320,23 @@ fn extract_composer(root: &Node) -> Option<String> {
     None
 }
 
-/// Extract the instrument name from the first `<part-name>`.
-fn extract_instrument(root: &Node) -> Option<String> {
+/// Extract the instrument name for a specific `<part id="...">` by matching
+/// against `<score-part id="...">` in `<part-list>`. Falls back to the first
+/// `<part-name>` if the id is unknown.
+fn extract_instrument_for(root: &Node, part_id: Option<&str>) -> Option<String> {
     let part_list = find_descendant(root, "part-list")?;
-    let part_name = find_descendant_text(&part_list, "part-name")?;
-    if part_name.is_empty() {
-        None
-    } else {
-        Some(part_name)
+    if let Some(id) = part_id {
+        for score_part in part_list
+            .children()
+            .filter(|n| n.has_tag_name("score-part"))
+        {
+            if score_part.attribute("id") == Some(id) {
+                return find_descendant_text(&score_part, "part-name")
+                    .filter(|s| !s.is_empty());
+            }
+        }
     }
+    find_descendant_text(&part_list, "part-name").filter(|s| !s.is_empty())
 }
 
 /// Parse a `<dynamics>` element into a [`Dynamic`].
@@ -454,5 +560,193 @@ mod tests {
                 note.start_beat
             );
         }
+    }
+
+    /// Two-part MusicXML: Trumpet plays C4 D4, Trombone plays G3 F3.
+    const TWO_PART_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1"><part-name>Trumpet</part-name></score-part>
+    <score-part id="P2"><part-name>Trombone</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note><pitch><step>G</step><octave>3</octave></pitch><duration>1</duration></note>
+      <note><pitch><step>F</step><octave>3</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+    #[test]
+    fn parse_multi_part_selects_first_part_by_default() {
+        let model = parse_musicxml_str(TWO_PART_XML).expect("parse two-part XML");
+        let midi_numbers: Vec<u8> = model.measures[0]
+            .notes
+            .iter()
+            .map(|n| n.midi_number)
+            .collect();
+        assert_eq!(
+            midi_numbers,
+            vec![60, 62],
+            "Default (part 0) should be Trumpet (C4=60, D4=62)"
+        );
+        assert_eq!(model.instrument.as_deref(), Some("Trumpet"));
+    }
+
+    #[test]
+    fn parse_multi_part_selects_second_part() {
+        let model = parse_musicxml_str_part(TWO_PART_XML, 1).expect("parse part 1");
+        let midi_numbers: Vec<u8> = model.measures[0]
+            .notes
+            .iter()
+            .map(|n| n.midi_number)
+            .collect();
+        assert_eq!(
+            midi_numbers,
+            vec![55, 53],
+            "Part 1 should be Trombone (G3=55, F3=53)"
+        );
+        assert_eq!(model.instrument.as_deref(), Some("Trombone"));
+    }
+
+    #[test]
+    fn parse_multi_part_out_of_range_returns_part_not_found() {
+        let err = parse_musicxml_str_part(TWO_PART_XML, 99).unwrap_err();
+        assert!(
+            matches!(err, ScoreError::PartNotFound(99)),
+            "Expected PartNotFound(99), got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_parts_returns_names_in_document_order() {
+        let names = list_parts(TWO_PART_XML).expect("list parts");
+        assert_eq!(names, vec!["Trumpet".to_string(), "Trombone".to_string()]);
+    }
+
+    #[test]
+    fn list_parts_fills_missing_names_with_placeholders() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list>
+    <score-part id="P1"><part-name></part-name></score-part>
+    <score-part id="P2"><part-name>Violin</part-name></score-part>
+  </part-list>
+  <part id="P1"><measure number="1"/></part>
+  <part id="P2"><measure number="1"/></part>
+</score-partwise>"#;
+        let names = list_parts(xml).expect("list parts");
+        assert_eq!(names, vec!["Part 1".to_string(), "Violin".to_string()]);
+    }
+
+    #[test]
+    fn pitch_missing_step_returns_error() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        match err {
+            ScoreError::MusicXml(msg) => {
+                assert!(
+                    msg.contains("step") && msg.contains("measure 1"),
+                    "Error should mention missing step at measure 1, got: {msg}"
+                );
+            }
+            other => panic!("Expected MusicXml error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn pitch_invalid_step_returns_error() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>Q</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        assert!(
+            matches!(err, ScoreError::MusicXml(ref m) if m.contains("'Q'")),
+            "Expected error mentioning invalid step 'Q', got: {err}"
+        );
+    }
+
+    #[test]
+    fn pitch_invalid_octave_returns_error() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>not-a-number</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        assert!(
+            matches!(err, ScoreError::MusicXml(ref m) if m.contains("octave")),
+            "Expected error mentioning invalid octave, got: {err}"
+        );
+    }
+
+    #[test]
+    fn note_without_pitch_or_rest_returns_error() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        assert!(
+            matches!(err, ScoreError::MusicXml(ref m) if m.contains("neither")),
+            "Expected error about note without pitch or rest, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pitch_step_is_case_insensitive() {
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>c</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("lowercase step should parse");
+        assert_eq!(model.measures[0].notes[0].midi_number, 60);
     }
 }

@@ -23,6 +23,8 @@ pub enum ScoreError {
     MusicXml(String),
     #[error("MIDI parse error: {0}")]
     Midi(String),
+    #[error("part index {0} out of range")]
+    PartNotFound(usize),
 }
 
 // ── Score model types ─────────────────────────────────────────────────
@@ -164,10 +166,33 @@ pub fn midi_to_hz(midi: f64) -> f64 {
 pub struct ScoreParser;
 
 impl ScoreParser {
-    /// Parse a MusicXML file.
+    /// Parse a MusicXML file. Defaults to the first `<part>` (index 0).
+    ///
+    /// Use [`ScoreParser::parse_musicxml_part`] to select a specific part and
+    /// [`ScoreParser::list_musicxml_parts`] to enumerate available part names.
     pub fn parse_musicxml(path: &Path) -> Result<ScoreModel, ScoreError> {
+        Self::parse_musicxml_part(path, 0)
+    }
+
+    /// Parse a specific part from a multi-part MusicXML file.
+    ///
+    /// `part_index` is zero-based against the order of `<part>` elements in
+    /// the file. Returns [`ScoreError::PartNotFound`] if the index is out of
+    /// range.
+    pub fn parse_musicxml_part(
+        path: &Path,
+        part_index: usize,
+    ) -> Result<ScoreModel, ScoreError> {
         let xml = std::fs::read_to_string(path)?;
-        musicxml::parse_musicxml_str(&xml)
+        musicxml::parse_musicxml_str_part(&xml, part_index)
+    }
+
+    /// List the part names (from `<part-name>` in `<part-list>`) in a
+    /// MusicXML file, in the order the parts appear. Useful for letting a
+    /// user pick which instrument to practice.
+    pub fn list_musicxml_parts(path: &Path) -> Result<Vec<String>, ScoreError> {
+        let xml = std::fs::read_to_string(path)?;
+        musicxml::list_parts(&xml)
     }
 
     /// Parse a MIDI file.
@@ -177,6 +202,10 @@ impl ScoreParser {
     }
 
     /// Auto-detect format from extension and parse.
+    ///
+    /// Supported extensions: `.musicxml`, `.xml`, `.mid`, `.midi`.
+    /// Note: `.mxl` (compressed MusicXML) is not yet supported — it requires
+    /// a ZIP-decompression dependency that we haven't taken on yet.
     pub fn parse(path: &Path) -> Result<ScoreModel, ScoreError> {
         let ext = path
             .extension()
@@ -184,7 +213,7 @@ impl ScoreParser {
             .unwrap_or("")
             .to_lowercase();
         match ext.as_str() {
-            "musicxml" | "xml" | "mxl" => Self::parse_musicxml(path),
+            "musicxml" | "xml" => Self::parse_musicxml(path),
             "mid" | "midi" => Self::parse_midi(path),
             other => Err(ScoreError::UnsupportedFormat(other.to_string())),
         }
@@ -227,6 +256,20 @@ mod tests {
         assert!(
             matches!(err, ScoreError::UnsupportedFormat(ref ext) if ext == "pdf"),
             "Expected UnsupportedFormat(\"pdf\"), got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_mxl_extension() {
+        // .mxl (compressed/zipped MusicXML) is not yet supported — reading
+        // the file as text would yield garbage. Make sure auto-detect rejects
+        // it with UnsupportedFormat rather than silently failing deep in the
+        // XML parser.
+        let path = PathBuf::from("/tmp/score.mxl");
+        let err = ScoreParser::parse(&path).unwrap_err();
+        assert!(
+            matches!(err, ScoreError::UnsupportedFormat(ref ext) if ext == "mxl"),
+            "Expected UnsupportedFormat(\"mxl\"), got: {err}"
         );
     }
 

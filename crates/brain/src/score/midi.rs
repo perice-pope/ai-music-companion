@@ -12,11 +12,15 @@ use super::{
 pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     let smf = Smf::parse(bytes).map_err(|e| ScoreError::Midi(e.to_string()))?;
 
-    let ticks_per_beat = match smf.header.timing {
+    // `ticks_per_quarter` is the number of MIDI ticks per quarter note, which
+    // is what MIDI's Metrical timing natively expresses. We convert to
+    // "ticks per beat" below once we know the time signature, because in a
+    // 3/8 or 6/8 meter the *beat* is an eighth note, not a quarter.
+    let ticks_per_quarter = match smf.header.timing {
         midly::Timing::Metrical(tpb) => tpb.as_int() as f64,
         midly::Timing::Timecode(fps, sub) => {
             // Fall back to a reasonable default; timecode-based files are rare
-            // for sheet music. Use fps * sub as ticks-per-beat approximation.
+            // for sheet music. Use fps * sub as ticks-per-quarter approximation.
             f64::from(fps.as_f32()) * f64::from(sub)
         }
     };
@@ -32,8 +36,10 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
 
     for (track_idx, track) in smf.tracks.iter().enumerate() {
         let mut abs_tick: u64 = 0;
-        // Track active note-on events: (key, velocity, start_tick)
-        let mut active_notes: Vec<(u8, u8, u64)> = Vec::new();
+        // Track active note-on events: (channel, key, velocity, start_tick).
+        // Channel is included so that the same MIDI key sounding on two
+        // different channels does not cross-match in `close_note`.
+        let mut active_notes: Vec<(u8, u8, u8, u64)> = Vec::new();
 
         for event in track {
             abs_tick += event.delta.as_int() as u64;
@@ -83,27 +89,42 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
                         _ => {}
                     }
                 }
-                TrackEventKind::Midi { message, .. } => match message {
-                    MidiMessage::NoteOn { key, vel } => {
-                        if vel.as_int() == 0 {
-                            // Note-on with velocity 0 is treated as note-off
-                            close_note(&mut active_notes, &mut raw_notes, key.as_int(), abs_tick);
-                        } else {
-                            active_notes.push((key.as_int(), vel.as_int(), abs_tick));
+                TrackEventKind::Midi { channel, message } => {
+                    let ch = channel.as_int();
+                    match message {
+                        MidiMessage::NoteOn { key, vel } => {
+                            if vel.as_int() == 0 {
+                                // Note-on with velocity 0 is treated as note-off
+                                close_note(
+                                    &mut active_notes,
+                                    &mut raw_notes,
+                                    ch,
+                                    key.as_int(),
+                                    abs_tick,
+                                );
+                            } else {
+                                active_notes.push((ch, key.as_int(), vel.as_int(), abs_tick));
+                            }
                         }
+                        MidiMessage::NoteOff { key, .. } => {
+                            close_note(
+                                &mut active_notes,
+                                &mut raw_notes,
+                                ch,
+                                key.as_int(),
+                                abs_tick,
+                            );
+                        }
+                        _ => {}
                     }
-                    MidiMessage::NoteOff { key, .. } => {
-                        close_note(&mut active_notes, &mut raw_notes, key.as_int(), abs_tick);
-                    }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }
 
         // Close any notes that were still active at end of track
         let final_tick = abs_tick;
-        for (key, _vel, start) in active_notes.drain(..) {
+        for (_ch, key, _vel, start) in active_notes.drain(..) {
             raw_notes.push(RawNote {
                 midi_key: key,
                 start_tick: start,
@@ -115,7 +136,11 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     // Sort by start_tick for deterministic measure assignment
     raw_notes.sort_by_key(|n| n.start_tick);
 
-    // Convert raw notes into measures
+    // Convert ticks-per-quarter into ticks-per-beat using the time signature's
+    // beat unit. In 6/8 the beat is an eighth note (beat_type = 8), so
+    // ticks_per_beat = ticks_per_quarter * (4 / 8) = half of a quarter.
+    let beat_type = time_signature.beat_type.max(1) as f64;
+    let ticks_per_beat = ticks_per_quarter * (4.0 / beat_type);
     let beats_per_measure = time_signature.beats as f64;
     let ticks_per_measure = ticks_per_beat * beats_per_measure;
     let measures = build_measures(&raw_notes, ticks_per_beat, ticks_per_measure);
@@ -139,10 +164,19 @@ struct RawNote {
     duration_ticks: u64,
 }
 
-/// Close the first matching active note and push a RawNote.
-fn close_note(active: &mut Vec<(u8, u8, u64)>, out: &mut Vec<RawNote>, key: u8, off_tick: u64) {
-    if let Some(idx) = active.iter().position(|(k, _, _)| *k == key) {
-        let (midi_key, _vel, start_tick) = active.remove(idx);
+/// Close the first matching active note (same channel AND key) and push a RawNote.
+fn close_note(
+    active: &mut Vec<(u8, u8, u8, u64)>,
+    out: &mut Vec<RawNote>,
+    channel: u8,
+    key: u8,
+    off_tick: u64,
+) {
+    if let Some(idx) = active
+        .iter()
+        .position(|(c, k, _, _)| *c == channel && *k == key)
+    {
+        let (_ch, midi_key, _vel, start_tick) = active.remove(idx);
         out.push(RawNote {
             midi_key,
             start_tick,
@@ -406,5 +440,143 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Build a MIDI file in 6/8 time with six eighth-note C4 notes (one full
+    /// measure). 480 ticks-per-quarter means 240 ticks per eighth note (the
+    /// beat in 6/8).
+    fn build_six_eight_midi() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&480u16.to_be_bytes());
+
+        let mut track = Vec::new();
+        // Tempo: 120 BPM
+        write_meta_event(&mut track, 0, 0x51, &[0x07, 0xA1, 0x20]);
+        // Time signature 6/8: numerator=6, denom_pow=3 (2^3 = 8), clocks=24, 32nds=8
+        write_meta_event(&mut track, 0, 0x58, &[6, 3, 24, 8]);
+
+        // Six eighth-notes of C4 (MIDI 60). Each eighth = 240 ticks.
+        let eighth: u16 = 240;
+        for _ in 0..6 {
+            write_midi_event(&mut track, 0, 0x90, 60, 80);
+            write_midi_event(&mut track, eighth, 0x80, 60, 0);
+        }
+
+        write_meta_event(&mut track, 0, 0x2F, &[]);
+
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&track);
+        buf
+    }
+
+    #[test]
+    fn six_eight_time_uses_eighth_note_beats() {
+        let midi_bytes = build_six_eight_midi();
+        let model = parse_midi_bytes(&midi_bytes).expect("parse 6/8 MIDI");
+
+        assert_eq!(model.time_signature.beats, 6);
+        assert_eq!(model.time_signature.beat_type, 8);
+
+        // Expect exactly one measure with six notes (six eighth-note beats).
+        assert_eq!(
+            model.measures.len(),
+            1,
+            "6/8 with six eighths should fit in one measure, got {} measures",
+            model.measures.len()
+        );
+        let notes = &model.measures[0].notes;
+        assert_eq!(notes.len(), 6, "Expected 6 eighth notes");
+
+        // Each eighth note should register as exactly 1 beat in 6/8 time.
+        for (i, note) in notes.iter().enumerate() {
+            assert!(
+                (note.duration_beats - 1.0).abs() < 0.01,
+                "Note {i} duration in 6/8 should be 1 beat (an eighth), got {}",
+                note.duration_beats
+            );
+            assert!(
+                (note.start_beat - i as f64).abs() < 0.01,
+                "Note {i} start_beat should be {i}.0, got {}",
+                note.start_beat
+            );
+        }
+    }
+
+    /// Build a MIDI file where the same key (C4) is held on two different
+    /// channels. Channel 0's NoteOn comes FIRST but its NoteOff comes SECOND,
+    /// so a non-channel-aware matcher would close channel 0's note at
+    /// channel 1's NoteOff tick (the buggy case), producing the wrong
+    /// durations.
+    ///
+    /// Timeline:
+    ///   t=0     NoteOn  ch0 C4
+    ///   t=240   NoteOn  ch1 C4
+    ///   t=480   NoteOff ch1 C4   (ch1 duration = 240 ticks = 0.5 beats)
+    ///   t=960   NoteOff ch0 C4   (ch0 duration = 960 ticks = 2.0 beats)
+    ///
+    /// Buggy behavior (match first active by key only):
+    ///   t=480 closes ch0 (wrong) -> duration = 480 ticks = 1.0 beat
+    ///   t=960 closes ch1 -> duration = 720 ticks = 1.5 beats
+    /// So the buggy output is [1.0, 1.5] and the correct output is [0.5, 2.0].
+    fn build_two_channel_overlap_midi() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&480u16.to_be_bytes());
+
+        let mut track = Vec::new();
+        write_meta_event(&mut track, 0, 0x51, &[0x07, 0xA1, 0x20]); // 120 BPM
+        write_meta_event(&mut track, 0, 0x58, &[4, 2, 24, 8]); // 4/4
+
+        // t=0: NoteOn C4 on channel 0 (status 0x90)
+        write_midi_event(&mut track, 0, 0x90, 60, 80);
+        // t=240: NoteOn C4 on channel 1 (status 0x91), delta from previous = 240
+        write_midi_event(&mut track, 240, 0x91, 60, 80);
+        // t=480: NoteOff C4 on channel 1 (status 0x81), delta = 240
+        write_midi_event(&mut track, 240, 0x81, 60, 0);
+        // t=960: NoteOff C4 on channel 0 (status 0x80), delta = 480
+        write_midi_event(&mut track, 480, 0x80, 60, 0);
+        write_meta_event(&mut track, 0, 0x2F, &[]);
+
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&track);
+        buf
+    }
+
+    #[test]
+    fn same_key_on_different_channels_does_not_cross_match() {
+        let midi_bytes = build_two_channel_overlap_midi();
+        let model = parse_midi_bytes(&midi_bytes).expect("parse two-channel MIDI");
+
+        let mut durations: Vec<f64> = model
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter().map(|n| n.duration_beats))
+            .collect();
+        assert_eq!(durations.len(), 2, "Expected 2 notes");
+
+        durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // With the fix: ch1 lasts 0.5 beats, ch0 lasts 2.0 beats.
+        // Without the fix (buggy): the durations would be [1.0, 1.5].
+        assert!(
+            (durations[0] - 0.5).abs() < 0.01,
+            "Shortest note (ch1) should be 0.5 beats, got {} (all: {:?})",
+            durations[0],
+            durations,
+        );
+        assert!(
+            (durations[1] - 2.0).abs() < 0.01,
+            "Longest note (ch0) should be 2.0 beats, got {} (all: {:?})",
+            durations[1],
+            durations,
+        );
     }
 }
