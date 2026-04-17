@@ -310,10 +310,7 @@ mod tests {
     #[test]
     fn pitch_to_hz_a4_is_440() {
         let hz = pitch_to_hz("A", 4, 0.0);
-        assert!(
-            (hz - 440.0).abs() < 0.01,
-            "A4 should be 440 Hz, got {hz}"
-        );
+        assert!((hz - 440.0).abs() < 0.01, "A4 should be 440 Hz, got {hz}");
     }
 
     #[test]

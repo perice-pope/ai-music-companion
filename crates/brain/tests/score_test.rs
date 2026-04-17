@@ -50,14 +50,12 @@ fn score_model_pitch_values_are_correct() {
     let model = ScoreParser::parse(&path).expect("parse fixture");
 
     // Expected: C4, D4, E4, F4, G4, A4, B4, C5
-    let expected_hz: &[f64] = &[261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25];
+    let expected_hz: &[f64] = &[
+        261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
+    ];
     let expected_midi: &[u8] = &[60, 62, 64, 65, 67, 69, 71, 72];
 
-    let all_notes: Vec<_> = model
-        .measures
-        .iter()
-        .flat_map(|m| m.notes.iter())
-        .collect();
+    let all_notes: Vec<_> = model.measures.iter().flat_map(|m| m.notes.iter()).collect();
 
     assert_eq!(all_notes.len(), expected_hz.len());
 

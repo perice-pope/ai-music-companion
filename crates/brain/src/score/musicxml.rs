@@ -84,9 +84,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
         .collect();
 
     if parts.is_empty() {
-        return Err(ScoreError::MusicXml(
-            "no <part> element found".to_string(),
-        ));
+        return Err(ScoreError::MusicXml("no <part> element found".to_string()));
     }
 
     let part = parts
@@ -194,10 +192,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
                         ))
                     })?;
                     let step = step_raw.to_uppercase();
-                    if !matches!(
-                        step.as_str(),
-                        "C" | "D" | "E" | "F" | "G" | "A" | "B"
-                    ) {
+                    if !matches!(step.as_str(), "C" | "D" | "E" | "F" | "G" | "A" | "B") {
                         return Err(ScoreError::MusicXml(format!(
                             "invalid pitch step '{step_raw}' at measure {measure_number} \
                              (expected one of C, D, E, F, G, A, B)"
@@ -331,8 +326,7 @@ fn extract_instrument_for(root: &Node, part_id: Option<&str>) -> Option<String> 
             .filter(|n| n.has_tag_name("score-part"))
         {
             if score_part.attribute("id") == Some(id) {
-                return find_descendant_text(&score_part, "part-name")
-                    .filter(|s| !s.is_empty());
+                return find_descendant_text(&score_part, "part-name").filter(|s| !s.is_empty());
             }
         }
     }
@@ -505,10 +499,7 @@ mod tests {
   </part-list>
 </score-partwise>"#;
         let result = parse_musicxml_str(xml);
-        assert!(
-            result.is_err(),
-            "XML without <part> should return an error"
-        );
+        assert!(result.is_err(), "XML without <part> should return an error");
     }
 
     #[test]
