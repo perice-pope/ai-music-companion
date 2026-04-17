@@ -76,9 +76,7 @@ impl RetentionManager {
         // 1. Age sweep.
         if let Some(max_age_days) = self.policy.max_age_days {
             let cutoff = SystemTime::now()
-                .checked_sub(Duration::from_secs(
-                    u64::from(max_age_days) * 24 * 60 * 60,
-                ))
+                .checked_sub(Duration::from_secs(u64::from(max_age_days) * 24 * 60 * 60))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
 
             entries.retain(|entry| {
@@ -150,10 +148,7 @@ fn collect_wav_entries(dir: &Path) -> Result<Vec<WavEntry>, RecorderError> {
         let metadata = entry.metadata()?;
         let size = metadata.len();
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let is_best = stem.ends_with("_best");
         out.push(WavEntry {
             path,
@@ -188,8 +183,8 @@ mod tests {
     #[test]
     fn sweep_deletes_files_older_than_max_age() {
         let tmp = TempDir::new().unwrap();
-        let old = write_file(tmp.path(), "old.wav", &vec![0u8; 128]);
-        let fresh = write_file(tmp.path(), "fresh.wav", &vec![0u8; 128]);
+        let old = write_file(tmp.path(), "old.wav", &[0u8; 128]);
+        let fresh = write_file(tmp.path(), "fresh.wav", &[0u8; 128]);
         set_mtime_days_ago(&old, 5);
 
         let mgr = RetentionManager::new(RetentionPolicy {
@@ -209,7 +204,7 @@ mod tests {
     #[test]
     fn sweep_preserves_best_take_files_when_flag_set() {
         let tmp = TempDir::new().unwrap();
-        let best = write_file(tmp.path(), "session_best.wav", &vec![0u8; 128]);
+        let best = write_file(tmp.path(), "session_best.wav", &[0u8; 128]);
         set_mtime_days_ago(&best, 30);
 
         let mgr = RetentionManager::new(RetentionPolicy {
@@ -226,7 +221,7 @@ mod tests {
     #[test]
     fn sweep_deletes_best_take_when_flag_off() {
         let tmp = TempDir::new().unwrap();
-        let best = write_file(tmp.path(), "session_best.wav", &vec![0u8; 128]);
+        let best = write_file(tmp.path(), "session_best.wav", &[0u8; 128]);
         set_mtime_days_ago(&best, 30);
 
         let mgr = RetentionManager::new(RetentionPolicy {
@@ -242,9 +237,9 @@ mod tests {
     #[test]
     fn sweep_respects_max_total_bytes() {
         let tmp = TempDir::new().unwrap();
-        let a = write_file(tmp.path(), "a.wav", &vec![0u8; 1024]);
-        let b = write_file(tmp.path(), "b.wav", &vec![0u8; 1024]);
-        let c = write_file(tmp.path(), "c.wav", &vec![0u8; 1024]);
+        let a = write_file(tmp.path(), "a.wav", &[0u8; 1024]);
+        let b = write_file(tmp.path(), "b.wav", &[0u8; 1024]);
+        let c = write_file(tmp.path(), "c.wav", &[0u8; 1024]);
         // Make a the oldest, c the newest.
         set_mtime_days_ago(&a, 3);
         set_mtime_days_ago(&b, 2);
@@ -268,8 +263,8 @@ mod tests {
     #[test]
     fn sweep_reports_counts_and_bytes() {
         let tmp = TempDir::new().unwrap();
-        let a = write_file(tmp.path(), "a.wav", &vec![0u8; 256]);
-        let b = write_file(tmp.path(), "b.wav", &vec![0u8; 128]);
+        let a = write_file(tmp.path(), "a.wav", &[0u8; 256]);
+        let b = write_file(tmp.path(), "b.wav", &[0u8; 128]);
         set_mtime_days_ago(&a, 10);
         set_mtime_days_ago(&b, 10);
 
@@ -306,7 +301,7 @@ mod tests {
     #[test]
     fn sweep_ignores_non_wav_files() {
         let tmp = TempDir::new().unwrap();
-        let wav = write_file(tmp.path(), "session.wav", &vec![0u8; 64]);
+        let wav = write_file(tmp.path(), "session.wav", &[0u8; 64]);
         let txt = write_file(tmp.path(), "notes.txt", b"hello");
         set_mtime_days_ago(&wav, 30);
         set_mtime_days_ago(&txt, 30);
@@ -345,9 +340,9 @@ mod tests {
         // want absolute preservation of best-takes should leave
         // max_total_bytes as None.
         let tmp = TempDir::new().unwrap();
-        let best = write_file(tmp.path(), "a_best.wav", &vec![0u8; 2048]);
+        let best = write_file(tmp.path(), "a_best.wav", &[0u8; 2048]);
         set_mtime_days_ago(&best, 2);
-        let other = write_file(tmp.path(), "b.wav", &vec![0u8; 2048]);
+        let other = write_file(tmp.path(), "b.wav", &[0u8; 2048]);
         set_mtime_days_ago(&other, 1);
 
         let mgr = RetentionManager::new(RetentionPolicy {

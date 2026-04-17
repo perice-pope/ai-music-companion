@@ -49,9 +49,7 @@ pub struct RecorderConfig {
 impl RecorderConfig {
     fn validate(&self) -> Result<(), RecorderError> {
         if self.channels == 0 {
-            return Err(RecorderError::InvalidConfig(
-                "channels must be >= 1".into(),
-            ));
+            return Err(RecorderError::InvalidConfig("channels must be >= 1".into()));
         }
         if self.sample_rate == 0 {
             return Err(RecorderError::InvalidConfig(
@@ -177,11 +175,7 @@ impl AudioRecorder {
     /// header and transitions the recorder to the Recording state.
     ///
     /// Returns the path of the WAV file that was created.
-    pub fn start(
-        &mut self,
-        session_id: &str,
-        instrument: &str,
-    ) -> Result<PathBuf, RecorderError> {
+    pub fn start(&mut self, session_id: &str, instrument: &str) -> Result<PathBuf, RecorderError> {
         if matches!(self.state, RecordingState::Recording(_)) {
             return Err(RecorderError::AlreadyRecording);
         }
@@ -288,13 +282,9 @@ impl AudioRecorder {
         // Header is 44 bytes total, RIFF field spans bytes 0..8 so 36 + data_size.
         let riff_size = 36u32 + data_size;
 
-        active
-            .file
-            .seek(SeekFrom::Start(WAV_RIFF_SIZE_OFFSET))?;
+        active.file.seek(SeekFrom::Start(WAV_RIFF_SIZE_OFFSET))?;
         active.file.write_all(&riff_size.to_le_bytes())?;
-        active
-            .file
-            .seek(SeekFrom::Start(WAV_DATA_SIZE_OFFSET))?;
+        active.file.seek(SeekFrom::Start(WAV_DATA_SIZE_OFFSET))?;
         active.file.write_all(&data_size.to_le_bytes())?;
         active.file.flush()?;
 
@@ -325,19 +315,10 @@ impl AudioRecorder {
     /// returns a [`RecordingMetadata`] whose `best_take_marks` you want to
     /// preserve on disk.
     pub fn rename_with_best_marker(path: &Path) -> Result<PathBuf, RecorderError> {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                RecorderError::InvalidConfig(format!(
-                    "path has no file stem: {}",
-                    path.display()
-                ))
-            })?;
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("wav");
+        let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            RecorderError::InvalidConfig(format!("path has no file stem: {}", path.display()))
+        })?;
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("wav");
         let parent = path.parent().ok_or_else(|| {
             RecorderError::InvalidConfig(format!("path has no parent: {}", path.display()))
         })?;
@@ -484,9 +465,18 @@ mod tests {
         let path = rec.start("sess-abc", "trumpet").unwrap();
         assert!(path.exists(), "expected file to be created at {path:?}");
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        assert!(name.ends_with(".wav"), "filename should end in .wav: {name}");
-        assert!(name.contains("trumpet"), "filename should contain instrument: {name}");
-        assert!(name.contains("sess-abc"), "filename should contain session id: {name}");
+        assert!(
+            name.ends_with(".wav"),
+            "filename should end in .wav: {name}"
+        );
+        assert!(
+            name.contains("trumpet"),
+            "filename should contain instrument: {name}"
+        );
+        assert!(
+            name.contains("sess-abc"),
+            "filename should contain session id: {name}"
+        );
         // Parent must match output dir.
         assert_eq!(path.parent().unwrap(), tmp.path());
     }
@@ -582,7 +572,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         let path = rec.start("s", "trumpet").unwrap();
-        rec.write_samples(&vec![0.0; 1024]).unwrap();
+        rec.write_samples(&[0.0; 1024]).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         assert_eq!(&bytes[0..4], b"RIFF");
@@ -598,7 +588,7 @@ mod tests {
         cfg.sample_rate = 44100;
         let mut rec = AudioRecorder::new(cfg);
         let path = rec.start("s", "t").unwrap();
-        rec.write_samples(&vec![0.0; 8]).unwrap();
+        rec.write_samples(&[0.0; 8]).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         let sr = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
@@ -612,7 +602,7 @@ mod tests {
         cfg.channels = 1;
         let mut rec = AudioRecorder::new(cfg);
         let path = rec.start("s", "t").unwrap();
-        rec.write_samples(&vec![0.0; 8]).unwrap();
+        rec.write_samples(&[0.0; 8]).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         let ch = u16::from_le_bytes(bytes[22..24].try_into().unwrap());
@@ -626,7 +616,7 @@ mod tests {
         cfg.bits_per_sample = 16;
         let mut rec = AudioRecorder::new(cfg);
         let path = rec.start("s", "t").unwrap();
-        rec.write_samples(&vec![0.0; 8]).unwrap();
+        rec.write_samples(&[0.0; 8]).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         let bps = u16::from_le_bytes(bytes[34..36].try_into().unwrap());
@@ -638,8 +628,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         let path = rec.start("s", "t").unwrap();
-        let sample_count = 100;
-        rec.write_samples(&vec![0.0; sample_count]).unwrap();
+        let samples = vec![0.0_f32; 100];
+        rec.write_samples(&samples).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
@@ -657,8 +647,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         let path = rec.start("s", "t").unwrap();
-        let sample_count = 100u32;
-        rec.write_samples(&vec![0.25; sample_count as usize]).unwrap();
+        let sample_count: u32 = 100;
+        let samples = vec![0.25_f32; sample_count as usize];
+        rec.write_samples(&samples).unwrap();
         rec.stop().unwrap();
         let bytes = read_all(&path);
         let data_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
@@ -714,7 +705,7 @@ mod tests {
         cfg.max_bytes_per_file = 100;
         let mut rec = AudioRecorder::new(cfg);
         rec.start("s", "t").unwrap();
-        let err = rec.write_samples(&vec![0.0; 100]).unwrap_err();
+        let err = rec.write_samples(&[0.0; 100]).unwrap_err();
         assert!(matches!(err, RecorderError::SizeLimitReached(100)));
     }
 
@@ -724,7 +715,7 @@ mod tests {
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         rec.start("s", "t").unwrap();
         // 1 second at 44100 Hz mono.
-        rec.write_samples(&vec![0.0; 44100]).unwrap();
+        rec.write_samples(&[0.0; 44100]).unwrap();
         rec.mark_best_take(Some("nailed it".into())).unwrap();
         let meta = rec.stop().unwrap();
         assert_eq!(meta.best_take_marks.len(), 1);
@@ -743,7 +734,7 @@ mod tests {
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         rec.start("s", "t").unwrap();
         // 2 seconds at 44100 mono.
-        rec.write_samples(&vec![0.0; 88_200]).unwrap();
+        rec.write_samples(&[0.0; 88_200]).unwrap();
         let meta = rec.stop().unwrap();
         assert!(
             (meta.duration_secs - 2.0).abs() < EPSILON,
@@ -758,7 +749,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         rec.start("s1", "t").unwrap();
-        rec.write_samples(&vec![0.0; 16]).unwrap();
+        rec.write_samples(&[0.0; 16]).unwrap();
         rec.stop().unwrap();
         assert!(!rec.is_recording());
         // Can start again.
@@ -772,12 +763,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         rec.start("s", "t").unwrap();
-        rec.write_samples(&vec![0.0; 22_050]).unwrap(); // 0.5s
+        rec.write_samples(&[0.0; 22_050]).unwrap(); // 0.5s
         let dur = rec.current_duration_secs().unwrap();
-        assert!(
-            (dur - 0.5).abs() < 1e-6,
-            "expected 0.5s, got {dur}"
-        );
+        assert!((dur - 0.5).abs() < 1e-6, "expected 0.5s, got {dur}");
         rec.stop().unwrap();
     }
 
@@ -795,7 +783,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut rec = AudioRecorder::new(base_config(tmp.path()));
         let path = rec.start("abc", "trumpet").unwrap();
-        rec.write_samples(&vec![0.0; 16]).unwrap();
+        rec.write_samples(&[0.0; 16]).unwrap();
         rec.stop().unwrap();
         let new_path = AudioRecorder::rename_with_best_marker(&path).unwrap();
         let name = new_path.file_name().unwrap().to_string_lossy();
