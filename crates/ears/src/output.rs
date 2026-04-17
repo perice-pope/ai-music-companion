@@ -57,6 +57,7 @@ const CLICK_DECAY: f64 = 50.0;
 ///
 /// Emits a short decaying sine "tick" at each beat. `next_sample` is hot-path
 /// safe and must be called at the audio sample rate.
+#[derive(Debug, Clone)]
 pub struct Metronome {
     config: MetronomeConfig,
     sample_rate: u32,
@@ -136,8 +137,7 @@ impl Metronome {
             // Fire a new click.
             self.click_cursor = 0;
             self.samples_until_next_beat = samples_per_beat(self.config.bpm, self.sample_rate);
-            self.current_is_accent =
-                self.config.accent_first_beat && self.beat_index == 0;
+            self.current_is_accent = self.config.accent_first_beat && self.beat_index == 0;
             self.beat_index = (self.beat_index + 1) % self.config.time_signature.0 as usize;
             self.any_beat_fired = true;
         }
@@ -235,6 +235,7 @@ pub struct DroneConfig {
 }
 
 /// A continuous-tone drone for tuning against.
+#[derive(Debug, Clone)]
 pub struct TuningDrone {
     config: DroneConfig,
     sample_rate: u32,
@@ -351,6 +352,7 @@ impl ConcertPitch {
 ///
 /// Sources are summed and clipped to [-1.0, 1.0]. The mixer has a master
 /// volume applied after summing but before clipping.
+#[derive(Debug, Clone)]
 pub struct OutputMixer {
     metronome: Option<Metronome>,
     drone: Option<TuningDrone>,
@@ -488,9 +490,8 @@ mod tests {
         // Each click is ~30 ms = ~1323 samples. 4 clicks -> ~5292 samples.
         // Allow a wide band because the tail of the envelope is small-but-nonzero.
         assert!(
-            nonzero >= 4 * 800 && nonzero <= 4 * 1500,
-            "expected ~4 click windows of nonzero audio, got {} nonzero samples",
-            nonzero
+            (4 * 800..=4 * 1500).contains(&nonzero),
+            "expected ~4 click windows of nonzero audio, got {nonzero} nonzero samples",
         );
     }
 
@@ -748,8 +749,7 @@ mod tests {
     fn mixer_sums_metronome_and_drone() {
         // Construct a mixer with only a drone at 440 Hz and a metronome at
         // 120 BPM. Construct separate instances to compare.
-        let mut reference_drone =
-            TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
+        let mut reference_drone = TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
         let mut reference_metro = Metronome::new(metro(120.0), 44_100).unwrap();
 
         let mut mixer = OutputMixer::new();
@@ -760,8 +760,7 @@ mod tests {
 
         // Check across many samples including a click.
         for _ in 0..5000 {
-            let expected_raw =
-                reference_drone.next_sample() + reference_metro.next_sample();
+            let expected_raw = reference_drone.next_sample() + reference_metro.next_sample();
             let expected = expected_raw.clamp(-1.0, 1.0);
             let actual = mixer.next_sample();
             assert!(
@@ -801,10 +800,8 @@ mod tests {
     #[test]
     fn mixer_master_volume_scales_output() {
         // Full-vol vs half-vol drone — RMS should halve.
-        let drone_full =
-            TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
-        let drone_half =
-            TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
+        let drone_full = TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
+        let drone_half = TuningDrone::new(drone(440.0, Waveform::Sine), 44_100).unwrap();
 
         let mut full = OutputMixer::new();
         full.set_drone(Some(drone_full));
