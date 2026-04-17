@@ -1,8 +1,8 @@
 //! Integration tests for the coaching engine.
 
 use brain::coaching::{
-    CoachingCategory, CoachingConfig, CoachingEngine, CoachingError, CoachingSeverity,
-    CoachingTip, HttpClient, SessionContext,
+    CoachingCategory, CoachingConfig, CoachingEngine, CoachingError, CoachingSeverity, CoachingTip,
+    HttpClient, SessionContext,
 };
 use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
 
@@ -135,11 +135,7 @@ async fn end_to_end_coaching_with_mock_api() {
 
 #[tokio::test]
 async fn multiple_phrases_get_different_prompts() {
-    let response = anthropic_response(
-        "Keep it up!",
-        "encouragement",
-        "tone",
-    );
+    let response = anthropic_response("Keep it up!", "encouragement", "tone");
 
     let mock = IntegrationMockClient::new(&response);
     let config = CoachingConfig {
@@ -183,8 +179,14 @@ async fn multiple_phrases_get_different_prompts() {
     );
 
     // Verify specific differences
-    assert!(prompt1.contains("880.0"), "Prompt 1 should contain 880.0 Hz");
-    assert!(prompt2.contains("220.0"), "Prompt 2 should contain 220.0 Hz");
+    assert!(
+        prompt1.contains("880.0"),
+        "Prompt 1 should contain 880.0 Hz"
+    );
+    assert!(
+        prompt2.contains("220.0"),
+        "Prompt 2 should contain 220.0 Hz"
+    );
     assert!(prompt1.contains("flute"), "Prompt 1 should mention flute");
     assert!(
         prompt2.contains("trombone"),

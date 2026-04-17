@@ -696,9 +696,7 @@ mod tests {
         let mut engine = make_engine(mock);
 
         // Should NOT return Err — should return a fallback tip
-        let result = engine
-            .get_tip(&sample_phrase(), &sample_context())
-            .await;
+        let result = engine.get_tip(&sample_phrase(), &sample_context()).await;
 
         assert!(result.is_ok(), "API failure should degrade gracefully");
         let tip = result.unwrap();
@@ -806,8 +804,7 @@ mod tests {
 
         for severity in &severities {
             let json = serde_json::to_string(severity).unwrap();
-            let roundtripped: CoachingSeverity =
-                serde_json::from_str(&json).unwrap();
+            let roundtripped: CoachingSeverity = serde_json::from_str(&json).unwrap();
             assert_eq!(
                 *severity, roundtripped,
                 "Severity {json} did not roundtrip correctly"
@@ -842,8 +839,7 @@ mod tests {
 
         for category in &categories {
             let json = serde_json::to_string(category).unwrap();
-            let roundtripped: CoachingCategory =
-                serde_json::from_str(&json).unwrap();
+            let roundtripped: CoachingCategory = serde_json::from_str(&json).unwrap();
             assert_eq!(
                 *category, roundtripped,
                 "Category {json} did not roundtrip correctly"
@@ -1018,8 +1014,7 @@ mod tests {
 
     #[test]
     fn user_prompt_includes_phrase_data() {
-        let user_prompt =
-            CoachingEngine::build_user_prompt(&sample_phrase(), &sample_context());
+        let user_prompt = CoachingEngine::build_user_prompt(&sample_phrase(), &sample_context());
         assert!(
             user_prompt.contains("440.0"),
             "User prompt should include mean pitch"
