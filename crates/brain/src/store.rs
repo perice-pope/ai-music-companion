@@ -404,7 +404,9 @@ mod tests {
             instrument: "clarinet".to_owned(),
         };
         let now = Utc::now();
-        store.save(id, now, now + Duration::seconds(124), &recap).unwrap();
+        store
+            .save(id, now, now + Duration::seconds(124), &recap)
+            .unwrap();
 
         let loaded = store.load(id).unwrap();
         assert_eq!(
@@ -440,7 +442,9 @@ mod tests {
         let id = SessionId::new();
         let now = Utc::now();
         let recap = recap_with("trumpet", 123.456, 4);
-        store.save(id, now, now + Duration::seconds(124), &recap).unwrap();
+        store
+            .save(id, now, now + Duration::seconds(124), &recap)
+            .unwrap();
 
         let loaded = store.load(id).unwrap();
         assert!(
@@ -454,8 +458,10 @@ mod tests {
     fn migration_is_idempotent_on_file_backed_store() {
         // Use a tempfile-style path in the system temp dir.
         let dir = std::env::temp_dir();
-        let file =
-            dir.join(format!("ai-music-companion-test-{}.db", SessionId::new().as_str()));
+        let file = dir.join(format!(
+            "ai-music-companion-test-{}.db",
+            SessionId::new().as_str()
+        ));
 
         // Open twice in sequence: the second open must not error.
         let first = SessionStore::open(&file).unwrap();
@@ -476,8 +482,12 @@ mod tests {
         let now = Utc::now();
         let first = recap_with("trumpet", 10.0, 1);
         let second = recap_with("violin", 20.0, 2);
-        store.save(id, now, now + Duration::seconds(10), &first).unwrap();
-        store.save(id, now, now + Duration::seconds(20), &second).unwrap();
+        store
+            .save(id, now, now + Duration::seconds(10), &first)
+            .unwrap();
+        store
+            .save(id, now, now + Duration::seconds(20), &second)
+            .unwrap();
 
         let loaded = store.load(id).unwrap();
         assert_eq!(

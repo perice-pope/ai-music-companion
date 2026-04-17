@@ -241,8 +241,7 @@ impl SessionRecorder {
         }
 
         let ended_at = Utc::now();
-        let duration_secs =
-            (ended_at - self.started_at).num_milliseconds() as f64 / 1000.0;
+        let duration_secs = (ended_at - self.started_at).num_milliseconds() as f64 / 1000.0;
 
         let input = RecapInput {
             instrument: self.instrument.clone(),
@@ -357,9 +356,7 @@ mod tests {
                 "Good breath support throughout.".to_owned(),
             ],
             areas_to_improve: vec!["Intonation drifts sharp in the upper register.".to_owned()],
-            next_session_suggestions: vec![
-                "Play the C major scale slowly with a drone.".to_owned(),
-            ],
+            next_session_suggestions: vec!["Play the C major scale slowly with a drone.".to_owned()],
             duration_secs: 0.0,
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
@@ -569,8 +566,7 @@ mod tests {
 
     #[test]
     fn recap_generator_failure_propagates_as_session_error() {
-        let mut recorder =
-            SessionRecorder::new("trumpet".to_owned(), Box::new(FailingGenerator));
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), Box::new(FailingGenerator));
         recorder.record_phrase(phrase(0));
 
         let err = recorder.end_session().unwrap_err();

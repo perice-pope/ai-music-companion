@@ -5,9 +5,7 @@
 //! Tauri shell.
 
 use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
-use brain::session::{
-    RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder,
-};
+use brain::session::{RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder};
 use brain::store::SessionStore;
 use chrono::{Duration, Utc};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -119,8 +117,8 @@ fn end_to_end_record_and_persist() {
 
     // 4. Persist to an in-memory store and read back.
     let store = SessionStore::in_memory().unwrap();
-    let ended_at = started_at
-        + Duration::milliseconds((recap.duration_secs * 1000.0).round() as i64);
+    let ended_at =
+        started_at + Duration::milliseconds((recap.duration_secs * 1000.0).round() as i64);
     store.save(id, started_at, ended_at, &recap).unwrap();
 
     let loaded = store.load(id).unwrap();
@@ -129,7 +127,10 @@ fn end_to_end_record_and_persist() {
     assert_eq!(loaded.overall_assessment, recap.overall_assessment);
     assert_eq!(loaded.strengths, recap.strengths);
     assert_eq!(loaded.areas_to_improve, recap.areas_to_improve);
-    assert_eq!(loaded.next_session_suggestions, recap.next_session_suggestions);
+    assert_eq!(
+        loaded.next_session_suggestions,
+        recap.next_session_suggestions
+    );
     assert_eq!(loaded.phrase_count, recap.phrase_count);
     assert_eq!(loaded.instrument, recap.instrument);
     assert!(
@@ -146,8 +147,10 @@ fn multiple_sessions_coexist_in_store() {
     // Save 3 sessions with different timestamps and instruments.
     let mut ids = Vec::new();
     for (i, instrument) in ["trumpet", "violin", "voice"].iter().enumerate() {
-        let mut recorder =
-            SessionRecorder::new((*instrument).to_owned(), Box::new(MockRecapGenerator::new()));
+        let mut recorder = SessionRecorder::new(
+            (*instrument).to_owned(),
+            Box::new(MockRecapGenerator::new()),
+        );
         recorder.record_phrase(phrase_at(0));
         let (id, recap) = recorder.end_session().unwrap();
 
@@ -179,8 +182,7 @@ fn multiple_sessions_coexist_in_store() {
 #[test]
 fn empty_session_cannot_be_persisted_because_end_session_errors() {
     // Proves the whole pipeline refuses to produce a zero-phrase recap.
-    let recorder =
-        SessionRecorder::new("trumpet".to_owned(), Box::new(MockRecapGenerator::new()));
+    let recorder = SessionRecorder::new("trumpet".to_owned(), Box::new(MockRecapGenerator::new()));
     let err = recorder.end_session().unwrap_err();
     assert!(
         matches!(err, SessionError::Empty),
