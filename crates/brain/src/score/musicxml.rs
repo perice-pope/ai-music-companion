@@ -116,6 +116,11 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
 
         let mut notes = Vec::new();
         let mut current_beat: f64 = 0.0;
+        // Remember the most recent non-chord note's start_beat so chord notes
+        // can share it. Using `current_beat - duration_beats` is only correct
+        // when the chord leader's duration equals the chord note's duration,
+        // which breaks for tied or mixed-value chords.
+        let mut last_note_start: f64 = 0.0;
 
         for child in measure_node.children() {
             if child.has_tag_name("attributes") {
@@ -186,8 +191,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
                 // previous note (don't advance current_beat).
                 let is_chord = find_descendant(&child, "chord").is_some();
                 let start_beat = if is_chord {
-                    // Back up to where the previous note started.
-                    (current_beat - duration_beats).max(0.0)
+                    last_note_start
                 } else {
                     current_beat
                 };
@@ -254,6 +258,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
                 });
 
                 if !is_chord {
+                    last_note_start = start_beat;
                     current_beat += duration_beats;
                 }
             }
@@ -757,5 +762,88 @@ mod tests {
 </score-partwise>"#;
         let model = parse_musicxml_str(xml).expect("lowercase step should parse");
         assert_eq!(model.measures[0].notes[0].midi_number, 60);
+    }
+
+    #[test]
+    fn chord_with_mixed_durations_shares_previous_start_beat() {
+        // Regression test for the chord start_beat bug.
+        //
+        // Previous (buggy) logic: `start_beat = current_beat - duration_beats`.
+        // For a quarter-note C (duration 4, start 0) followed by a *eighth*-note
+        // <chord> E (duration 2), the buggy calc gave:
+        //   current_beat = 1.0 (after quarter)
+        //   duration_beats = 0.5 (eighth)
+        //   start_beat = 1.0 - 0.5 = 0.5   ← WRONG, should be 0.0
+        //
+        // With the fix, the chord note uses last_note_start (0.0) directly.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>2</duration>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse chord XML");
+        let notes = &model.measures[0].notes;
+        assert_eq!(notes.len(), 2, "Expected 2 notes in the chord measure");
+        assert!(
+            (notes[0].start_beat - 0.0).abs() < 1e-9,
+            "Leader C should start at beat 0.0, got {}",
+            notes[0].start_beat,
+        );
+        assert!(
+            (notes[1].start_beat - 0.0).abs() < 1e-9,
+            "Chord E (even with shorter duration) should share start 0.0, got {}",
+            notes[1].start_beat,
+        );
+        // And durations must still be preserved independently.
+        assert!((notes[0].duration_beats - 1.0).abs() < 1e-9);
+        assert!((notes[1].duration_beats - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_chord_note_after_chord_advances_from_leader_not_chord() {
+        // Harder regression: the note *after* the chord should start at
+        // leader_start + leader_duration, NOT after the chord note. Because
+        // chord notes don't advance `current_beat`, this should Just Work
+        // provided the bookkeeping is right.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>2</duration>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>4</duration>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse XML");
+        let notes = &model.measures[0].notes;
+        assert_eq!(notes.len(), 3);
+        // Sequence: C at 0, E (chord) at 0, D at 1 (after C's full quarter).
+        assert!((notes[2].start_beat - 1.0).abs() < 1e-9);
     }
 }

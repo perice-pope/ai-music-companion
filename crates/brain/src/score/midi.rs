@@ -18,10 +18,18 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     // 3/8 or 6/8 meter the *beat* is an eighth note, not a quarter.
     let ticks_per_quarter = match smf.header.timing {
         midly::Timing::Metrical(tpb) => tpb.as_int() as f64,
-        midly::Timing::Timecode(fps, sub) => {
-            // Fall back to a reasonable default; timecode-based files are rare
-            // for sheet music. Use fps * sub as ticks-per-quarter approximation.
-            f64::from(fps.as_f32()) * f64::from(sub)
+        midly::Timing::Timecode(_, _) => {
+            // Timecode-based MIDI expresses absolute time (frames-per-second
+            // × subframes), not metrical beats. There is no correct conversion
+            // to ticks-per-quarter without additional tempo/meter hints, and
+            // timecode files are overwhelmingly used for film scoring sync,
+            // not practice pieces. Reject explicitly rather than silently
+            // producing wrong beat/measure positions.
+            return Err(ScoreError::Midi(
+                "timecode-based MIDI timing is not supported; \
+                 please export with metrical (ticks-per-quarter) timing"
+                    .to_string(),
+            ));
         }
     };
 
@@ -572,5 +580,41 @@ mod tests {
             durations[1],
             durations,
         );
+    }
+
+    /// Build a minimal MIDI file with timecode-based timing (SMPTE 24 fps)
+    /// just to trigger the Timing::Timecode branch in parse_midi_bytes.
+    fn build_timecode_midi() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_u32.to_be_bytes());
+        bytes.extend_from_slice(&0_u16.to_be_bytes()); // format 0
+        bytes.extend_from_slice(&1_u16.to_be_bytes()); // 1 track
+                                                       // SMPTE: high bit set on fps byte. -24 fps + 40 subframes => 0xE8, 0x28
+        bytes.extend_from_slice(&[0xE8, 0x28]);
+        // Minimal empty track with End-of-Track meta event
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&4_u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        bytes
+    }
+
+    #[test]
+    fn timecode_timing_is_rejected_with_clear_error() {
+        // Regression: we previously fell back to `fps * sub` as a pseudo
+        // ticks-per-quarter, which is ticks-per-second in disguise and produces
+        // badly-wrong beat positions. Reject explicitly instead.
+        let bytes = build_timecode_midi();
+        let result = parse_midi_bytes(&bytes);
+        match result {
+            Err(ScoreError::Midi(msg)) => {
+                assert!(
+                    msg.to_lowercase().contains("timecode"),
+                    "Error should mention timecode, got: {msg}"
+                );
+            }
+            Err(other) => panic!("Expected Midi error, got: {other:?}"),
+            Ok(_) => panic!("Timecode-based MIDI should be rejected, not parsed"),
+        }
     }
 }
