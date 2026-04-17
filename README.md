@@ -2,6 +2,10 @@
 
 **Real-time practice coaching for musicians.**
 
+> [**View the pitch deck →**](https://perice-pope.github.io/ai-music-companion-pitch/)
+>
+> A quick walk-through of the vision, market, and product direction. The deck lives in its own public repo: [perice-pope/ai-music-companion-pitch](https://github.com/perice-pope/ai-music-companion-pitch).
+
 ## Overview
 
 AI Music Companion is a desktop practice tool for brass, voice, strings, woodwinds, and piano players. It listens to your playing, tracks pitch and timing against a score, and delivers phrase-level coaching feedback -- all with sub-25ms mic-to-screen latency. Built with Tauri 2.0 (Rust backend, React frontend) so the audio-critical path stays in native code while the UI remains fast to iterate on.
