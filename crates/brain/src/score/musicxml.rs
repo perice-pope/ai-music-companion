@@ -2,12 +2,25 @@
 //!
 //! Uses `roxmltree` for lightweight, read-only XML parsing (no unsafe code).
 
-use roxmltree::{Document, Node};
+use roxmltree::{Document, Node, ParsingOptions};
 
 use super::{
     midi_to_hz, pitch_to_midi, Dynamic, KeyMode, KeySignature, Measure, ScoreError, ScoreModel,
     ScoreNote, TimeSignature,
 };
+
+/// Parse XML with DTD allowed. Real-world MusicXML files (and our fixtures)
+/// start with a `<!DOCTYPE score-partwise PUBLIC ...>` declaration; the
+/// default `Document::parse` rejects these as a security precaution.
+/// Since we only parse user-provided local files (no XXE risk from
+/// remote input), opt-in to DTD parsing.
+fn parse_xml(xml: &str) -> Result<Document<'_>, ScoreError> {
+    let opts = ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    Document::parse_with_options(xml, opts).map_err(|e| ScoreError::MusicXml(e.to_string()))
+}
 
 /// Parse a MusicXML string into a [`ScoreModel`], selecting the first `<part>`.
 ///
@@ -21,7 +34,7 @@ pub fn parse_musicxml_str(xml: &str) -> Result<ScoreModel, ScoreError> {
 /// order. Names that are missing or empty are reported as "Part N" so the
 /// returned vector length always matches the number of `<part>` elements.
 pub fn list_parts(xml: &str) -> Result<Vec<String>, ScoreError> {
-    let doc = Document::parse(xml).map_err(|e| ScoreError::MusicXml(e.to_string()))?;
+    let doc = parse_xml(xml)?;
     let root = doc.root_element();
 
     // Map from score-part id -> part-name text
@@ -63,7 +76,7 @@ pub fn list_parts(xml: &str) -> Result<Vec<String>, ScoreError> {
 /// Parse a MusicXML string, selecting the part at `part_index` (zero-based,
 /// in document order).
 pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreModel, ScoreError> {
-    let doc = Document::parse(xml).map_err(|e| ScoreError::MusicXml(e.to_string()))?;
+    let doc = parse_xml(xml)?;
     let root = doc.root_element();
 
     let title = extract_title(&root);
@@ -355,7 +368,12 @@ fn parse_dynamic(dynamics_node: &Node) -> Option<Dynamic> {
 }
 
 /// Find the first descendant element with the given tag name (depth-first).
-fn find_descendant<'a>(node: &'a Node, tag: &str) -> Option<Node<'a, 'a>> {
+///
+/// Lifetime `'input` is the document's input-string lifetime; `'a` is the
+/// arena lifetime. Threading both through explicitly (rather than tying the
+/// returned node to the reference lifetime) is required so the recursive
+/// call's return value doesn't borrow from the local `child`.
+fn find_descendant<'a, 'input>(node: &Node<'a, 'input>, tag: &str) -> Option<Node<'a, 'input>> {
     for child in node.children() {
         if child.has_tag_name(tag) {
             return Some(child);

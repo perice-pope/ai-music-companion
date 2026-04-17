@@ -179,10 +179,7 @@ impl ScoreParser {
     /// `part_index` is zero-based against the order of `<part>` elements in
     /// the file. Returns [`ScoreError::PartNotFound`] if the index is out of
     /// range.
-    pub fn parse_musicxml_part(
-        path: &Path,
-        part_index: usize,
-    ) -> Result<ScoreModel, ScoreError> {
+    pub fn parse_musicxml_part(path: &Path, part_index: usize) -> Result<ScoreModel, ScoreError> {
         let xml = std::fs::read_to_string(path)?;
         musicxml::parse_musicxml_str_part(&xml, part_index)
     }
@@ -296,8 +293,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&model).expect("serialize ScoreModel");
-        let roundtrip: ScoreModel =
-            serde_json::from_str(&json).expect("deserialize ScoreModel");
+        let roundtrip: ScoreModel = serde_json::from_str(&json).expect("deserialize ScoreModel");
 
         assert_eq!(roundtrip.title, "Test");
         assert_eq!(roundtrip.composer.as_deref(), Some("Bach"));

@@ -52,9 +52,7 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
                                 let name = name.trim().to_string();
                                 if !name.is_empty() {
                                     // Use first track name as title, subsequent as instrument
-                                    if track_idx == 0
-                                        || smf.header.format == Format::SingleTrack
-                                    {
+                                    if track_idx == 0 || smf.header.format == Format::SingleTrack {
                                         title = name.clone();
                                     }
                                     if instrument.is_none() && track_idx > 0 {
@@ -186,11 +184,7 @@ fn close_note(
 }
 
 /// Group raw notes into measures.
-fn build_measures(
-    notes: &[RawNote],
-    ticks_per_beat: f64,
-    ticks_per_measure: f64,
-) -> Vec<Measure> {
+fn build_measures(notes: &[RawNote], ticks_per_beat: f64, ticks_per_measure: f64) -> Vec<Measure> {
     if notes.is_empty() {
         return Vec::new();
     }
@@ -298,7 +292,7 @@ mod tests {
                 write_midi_event(&mut track, delta, 0x80, notes[i - 1], 0);
             }
             // Note On
-            write_midi_event(&mut track, if i == 0 { 0 } else { 0 }, 0x90, key, velocity);
+            write_midi_event(&mut track, 0, 0x90, key, velocity);
         }
         // Note Off for last note
         write_midi_event(&mut track, note_duration, 0x80, *notes.last().unwrap(), 0);
