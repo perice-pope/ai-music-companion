@@ -11,8 +11,14 @@ pub mod scoring;
 
 #[cfg(test)]
 mod tests {
+    use crate::phrase::{PhraseAggregator, PhraseConfig};
+    use crate::scoring::{score_note, ScoringThresholds, Verdict};
+
     #[test]
-    fn brain_crate_loads() {
-        assert!(true);
+    fn phrase_and_scoring_modules_are_accessible() {
+        let agg = PhraseAggregator::new(PhraseConfig::default());
+        assert!(agg.is_ok());
+        let score = score_note(0, 0.0, 0.0, &ScoringThresholds::default());
+        assert_eq!(score.verdict, Verdict::Green);
     }
 }
