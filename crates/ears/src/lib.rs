@@ -10,6 +10,8 @@
 pub mod capture;
 pub mod pitch;
 pub mod profile;
+pub mod recorder;
+pub mod retention;
 
 /// Audio event emitted by the Ears layer to the Brain.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
