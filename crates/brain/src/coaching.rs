@@ -186,9 +186,7 @@ impl HttpClient for ReqwestClient {
             .map_err(|e| CoachingError::HttpError(e.to_string()))?;
 
         if !status.is_success() {
-            return Err(CoachingError::HttpError(format!(
-                "HTTP {status}: {text}"
-            )));
+            return Err(CoachingError::HttpError(format!("HTTP {status}: {text}")));
         }
 
         Ok(text)
@@ -255,7 +253,12 @@ impl CoachingEngine {
     ) -> Result<Self, CoachingError> {
         let env_api_key = env::var("MUSIC_COMPANION_LLM_API_KEY").ok();
         let env_model = env::var("MUSIC_COMPANION_LLM_MODEL").ok();
-        Self::with_env(config, http_client, env_api_key.as_deref(), env_model.as_deref())
+        Self::with_env(
+            config,
+            http_client,
+            env_api_key.as_deref(),
+            env_model.as_deref(),
+        )
     }
 
     /// Construct an engine with explicit environment values.
@@ -323,8 +326,7 @@ impl CoachingEngine {
             .await;
 
         match response {
-            Ok(body) => Self::parse_tip_from_response(&body)
-                .or_else(|_| Ok(Self::fallback_tip())),
+            Ok(body) => Self::parse_tip_from_response(&body).or_else(|_| Ok(Self::fallback_tip())),
             Err(_) => Ok(Self::fallback_tip()),
         }
     }
@@ -465,9 +467,7 @@ Choose the category that best matches the most notable aspect of the phrase data
     /// Parse a coaching tip from the raw LLM response JSON.
     fn parse_tip_from_response(response_body: &str) -> Result<CoachingTip, CoachingError> {
         // Try Anthropic response format first
-        if let Ok(anthropic) =
-            serde_json::from_str::<serde_json::Value>(response_body)
-        {
+        if let Ok(anthropic) = serde_json::from_str::<serde_json::Value>(response_body) {
             // Anthropic: { "content": [ { "type": "text", "text": "..." } ] }
             if let Some(text) = anthropic
                 .get("content")
@@ -628,9 +628,7 @@ mod tests {
             instrument: "trumpet".to_owned(),
             session_duration_secs: 120.0,
             phrases_played: 5,
-            previous_tips: vec![
-                "Try relaxing your embouchure on the high notes.".to_owned(),
-            ],
+            previous_tips: vec!["Try relaxing your embouchure on the high notes.".to_owned()],
         }
     }
 
@@ -923,12 +921,14 @@ mod tests {
         let mock = MockHttpClient::succeeding("{}");
         let result = CoachingEngine::with_env(config, Box::new(mock), None, None);
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, CoachingError::MissingApiKey),
-            "Expected MissingApiKey, got: {err}"
-        );
+        // CoachingEngine doesn't impl Debug (it holds a `Box<dyn HttpClient>`
+        // which can't require Debug without poisoning the trait object), so we
+        // pattern-match instead of calling `.unwrap_err()`.
+        match result {
+            Err(CoachingError::MissingApiKey) => {}
+            Err(other) => panic!("Expected MissingApiKey, got: {other}"),
+            Ok(_) => panic!("Expected MissingApiKey error, got Ok"),
+        }
     }
 
     #[test]

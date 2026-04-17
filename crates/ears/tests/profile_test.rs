@@ -40,7 +40,7 @@ fn load_trumpet_profile_from_file() {
 #[test]
 fn load_all_profiles_matches_file_count() {
     let profiles = ProfileLoader::load_all(&profiles_dir()).unwrap();
-    let json_count = std::fs::read_dir(&profiles_dir())
+    let json_count = std::fs::read_dir(profiles_dir())
         .unwrap()
         .filter(|e| {
             e.as_ref()
