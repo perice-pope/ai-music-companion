@@ -6,6 +6,7 @@
 //! - Score following (aligning played notes to sheet music)
 //! - Adaptive practice planning (spaced repetition)
 
+pub mod coaching;
 pub mod phrase;
 pub mod score;
 pub mod scoring;
