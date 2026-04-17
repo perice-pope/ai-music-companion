@@ -196,6 +196,36 @@ impl HttpClient for ReqwestClient {
 }
 
 // ---------------------------------------------------------------------------
+// Pure resolution helpers (testable without env mutation)
+// ---------------------------------------------------------------------------
+
+/// Resolve the API key from an explicit config value and an optional env value.
+///
+/// Order: config (if non-empty) → env (if Some and non-empty) → error.
+fn resolve_api_key(config_key: &str, env_value: Option<&str>) -> Result<String, CoachingError> {
+    if !config_key.is_empty() {
+        return Ok(config_key.to_owned());
+    }
+    match env_value {
+        Some(v) if !v.is_empty() => Ok(v.to_owned()),
+        _ => Err(CoachingError::MissingApiKey),
+    }
+}
+
+/// Resolve the model from an explicit config value and an optional env value.
+///
+/// Order: config (if non-empty) → env (if Some and non-empty) → default.
+fn resolve_model(config_model: &str, env_value: Option<&str>) -> String {
+    if !config_model.is_empty() {
+        return config_model.to_owned();
+    }
+    match env_value {
+        Some(v) if !v.is_empty() => v.to_owned(),
+        _ => "claude-3-5-sonnet".to_owned(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Coaching engine
 // ---------------------------------------------------------------------------
 
@@ -223,23 +253,25 @@ impl CoachingEngine {
         config: CoachingConfig,
         http_client: Box<dyn HttpClient>,
     ) -> Result<Self, CoachingError> {
-        let resolved_api_key = if config.api_key.is_empty() {
-            env::var("MUSIC_COMPANION_LLM_API_KEY")
-                .unwrap_or_default()
-        } else {
-            config.api_key.clone()
-        };
+        let env_api_key = env::var("MUSIC_COMPANION_LLM_API_KEY").ok();
+        let env_model = env::var("MUSIC_COMPANION_LLM_MODEL").ok();
+        Self::with_env(config, http_client, env_api_key.as_deref(), env_model.as_deref())
+    }
 
-        if resolved_api_key.is_empty() {
-            return Err(CoachingError::MissingApiKey);
-        }
-
-        let resolved_model = if config.model.is_empty() {
-            env::var("MUSIC_COMPANION_LLM_MODEL")
-                .unwrap_or_else(|_| "claude-3-5-sonnet".to_owned())
-        } else {
-            config.model.clone()
-        };
+    /// Construct an engine with explicit environment values.
+    ///
+    /// This is the pure-function core of [`Self::new`] — it accepts the env
+    /// values as arguments instead of reading globals, which makes it
+    /// deterministic and safe to exercise from tests without mutating
+    /// process-wide state.
+    pub fn with_env(
+        config: CoachingConfig,
+        http_client: Box<dyn HttpClient>,
+        env_api_key: Option<&str>,
+        env_model: Option<&str>,
+    ) -> Result<Self, CoachingError> {
+        let resolved_api_key = resolve_api_key(&config.api_key, env_api_key)?;
+        let resolved_model = resolve_model(&config.model, env_model);
 
         Ok(Self {
             config,
@@ -883,23 +915,76 @@ mod tests {
 
     #[test]
     fn missing_api_key_returns_error() {
-        // Ensure the env var is not set for this test
-        env::remove_var("MUSIC_COMPANION_LLM_API_KEY");
-
+        // Use with_env + explicit None so we never touch process env.
+        // This is the deterministic, parallel-safe equivalent of the old test
+        // that called env::remove_var — that approach would race against
+        // other tests reading MUSIC_COMPANION_LLM_API_KEY.
         let config = CoachingConfig {
             api_key: String::new(),
             model: "claude-3-5-sonnet".to_owned(),
             rate_limit_secs: 3.0,
         };
         let mock = MockHttpClient::succeeding("{}");
-        let result = CoachingEngine::new(config, Box::new(mock));
+        let result = CoachingEngine::with_env(config, Box::new(mock), None, None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("API key"),
-            "Error should mention API key: {err}"
+            matches!(err, CoachingError::MissingApiKey),
+            "Expected MissingApiKey, got: {err}"
         );
+    }
+
+    #[test]
+    fn resolve_api_key_prefers_config_over_env() {
+        let result = resolve_api_key("config-key", Some("env-key")).unwrap();
+        assert_eq!(result, "config-key");
+    }
+
+    #[test]
+    fn resolve_api_key_falls_back_to_env_when_config_empty() {
+        let result = resolve_api_key("", Some("env-key")).unwrap();
+        assert_eq!(result, "env-key");
+    }
+
+    #[test]
+    fn resolve_api_key_errors_when_both_empty() {
+        let err = resolve_api_key("", None).unwrap_err();
+        assert!(matches!(err, CoachingError::MissingApiKey));
+
+        // Empty string in env counts as missing, not a valid key
+        let err = resolve_api_key("", Some("")).unwrap_err();
+        assert!(matches!(err, CoachingError::MissingApiKey));
+    }
+
+    #[test]
+    fn resolve_model_prefers_config_then_env_then_default() {
+        // Config wins
+        assert_eq!(resolve_model("gpt-4", Some("claude-3-opus")), "gpt-4");
+        // Env wins when config empty
+        assert_eq!(resolve_model("", Some("claude-3-opus")), "claude-3-opus");
+        // Default when both empty
+        assert_eq!(resolve_model("", None), "claude-3-5-sonnet");
+        assert_eq!(resolve_model("", Some("")), "claude-3-5-sonnet");
+    }
+
+    #[test]
+    fn with_env_uses_explicit_env_values() {
+        let config = CoachingConfig {
+            api_key: String::new(),
+            model: String::new(),
+            rate_limit_secs: 3.0,
+        };
+        let mock = MockHttpClient::succeeding("{}");
+        let engine = CoachingEngine::with_env(
+            config,
+            Box::new(mock),
+            Some("injected-key"),
+            Some("gpt-4-turbo"),
+        )
+        .unwrap();
+        assert_eq!(engine.resolved_api_key, "injected-key");
+        assert_eq!(engine.resolved_model, "gpt-4-turbo");
     }
 
     #[test]
