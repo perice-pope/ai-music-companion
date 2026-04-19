@@ -125,9 +125,22 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
         for child in measure_node.children() {
             if child.has_tag_name("attributes") {
                 if let Some(div) = find_descendant_text(&child, "divisions") {
-                    if let Ok(d) = div.parse::<f64>() {
-                        divisions = d;
+                    // `<divisions>` sets ticks-per-quarter for the part; a non-
+                    // positive value would make every `duration / divisions`
+                    // below zero or produce a divide-by-zero. Reject it
+                    // explicitly instead of silently coercing to 0.0.
+                    let d = div.parse::<f64>().map_err(|_| {
+                        ScoreError::MusicXml(format!(
+                            "invalid <divisions> value '{div}' at measure {measure_number}"
+                        ))
+                    })?;
+                    if !(d.is_finite() && d > 0.0) {
+                        return Err(ScoreError::MusicXml(format!(
+                            "<divisions> must be a positive finite number (got {d}) \
+                             at measure {measure_number}"
+                        )));
                     }
+                    divisions = d;
                 }
                 if let Some(time_node) = find_descendant(&child, "time") {
                     if let (Some(beats_str), Some(bt_str)) = (
@@ -178,14 +191,29 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
             if child.has_tag_name("note") {
                 let is_rest = find_descendant(&child, "rest").is_some();
 
-                let duration_divs = find_descendant_text(&child, "duration")
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                let duration_beats = if divisions > 0.0 {
-                    duration_divs / divisions
-                } else {
-                    duration_divs
+                // `<duration>` is required on non-grace notes. Silently
+                // defaulting to 0.0 (as we used to) produces zero-length
+                // events that corrupt downstream beat math. Grace notes
+                // (the one legitimate case without `<duration>`) are
+                // handled below: they're marked with `<grace/>` and may
+                // legally omit duration — we treat them as 0-beat and skip
+                // advancing current_beat.
+                let is_grace = find_descendant(&child, "grace").is_some();
+                let duration_divs = match find_descendant_text(&child, "duration") {
+                    Some(s) => s.parse::<f64>().map_err(|_| {
+                        ScoreError::MusicXml(format!(
+                            "invalid <duration> '{s}' in note at measure {measure_number}"
+                        ))
+                    })?,
+                    None if is_grace => 0.0,
+                    None => {
+                        return Err(ScoreError::MusicXml(format!(
+                            "note at measure {measure_number} is missing <duration>"
+                        )));
+                    }
                 };
+                // `divisions` is validated above to be > 0 before use.
+                let duration_beats = duration_divs / divisions;
 
                 // Handle chord: chord notes share the same start_beat as the
                 // previous note (don't advance current_beat).
@@ -265,26 +293,14 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
 
             // <forward> advances the beat cursor
             if child.has_tag_name("forward") {
-                let dur = find_descendant_text(&child, "duration")
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                current_beat += if divisions > 0.0 {
-                    dur / divisions
-                } else {
-                    dur
-                };
+                let dur = parse_required_duration(&child, "forward", measure_number)?;
+                current_beat += dur / divisions;
             }
 
             // <backup> moves the beat cursor backwards
             if child.has_tag_name("backup") {
-                let dur = find_descendant_text(&child, "duration")
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                let backup_beats = if divisions > 0.0 {
-                    dur / divisions
-                } else {
-                    dur
-                };
+                let dur = parse_required_duration(&child, "backup", measure_number)?;
+                let backup_beats = dur / divisions;
                 current_beat = (current_beat - backup_beats).max(0.0);
             }
         }
@@ -353,11 +369,15 @@ fn extract_instrument_for(root: &Node, part_id: Option<&str>) -> Option<String> 
 
 /// Parse a `<dynamics>` element into a [`Dynamic`].
 fn parse_dynamic(dynamics_node: &Node) -> Option<Dynamic> {
+    // Scan ALL element children; don't bail on the first unknown tag.
+    // MusicXML sometimes wraps dynamics in other markings (e.g. a stray
+    // <other-dynamics> followed by the real <f/>), and returning early
+    // on the first non-match would miss the valid one.
     for child in dynamics_node.children() {
         if !child.is_element() {
             continue;
         }
-        return match child.tag_name().name() {
+        let dyn_opt = match child.tag_name().name() {
             "ppp" => Some(Dynamic::PPP),
             "pp" => Some(Dynamic::PP),
             "p" => Some(Dynamic::P),
@@ -368,8 +388,39 @@ fn parse_dynamic(dynamics_node: &Node) -> Option<Dynamic> {
             "fff" => Some(Dynamic::FFF),
             _ => None,
         };
+        if dyn_opt.is_some() {
+            return dyn_opt;
+        }
     }
     None
+}
+
+/// Extract and parse the required `<duration>` child of `<forward>` /
+/// `<backup>`. Both elements are defined by MusicXML to carry a positive
+/// `<duration>` in divisions; missing or unparseable values indicate a
+/// malformed file and must be rejected (coercing to 0 silently shifts
+/// every subsequent beat cursor).
+fn parse_required_duration(
+    node: &Node,
+    elem: &str,
+    measure_number: usize,
+) -> Result<f64, ScoreError> {
+    let s = find_descendant_text(node, "duration").ok_or_else(|| {
+        ScoreError::MusicXml(format!(
+            "<{elem}> at measure {measure_number} is missing <duration>"
+        ))
+    })?;
+    let d = s.parse::<f64>().map_err(|_| {
+        ScoreError::MusicXml(format!(
+            "invalid <duration> '{s}' in <{elem}> at measure {measure_number}"
+        ))
+    })?;
+    if !(d.is_finite() && d >= 0.0) {
+        return Err(ScoreError::MusicXml(format!(
+            "<{elem}> at measure {measure_number} requires non-negative finite duration (got {d})"
+        )));
+    }
+    Ok(d)
 }
 
 /// Find the first descendant element with the given tag name (depth-first).
@@ -845,5 +896,84 @@ mod tests {
         assert_eq!(notes.len(), 3);
         // Sequence: C at 0, E (chord) at 0, D at 1 (after C's full quarter).
         assert!((notes[2].start_beat - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_positive_divisions_is_rejected() {
+        // Regression: we used to silently accept <divisions>0</divisions>
+        // (coercing note duration math to zero or divide-by-zero territory).
+        // Reject explicitly instead.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>0</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        match err {
+            ScoreError::MusicXml(ref m) => {
+                assert!(
+                    m.contains("divisions"),
+                    "Error should mention divisions, got: {m}"
+                );
+            }
+            other => panic!("Expected MusicXml error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_note_duration_is_rejected() {
+        // Regression: missing <duration> on a regular note used to coerce
+        // to 0.0 and silently produce zero-length notes.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let err = parse_musicxml_str(xml).unwrap_err();
+        match err {
+            ScoreError::MusicXml(ref m) => {
+                assert!(
+                    m.contains("duration"),
+                    "Error should mention duration, got: {m}"
+                );
+            }
+            other => panic!("Expected MusicXml error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_dynamic_scans_all_children_not_just_first() {
+        // Regression: `parse_dynamic` returned on the first child, so an
+        // unrecognised wrapper element would hide the real dynamic.
+        // This XML puts a non-standard <other-dynamics> before the
+        // legitimate <f/>; the old code missed it.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <direction><dynamics><other-dynamics>sfz</other-dynamics><f/></dynamics></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse XML with mixed dynamics children");
+        let note = &model.measures[0].notes[0];
+        assert_eq!(
+            note.dynamic,
+            Some(Dynamic::F),
+            "Should find the <f/> even though <other-dynamics> came first"
+        );
     }
 }

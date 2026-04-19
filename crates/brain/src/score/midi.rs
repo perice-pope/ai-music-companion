@@ -33,16 +33,36 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
         }
     };
 
+    // Reject SMF Format 2 (sequential tracks that play as independent
+    // pieces, one after another). Our single-timeline merging logic below
+    // would incorrectly overlap them as if they were simultaneous.
+    // Format 2 is rare outside of drum machine files — supporting it would
+    // mean producing multiple ScoreModels or concatenating tracks with
+    // track-local abs_tick offsets, neither of which fits the current API.
+    if smf.header.format == Format::Sequential {
+        return Err(ScoreError::Midi(
+            "SMF Format 2 (sequential multi-song) is not supported; \
+             please provide a Format 0 (single track) or Format 1 \
+             (simultaneous multi-track) file"
+                .to_string(),
+        ));
+    }
+
     let mut title = String::from("Untitled");
     let mut instrument: Option<String> = None;
     let mut time_signature = TimeSignature::default();
     let mut key_signature = KeySignature::default();
-    let mut tempo_bpm: f64 = 120.0;
+    // Tempo is tracked internally in quarter-note BPM (because MIDI's
+    // `MetaMessage::Tempo` is defined as microseconds-per-quarter-note,
+    // independent of any time signature). We convert to signature-beat
+    // BPM at the end so downstream consumers using `time_signature.beat_type`
+    // see consistent units.
+    let mut tempo_quarter_bpm: f64 = 120.0;
 
     // Collect all note events with absolute tick positions from all tracks
     let mut raw_notes: Vec<RawNote> = Vec::new();
 
-    for (track_idx, track) in smf.tracks.iter().enumerate() {
+    for track in smf.tracks.iter() {
         let mut abs_tick: u64 = 0;
         // Track active note-on events: (channel, key, velocity, start_tick).
         // Channel is included so that the same MIDI key sounding on two
@@ -59,21 +79,25 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
                             if let Ok(name) = std::str::from_utf8(name_bytes) {
                                 let name = name.trim().to_string();
                                 if !name.is_empty() {
-                                    // Use first track name as title, subsequent as instrument
-                                    if track_idx == 0 || smf.header.format == Format::SingleTrack {
+                                    // Title: use the first non-empty TrackName we encounter,
+                                    // regardless of which track it's on. Format 1 files often
+                                    // leave track 0 as tempo/meta-only with the real title on
+                                    // track 1; requiring `track_idx == 0` misses those.
+                                    if title == "Untitled" {
                                         title = name.clone();
                                     }
-                                    if instrument.is_none() && track_idx > 0 {
+                                    // Instrument: first track-name that isn't the piece title.
+                                    if instrument.is_none() && title != name {
                                         instrument = Some(name);
                                     }
                                 }
                             }
                         }
                         midly::MetaMessage::Tempo(t) => {
-                            // Microseconds per beat → BPM
-                            let uspb = t.as_int() as f64;
-                            if uspb > 0.0 {
-                                tempo_bpm = 60_000_000.0 / uspb;
+                            // Microseconds per quarter-note → quarter-note BPM.
+                            let uspqn = t.as_int() as f64;
+                            if uspqn > 0.0 {
+                                tempo_quarter_bpm = 60_000_000.0 / uspqn;
                             }
                         }
                         midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
@@ -150,6 +174,14 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     let beats_per_measure = time_signature.beats as f64;
     let ticks_per_measure = ticks_per_beat * beats_per_measure;
     let measures = build_measures(&raw_notes, ticks_per_beat, ticks_per_measure);
+
+    // Convert quarter-note BPM to signature-beat BPM so downstream consumers
+    // using `duration_beats` (which is in signature-beat units) see consistent
+    // tempo math. In 6/8: one quarter = 2 eighths, so quarter_bpm=120 means
+    // eighth_bpm=240. Formula: tempo_bpm = quarter_bpm * (beat_type / 4).
+    // This is the inverse of the ticks_per_beat multiplier above — ticks
+    // scale with beat *period*, tempo scales with beat *frequency*.
+    let tempo_bpm = tempo_quarter_bpm * (beat_type / 4.0);
 
     Ok(ScoreModel {
         title,
@@ -616,5 +648,100 @@ mod tests {
             Err(other) => panic!("Expected Midi error, got: {other:?}"),
             Ok(_) => panic!("Timecode-based MIDI should be rejected, not parsed"),
         }
+    }
+
+    /// Minimal Format-2 (Sequential) MIDI file with two tiny tracks.
+    fn build_format_2_midi() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_u32.to_be_bytes());
+        bytes.extend_from_slice(&2_u16.to_be_bytes()); // format 2
+        bytes.extend_from_slice(&2_u16.to_be_bytes()); // 2 tracks
+        bytes.extend_from_slice(&480_u16.to_be_bytes()); // 480 tpq
+        for _ in 0..2 {
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(&4_u32.to_be_bytes());
+            bytes.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn format_2_midi_is_rejected_with_clear_error() {
+        // Regression: Format 2 files define sequential (not simultaneous)
+        // tracks. Merging them into a single timeline produces garbage
+        // measure positions; we require Format 0 or 1.
+        let bytes = build_format_2_midi();
+        let err = parse_midi_bytes(&bytes).unwrap_err();
+        let msg = match &err {
+            ScoreError::Midi(m) => m.clone(),
+            other => panic!("Expected Midi error, got: {other:?}"),
+        };
+        assert!(
+            msg.contains("Format 2"),
+            "Error should mention Format 2, got: {msg}"
+        );
+    }
+
+    /// Build a Format-1 MIDI file where track 0 has tempo + no TrackName,
+    /// and track 1 carries the first non-empty TrackName ("My Piece").
+    fn build_format_1_name_on_track_1() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_u32.to_be_bytes());
+        bytes.extend_from_slice(&1_u16.to_be_bytes()); // format 1
+        bytes.extend_from_slice(&2_u16.to_be_bytes()); // 2 tracks
+        bytes.extend_from_slice(&480_u16.to_be_bytes());
+
+        // Track 0: tempo + end-of-track (no TrackName)
+        let mut t0 = Vec::new();
+        // Tempo 500000 us/qn → 120 BPM
+        write_meta_event(&mut t0, 0, 0x51, &[0x07, 0xA1, 0x20]);
+        write_meta_event(&mut t0, 0, 0x2F, &[]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(t0.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&t0);
+
+        // Track 1: TrackName "My Piece" + a single note + end-of-track
+        let mut t1 = Vec::new();
+        write_meta_event(&mut t1, 0, 0x03, b"My Piece");
+        write_midi_event(&mut t1, 0, 0x90, 60, 80);
+        write_midi_event(&mut t1, 480, 0x80, 60, 0);
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(t1.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&t1);
+
+        bytes
+    }
+
+    #[test]
+    fn title_uses_first_non_empty_track_name_not_only_track_zero() {
+        // Regression: Format-1 files often have a meta-only track 0; the
+        // real piece title shows up as TrackName on track 1. Previously
+        // we only looked at track 0, so this file came back as "Untitled".
+        let bytes = build_format_1_name_on_track_1();
+        let model = parse_midi_bytes(&bytes).expect("parse Format 1 MIDI");
+        assert_eq!(
+            model.title, "My Piece",
+            "First non-empty TrackName across all tracks should become the title"
+        );
+    }
+
+    #[test]
+    fn tempo_is_in_signature_beat_units_not_quarter_notes() {
+        // Regression: MIDI tempo is always quarter-note-based. Our model's
+        // `tempo_bpm` is expressed in time-signature-beat units (so
+        // downstream duration math stays consistent). In 6/8 with
+        // quarter=120, we expect eighth=240 BPM at the model level.
+        let bytes = build_six_eight_midi();
+        let model = parse_midi_bytes(&bytes).expect("parse 6/8 MIDI");
+        assert_eq!(model.time_signature.beats, 6);
+        assert_eq!(model.time_signature.beat_type, 8);
+        assert!(
+            (model.tempo_bpm - 240.0).abs() < 0.01,
+            "Expected 240 eighth-BPM (= 120 quarter-BPM × 2) in 6/8, got {}",
+            model.tempo_bpm,
+        );
     }
 }
