@@ -11,5 +11,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
+# All needed dependencies are already declared in [dependencies] above
+# and are automatically available to integration and unit tests.
