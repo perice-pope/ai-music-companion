@@ -51,6 +51,24 @@ pub enum StoreError {
 // Summary row returned by list_recent
 // ---------------------------------------------------------------------------
 
+/// A loaded session with authoritative persisted timestamps.
+///
+/// `load()` returns this rather than a bare `SessionRecap` so callers can
+/// see exactly when the session happened — the timestamps `save()` wrote
+/// would otherwise be effectively write-only, forcing callers to
+/// reconstruct them by adding `duration_secs` to a cached `started_at`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StoredSession {
+    /// Unique session id.
+    pub id: SessionId,
+    /// Wall-clock start of the session.
+    pub started_at: DateTime<Utc>,
+    /// Wall-clock end of the session.
+    pub ended_at: DateTime<Utc>,
+    /// The persisted recap.
+    pub recap: SessionRecap,
+}
+
 /// Lightweight summary row for the session history UI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionSummary {
@@ -157,21 +175,57 @@ impl SessionStore {
     /// Load the recap for a specific session id.
     ///
     /// Returns [`StoreError::NotFound`] if the id is unknown.
-    pub fn load(&self, id: SessionId) -> Result<SessionRecap, StoreError> {
+    /// Load a full stored session (recap + persisted timestamps) by id.
+    pub fn load(&self, id: SessionId) -> Result<StoredSession, StoreError> {
         let id_str = id.as_str();
-        let row: Option<String> = self
+        let row: Option<(String, String, String)> = self
             .conn
             .query_row(
-                "SELECT recap_json FROM sessions WHERE id = ?1",
+                "SELECT recap_json, started_at, ended_at FROM sessions WHERE id = ?1",
                 params![id_str],
-                |r| r.get::<_, String>(0),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()?;
 
         match row {
-            Some(json) => Ok(serde_json::from_str(&json)?),
+            Some((json, started_at_str, ended_at_str)) => {
+                let recap: SessionRecap = serde_json::from_str(&json)?;
+                let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+                    .map_err(|e| {
+                        StoreError::CorruptRow(format!(
+                            "invalid RFC3339 started_at {started_at_str}: {e}"
+                        ))
+                    })?
+                    .with_timezone(&Utc);
+                let ended_at = DateTime::parse_from_rfc3339(&ended_at_str)
+                    .map_err(|e| {
+                        StoreError::CorruptRow(format!(
+                            "invalid RFC3339 ended_at {ended_at_str}: {e}"
+                        ))
+                    })?
+                    .with_timezone(&Utc);
+                Ok(StoredSession {
+                    id,
+                    started_at,
+                    ended_at,
+                    recap,
+                })
+            }
             None => Err(StoreError::NotFound(id_str)),
         }
+    }
+
+    /// Convenience: load just the recap when the timestamps aren't
+    /// needed. Thin wrapper over [`Self::load`] so callers that only
+    /// care about the recap body don't have to pull it out themselves.
+    pub fn load_recap(&self, id: SessionId) -> Result<SessionRecap, StoreError> {
+        self.load(id).map(|s| s.recap)
     }
 
     /// Return up to `limit` session summaries, most recent first
@@ -284,21 +338,25 @@ mod tests {
         store.save(id, started, ended, &recap).unwrap();
         let loaded = store.load(id).unwrap();
 
+        // Persisted timestamps round-trip too — this is the whole point of
+        // returning StoredSession rather than just the recap body.
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.started_at, started);
+        assert_eq!(loaded.ended_at, ended);
+
         // Per-field equality, not whole-object JSON string comparison,
         // so we catch any silent coercion (e.g. f64 rounding).
-        assert_eq!(loaded.overall_assessment, recap.overall_assessment);
-        assert_eq!(loaded.strengths, recap.strengths);
-        assert_eq!(loaded.areas_to_improve, recap.areas_to_improve);
-        assert_eq!(
-            loaded.next_session_suggestions,
-            recap.next_session_suggestions
-        );
-        assert_eq!(loaded.phrase_count, recap.phrase_count);
-        assert_eq!(loaded.instrument, recap.instrument);
+        let r = &loaded.recap;
+        assert_eq!(r.overall_assessment, recap.overall_assessment);
+        assert_eq!(r.strengths, recap.strengths);
+        assert_eq!(r.areas_to_improve, recap.areas_to_improve);
+        assert_eq!(r.next_session_suggestions, recap.next_session_suggestions);
+        assert_eq!(r.phrase_count, recap.phrase_count);
+        assert_eq!(r.instrument, recap.instrument);
         assert!(
-            (loaded.duration_secs - recap.duration_secs).abs() < 1e-9,
+            (r.duration_secs - recap.duration_secs).abs() < 1e-9,
             "duration roundtrip mismatch: {} vs {}",
-            loaded.duration_secs,
+            r.duration_secs,
             recap.duration_secs
         );
     }
@@ -409,20 +467,21 @@ mod tests {
             .unwrap();
 
         let loaded = store.load(id).unwrap();
+        let r = &loaded.recap;
         assert_eq!(
-            loaded.strengths.len(),
+            r.strengths.len(),
             3,
             "strengths vector length must be preserved"
         );
-        assert_eq!(loaded.strengths[0], "A");
-        assert_eq!(loaded.strengths[1], "B");
-        assert_eq!(loaded.strengths[2], "C");
-        assert_eq!(loaded.areas_to_improve.len(), 2);
-        assert_eq!(loaded.areas_to_improve[0], "X");
-        assert_eq!(loaded.areas_to_improve[1], "Y");
-        assert_eq!(loaded.next_session_suggestions.len(), 3);
-        assert_eq!(loaded.next_session_suggestions[2], "Three");
-        assert_eq!(loaded.phrase_count, 17);
+        assert_eq!(r.strengths[0], "A");
+        assert_eq!(r.strengths[1], "B");
+        assert_eq!(r.strengths[2], "C");
+        assert_eq!(r.areas_to_improve.len(), 2);
+        assert_eq!(r.areas_to_improve[0], "X");
+        assert_eq!(r.areas_to_improve[1], "Y");
+        assert_eq!(r.next_session_suggestions.len(), 3);
+        assert_eq!(r.next_session_suggestions[2], "Three");
+        assert_eq!(r.phrase_count, 17);
     }
 
     #[test]
@@ -448,9 +507,9 @@ mod tests {
 
         let loaded = store.load(id).unwrap();
         assert!(
-            (loaded.duration_secs - 123.456).abs() < 1e-9,
+            (loaded.recap.duration_secs - 123.456).abs() < 1e-9,
             "duration_secs must preserve f64 precision, got {}",
-            loaded.duration_secs
+            loaded.recap.duration_secs
         );
     }
 
@@ -491,10 +550,10 @@ mod tests {
 
         let loaded = store.load(id).unwrap();
         assert_eq!(
-            loaded.instrument, "violin",
+            loaded.recap.instrument, "violin",
             "second save with same id must overwrite the first row"
         );
-        assert!((loaded.duration_secs - 20.0).abs() < 1e-9);
+        assert!((loaded.recap.duration_secs - 20.0).abs() < 1e-9);
     }
 
     #[test]
