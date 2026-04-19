@@ -14,7 +14,8 @@ serde_json.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+roxmltree.workspace = true
+midly.workspace = true
 
 [dev-dependencies]
-# All needed dependencies are already declared in [dependencies] above
-# and are automatically available to integration and unit tests.
+tempfile = "3"
