@@ -155,6 +155,15 @@ impl SessionStore {
     ) -> Result<(), StoreError> {
         let recap_json = serde_json::to_string(recap)?;
         let phrase_count = i64::try_from(recap.phrase_count).unwrap_or(i64::MAX);
+
+        // Derive the authoritative `duration_secs` from the timestamps
+        // we're about to persist, NOT from `recap.duration_secs`. The
+        // recap blob is opaque LLM-adjacent data; internal row fields
+        // must stay consistent with each other so `list_recent` doesn't
+        // report a different number than what `ended_at - started_at`
+        // implies.
+        let duration_secs = (ended_at - started_at).num_milliseconds() as f64 / 1000.0;
+
         self.conn.execute(
             "INSERT OR REPLACE INTO sessions \
              (id, instrument, started_at, ended_at, duration_secs, phrase_count, recap_json) \
@@ -164,7 +173,7 @@ impl SessionStore {
                 recap.instrument,
                 started_at.to_rfc3339(),
                 ended_at.to_rfc3339(),
-                recap.duration_secs,
+                duration_secs,
                 phrase_count,
                 recap_json,
             ],
@@ -259,7 +268,15 @@ impl SessionStore {
                     ))
                 })?
                 .with_timezone(&Utc);
-            let phrase_count = usize::try_from(phrase_count).unwrap_or(0);
+            // Don't silently coerce a corrupt (e.g. negative) phrase_count
+            // into a real zero — every other decode path in this module
+            // escalates malformed data to CorruptRow, and this one should
+            // be consistent so callers don't see fabricated summaries.
+            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
+                StoreError::CorruptRow(format!(
+                    "invalid phrase_count {phrase_count} for session {id_str}"
+                ))
+            })?;
             summaries.push(SessionSummary {
                 id,
                 instrument,
@@ -578,5 +595,76 @@ mod tests {
             delta <= 1,
             "started_at must roundtrip within 1ms, got delta {delta}ms"
         );
+    }
+
+    #[test]
+    fn save_derives_duration_from_timestamps_not_recap_blob() {
+        // Regression: `save()` used to copy `recap.duration_secs` into the
+        // summary column, which let the row drift internally — e.g. a
+        // recap with duration=0.5 persisted against a 30-second span of
+        // (ended_at - started_at) would make `list_recent()` report 0.5
+        // instead of 30. The column must match the timestamps.
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let started = Utc::now();
+        let ended = started + Duration::seconds(30);
+
+        // Recap claims something wildly different from the real span.
+        let lying_recap = recap_with("trumpet", 0.5, 1);
+        store.save(id, started, ended, &lying_recap).unwrap();
+
+        let summary = store
+            .list_recent(1)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("one session");
+        assert!(
+            (summary.duration_secs - 30.0).abs() < 0.01,
+            "summary.duration_secs must be timestamp-derived (≈30s), got {}",
+            summary.duration_secs,
+        );
+
+        // The recap blob itself is preserved unchanged so opaque LLM
+        // text survives, but the indexable column is authoritative.
+        let loaded = store.load(id).unwrap();
+        assert!((loaded.recap.duration_secs - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn list_recent_rejects_corrupt_phrase_count() {
+        // Regression: a negative `phrase_count` row (only reachable via an
+        // externally-mutated DB) used to silently coerce to 0, presenting
+        // a fabricated zero-phrase summary. Now it escalates to CorruptRow
+        // consistent with every other malformed-field path in the module.
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        store
+            .save(
+                id,
+                now,
+                now + Duration::seconds(10),
+                &recap_with("x", 10.0, 0),
+            )
+            .unwrap();
+
+        // Corrupt the row directly.
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET phrase_count = -1 WHERE id = ?1",
+                params![id.as_str()],
+            )
+            .unwrap();
+
+        let err = store.list_recent(10).unwrap_err();
+        match err {
+            StoreError::CorruptRow(msg) => assert!(
+                msg.contains("phrase_count"),
+                "CorruptRow message should mention phrase_count, got: {msg}"
+            ),
+            other => panic!("expected CorruptRow, got {other:?}"),
+        }
     }
 }
