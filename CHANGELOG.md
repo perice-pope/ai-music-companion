@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/perice-pope/ai-music-companion/compare/v1.2.0...v1.3.0) (2026-04-19)
+
+### Features
+
+* session recorder + SQLite store — Story [#13](https://github.com/perice-pope/ai-music-companion/issues/13) ([#28](https://github.com/perice-pope/ai-music-companion/issues/28)) ([3163c1c](https://github.com/perice-pope/ai-music-companion/commit/3163c1ce5fbdcbfaaf20e709dfa48648bcfa50cd)), closes [#12](https://github.com/perice-pope/ai-music-companion/issues/12) [#14](https://github.com/perice-pope/ai-music-companion/issues/14)
+
 ## [1.2.0](https://github.com/perice-pope/ai-music-companion/compare/v1.1.0...v1.2.0) (2026-04-19)
 
 ### Features
