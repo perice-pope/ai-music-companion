@@ -37,6 +37,13 @@ pub struct RecorderConfig {
     pub output_dir: PathBuf,
     /// Safety cap on a single recording. When exceeded, [`AudioRecorder::write_samples`]
     /// returns [`RecorderError::SizeLimitReached`] and refuses further writes.
+    ///
+    /// **WAV format limit:** classic RIFF WAV stores its `RIFF` and `data`
+    /// chunk sizes as unsigned 32-bit integers, so a single WAV file cannot
+    /// legally exceed ~4 GiB. `RecorderConfig::validate()` enforces
+    /// `max_bytes_per_file <= u32::MAX` and rejects anything larger —
+    /// without this, `stop()` would `as u32`-truncate the patched size
+    /// fields and produce a structurally invalid header.
     pub max_bytes_per_file: u64,
     /// Number of audio channels (1 = mono, 2 = stereo).
     pub channels: u16,
@@ -65,6 +72,16 @@ impl RecorderConfig {
         if self.max_bytes_per_file < WAV_HEADER_SIZE {
             return Err(RecorderError::InvalidConfig(format!(
                 "max_bytes_per_file must be at least {WAV_HEADER_SIZE} (WAV header size)"
+            )));
+        }
+        // WAV stores `RIFF` and `data` chunk sizes as u32. Values beyond
+        // `u32::MAX` would silently truncate in `stop()` when the header
+        // is patched, yielding a structurally invalid file. Reject at
+        // config time rather than corrupting bytes at session end.
+        if self.max_bytes_per_file > u64::from(u32::MAX) {
+            return Err(RecorderError::InvalidConfig(format!(
+                "max_bytes_per_file {} exceeds the WAV 4 GiB (u32::MAX) size limit",
+                self.max_bytes_per_file
             )));
         }
         if !self.output_dir.exists() {
@@ -532,6 +549,43 @@ mod tests {
             }
             other => panic!("expected InvalidConfig, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_rejects_max_bytes_above_u32_max() {
+        // Regression: WAV's RIFF/data chunk sizes are 32-bit unsigned. A
+        // `max_bytes_per_file` larger than `u32::MAX` would silently
+        // truncate in `stop()` when patching the header, producing a
+        // structurally invalid file. Reject at config validation time.
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = base_config(tmp.path());
+        cfg.max_bytes_per_file = u64::from(u32::MAX) + 1;
+        let mut rec = AudioRecorder::new(cfg);
+        let err = rec.start("s", "t").unwrap_err();
+        match err {
+            RecorderError::InvalidConfig(msg) => {
+                assert!(
+                    msg.contains("4 GiB") || msg.contains("u32::MAX"),
+                    "error should mention the WAV 4 GiB limit, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_accepts_max_bytes_exactly_at_u32_max() {
+        // Boundary: exactly u32::MAX is valid (though impractical).
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = base_config(tmp.path());
+        cfg.max_bytes_per_file = u64::from(u32::MAX);
+        let mut rec = AudioRecorder::new(cfg);
+        // Start validates config and should succeed at the boundary.
+        let _path = rec
+            .start("s", "t")
+            .expect("u32::MAX exactly should be accepted");
+        // We can stop cleanly without writing any samples.
+        rec.stop().unwrap();
     }
 
     #[test]
