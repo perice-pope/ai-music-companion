@@ -9,6 +9,7 @@
 
 pub mod coaching;
 pub mod phrase;
+pub mod score;
 pub mod scoring;
 pub mod session;
 pub mod store;
