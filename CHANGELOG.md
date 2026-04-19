@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/perice-pope/ai-music-companion/compare/v1.1.0...v1.2.0) (2026-04-19)
+
+### Features
+
+* MusicXML and MIDI score parser — Story [#15](https://github.com/perice-pope/ai-music-companion/issues/15) ([#26](https://github.com/perice-pope/ai-music-companion/issues/26)) ([787eefc](https://github.com/perice-pope/ai-music-companion/commit/787eefc146534f9c7260c8511dcfbb89507bb784))
+
 ## [1.1.0](https://github.com/perice-pope/ai-music-companion/compare/v1.0.0...v1.1.0) (2026-04-17)
 
 ### Features
