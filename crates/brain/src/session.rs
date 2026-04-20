@@ -5,6 +5,18 @@
 //! This module runs on the processing thread, NOT the audio thread, so
 //! heap allocation (Vec, String, etc.) is allowed.
 //!
+//! # Data model (Story #14, PR 0)
+//!
+//! A session is a **tree**: `Session → Vec<Participant> → Vec<InstrumentSegment>`.
+//! A `Participant` represents one human/input (`display_name` + `input_source`);
+//! an `InstrumentSegment` represents a contiguous span during which that
+//! participant was playing a single instrument. The solo MVP only ever
+//! populates one participant with one or more segments (one per instrument
+//! switch). The tree exists now so the ensemble mode story (#40) and
+//! multi-instrumentalist switching don't need a second data-model migration.
+//! See `docs/design/decisions-log.md` entry "Participants + segments data
+//! model, even in solo MVP" for the full rationale.
+//!
 //! # Decoupling from the coaching module
 //!
 //! The recap is generated through the [`RecapGenerator`] trait rather
@@ -38,57 +50,77 @@ pub enum SessionError {
     /// in the caller (e.g. pushing phrases to the wrong recorder).
     #[error("no phrases recorded — cannot generate recap")]
     Empty,
+    /// A recorder operation required a currently-open [`InstrumentSegment`]
+    /// but none was open. Should never happen in the MVP flow — defensive.
+    #[error("no instrument segment is currently open")]
+    NoOpenSegment,
+    /// A recorder operation required at least one [`Participant`] but
+    /// none was present. Only reachable by a recorder constructed via
+    /// `new()` that was later mutated by internal code — defensive.
+    #[error("recorder has no participant")]
+    NoParticipant,
 }
 
 // ---------------------------------------------------------------------------
-// SessionId
+// Id newtypes
 // ---------------------------------------------------------------------------
 
-/// Unique identifier for a practice session.
-///
-/// Wraps a [`Uuid`] (v4) so callers can persist it as a string and hand
-/// it to the [`SessionStore`](crate::store::SessionStore) without
-/// depending on `uuid` directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionId(Uuid);
+/// Generate the standard id newtype impls (Display, FromStr, Default,
+/// Debug, Copy, PartialEq, Eq, Hash, Serialize, Deserialize).
+macro_rules! uuid_newtype {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(Uuid);
 
-impl SessionId {
-    /// Generate a fresh random session id.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
+        impl $name {
+            /// Generate a fresh random id.
+            pub fn new() -> Self {
+                Self(Uuid::new_v4())
+            }
 
-    /// Hyphenated string representation.
-    pub fn as_str(&self) -> String {
-        self.0.to_string()
-    }
+            /// Hyphenated string representation.
+            pub fn as_str(&self) -> String {
+                self.0.to_string()
+            }
 
-    /// The inner UUID, if a caller needs it.
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
-    }
+            /// The inner UUID, if a caller needs it.
+            pub fn as_uuid(&self) -> Uuid {
+                self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = uuid::Error;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Uuid::parse_str(s).map(Self)
+            }
+        }
+    };
 }
 
-impl Default for SessionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl FromStr for SessionId {
-    type Err = uuid::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(s).map(Self)
-    }
-}
+uuid_newtype!(SessionId, "Unique identifier for a practice session.");
+uuid_newtype!(
+    ParticipantId,
+    "Stable id for a participant within one session."
+);
+uuid_newtype!(
+    SegmentId,
+    "Stable id for an instrument segment within one session."
+);
 
 // ---------------------------------------------------------------------------
 // Recorded tip
@@ -102,8 +134,8 @@ impl FromStr for SessionId {
 /// callers should pass the same lower-case string.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordedTip {
-    /// Index of the phrase in [`SessionRecorder::phrases`] that this
-    /// tip was generated for.
+    /// Index of the phrase within the containing [`InstrumentSegment`]
+    /// that this tip was generated for.
     pub phrase_index: usize,
     /// Human-readable coaching text.
     pub text: String,
@@ -116,19 +148,84 @@ pub struct RecordedTip {
 }
 
 // ---------------------------------------------------------------------------
+// Participants & instrument segments
+// ---------------------------------------------------------------------------
+
+/// Where a participant's audio is coming from.
+///
+/// MVP supports only the default system mic; multi-channel /
+/// audio-interface-channel / remote inputs are future work. See
+/// `docs/design/decisions-log.md` for the rejected alternatives
+/// (networked peers, per-player mics) and why ensemble mode uses a
+/// single shared mic.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputSource {
+    /// The OS default microphone input. Only option in the solo MVP.
+    DefaultMic,
+    // AudioInterfaceChannel(u8) — reserved for ensemble mode (#40)
+    // Networked { peer_id: String } — REJECTED, see decisions-log.md
+}
+
+/// A contiguous span within a session during which one participant was
+/// playing a single instrument. Segments are opened implicitly (by
+/// [`SessionRecorder::new`]) or explicitly (by [`SessionRecorder::switch_instrument`])
+/// and closed when a newer segment starts or the session is completed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstrumentSegment {
+    pub id: SegmentId,
+    /// Profile name, e.g. `"trumpet"` or `"piano"`.
+    pub instrument: String,
+    pub started_at: DateTime<Utc>,
+    /// `None` while the segment is still open. Set when a newer segment
+    /// starts or the session ends.
+    pub ended_at: Option<DateTime<Utc>>,
+    /// Phrases recorded while this segment was open.
+    pub phrases: Vec<PhraseSummary>,
+    /// Coaching tips recorded while this segment was open.
+    pub tips: Vec<RecordedTip>,
+}
+
+/// A participant in a session (one human/input). The solo MVP always
+/// has exactly one participant with `display_name: "You"` and
+/// `input_source: InputSource::DefaultMic`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Participant {
+    pub id: ParticipantId,
+    /// `"You"` in the solo MVP. In ensemble mode (#40) this becomes the
+    /// section or player label (e.g. `"Trumpets"`, `"Alice"`).
+    pub display_name: String,
+    pub input_source: InputSource,
+    /// Ordered list of instrument segments. Always at least one in the
+    /// MVP flow — [`SessionRecorder::new`] opens the first segment
+    /// immediately.
+    pub segments: Vec<InstrumentSegment>,
+}
+
+// ---------------------------------------------------------------------------
 // Recap types
 // ---------------------------------------------------------------------------
 
 /// Input passed to a [`RecapGenerator`] to produce a [`SessionRecap`].
+///
+/// The participants tree is flattened into `phrases` and `tips` before
+/// being handed to the LLM — the prompt still receives the cross-segment
+/// aggregate, so LLM-side changes aren't required for this PR. Future
+/// prompt work can add segment-aware context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecapInput {
-    /// The instrument being played.
+    /// Primary instrument for the session. In a multi-segment session
+    /// this is the instrument of the first segment (lossy — see
+    /// `docs/design/story-14-free-play-mode.md`).
     pub instrument: String,
     /// Total session duration in seconds.
     pub duration_secs: f64,
-    /// All phrase summaries recorded during the session.
+    /// All phrase summaries recorded during the session, flattened
+    /// across all segments in segment order.
     pub phrases: Vec<PhraseSummary>,
-    /// All coaching tips recorded during the session.
+    /// All coaching tips recorded during the session, flattened across
+    /// all segments in segment order. Note: `phrase_index` is relative
+    /// to the segment it was recorded in, not the flattened list.
     pub tips: Vec<RecordedTip>,
 }
 
@@ -151,7 +248,8 @@ pub struct SessionRecap {
     pub duration_secs: f64,
     /// Number of phrases played (copied from `RecapInput.phrases.len()`).
     pub phrase_count: usize,
-    /// Instrument played (copied from `RecapInput.instrument`).
+    /// Instrument played (first-segment instrument for multi-segment
+    /// sessions — copied from `RecapInput.instrument`).
     pub instrument: String,
 }
 
@@ -170,7 +268,7 @@ pub trait RecapGenerator: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// SessionRecorder
+// CompletedSession
 // ---------------------------------------------------------------------------
 
 /// A finalised practice session, with authoritative timestamps and all
@@ -179,34 +277,60 @@ pub trait RecapGenerator: Send + Sync {
 /// This is the unit of persistence: once you have a `CompletedSession`,
 /// you can store it, generate a recap from it (once or multiple times),
 /// or discard it — independent of whether the LLM recap call succeeds.
-/// Previously `end_session` coupled finalisation with recap generation,
-/// which meant a transient LLM failure would destroy the session data
-/// along with the consumed recorder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedSession {
     pub id: SessionId,
-    pub instrument: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub duration_secs: f64,
-    pub phrases: Vec<PhraseSummary>,
-    pub tips: Vec<RecordedTip>,
+    /// The full participants tree. Always len >= 1; MVP only ever
+    /// populates one.
+    pub participants: Vec<Participant>,
 }
 
 impl CompletedSession {
-    /// How many phrases were recorded.
-    pub fn phrase_count(&self) -> usize {
-        self.phrases.len()
+    /// The primary instrument — instrument of the first segment of the
+    /// first participant. Panics if the session has no participants or
+    /// no segments, which [`SessionRecorder::complete`] guarantees.
+    pub fn primary_instrument(&self) -> &str {
+        &self.participants[0].segments[0].instrument
     }
 
-    /// Build a [`RecapInput`] from this completed session. Keeps the
-    /// LLM prompt inputs consistent with what actually happened.
+    /// Total number of phrases across all segments and participants.
+    pub fn phrase_count(&self) -> usize {
+        self.participants
+            .iter()
+            .flat_map(|p| p.segments.iter())
+            .map(|s| s.phrases.len())
+            .sum()
+    }
+
+    /// Flattened vector of every phrase recorded, in segment order.
+    pub fn all_phrases(&self) -> Vec<PhraseSummary> {
+        self.participants
+            .iter()
+            .flat_map(|p| p.segments.iter().flat_map(|s| s.phrases.iter().cloned()))
+            .collect()
+    }
+
+    /// Flattened vector of every tip recorded, in segment order.
+    pub fn all_tips(&self) -> Vec<RecordedTip> {
+        self.participants
+            .iter()
+            .flat_map(|p| p.segments.iter().flat_map(|s| s.tips.iter().cloned()))
+            .collect()
+    }
+
+    /// Build a [`RecapInput`] from this completed session. The LLM
+    /// prompt still receives flat phrases + tips, so we flatten the
+    /// participants tree here. `instrument` is the primary instrument
+    /// (first segment) — see [`Self::primary_instrument`].
     pub fn to_recap_input(&self) -> RecapInput {
         RecapInput {
-            instrument: self.instrument.clone(),
+            instrument: self.primary_instrument().to_owned(),
             duration_secs: self.duration_secs,
-            phrases: self.phrases.clone(),
-            tips: self.tips.clone(),
+            phrases: self.all_phrases(),
+            tips: self.all_tips(),
         }
     }
 
@@ -224,14 +348,19 @@ impl CompletedSession {
         let input = self.to_recap_input();
         let mut recap = generator.generate_recap(&input)?;
         recap.duration_secs = self.duration_secs;
-        recap.phrase_count = self.phrases.len();
-        recap.instrument = self.instrument.clone();
+        recap.phrase_count = self.phrase_count();
+        recap.instrument = self.primary_instrument().to_owned();
         Ok(recap)
     }
 }
 
+// ---------------------------------------------------------------------------
+// SessionRecorder
+// ---------------------------------------------------------------------------
+
 /// Records a single practice session: phrases, coaching tips, and
-/// wall-clock timing.
+/// wall-clock timing, across one or more [`InstrumentSegment`]s owned
+/// by a single [`Participant`] (in the MVP).
 ///
 /// A recorder does NOT own a [`RecapGenerator`]; recap generation is a
 /// separate step on the returned [`CompletedSession`]. This keeps
@@ -239,33 +368,70 @@ impl CompletedSession {
 /// to generate a recap at all.
 pub struct SessionRecorder {
     session_id: SessionId,
-    instrument: String,
     started_at: DateTime<Utc>,
-    phrases: Vec<PhraseSummary>,
-    tips: Vec<RecordedTip>,
+    participants: Vec<Participant>,
 }
 
 impl SessionRecorder {
     /// Create a new recorder for the given instrument. The start time
-    /// is captured as `Utc::now()` at construction.
-    pub fn new(instrument: String) -> Self {
-        Self {
-            session_id: SessionId::new(),
-            instrument,
-            started_at: Utc::now(),
+    /// is captured as `Utc::now()` at construction, and the first
+    /// [`InstrumentSegment`] is opened immediately with `initial_instrument`.
+    pub fn new(initial_instrument: String) -> Self {
+        let started_at = Utc::now();
+        let first_segment = InstrumentSegment {
+            id: SegmentId::new(),
+            instrument: initial_instrument,
+            started_at,
+            ended_at: None,
             phrases: Vec::new(),
             tips: Vec::new(),
+        };
+        let participant = Participant {
+            id: ParticipantId::new(),
+            display_name: "You".to_owned(),
+            input_source: InputSource::DefaultMic,
+            segments: vec![first_segment],
+        };
+        Self {
+            session_id: SessionId::new(),
+            started_at,
+            participants: vec![participant],
         }
     }
 
-    /// Append a completed phrase to the session.
-    pub fn record_phrase(&mut self, phrase: PhraseSummary) {
-        self.phrases.push(phrase);
+    /// Mutable access to the sole participant (MVP invariant: exactly one).
+    fn sole_participant_mut(&mut self) -> Result<&mut Participant, SessionError> {
+        self.participants
+            .first_mut()
+            .ok_or(SessionError::NoParticipant)
     }
 
-    /// Append a coaching tip to the session.
+    /// Mutable access to the currently-open (trailing) segment of the
+    /// sole participant. Errors if no segment is open — which shouldn't
+    /// happen post-`new()` but we check defensively.
+    fn current_segment_mut(&mut self) -> Result<&mut InstrumentSegment, SessionError> {
+        let participant = self.sole_participant_mut()?;
+        let last = participant
+            .segments
+            .last_mut()
+            .ok_or(SessionError::NoOpenSegment)?;
+        if last.ended_at.is_some() {
+            return Err(SessionError::NoOpenSegment);
+        }
+        Ok(last)
+    }
+
+    /// Append a completed phrase to the *currently open segment* of the
+    /// *sole participant*.
+    pub fn record_phrase(&mut self, phrase: PhraseSummary) -> Result<(), SessionError> {
+        let seg = self.current_segment_mut()?;
+        seg.phrases.push(phrase);
+        Ok(())
+    }
+
+    /// Append a coaching tip to the currently open segment.
     ///
-    /// `phrase_index` should point into the phrases already recorded —
+    /// `phrase_index` is interpreted within the current open segment —
     /// it is stored verbatim and not validated, because phrases may be
     /// buffered in the UI before the recorder sees them and out-of-range
     /// values are still meaningful metadata for retrospective analysis.
@@ -275,40 +441,80 @@ impl SessionRecorder {
         text: String,
         severity: String,
         category: String,
-    ) {
-        self.tips.push(RecordedTip {
+    ) -> Result<(), SessionError> {
+        let seg = self.current_segment_mut()?;
+        seg.tips.push(RecordedTip {
             phrase_index,
             text,
             severity,
             category,
             recorded_at: Utc::now(),
         });
+        Ok(())
+    }
+
+    /// Close the currently open segment and open a new one with
+    /// `new_instrument`. Returns the new segment's id.
+    ///
+    /// Errors with [`SessionError::NoOpenSegment`] if the previous
+    /// segment was already closed (shouldn't happen in the MVP flow).
+    pub fn switch_instrument(&mut self, new_instrument: String) -> Result<SegmentId, SessionError> {
+        let now = Utc::now();
+        {
+            // Close the current segment.
+            let current = self.current_segment_mut()?;
+            current.ended_at = Some(now);
+        }
+        let new_segment = InstrumentSegment {
+            id: SegmentId::new(),
+            instrument: new_instrument,
+            started_at: now,
+            ended_at: None,
+            phrases: Vec::new(),
+            tips: Vec::new(),
+        };
+        let new_id = new_segment.id;
+        self.sole_participant_mut()?.segments.push(new_segment);
+        Ok(new_id)
     }
 
     /// Finalise the session and return a [`CompletedSession`] with
     /// authoritative timestamps. Consumes `self` — a recorder is
     /// single-use.
     ///
-    /// Returns [`SessionError::Empty`] if no phrases were recorded.
+    /// Any currently-open segment is closed with `ended_at = now`.
     ///
-    /// Note: this no longer calls any recap generator. Call
-    /// [`CompletedSession::generate_recap`] separately if/when you
-    /// want a recap — that way a failed LLM call doesn't destroy the
-    /// session data.
-    pub fn complete(self) -> Result<CompletedSession, SessionError> {
-        if self.phrases.is_empty() {
+    /// Returns [`SessionError::Empty`] if no phrases were recorded
+    /// across any segment.
+    pub fn complete(mut self) -> Result<CompletedSession, SessionError> {
+        let ended_at = Utc::now();
+
+        // Close any trailing open segment on every participant.
+        for p in &mut self.participants {
+            if let Some(last) = p.segments.last_mut() {
+                if last.ended_at.is_none() {
+                    last.ended_at = Some(ended_at);
+                }
+            }
+        }
+
+        let total_phrases: usize = self
+            .participants
+            .iter()
+            .flat_map(|p| p.segments.iter())
+            .map(|s| s.phrases.len())
+            .sum();
+        if total_phrases == 0 {
             return Err(SessionError::Empty);
         }
-        let ended_at = Utc::now();
+
         let duration_secs = (ended_at - self.started_at).num_milliseconds() as f64 / 1000.0;
         Ok(CompletedSession {
             id: self.session_id,
-            instrument: self.instrument,
             started_at: self.started_at,
             ended_at,
             duration_secs,
-            phrases: self.phrases,
-            tips: self.tips,
+            participants: self.participants,
         })
     }
 
@@ -318,15 +524,22 @@ impl SessionRecorder {
         self.session_id
     }
 
-    /// Number of phrases recorded so far.
+    /// Total number of phrases recorded so far, across all segments.
     pub fn phrase_count(&self) -> usize {
-        self.phrases.len()
+        self.participants
+            .iter()
+            .flat_map(|p| p.segments.iter())
+            .map(|s| s.phrases.len())
+            .sum()
     }
 
-    /// Number of tips recorded so far (primarily for assertions in
-    /// tests / diagnostics).
+    /// Total number of tips recorded so far, across all segments.
     pub fn tip_count(&self) -> usize {
-        self.tips.len()
+        self.participants
+            .iter()
+            .flat_map(|p| p.segments.iter())
+            .map(|s| s.tips.len())
+            .sum()
     }
 
     /// When the session started.
@@ -334,9 +547,13 @@ impl SessionRecorder {
         self.started_at
     }
 
-    /// Instrument label this recorder was constructed with.
-    pub fn instrument(&self) -> &str {
-        &self.instrument
+    /// Instrument of the currently-open segment.
+    pub fn current_instrument(&self) -> Option<&str> {
+        self.participants
+            .first()
+            .and_then(|p| p.segments.last())
+            .filter(|s| s.ended_at.is_none())
+            .map(|s| s.instrument.as_str())
     }
 }
 
@@ -355,15 +572,9 @@ mod tests {
     // Mock recap generator
     // -----------------------------------------------------------------------
 
-    /// Records every call it receives so the test can assert on what
-    /// was passed through.
     struct RecordingMockGenerator {
-        /// The last input the generator saw. Wrapped in Mutex because
-        /// `generate_recap` takes `&self`.
         last_input: Arc<Mutex<Option<RecapInput>>>,
-        /// Number of times the generator has been called.
         call_count: Arc<AtomicUsize>,
-        /// Canned recap to return.
         canned: SessionRecap,
     }
 
@@ -393,7 +604,6 @@ mod tests {
         }
     }
 
-    /// A generator that always fails. Used to verify error propagation.
     struct FailingGenerator;
 
     impl RecapGenerator for FailingGenerator {
@@ -445,162 +655,294 @@ mod tests {
         }
     }
 
-    /// Convenience factory: returns a recorder plus a mock generator
-    /// (kept separately, since the recorder no longer owns it) and a
-    /// handle for inspecting the mock's last captured input after
-    /// `generate_recap` is called.
-    fn make_recorder(
-        canned: SessionRecap,
-    ) -> (
-        SessionRecorder,
-        RecordingMockGenerator,
-        Arc<Mutex<Option<RecapInput>>>,
-    ) {
-        let mock = RecordingMockGenerator::new(canned);
-        let input_handle = mock.last_input_handle();
-        let recorder = SessionRecorder::new("trumpet".to_owned());
-        (recorder, mock, input_handle)
-    }
-
     // -----------------------------------------------------------------------
-    // Behaviour tests
+    // New-data-model behaviour tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn recorder_starts_empty() {
-        let (recorder, _, _) = make_recorder(canned_recap());
-        assert_eq!(recorder.phrase_count(), 0);
-        assert_eq!(recorder.tip_count(), 0);
-        assert_eq!(recorder.instrument(), "trumpet");
+    fn recorder_opens_first_segment_on_new() {
+        // new() opens exactly one participant with exactly one open segment.
+        let recorder = SessionRecorder::new("trumpet".to_owned());
+        assert_eq!(recorder.participants.len(), 1);
+        let p = &recorder.participants[0];
+        assert_eq!(p.display_name, "You");
+        assert_eq!(p.input_source, InputSource::DefaultMic);
+        assert_eq!(p.segments.len(), 1);
+        let seg = &p.segments[0];
+        assert_eq!(seg.instrument, "trumpet");
+        assert!(seg.ended_at.is_none(), "first segment must be open");
+        assert_eq!(seg.phrases.len(), 0);
+        assert_eq!(seg.tips.len(), 0);
+        assert_eq!(recorder.current_instrument(), Some("trumpet"));
     }
+
+    #[test]
+    fn switch_instrument_closes_current_and_opens_new() {
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let first_id = recorder.participants[0].segments[0].id;
+        let new_id = recorder.switch_instrument("piano".to_owned()).unwrap();
+
+        let p = &recorder.participants[0];
+        assert_eq!(p.segments.len(), 2);
+        assert!(
+            p.segments[0].ended_at.is_some(),
+            "previous segment must be closed after switch"
+        );
+        assert_eq!(p.segments[0].id, first_id);
+        assert_eq!(p.segments[1].id, new_id);
+        assert_eq!(p.segments[1].instrument, "piano");
+        assert!(p.segments[1].ended_at.is_none(), "new segment must be open");
+        assert_ne!(first_id, new_id, "segment ids must be unique");
+    }
+
+    #[test]
+    fn switch_instrument_preserves_phrase_ordering() {
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
+        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder.record_phrase(phrase(2)).unwrap();
+        recorder.record_phrase(phrase(3)).unwrap();
+
+        let completed = recorder.complete().unwrap();
+        assert_eq!(completed.participants.len(), 1);
+        let segs = &completed.participants[0].segments;
+        assert_eq!(segs.len(), 2);
+
+        // Phrases 0 & 1 in first (trumpet) segment; 2 & 3 in second (piano).
+        assert_eq!(segs[0].instrument, "trumpet");
+        assert_eq!(segs[0].phrases.len(), 2);
+        assert_eq!(segs[0].phrases[0].phrase_index, 0);
+        assert_eq!(segs[0].phrases[1].phrase_index, 1);
+
+        assert_eq!(segs[1].instrument, "piano");
+        assert_eq!(segs[1].phrases.len(), 2);
+        assert_eq!(segs[1].phrases[0].phrase_index, 2);
+        assert_eq!(segs[1].phrases[1].phrase_index, 3);
+
+        // Flattened view honours segment order.
+        let flat = completed.all_phrases();
+        assert_eq!(flat.len(), 4);
+        assert_eq!(
+            flat.iter().map(|p| p.phrase_index).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+        );
+    }
+
+    #[test]
+    fn record_tip_attaches_to_current_segment_not_sibling() {
+        // After a switch, tips must land in the new segment, not the old
+        // one. A naive implementation that kept a flat vec would misplace
+        // them.
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder
+            .record_tip(
+                0,
+                "old tip".to_owned(),
+                "suggestion".to_owned(),
+                "tone".to_owned(),
+            )
+            .unwrap();
+        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder
+            .record_tip(
+                0,
+                "new tip".to_owned(),
+                "encouragement".to_owned(),
+                "dynamics".to_owned(),
+            )
+            .unwrap();
+
+        let completed = recorder.complete().unwrap();
+        let segs = &completed.participants[0].segments;
+        assert_eq!(segs[0].tips.len(), 1);
+        assert_eq!(segs[0].tips[0].text, "old tip");
+        assert_eq!(segs[1].tips.len(), 1);
+        assert_eq!(segs[1].tips[0].text, "new tip");
+    }
+
+    #[test]
+    fn complete_closes_open_segment() {
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
+
+        let completed = recorder.complete().unwrap();
+        let seg = &completed.participants[0].segments[0];
+        assert!(
+            seg.ended_at.is_some(),
+            "final segment must be closed after complete()"
+        );
+        assert!(
+            seg.ended_at.unwrap() >= seg.started_at,
+            "ended_at must not be earlier than started_at"
+        );
+    }
+
+    #[test]
+    fn empty_session_still_errors() {
+        // The "no phrases ever recorded" check must still fire in the
+        // new model — a session with an open segment but no phrases is
+        // still empty.
+        let recorder = SessionRecorder::new("trumpet".to_owned());
+        let err = recorder.complete().unwrap_err();
+        assert!(
+            matches!(err, SessionError::Empty),
+            "zero-phrase session must return Empty, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn empty_session_after_switch_still_errors() {
+        // Regression guard: switching without ever recording a phrase
+        // must not accidentally pass the Empty check.
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.switch_instrument("piano".to_owned()).unwrap();
+        let err = recorder.complete().unwrap_err();
+        assert!(matches!(err, SessionError::Empty));
+    }
+
+    #[test]
+    fn participant_id_and_segment_id_serde_roundtrip() {
+        // Both new id types must round-trip through JSON identically
+        // to the existing SessionId — the store relies on this.
+        let pid = ParticipantId::new();
+        let pjson = serde_json::to_string(&pid).unwrap();
+        let pback: ParticipantId = serde_json::from_str(&pjson).unwrap();
+        assert_eq!(pid, pback);
+        assert_eq!(pid.to_string(), pid.as_str());
+        let parsed: ParticipantId = pid.as_str().parse().unwrap();
+        assert_eq!(parsed, pid);
+
+        let sid = SegmentId::new();
+        let sjson = serde_json::to_string(&sid).unwrap();
+        let sback: SegmentId = serde_json::from_str(&sjson).unwrap();
+        assert_eq!(sid, sback);
+        assert_eq!(sid.to_string(), sid.as_str());
+        let parsed: SegmentId = sid.as_str().parse().unwrap();
+        assert_eq!(parsed, sid);
+    }
+
+    #[test]
+    fn input_source_serde_roundtrip() {
+        // InputSource uses #[serde(tag = "kind")] to stay forward-compatible
+        // with future variants. Verify the wire format is stable.
+        let src = InputSource::DefaultMic;
+        let json = serde_json::to_string(&src).unwrap();
+        assert!(
+            json.contains("\"kind\""),
+            "InputSource must use tagged enum form, got {json}"
+        );
+        let back: InputSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(src, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing-behaviour regression tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn record_phrase_accumulates() {
-        let (mut recorder, _, _) = make_recorder(canned_recap());
-        recorder.record_phrase(phrase(0));
-        recorder.record_phrase(phrase(1));
-        recorder.record_phrase(phrase(2));
-        assert_eq!(
-            recorder.phrase_count(),
-            3,
-            "three record_phrase calls should yield count == 3"
-        );
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
+        recorder.record_phrase(phrase(2)).unwrap();
+        assert_eq!(recorder.phrase_count(), 3);
     }
 
     #[test]
-    fn record_tip_attaches_to_phrase_index() {
-        let (mut recorder, mock, input_handle) = make_recorder(canned_recap());
+    fn record_tip_lands_in_input_after_complete() {
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mock = RecordingMockGenerator::new(canned_recap());
+        let input_handle = mock.last_input_handle();
 
-        recorder.record_phrase(phrase(0));
-        recorder.record_phrase(phrase(1));
-        recorder.record_tip(
-            1,
-            "Breathe before this entrance.".to_owned(),
-            "suggestion".to_owned(),
-            "expression".to_owned(),
-        );
-
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
+        recorder
+            .record_tip(
+                1,
+                "Breathe before this entrance.".to_owned(),
+                "suggestion".to_owned(),
+                "expression".to_owned(),
+            )
+            .unwrap();
         assert_eq!(recorder.tip_count(), 1);
 
-        // Complete + generate recap so the mock captures the input.
         let completed = recorder.complete().unwrap();
         completed.generate_recap(&mock).unwrap();
         let captured = input_handle.lock().unwrap().clone().unwrap();
         assert_eq!(captured.tips.len(), 1);
         assert_eq!(captured.tips[0].phrase_index, 1);
         assert_eq!(captured.tips[0].text, "Breathe before this entrance.");
-        assert_eq!(captured.tips[0].severity, "suggestion");
-        assert_eq!(captured.tips[0].category, "expression");
     }
 
     #[test]
-    fn generate_recap_calls_generator_with_all_data() {
+    fn generate_recap_flattens_multi_segment_into_input() {
         let canned = canned_recap();
         let mock = RecordingMockGenerator::new(canned);
         let input_handle = mock.last_input_handle();
         let call_count = mock.call_count_handle();
-        let mut recorder = SessionRecorder::new("violin".to_owned());
 
-        recorder.record_phrase(phrase(0));
-        recorder.record_phrase(phrase(1));
-        recorder.record_tip(
-            0,
-            "Nice bow control.".to_owned(),
-            "encouragement".to_owned(),
-            "technique".to_owned(),
-        );
-        recorder.record_tip(
-            1,
-            "Watch the intonation on your shifts.".to_owned(),
-            "focus".to_owned(),
-            "intonation".to_owned(),
-        );
+        let mut recorder = SessionRecorder::new("violin".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder
+            .record_tip(
+                0,
+                "Nice bow control.".to_owned(),
+                "encouragement".to_owned(),
+                "technique".to_owned(),
+            )
+            .unwrap();
+        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
+        recorder
+            .record_tip(
+                0,
+                "Watch voicing of the left hand.".to_owned(),
+                "focus".to_owned(),
+                "balance".to_owned(),
+            )
+            .unwrap();
 
         let completed = recorder.complete().unwrap();
         completed.generate_recap(&mock).unwrap();
 
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            1,
-            "recap generator should be called exactly once per generate_recap"
-        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
         let captured = input_handle.lock().unwrap().clone().unwrap();
+        // Primary instrument — first segment's.
         assert_eq!(captured.instrument, "violin");
+        // Phrases & tips flattened across both segments.
         assert_eq!(captured.phrases.len(), 2);
-        assert_eq!(captured.phrases[0].phrase_index, 0);
-        assert_eq!(captured.phrases[1].phrase_index, 1);
         assert_eq!(captured.tips.len(), 2);
         assert_eq!(captured.tips[0].category, "technique");
-        assert_eq!(captured.tips[1].category, "intonation");
+        assert_eq!(captured.tips[1].category, "balance");
     }
 
     #[test]
     fn complete_returns_completed_session_with_authoritative_timestamps() {
-        let (mut recorder, _mock, _) = make_recorder(canned_recap());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
         let expected_id = recorder.session_id();
         let expected_started = recorder.started_at();
-        recorder.record_phrase(phrase(0));
+        recorder.record_phrase(phrase(0)).unwrap();
 
         let completed = recorder.complete().unwrap();
         assert_eq!(completed.id, expected_id);
         assert_eq!(completed.started_at, expected_started);
-        assert!(
-            completed.ended_at >= completed.started_at,
-            "ended_at must not be earlier than started_at"
-        );
-        assert_eq!(completed.instrument, "trumpet");
-        assert_eq!(completed.phrases.len(), 1);
-    }
-
-    #[test]
-    fn complete_errors_on_empty_session() {
-        let (recorder, _, _) = make_recorder(canned_recap());
-        let err = recorder.complete().unwrap_err();
-        assert!(
-            matches!(err, SessionError::Empty),
-            "empty session should return SessionError::Empty, got {err:?}"
-        );
+        assert!(completed.ended_at >= completed.started_at);
+        assert_eq!(completed.primary_instrument(), "trumpet");
+        assert_eq!(completed.phrase_count(), 1);
     }
 
     #[test]
     fn complete_calculates_duration_from_start_to_now() {
-        let (mut recorder, _mock, _) = make_recorder(canned_recap());
-        recorder.record_phrase(phrase(0));
-
-        // Sleep a small but measurable amount so duration > 0.
+        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        recorder.record_phrase(phrase(0)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(15));
 
         let completed = recorder.complete().unwrap();
-        assert!(
-            completed.duration_secs > 0.0,
-            "duration must be > 0 after real wall-clock time elapses, got {}",
-            completed.duration_secs,
-        );
-        assert!(
-            completed.duration_secs < 60.0,
-            "duration must be plausible (<60s) for a fast unit test, got {}",
-            completed.duration_secs,
-        );
+        assert!(completed.duration_secs > 0.0);
+        assert!(completed.duration_secs < 60.0);
     }
 
     #[test]
@@ -608,7 +950,6 @@ mod tests {
         let a = SessionRecorder::new("trumpet".to_owned());
         let b = SessionRecorder::new("trumpet".to_owned());
         let c = SessionRecorder::new("trumpet".to_owned());
-
         let ids = [a.session_id(), b.session_id(), c.session_id()];
         assert_ne!(ids[0], ids[1]);
         assert_ne!(ids[0], ids[2]);
@@ -618,7 +959,7 @@ mod tests {
     #[test]
     fn recap_generator_failure_propagates_as_session_error() {
         let mut recorder = SessionRecorder::new("trumpet".to_owned());
-        recorder.record_phrase(phrase(0));
+        recorder.record_phrase(phrase(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
         let err = completed.generate_recap(&FailingGenerator).unwrap_err();
@@ -630,67 +971,49 @@ mod tests {
 
     #[test]
     fn generate_recap_overwrites_authoritative_fields() {
-        // An LLM could hallucinate wrong values for duration / phrase_count /
-        // instrument. The recap we return to callers must reflect what the
-        // recorder actually observed, not whatever the generator emitted.
         let mut lying_recap = canned_recap();
         lying_recap.duration_secs = 999.0;
         lying_recap.phrase_count = 42;
-        lying_recap.instrument = "tuba".to_owned(); // NB: recorder is trumpet
+        lying_recap.instrument = "tuba".to_owned();
 
         let mock = RecordingMockGenerator::new(lying_recap);
         let mut recorder = SessionRecorder::new("trumpet".to_owned());
-        recorder.record_phrase(phrase(0));
-        recorder.record_phrase(phrase(1));
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
 
         let completed = recorder.complete().unwrap();
         let recap = completed.generate_recap(&mock).unwrap();
 
-        assert_eq!(
-            recap.instrument, "trumpet",
-            "recorder instrument must override generator output"
-        );
-        assert_eq!(
-            recap.phrase_count, 2,
-            "phrase_count must be authoritative (actually-recorded count)"
-        );
-        assert!(
-            (recap.duration_secs - completed.duration_secs).abs() < 1e-9,
-            "duration_secs must match CompletedSession, not the generator's claim"
-        );
-        // And the fields the generator owns ARE preserved:
+        assert_eq!(recap.instrument, "trumpet");
+        assert_eq!(recap.phrase_count, 2);
+        assert!((recap.duration_secs - completed.duration_secs).abs() < 1e-9);
         assert!(!recap.overall_assessment.is_empty());
     }
 
     #[test]
     fn session_data_survives_recap_generator_failure() {
-        // Regression for CR comment #1: a failing LLM must not destroy the
-        // CompletedSession. Callers can retry or persist without a recap.
         let mut recorder = SessionRecorder::new("flute".to_owned());
-        recorder.record_phrase(phrase(0));
-        recorder.record_phrase(phrase(1));
+        recorder.record_phrase(phrase(0)).unwrap();
+        recorder.record_phrase(phrase(1)).unwrap();
 
         let completed = recorder.complete().unwrap();
         let saved_id = completed.id;
-        let saved_count = completed.phrases.len();
+        let saved_count = completed.phrase_count();
 
-        // First attempt fails.
         let err = completed.generate_recap(&FailingGenerator).unwrap_err();
         assert!(matches!(err, SessionError::RecapFailed(_)));
 
-        // CompletedSession is still intact and usable.
         assert_eq!(completed.id, saved_id);
         assert_eq!(completed.phrase_count(), saved_count);
 
-        // And a retry with a working generator succeeds.
         let retry_mock = RecordingMockGenerator::new(canned_recap());
         let recap = completed.generate_recap(&retry_mock).unwrap();
         assert_eq!(recap.phrase_count, saved_count);
     }
 
     // -----------------------------------------------------------------------
-    // SessionId behaviour
+    // Id type regression tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -719,6 +1042,6 @@ mod tests {
         let recap = canned_recap();
         let json = serde_json::to_string(&recap).unwrap();
         let parsed: SessionRecap = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, recap, "SessionRecap must roundtrip byte-for-byte");
+        assert_eq!(parsed, recap);
     }
 }

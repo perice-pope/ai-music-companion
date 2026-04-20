@@ -89,27 +89,31 @@ fn end_to_end_record_and_persist() {
     let started_at = recorder.started_at();
 
     // 2. Record 2 phrases and 2 tips.
-    recorder.record_phrase(phrase_at(0));
-    recorder.record_phrase(phrase_at(1));
-    recorder.record_tip(
-        0,
-        "Nice tone at the start.".to_owned(),
-        "encouragement".to_owned(),
-        "tone".to_owned(),
-    );
-    recorder.record_tip(
-        1,
-        "Watch the intonation on the final note.".to_owned(),
-        "suggestion".to_owned(),
-        "intonation".to_owned(),
-    );
+    recorder.record_phrase(phrase_at(0)).unwrap();
+    recorder.record_phrase(phrase_at(1)).unwrap();
+    recorder
+        .record_tip(
+            0,
+            "Nice tone at the start.".to_owned(),
+            "encouragement".to_owned(),
+            "tone".to_owned(),
+        )
+        .unwrap();
+    recorder
+        .record_tip(
+            1,
+            "Watch the intonation on the final note.".to_owned(),
+            "suggestion".to_owned(),
+            "intonation".to_owned(),
+        )
+        .unwrap();
     assert_eq!(recorder.phrase_count(), 2);
     assert_eq!(recorder.tip_count(), 2);
 
     // 3. Finalise the session — authoritative timestamps come from the
     //    recorder, not reconstructed from a recap.
     let completed = recorder.complete().expect("complete");
-    assert_eq!(completed.instrument, "trumpet");
+    assert_eq!(completed.primary_instrument(), "trumpet");
     assert_eq!(completed.phrase_count(), 2);
     assert_eq!(completed.started_at, started_at);
     assert!(completed.ended_at >= completed.started_at);
@@ -163,7 +167,7 @@ fn multiple_sessions_coexist_in_store() {
     let mut ids = Vec::new();
     for (i, instrument) in ["trumpet", "violin", "voice"].iter().enumerate() {
         let mut recorder = SessionRecorder::new((*instrument).to_owned());
-        recorder.record_phrase(phrase_at(0));
+        recorder.record_phrase(phrase_at(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
         let generator = MockRecapGenerator::new();
@@ -213,8 +217,8 @@ fn completed_session_persists_without_recap_when_generator_fails() {
     // by constructing a CompletedSession but never generating a recap —
     // callers can synthesize a minimal recap and still save the timing.
     let mut recorder = SessionRecorder::new("voice".to_owned());
-    recorder.record_phrase(phrase_at(0));
-    recorder.record_phrase(phrase_at(1));
+    recorder.record_phrase(phrase_at(0)).unwrap();
+    recorder.record_phrase(phrase_at(1)).unwrap();
 
     let completed = recorder.complete().unwrap();
 
@@ -228,7 +232,7 @@ fn completed_session_persists_without_recap_when_generator_fails() {
         next_session_suggestions: Vec::new(),
         duration_secs: completed.duration_secs,
         phrase_count: completed.phrase_count(),
-        instrument: completed.instrument.clone(),
+        instrument: completed.primary_instrument().to_owned(),
     };
 
     let store = SessionStore::in_memory().unwrap();
