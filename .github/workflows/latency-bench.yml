@@ -1,0 +1,143 @@
+name: Latency bench
+
+on:
+  pull_request:
+    paths:
+      - 'crates/ears/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/latency-bench.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # 25 ms budget for the analysis path (samples -> AudioEvent).
+  # IPC + render is enforced elsewhere.
+  LATENCY_BUDGET_MS: 25
+
+# The bench binary needs an optimized build, so we use the same cache
+# key scheme as the main CI.  Single write permission is enough to
+# post the PR comment.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    name: Analysis-path latency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libssl-dev
+
+      - name: Run latency benchmark
+        run: cargo bench --bench latency -- --save-baseline pr
+
+      - name: Parse criterion output and enforce budget
+        id: parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUDGET_MS="${LATENCY_BUDGET_MS}"
+
+          ESTIMATES=$(find target/criterion -path '*/latency_per_event/*/new/estimates.json' | head -n 1)
+          SAMPLES=$(find target/criterion   -path '*/latency_per_event/*/new/sample.json'    | head -n 1)
+
+          if [ -z "${ESTIMATES}" ] || [ -z "${SAMPLES}" ]; then
+            echo "::error::criterion output not found under target/criterion"
+            exit 1
+          fi
+
+          echo "estimates: ${ESTIMATES}"
+          echo "samples:   ${SAMPLES}"
+
+          # Compute mean and p95 in nanoseconds, convert to ms, compare
+          # against budget.  Exit code 1 from python fails the step.
+          python3 - "${ESTIMATES}" "${SAMPLES}" "${BUDGET_MS}" <<'PY'
+          import json, sys
+
+          estimates_path, samples_path, budget_ms_str = sys.argv[1:]
+          budget_ms = float(budget_ms_str)
+
+          with open(estimates_path) as f:
+              est = json.load(f)
+          with open(samples_path) as f:
+              samp = json.load(f)
+
+          # estimates.json: mean.point_estimate is in nanoseconds per iteration.
+          mean_ns = float(est["mean"]["point_estimate"])
+
+          # sample.json: parallel arrays of (iters, times).  times[i] is the
+          # wall-clock nanoseconds for running iters[i] iterations in one sample.
+          # Per-iter time = times[i] / iters[i].  p95 across samples.
+          iters = samp["iters"]
+          times = samp["times"]
+          per_iter = sorted(t / i for t, i in zip(times, iters) if i > 0)
+          if not per_iter:
+              print("::error::no samples in criterion output")
+              sys.exit(1)
+          # Nearest-rank p95.
+          idx = max(0, int(round(0.95 * len(per_iter))) - 1)
+          p95_ns = per_iter[idx]
+
+          mean_ms = mean_ns / 1e6
+          p95_ms  = p95_ns  / 1e6
+
+          within_budget = mean_ms <= budget_ms
+          status_icon = "pass" if within_budget else "fail"
+          status_text = "within budget" if within_budget else "EXCEEDS BUDGET"
+
+          # Emit outputs for the next step to build the PR comment.
+          with open(__import__("os").environ["GITHUB_OUTPUT"], "a") as gh:
+              gh.write(f"mean_ms={mean_ms:.2f}\n")
+              gh.write(f"p95_ms={p95_ms:.2f}\n")
+              gh.write(f"budget_ms={budget_ms:.0f}\n")
+              gh.write(f"within_budget={'true' if within_budget else 'false'}\n")
+              gh.write(f"status_icon={status_icon}\n")
+              gh.write(f"status_text={status_text}\n")
+
+          print(f"mean_ms = {mean_ms:.2f}")
+          print(f"p95_ms  = {p95_ms:.2f}")
+          print(f"budget  = {budget_ms:.0f} ms")
+          print(f"status  = {status_text}")
+
+          if not within_budget:
+              print(f"::error::analysis-path mean latency {mean_ms:.2f} ms exceeds {budget_ms:.0f} ms budget")
+              sys.exit(1)
+          PY
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && (success() || failure())
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### Latency bench
+            - Mean: ${{ steps.parse.outputs.mean_ms }}ms
+            - p95:  ${{ steps.parse.outputs.p95_ms }}ms
+            - Budget: ${{ steps.parse.outputs.budget_ms }}ms
+            - Status: ${{ steps.parse.outputs.status_icon == 'pass' && '✅' || '❌' }} ${{ steps.parse.outputs.status_text }}

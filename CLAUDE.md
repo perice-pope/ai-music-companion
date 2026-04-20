@@ -62,7 +62,10 @@ Total mic-to-screen must be **<25 ms**. Budget:
 - IPC + render: ~5 ms
 - Headroom: ~6 ms
 
-The CI benchmark suite measures this and **fails the build** if exceeded.
+The CI benchmark suite measures the analysis path (samples → `AudioEvent`)
+and **fails the build** if the mean exceeds 25 ms. The gate is enforced by
+`.github/workflows/latency-bench.yml`, which runs `cargo bench --bench latency`
+(see `crates/ears/benches/latency.rs`) on every PR touching `crates/ears/**`.
 
 ## What NOT to do
 
