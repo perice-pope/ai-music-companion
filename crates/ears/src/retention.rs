@@ -10,10 +10,13 @@
 //!    still exceed it, the oldest are deleted until the directory fits.
 //!
 //! Best-take preservation uses a filename convention: any file whose stem
-//! ends in `_best` (e.g. `foo_best.wav`) is kept regardless of age — as
-//! long as `keep_marked_best_takes` is `true`. Size-sweeping still considers
-//! best-takes so a pathological all-best-takes directory is not left
-//! unbounded; callers can set `max_total_bytes` to `None` to truly preserve.
+//! ends in `_best` (e.g. `foo_best.wav`) is kept when `keep_marked_best_takes`
+//! is `true`. This protection applies to BOTH the age sweep AND the size
+//! sweep: a best-take will never be deleted to stay under `max_total_bytes`
+//! when the flag is set. If the directory cannot fit inside the quota after
+//! removing every non-best file, the [`SweepReport`] surfaces the remaining
+//! overage via [`SweepReport::bytes_over_quota_after_sweep`] so callers can
+//! warn the user instead of silently shrinking their archive of best takes.
 //!
 //! Non-`.wav` files in the directory are ignored entirely.
 
@@ -34,7 +37,9 @@ pub struct RetentionPolicy {
     /// Oldest files are deleted first. `None` disables the size sweep.
     pub max_total_bytes: Option<u64>,
     /// When true, files whose stem ends in `_best` are preserved regardless
-    /// of age. They are still candidates for the size sweep.
+    /// of age AND are excluded from the size-based sweep. The directory may
+    /// therefore remain over `max_total_bytes` if the best-takes alone exceed
+    /// the quota; see [`SweepReport::bytes_over_quota_after_sweep`].
     pub keep_marked_best_takes: bool,
 }
 
@@ -44,6 +49,10 @@ pub struct SweepReport {
     pub files_deleted: usize,
     pub bytes_reclaimed: u64,
     pub files_kept: usize,
+    /// Bytes over quota that could not be reclaimed because all remaining
+    /// files are protected "best takes". Zero when the sweep succeeded in
+    /// getting under the quota (or no quota is set).
+    pub bytes_over_quota_after_sweep: u64,
 }
 
 /// Sweeper applying a [`RetentionPolicy`] to a directory.
@@ -96,7 +105,10 @@ impl RetentionManager {
             });
         }
 
-        // 2. Size sweep — oldest first.
+        // 2. Size sweep — oldest first. When `keep_marked_best_takes` is set,
+        // best-takes are protected from this pass as well; any resulting
+        // overage is reported via `bytes_over_quota_after_sweep`.
+        let mut bytes_over_quota_after_sweep: u64 = 0;
         if let Some(max_total_bytes) = self.policy.max_total_bytes {
             let mut total: u64 = entries.iter().map(|e| e.size).sum();
             if total > max_total_bytes {
@@ -104,6 +116,11 @@ impl RetentionManager {
                 let mut i = 0;
                 while total > max_total_bytes && i < entries.len() {
                     let entry = &entries[i];
+                    let is_protected = self.policy.keep_marked_best_takes && entry.is_best;
+                    if is_protected {
+                        i += 1;
+                        continue;
+                    }
                     match fs::remove_file(&entry.path) {
                         Ok(()) => {
                             files_deleted += 1;
@@ -115,6 +132,9 @@ impl RetentionManager {
                         Err(_) => i += 1,
                     }
                 }
+                if total > max_total_bytes {
+                    bytes_over_quota_after_sweep = total - max_total_bytes;
+                }
             }
         }
 
@@ -122,6 +142,7 @@ impl RetentionManager {
             files_deleted,
             bytes_reclaimed,
             files_kept: entries.len(),
+            bytes_over_quota_after_sweep,
         })
     }
 }
@@ -258,6 +279,10 @@ mod tests {
         assert_eq!(report.files_deleted, 1);
         assert_eq!(report.bytes_reclaimed, 1024);
         assert_eq!(report.files_kept, 2);
+        assert_eq!(
+            report.bytes_over_quota_after_sweep, 0,
+            "sweep reached the quota with room to spare"
+        );
     }
 
     #[test]
@@ -294,6 +319,7 @@ mod tests {
                 files_deleted: 0,
                 bytes_reclaimed: 0,
                 files_kept: 0,
+                bytes_over_quota_after_sweep: 0,
             }
         );
     }
@@ -334,12 +360,81 @@ mod tests {
     }
 
     #[test]
-    fn size_sweep_can_delete_best_take_if_needed_for_cap() {
-        // Document the edge case: size sweep is not age-based and still
-        // reclaims best-takes to stay under max_total_bytes. Callers who
-        // want absolute preservation of best-takes should leave
-        // max_total_bytes as None.
+    fn size_sweep_preserves_best_take_even_when_over_quota() {
+        // Regression for issue #36: when `keep_marked_best_takes` is set, the
+        // size sweep must skip `_best.wav` files even if that leaves the
+        // directory over quota. The residual overage is surfaced via the
+        // report so the UI can warn the user.
         let tmp = TempDir::new().unwrap();
+
+        let a = write_file(tmp.path(), "a.wav", &[0u8; 600]);
+        set_mtime_days_ago(&a, 3);
+        let best = write_file(tmp.path(), "b_best.wav", &[0u8; 600]);
+        set_mtime_days_ago(&best, 2);
+        let c = write_file(tmp.path(), "c.wav", &[0u8; 600]);
+        set_mtime_days_ago(&c, 1);
+
+        let mgr = RetentionManager::new(RetentionPolicy {
+            max_age_days: None,
+            max_total_bytes: Some(1024),
+            keep_marked_best_takes: true,
+        });
+        let report = mgr.sweep(tmp.path()).unwrap();
+
+        assert!(!a.exists(), "oldest non-best should be deleted");
+        assert!(best.exists(), "best-take must NOT be deleted by size sweep");
+        assert!(
+            !c.exists(),
+            "next non-best should be deleted to chase quota"
+        );
+        assert_eq!(report.files_deleted, 2);
+        assert_eq!(report.bytes_reclaimed, 1200);
+        assert_eq!(report.files_kept, 1);
+        // Remaining total is 600 bytes, quota is 1024 → not over.
+        // Wait: 600 < 1024, so overage is 0. Verify explicitly.
+        assert_eq!(
+            report.bytes_over_quota_after_sweep, 0,
+            "single 600-byte best-take fits under 1024-byte quota"
+        );
+    }
+
+    #[test]
+    fn size_sweep_reports_overage_when_best_takes_alone_exceed_quota() {
+        // Two best-takes totalling 1200 bytes against a 1024-byte quota: the
+        // sweep can't delete them, so `bytes_over_quota_after_sweep` must
+        // equal the overshoot (176 bytes).
+        let tmp = TempDir::new().unwrap();
+
+        let a = write_file(tmp.path(), "a.wav", &[0u8; 600]);
+        set_mtime_days_ago(&a, 3);
+        let best1 = write_file(tmp.path(), "b_best.wav", &[0u8; 600]);
+        set_mtime_days_ago(&best1, 2);
+        let best2 = write_file(tmp.path(), "c_best.wav", &[0u8; 600]);
+        set_mtime_days_ago(&best2, 1);
+
+        let mgr = RetentionManager::new(RetentionPolicy {
+            max_age_days: None,
+            max_total_bytes: Some(1024),
+            keep_marked_best_takes: true,
+        });
+        let report = mgr.sweep(tmp.path()).unwrap();
+
+        assert!(!a.exists(), "non-best file must be deleted");
+        assert!(best1.exists(), "best-take #1 preserved");
+        assert!(best2.exists(), "best-take #2 preserved");
+        assert_eq!(report.files_deleted, 1);
+        assert_eq!(report.bytes_reclaimed, 600);
+        assert_eq!(report.files_kept, 2);
+        // 1200 bytes remain, quota is 1024 → overage is 176 bytes.
+        assert_eq!(report.bytes_over_quota_after_sweep, 176);
+    }
+
+    #[test]
+    fn size_sweep_does_not_skip_best_takes_when_flag_is_false() {
+        // When `keep_marked_best_takes` is false, the size sweep treats best
+        // takes like any other file and may delete them to reach quota.
+        let tmp = TempDir::new().unwrap();
+
         let best = write_file(tmp.path(), "a_best.wav", &[0u8; 2048]);
         set_mtime_days_ago(&best, 2);
         let other = write_file(tmp.path(), "b.wav", &[0u8; 2048]);
@@ -348,12 +443,47 @@ mod tests {
         let mgr = RetentionManager::new(RetentionPolicy {
             max_age_days: None,
             max_total_bytes: Some(2048),
+            keep_marked_best_takes: false,
+        });
+        let report = mgr.sweep(tmp.path()).unwrap();
+
+        // Oldest goes first; the best-take is the oldest.
+        assert!(!best.exists(), "best-take deleted when flag disabled");
+        assert!(other.exists());
+        assert_eq!(report.files_deleted, 1);
+        assert_eq!(report.bytes_reclaimed, 2048);
+        assert_eq!(report.files_kept, 1);
+        assert_eq!(report.bytes_over_quota_after_sweep, 0);
+    }
+
+    #[test]
+    fn age_sweep_still_preserves_best_takes_alongside_size_preservation() {
+        // Regression guard: the fix must not weaken the age-sweep branch.
+        // An old best-take survives both sweeps; an old non-best is removed
+        // by the age sweep before the size sweep runs.
+        let tmp = TempDir::new().unwrap();
+
+        let old_best = write_file(tmp.path(), "session_best.wav", &[0u8; 512]);
+        set_mtime_days_ago(&old_best, 30);
+        let old_other = write_file(tmp.path(), "old.wav", &[0u8; 512]);
+        set_mtime_days_ago(&old_other, 30);
+        let fresh = write_file(tmp.path(), "fresh.wav", &[0u8; 128]);
+        set_mtime_days_ago(&fresh, 0);
+
+        let mgr = RetentionManager::new(RetentionPolicy {
+            max_age_days: Some(7),
+            max_total_bytes: Some(4096),
             keep_marked_best_takes: true,
         });
         let report = mgr.sweep(tmp.path()).unwrap();
-        // Oldest removed first; best-take is the oldest here.
-        assert!(!best.exists());
-        assert!(other.exists());
+
+        assert!(old_best.exists(), "old best-take preserved by age sweep");
+        assert!(!old_other.exists(), "old non-best deleted by age sweep");
+        assert!(fresh.exists(), "fresh file untouched");
         assert_eq!(report.files_deleted, 1);
+        assert_eq!(report.bytes_reclaimed, 512);
+        assert_eq!(report.files_kept, 2);
+        // Remaining total (640 bytes) is well under the 4096-byte quota.
+        assert_eq!(report.bytes_over_quota_after_sweep, 0);
     }
 }
