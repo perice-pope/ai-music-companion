@@ -1,0 +1,159 @@
+name: Daily engineering agent
+
+# Fires every morning. The agent reads the architecture spec, checks the state
+# of main, picks the next open Phase 1 story (skipping any that have an open PR
+# in flight), cuts a fresh branch, implements the work, runs the full local
+# CI gates (fmt + clippy --deny warnings + test --workspace), and opens a
+# DRAFT PR for you to review on github.com.
+#
+# Interaction model: no mid-run approvals. The draft PR IS the approval gate.
+# Review it in the morning, mark ready / close / comment like any normal PR.
+
+on:
+  schedule:
+    # 10:00 UTC = 05:00 EST (winter) / 06:00 EDT (summer).
+    # GitHub Actions only speaks UTC, so we accept the one-hour DST drift
+    # rather than maintain two crons.
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+    # Lets you kick off a run manually from the Actions tab at any time.
+    inputs:
+      focus:
+        description: 'Optional: force the agent to work on a specific issue number (leave blank to auto-pick)'
+        required: false
+        type: string
+
+permissions:
+  contents: write       # push the new branch
+  pull-requests: write  # open the draft PR
+  issues: read          # read the story backlog
+
+concurrency:
+  group: daily-agent
+  cancel-in-progress: false  # never interrupt a run in progress
+
+jobs:
+  engineer:
+    name: Pick a story and ship a draft PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Node + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run the engineering agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # The agent operates in "autonomous, push draft PR" mode. It does
+          # NOT pause for approval; the draft PR is the review surface.
+          mode: autonomous
+          allowed_tools: Bash,Edit,Read,Write,Grep,Glob,Agent
+          prompt: |
+            You are the daily engineering agent for the AI Music Companion ("Musa") codebase.
+            The human founder reviews your work every morning as a Draft PR on GitHub.
+            Focus on shipping one well-tested, well-reasoned unit of work — not a sprawling mega-PR.
+
+            # Ground rules
+
+            1. **Always cut a fresh branch off `main`.** Never reuse an existing branch.
+               Name: `story/<issue-number>-<short-slug>` for feature work,
+               `chore/<slug>` for infra, `fix/<slug>` for bug fixes.
+
+            2. **Skip stories that already have an open PR.** Run
+               `gh pr list --state open --json headRefName,number,title` and avoid
+               any issue whose branch is already taken.
+
+            3. **Honor the dependency graph.** Current Phase 1 build order:
+               #14 (free play UI) → #16 (score following) → #17 (practice history)
+               → #21 (practice modes). Don't work on a story whose dependencies
+               are still open.
+
+            4. **Follow `CLAUDE.md` conventions religiously**:
+               - Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`).
+               - NEVER allocate in the `crates/ears` audio thread (no `Box::new`,
+                 `Vec::push`, `format!`, `.to_string()`, `.to_owned()` in the hot path).
+               - Rust: `cargo clippy --deny warnings` MUST pass.
+               - TS: no `any`; strict mode stays on; use Zustand; use Tailwind.
+               - Every public item needs a `///` (Rust) or JSDoc (TS) comment.
+
+            5. **Tests must catch real bugs**, per `docs/testing-standards.md`.
+               No `assert!(true)`. No `.is_ok()` without checking the inside.
+               No string-contains-field-name tests; use serde roundtrips and
+               compare actual values. Every error path gets a test.
+
+            # Workflow
+
+            1. `git pull origin main` to make sure you're current.
+            2. Read `CLAUDE.md`, `ai-music-companion-architecture-v2.md`, and
+               `docs/testing-standards.md` to refresh context.
+            3. Optional: if `${{ inputs.focus }}` is set, prioritize that issue.
+            4. `gh issue list --state open --label phase-1 --json number,title`
+               to see the backlog. Filter out anything with an open PR.
+            5. Pick ONE story (or part of one if it's large). State your pick
+               and reasoning in a scratchpad before implementing.
+            6. Cut a branch. Implement. Add tests.
+            7. Locally run:
+               - `cargo fmt --all`
+               - `cargo clippy --workspace --all-targets -- -D warnings`
+               - `cargo test --workspace`
+               - `pnpm lint && pnpm test` (if you touched the frontend)
+               If any fail, fix them before pushing.
+            8. `git push -u origin <branch>` then `gh pr create --draft`.
+               PR body should include:
+                 - What story / which scope of the story this PR covers.
+                 - Architecture notes (why this design).
+                 - Test coverage summary.
+                 - `Closes #<number>` or `Part of #<number>`.
+
+            # Scope control
+
+            - If a story would produce > 800 lines of diff, split it. Ship the
+              smallest coherent slice today and note the follow-up in the PR body.
+            - If you hit an ambiguity in the spec, open a GitHub issue titled
+              "Spec question: …" and stop. Don't guess.
+            - If the test suite or clippy can't be made to pass, DO NOT force-push
+              or disable checks. Open a draft PR with the failure clearly flagged
+              and a "blocked" label.
+
+            # Reporting
+
+            At the end of your run, output a one-paragraph summary: what you
+            picked, why, what the PR does, any risks. This gets captured in the
+            Actions run log for the founder's morning review.
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Daily agent run: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See the draft PR opened by this run for the work product." >> $GITHUB_STEP_SUMMARY
+          gh pr list --draft --author '@me' --state open --json number,title,url \
+            -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
