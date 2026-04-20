@@ -67,13 +67,20 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run the engineering agent
+        id: agent
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # The agent operates in "autonomous, push draft PR" mode. It does
-          # NOT pause for approval; the draft PR is the review surface.
-          mode: autonomous
-          allowed_tools: Bash,Edit,Read,Write,Grep,Glob,Agent
+          # The `prompt` input puts the action in direct/headless mode:
+          # there's no issue/comment trigger, no mid-run approvals, and
+          # the agent writes + pushes + opens the PR on its own.
+          # `claude_args` are forwarded verbatim to the Claude Code CLI;
+          # `--permission-mode acceptEdits` lets it edit files without
+          # prompting, and `--allowed-tools` is the whitelist we want.
+          claude_args: >-
+            --permission-mode acceptEdits
+            --allowed-tools Bash,Edit,Read,Write,Grep,Glob,Agent
+            --max-turns 200
           prompt: |
             You are the daily engineering agent for the AI Music Companion ("Musa") codebase.
             The human founder reviews your work every morning as a Draft PR on GitHub.
@@ -147,13 +154,63 @@ jobs:
             picked, why, what the PR does, any risks. This gets captured in the
             Actions run log for the founder's morning review.
 
+      # Defense in depth: the agent's prompt *instructs* it to run these
+      # gates locally before pushing, but instructions are advisory. This
+      # step runs them deterministically against whatever the agent left
+      # in the workspace so any broken output fails the workflow — the
+      # draft PR's check status will be red, making the regression
+      # obvious in the morning review.
+      #
+      # `continue-on-error: true` so the *Summary* step still runs and
+      # surfaces the PR link even when gates fail. The overall job is
+      # still marked failed at the end via the final "fail if gates
+      # failed" step, which is what turns the commit status red.
+      - name: Enforce CI gates on agent output
+        id: gates
+        if: always() && steps.agent.conclusion == 'success'
+        continue-on-error: true
+        run: |
+          set -e
+          echo "::group::cargo fmt --check"
+          cargo fmt --all -- --check
+          echo "::endgroup::"
+          echo "::group::cargo clippy --deny warnings"
+          cargo clippy --workspace --all-targets -- -D warnings
+          echo "::endgroup::"
+          echo "::group::cargo test --workspace"
+          cargo test --workspace --locked
+          echo "::endgroup::"
+          # Only run frontend gates when the agent actually touched the frontend.
+          if git diff --name-only origin/main...HEAD 2>/dev/null | grep -Eq '\.(ts|tsx|js|jsx|css)$|apps/desktop/'; then
+            echo "::group::pnpm lint + test"
+            cd apps/desktop
+            pnpm install --frozen-lockfile
+            pnpm lint
+            pnpm test --run
+            cd -
+            echo "::endgroup::"
+          fi
+
       - name: Summary
         if: always()
         run: |
           echo "### Daily agent run: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "See the draft PR opened by this run for the work product." >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.gates.outcome }}" = "failure" ]; then
+            echo "⚠️ **CI gates failed on the agent's output.** Review the PR carefully — it won't pass CI on the feature branch either." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "Draft PR(s) opened by this run:" >> $GITHUB_STEP_SUMMARY
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Last step: propagate a gate failure so the workflow run is red.
+      # (We had to let the prior step soft-fail so the Summary could run
+      # even on failure — this step makes it hard-fail now.)
+      - name: Fail if CI gates failed
+        if: steps.gates.outcome == 'failure'
+        run: |
+          echo "CI gates failed on the agent's output. See the 'Enforce CI gates' step above." >&2
+          exit 1
