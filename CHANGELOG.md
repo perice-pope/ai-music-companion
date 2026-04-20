@@ -1,3 +1,10 @@
+## [1.4.0](https://github.com/perice-pope/ai-music-companion/compare/v1.3.0...v1.4.0) (2026-04-20)
+
+### Features
+
+* metronome and tuning drone — Story [#19](https://github.com/perice-pope/ai-music-companion/issues/19) ([#30](https://github.com/perice-pope/ai-music-companion/issues/30)) ([ef8f25e](https://github.com/perice-pope/ai-music-companion/commit/ef8f25e16de9a90a186f38cfa2c5ad1103a4fc54))
+* session audio recording infrastructure — Story [#20](https://github.com/perice-pope/ai-music-companion/issues/20) ([#29](https://github.com/perice-pope/ai-music-companion/issues/29)) ([bc879a8](https://github.com/perice-pope/ai-music-companion/commit/bc879a8a969f8a30890402ee34230870bd493d86))
+
 ## [1.3.0](https://github.com/perice-pope/ai-music-companion/compare/v1.2.0...v1.3.0) (2026-04-19)
 
 ### Features
