@@ -1,9 +1,15 @@
 # Story #14 — Free Play Practice Mode: Design Proposal
 
-**Status:** Draft for review
+**Status:** Approved — implementation-ready
 **Author:** Design proposal generated for founder + CTO review
 **Target story:** [#14 Phase 1: Free play practice mode (no score)](https://github.com/perice-pope/ai-music-companion/issues/14)
 **Dependencies landed:** #11 (PhraseAggregator), #12 (CoachingEngine), #13 (SessionRecorder + recap)
+
+**Revision notes (2026-04-20):**
+- ✅ Coaching-off-with-banner confirmed (§4)
+- ✅ No-pause confirmed (§2)
+- ❌ "Instrument locked for the session" **overruled** — multi-instrumentalists need to switch mid-session. Data model generalized to support participants + instrument segments (§2.5). Group practice / ensemble mode spun off as its own story: [#40 Ensemble practice mode](https://github.com/perice-pope/ai-music-companion/issues/40).
+- See [design-decisions log](./decisions-log.md) for the rationale behind the single-mic ensemble scope call.
 
 ---
 
@@ -152,6 +158,58 @@ If `recap` is null and `recapError` is set: show a calm error card ("I had troub
 
 ---
 
+## 2.5 Participants and instrument segments (data model)
+
+Free play MVP ships as **solo + mid-session instrument switch**. But the data model is built to also carry **ensemble mode** (story #40) without a retrofit later. Getting this right now is cheap; retrofitting it later is ruinous.
+
+### The shape
+
+```
+Session
+├─ id, started_at, ended_at
+├─ participants: Vec<Participant>          ← length 1 in MVP
+│  └─ Participant
+│     ├─ id (stable within the session)
+│     ├─ display_name ("You", "Student A", "The group")
+│     ├─ input_source: InputSource          ← MVP: always DefaultMic
+│     └─ segments: Vec<InstrumentSegment>
+│        └─ InstrumentSegment
+│           ├─ instrument: InstrumentProfile
+│           ├─ started_at, ended_at (Option<> — open segment has None)
+│           ├─ phrases: Vec<PhraseSummary>
+│           └─ coaching_tips: Vec<RecordedTip>
+```
+
+### Why this shape
+
+- **Solo with switching** (the MVP user): `participants.len() == 1`, that participant accumulates multiple `InstrumentSegment`s over time. A trumpet warm-up segment, then a piano segment, then a vocal segment — all one session.
+- **Ensemble** (future, story #40): `participants.len() == 1` still — because a single mic cannot reliably separate same-instrument players in real time (see [decisions-log](./decisions-log.md)). The *group* is modeled as one participant with a `display_name` like "The group" and a specialized instrument profile describing the ensemble. No data model change needed.
+- **Recap** iterates participants → segments → phrases. Works identically for both shapes.
+- **Coaching** runs per-segment — a trumpet segment gets trumpet-flavored tips, a piano segment gets piano-flavored tips. This is actually *more correct* than treating a switched session as one undifferentiated blob.
+- **SQLite schema** grows by two small tables (`participants`, `instrument_segments`). The existing `sessions` row stays unchanged; phrases and tips migrate onto the segment row.
+
+### UX consequence
+
+The `<InstrumentSelector>` stays as-is for session start. Inside `<PracticeSession>`, the current instrument name in the header is a button — clicking it opens a small "switch instrument" menu. Confirming closes the current segment and opens a new one:
+
+```
+┌─────────────────────────────────────┐
+│ Trumpet ▾     ● 04:23       [End]   │  ← header
+│                                     │
+│     (pitch display)                 │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+When switched, the tip panel briefly shows a small "You're on piano now" acknowledgement (not a tip — a status beat). The aggregator flushes any open phrase and resets. The new segment's pitch-detection profile is reconfigured (frequency range, vibrato tolerance, attack settings).
+
+### Scope reminder
+
+- **MVP ships:** solo + segment switching. One participant always.
+- **MVP does NOT ship:** per-participant UI, add-a-participant button, multi-channel audio routing, polyphonic pitch detection. All of that is [#40](https://github.com/perice-pope/ai-music-companion/issues/40).
+
+---
+
 ## 3. Backend wiring (Rust side)
 
 ### Tauri commands (the full surface)
@@ -177,18 +235,28 @@ async fn end_practice_session(
     state: State<'_, AppState>,
 ) -> Result<SessionRecap, String>;
 
+/// Switch the active participant's instrument mid-session. Closes the
+/// current InstrumentSegment, opens a new one, reconfigures pitch
+/// detection for the new profile. Returns the new segment id.
+#[tauri::command]
+async fn switch_instrument(
+    instrument: String,
+    state: State<'_, AppState>,
+) -> Result<String, String>;  // Ok = new SegmentId as string
+
 /// List instrument profile names available on disk.
 /// Used to populate the selector instead of hardcoding in TS.
 #[tauri::command]
 fn list_instruments() -> Result<Vec<InstrumentInfo>, String>;
 ```
 
-That's it — three commands. Every other piece of data flows over events, not commands.
+That's it — four commands. Every other piece of data flows over events, not commands.
 
 **Explicitly collapsed:**
-- No separate `configure_detection(instrument)` — the profile load happens inside `start_practice_session`.
+- No separate `configure_detection(instrument)` — the profile load happens inside `start_practice_session` (first segment) and `switch_instrument` (subsequent segments).
 - No separate `get_session_state()` poll — state lives in the Zustand store, driven by events.
 - No `pause_session` / `resume_session` — out of scope for v1 (see §6).
+- No `add_participant` — ensemble mode (story #40) adds this when it lands; the data model already supports it, the command surface doesn't yet expose it.
 
 ### Tauri events emitted
 
@@ -198,6 +266,7 @@ That's it — three commands. Every other piece of data flows over events, not c
 | `phrase-detected` | `PhraseSummary` | When aggregator closes a phrase | `practiceStore.pushPhrase` |
 | `coaching-tip` | `{ tip: CoachingTip, phrase_index: usize }` | When coaching task returns a tip | `practiceStore.pushTip` |
 | `session-status` | `{ status: "starting" \| "listening" \| "ending" \| "coaching" }` | State transitions | `practiceStore.setStatus` — used to show "still thinking..." during recap |
+| `segment-changed` | `{ segment_id: String, instrument: String, started_at: String }` | `switch_instrument` succeeded | `practiceStore.setActiveSegment` — updates header and flushes current-phrase state |
 
 `session-recap` is **not** an event — it's the return value of `end_practice_session`. Returning it as a command result makes the error path cleaner (frontend `await`s the recap directly).
 
@@ -364,7 +433,22 @@ We CANNOT easily write a full Playwright-style end-to-end test that drives the T
 
 ## 7. PR slicing
 
-Target: 3 PRs, each <600 lines ideally, <800 max, each testable and mergeable alone.
+Target: 4 PRs, each <600 lines ideally, <800 max, each testable and mergeable alone.
+
+### PR 0 — Data model: participants + segments (~500 lines)
+
+**Ships:**
+- New types in `crates/brain/src/session.rs`: `Participant`, `InputSource`, `InstrumentSegment`, `SegmentId`.
+- `SessionRecorder` refactored to operate on `(participants[0].segments[i])` rather than a single flat `phrases: Vec<_>`. Single participant always, but one or more segments over the session's lifetime.
+- `SessionRecorder::switch_instrument(&mut self, profile: InstrumentProfile) -> SegmentId` — closes the currently open segment, opens a new one.
+- SQLite migration: `participants` and `instrument_segments` tables. Existing `sessions` rows migrate to a single-participant-single-segment shape on first load (idempotent migration).
+- `StoredSession` now includes the participants tree.
+- Tests: segment transitions, migration idempotency, recap generation across multiple segments.
+- **No UI changes.** Entirely in `crates/brain`.
+
+**Merge criterion:** All existing session/store tests still pass post-refactor. New segment tests green. The Ears and Face crates are untouched.
+
+**Why first:** Everything else builds on this. Doing it as PR 0 means PR 1-3 never thrash the data model.
 
 ### PR 1 — Scaffolding + timer + mock pipeline (~500 lines)
 
@@ -377,9 +461,9 @@ Target: 3 PRs, each <600 lines ideally, <800 max, each testable and mergeable al
 - Vitest tests for components.
 - Rust tests for state machine.
 
-**Behavior:** You can pick an instrument, start a session, see the timer tick, end, get a recap built from canned data. No real coaching. No real audio pipeline change (Phase 0 `audio-event` still flows to `PitchDisplay`).
+**Behavior:** You can pick an instrument, start a session, see the timer tick, click the instrument name in the header to switch mid-session (calls `switch_instrument`), end, get a recap built from canned data. No real coaching. No real audio pipeline change (Phase 0 `audio-event` still flows to `PitchDisplay`).
 
-**Merge criterion:** AC 1–9 green with mocks. AC 10 (IPC events) green. State machine test green.
+**Merge criterion:** AC 1–9 green with mocks. AC 10 (IPC events) green. State machine test green. Segment-switch flow green end-to-end.
 
 ### PR 2 — CoachingTipPanel + phrase aggregator integration (~600 lines)
 
@@ -408,12 +492,18 @@ Target: 3 PRs, each <600 lines ideally, <800 max, each testable and mergeable al
 
 ## 8. Open questions for the founder
 
-1. **Coaching on/off: per-session toggle, or global setting?** I assumed **global** (persisted pref, edited from a settings panel we add in PR 3 — or just the rail toggle in the side panel). A per-session toggle adds friction but gives more control. Which?
-2. **Pause vs. one-shot.** I assumed no pause for v1 (§2). If a session runs long and the musician needs a break, does the wall-clock-keeps-running model feel wrong? Worth a quick gut check.
-3. **Mid-session instrument switch.** Currently impossible: the instrument is fixed at `start_practice_session`. If a user wants to switch, they end and restart. Acceptable, or do you want mid-session switching (requires reloading the profile and resetting the aggregator)?
-4. **Tip panel: left or right side?** I picked right. Some users are left-handed / have left-dominant monitor layouts. Worth asking — or do we make it a preference and move on?
-5. **What does "End Session" with zero phrases do?** (User clicks Start, never plays a note, clicks End.) Options: (a) show a calm empty-state recap ("Looks like you didn't get to play — come back when you're ready"), (b) skip the recap and return to selector, (c) disable the End button until phrases > 0. I lean (a).
-6. **Coaching-off default: on or off out of the box?** If a first-time user has no API key, they get "Coaching unavailable" immediately, which is a rough first impression. Alternative: ship a one-line rule-based tip generator so free play has *some* coaching even without a key. That contradicts my recommendation in §4 — worth calling out because it's a product judgment, not an engineering one.
+### Resolved (2026-04-20)
+
+- ~~**Pause vs. one-shot.**~~ → One-shot, wall clock runs through breaks. No pause button in MVP.
+- ~~**Mid-session instrument switch.**~~ → **YES, supported.** Drives the `Participant → InstrumentSegment` data model shift (§2.5, new PR 0).
+- ~~**Coaching-off default.**~~ → If no API key, show a calm "coaching unavailable" rail. No rule-based filler tips.
+
+### Still open
+
+1. **Coaching on/off: per-session toggle, or global setting?** Assumed **global** (persisted pref, edited from a settings panel we add in PR 3 — or just the rail toggle in the side panel). A per-session toggle adds friction but gives more control. Which?
+2. **Tip panel: left or right side?** Picked right. Some users are left-handed / have left-dominant monitor layouts. Worth asking — or do we make it a preference and move on?
+3. **"End Session" with zero phrases.** (User clicks Start, never plays a note, clicks End.) Options: (a) show a calm empty-state recap ("Looks like you didn't get to play — come back when you're ready"), (b) skip the recap and return to selector, (c) disable the End button until phrases > 0. I lean (a).
+4. **Instrument switch: confirmation modal or instant?** A click on the header instrument name either (a) switches instantly, or (b) pops a small confirm ("Switch to piano? Your trumpet segment will be closed."). (a) is smoother; (b) is safer against accidental clicks during playing. I lean (a) with an undo-like "Switch back" link in the tip panel for 5 seconds.
 
 ---
 
