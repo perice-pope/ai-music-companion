@@ -1,3 +1,13 @@
+## [1.5.0](https://github.com/perice-pope/ai-music-companion/compare/v1.4.0...v1.5.0) (2026-04-20)
+
+### Features
+
+* **ci:** latency benchmark enforcing <25ms budget ([#38](https://github.com/perice-pope/ai-music-companion/issues/38)) ([b871950](https://github.com/perice-pope/ai-music-companion/commit/b87195027e446dad6f233e5ce731d800bc56bbfa))
+
+### Bug Fixes
+
+* preserve best takes during size-based retention sweep ([#37](https://github.com/perice-pope/ai-music-companion/issues/37)) ([d83cb3b](https://github.com/perice-pope/ai-music-companion/commit/d83cb3b0c32b1a634b6b0a6d0993f711b2089b23)), closes [#36](https://github.com/perice-pope/ai-music-companion/issues/36)
+
 ## [1.4.0](https://github.com/perice-pope/ai-music-companion/compare/v1.3.0...v1.4.0) (2026-04-20)
 
 ### Features
