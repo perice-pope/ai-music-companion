@@ -1,6 +1,6 @@
 # Platform Modules Addendum — Mapping the Platform Strategy onto the v2 Architecture
 
-**Companion doc to:** `ai-music-companion-architecture-v2.md` and `AI_Music_Companion_Platform_Strategy_v3.docx`
+**Companion doc to:** [`architecture-v2.md`](./architecture-v2.md) and `AI_Music_Companion_Platform_Strategy_v3.docx` (lives in the public pitch repo under [`drafts/`](https://github.com/perice-pope/ai-music-companion-pitch/blob/main/drafts/AI_Music_Companion_Platform_Strategy_v3.docx))
 **Status:** Approved addendum (does not supersede v2 — extends it)
 **Date:** April 19, 2026
 
