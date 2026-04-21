@@ -74,7 +74,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          THRESHOLD="${{ github.event.inputs.max_open_drafts || '3' }}"
+          # workflow_dispatch inputs come through as strings, and there's
+          # no `type: number` for that trigger (only for workflow_call).
+          # So validate and coerce to an integer before the -ge test,
+          # otherwise a typo like "three" blows up `test -ge` with
+          # "integer expression expected" and turns the run red.
+          THRESHOLD_RAW="${{ github.event.inputs.max_open_drafts || '3' }}"
+          if [[ "$THRESHOLD_RAW" =~ ^[0-9]+$ ]]; then
+            THRESHOLD="$THRESHOLD_RAW"
+          else
+            echo "::warning::Invalid max_open_drafts='$THRESHOLD_RAW' (must be a non-negative integer). Falling back to 3."
+            THRESHOLD=3
+          fi
           OPEN=$(gh pr list --draft --author '@me' --state open --json number -q 'length')
           echo "Open agent draft PRs: $OPEN  (cap: $THRESHOLD)"
           if [ "$OPEN" -ge "$THRESHOLD" ]; then
@@ -251,7 +262,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "### Daily agent run: $(date -u +%Y-%m-%d %H:%M UTC)" >> $GITHUB_STEP_SUMMARY
+          echo "### Daily agent run: $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.queue_check.outputs.skip }}" = "true" ]; then
             echo "**Skipped — review queue at cap.**" >> $GITHUB_STEP_SUMMARY
