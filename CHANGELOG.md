@@ -1,3 +1,9 @@
+## [1.5.1](https://github.com/perice-pope/ai-music-companion/compare/v1.5.0...v1.5.1) (2026-04-21)
+
+### Bug Fixes
+
+* **ci:** add id-token write permission for claude-code-action ([#43](https://github.com/perice-pope/ai-music-companion/issues/43)) ([1498fd2](https://github.com/perice-pope/ai-music-companion/commit/1498fd2dcb568f0d9b35eecb5a0f7629b18414dc)), closes [#31](https://github.com/perice-pope/ai-music-companion/issues/31)
+
 ## [1.5.0](https://github.com/perice-pope/ai-music-companion/compare/v1.4.0...v1.5.0) (2026-04-20)
 
 ### Features
