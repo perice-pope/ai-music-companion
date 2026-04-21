@@ -1,3 +1,9 @@
+## [1.7.0](https://github.com/perice-pope/ai-music-companion/compare/v1.6.0...v1.7.0) (2026-04-21)
+
+### Features
+
+* **story-14:** PR 2 — coaching tip panel with auto-dismiss animation ([#51](https://github.com/perice-pope/ai-music-companion/issues/51)) ([ca3527e](https://github.com/perice-pope/ai-music-companion/commit/ca3527e96d30b655356e79e96f67488132540bde)), closes [#14](https://github.com/perice-pope/ai-music-companion/issues/14)
+
 ## [1.6.0](https://github.com/perice-pope/ai-music-companion/compare/v1.5.3...v1.6.0) (2026-04-21)
 
 ### Features
