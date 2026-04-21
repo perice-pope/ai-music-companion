@@ -1,8 +1,10 @@
 # Rust
 /target/
 **/target/
-Cargo.lock
 *.rs.bk
+# NOTE: Cargo.lock IS committed — this is a binary (Tauri desktop app),
+# not a pure library, so pinning the exact dep graph matters for
+# reproducibility and for `cargo test --locked` in CI.
 
 # Node
 node_modules/
