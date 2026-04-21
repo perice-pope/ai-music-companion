@@ -59,6 +59,19 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # System deps needed by the agent's OWN cargo invocations inside
+      # its bash loop (the prompt tells it to run cargo fmt/clippy/test
+      # locally before pushing). Same trimmed list as `ci.yml` — if you
+      # update that list, update this one.
+      # alsa-sys (pulled by cpal in crates/ears) needs libasound;
+      # reqwest native-tls needs libssl.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libssl-dev
+
       - name: Install Node + pnpm
         uses: actions/setup-node@v4
         with:
@@ -185,43 +198,19 @@ jobs:
             picked, why, what the PR does, any risks. This gets captured in the
             Actions run log for the founder's morning review.
 
-      # Defense in depth: the agent's prompt *instructs* it to run these
-      # gates locally before pushing, but instructions are advisory. This
-      # step runs them deterministically against whatever the agent left
-      # in the workspace so any broken output fails the workflow — the
-      # draft PR's check status will be red, making the regression
-      # obvious in the morning review.
+      # Why this workflow no longer runs its own cargo/pnpm gates:
       #
-      # `continue-on-error: true` so the *Summary* step still runs and
-      # surfaces the PR link even when gates fail. The overall job is
-      # still marked failed at the end via the final "fail if gates
-      # failed" step, which is what turns the commit status red.
-      - name: Enforce CI gates on agent output
-        id: gates
-        if: always() && steps.agent.conclusion == 'success'
-        continue-on-error: true
-        run: |
-          set -e
-          echo "::group::cargo fmt --check"
-          cargo fmt --all -- --check
-          echo "::endgroup::"
-          echo "::group::cargo clippy --deny warnings"
-          cargo clippy --workspace --all-targets -- -D warnings
-          echo "::endgroup::"
-          echo "::group::cargo test --workspace"
-          cargo test --workspace --locked
-          echo "::endgroup::"
-          # Only run frontend gates when the agent actually touched the frontend.
-          if git diff --name-only origin/main...HEAD 2>/dev/null | grep -Eq '\.(ts|tsx|js|jsx|css)$|apps/desktop/'; then
-            echo "::group::pnpm lint + test"
-            cd apps/desktop
-            pnpm install --frozen-lockfile
-            pnpm lint
-            pnpm test --run
-            cd -
-            echo "::endgroup::"
-          fi
-
+      # When the agent pushes a branch and opens the draft PR, GitHub
+      # Actions automatically triggers `ci.yml` on that branch. That
+      # run IS the gate. Re-running fmt/clippy/test here duplicated
+      # the ci.yml logic (apt deps, flags, toolchain setup) and
+      # drifted every time ci.yml was updated — the libasound bug
+      # that caused three consecutive red runs happened exactly
+      # because the two copies disagreed.
+      #
+      # Single source of truth: ci.yml. The PR's check status tells
+      # the morning reviewer whether the agent's code is good.
+      # If it's red, the PR is the place to look anyway.
       - name: Summary
         if: always()
         run: |
@@ -229,21 +218,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.gates.outcome }}" = "failure" ]; then
-            echo "⚠️ **CI gates failed on the agent's output.** Review the PR carefully — it won't pass CI on the feature branch either." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "Draft PR(s) opened by this run:" >> $GITHUB_STEP_SUMMARY
+          echo "Open draft PR(s) by this author (may include older drafts — check CI status on each):" >> $GITHUB_STEP_SUMMARY
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Last step: propagate a gate failure so the workflow run is red.
-      # (We had to let the prior step soft-fail so the Summary could run
-      # even on failure — this step makes it hard-fail now.)
-      - name: Fail if CI gates failed
-        if: steps.gates.outcome == 'failure'
-        run: |
-          echo "CI gates failed on the agent's output. See the 'Enforce CI gates' step above." >&2
-          exit 1
