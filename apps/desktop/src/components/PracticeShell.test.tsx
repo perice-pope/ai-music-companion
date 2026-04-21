@@ -1,0 +1,75 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import PracticeShell from "./PracticeShell";
+import { usePracticeStore } from "../stores/practiceStore";
+
+// Mock Tauri invoke so PracticeSession's child components don't error
+// on their own subscribe calls.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue("mock-id"),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+function resetStore() {
+  usePracticeStore.setState({
+    screen: "selector",
+    status: "idle",
+    sessionId: null,
+    instrumentName: null,
+    segmentId: null,
+    startedAtMs: null,
+    elapsedSecs: 0,
+    phrases: [],
+    tipQueue: [],
+    recap: null,
+    recapError: null,
+  });
+}
+
+describe("PracticeShell routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStore();
+  });
+
+  it("renders the selector screen by default", () => {
+    render(<PracticeShell />);
+    // The selector heading doubles as the app title on this screen.
+    screen.getByTestId("practice-shell-selector");
+    screen.getByTestId("instrument-selector");
+  });
+
+  it("renders the session screen when screen=session", () => {
+    usePracticeStore.setState({
+      screen: "session",
+      status: "listening",
+      instrumentName: "Trumpet",
+      startedAtMs: Date.now(),
+    });
+    render(<PracticeShell />);
+    screen.getByTestId("practice-session");
+    // Selector must be hidden — we're in-session.
+    expect(screen.queryByTestId("instrument-selector")).toBeNull();
+  });
+
+  it("renders the recap screen when screen=recap", () => {
+    usePracticeStore.setState({
+      screen: "recap",
+      recap: {
+        overall_assessment: "Nice work",
+        strengths: ["A"],
+        areas_to_improve: ["B"],
+        next_session_suggestions: ["C"],
+        duration_secs: 60,
+        phrase_count: 3,
+        instrument: "Trumpet",
+      },
+    });
+    render(<PracticeShell />);
+    screen.getByTestId("session-recap");
+    expect(screen.queryByTestId("instrument-selector")).toBeNull();
+    expect(screen.queryByTestId("practice-session")).toBeNull();
+  });
+});

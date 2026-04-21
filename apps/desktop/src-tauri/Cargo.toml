@@ -4,6 +4,19 @@ version = "0.1.0"
 description = "AI Music Companion — your intelligent practice partner"
 edition = "2021"
 
+# Keep this package out of the top-level workspace. The workspace hosts
+# `crates/ears` and `crates/brain`; this Tauri shell has its own build
+# graph (Tauri brings a big tree of dependencies we don't want resolved
+# for pure-Rust crate tests).
+[workspace]
+
+[lib]
+# Split the command surface out of the bin target so unit tests compile
+# without triggering `tauri::generate_context!` (which needs the packaged
+# icons and a fully-resolved config at compile time).
+name = "ai_music_companion"
+path = "src/lib.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -11,5 +24,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread"] }
+async-trait = "0.1"
 ears = { path = "../../../crates/ears" }
 brain = { path = "../../../crates/brain" }

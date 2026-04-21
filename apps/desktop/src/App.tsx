@@ -1,22 +1,21 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import InstrumentSelector from "./components/InstrumentSelector";
-import PitchDisplay from "./components/PitchDisplay";
+import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 
+/**
+ * App entry. Wires the pre-existing `audio-event` subscription from
+ * Phase 0 (so `PitchDisplay` keeps working inside `PracticeSession`)
+ * and hands rendering off to `PracticeShell`, which owns screen
+ * routing via the practice store.
+ *
+ * PR 1 note: the Phase-0 `ping` handshake banner has moved off the
+ * visible render path now that we're on the free-play shell. Real
+ * wiring for `phrase-detected` / `coaching-tip` events lands in PR 2.
+ */
 function App() {
-  const [backendResponse, setBackendResponse] = useState<string>("");
   const setEvent = useAudioStore((s) => s.setEvent);
   const setListening = useAudioStore((s) => s.setListening);
-
-  useEffect(() => {
-    invoke<string>("ping")
-      .then((response) => setBackendResponse(response))
-      .catch((err: unknown) =>
-        console.error("Failed to invoke ping:", err),
-      );
-  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -41,21 +40,7 @@ function App() {
     };
   }, [setEvent, setListening]);
 
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-8 bg-gray-900 text-white">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold">AI Music Companion</h1>
-        <p className="mt-2 text-sm text-gray-600">Phase 0 — Spike</p>
-        {backendResponse && (
-          <p className="mt-4 text-green-400" data-testid="backend-response">
-            Backend says: {backendResponse}
-          </p>
-        )}
-      </div>
-      <InstrumentSelector />
-      <PitchDisplay />
-    </main>
-  );
+  return <PracticeShell />;
 }
 
 export default App;
