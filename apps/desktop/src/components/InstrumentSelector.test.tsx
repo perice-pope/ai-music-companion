@@ -72,7 +72,8 @@ describe("InstrumentSelector", () => {
     // All 9 instruments should be rendered
     expect(INSTRUMENTS.length).toBe(9);
     for (const instrument of INSTRUMENTS) {
-      expect(screen.getByText(instrument.name)).toBeDefined();
+      const testId = `instrument-card-${instrument.name.toLowerCase().replace(/\s+/g, "-")}`;
+      expect(screen.getByTestId(testId)).toBeDefined();
     }
   });
 
@@ -82,7 +83,8 @@ describe("InstrumentSelector", () => {
     expect(screen.getAllByText("Brass").length).toBe(3);
     expect(screen.getAllByText("Strings").length).toBe(2);
     expect(screen.getAllByText("Woodwind").length).toBe(2);
-    expect(screen.getAllByText("Voice").length).toBe(1);
+    // Voice appears twice: as instrument name and as family badge (since Voice.family === "Voice")
+    expect(screen.getAllByText("Voice").length).toBe(2);
     expect(screen.getAllByText("Keyboard").length).toBe(1);
   });
 
