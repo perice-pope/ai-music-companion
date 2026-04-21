@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import InstrumentSelector, { INSTRUMENTS } from "./InstrumentSelector";
 import { useAudioStore } from "../stores/audioStore";
+import { usePracticeStore } from "../stores/practiceStore";
+
+const mockInvoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -35,6 +41,19 @@ describe("InstrumentSelector", () => {
       currentNote: null,
       isListening: false,
       selectedInstrument: null,
+    });
+    usePracticeStore.setState({
+      screen: "selector",
+      status: "idle",
+      sessionId: null,
+      instrumentName: null,
+      segmentId: null,
+      startedAtMs: null,
+      elapsedSecs: 0,
+      phrases: [],
+      tipQueue: [],
+      recap: null,
+      recapError: null,
     });
   });
 
@@ -134,5 +153,48 @@ describe("InstrumentSelector", () => {
   it("renders the section heading", () => {
     render(<InstrumentSelector />);
     expect(screen.getByText("Select Your Instrument")).toBeDefined();
+  });
+
+  it("Start Practice is disabled until an instrument is selected", () => {
+    render(<InstrumentSelector />);
+    const btn = screen.getByTestId("start-practice-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+
+    fireEvent.click(screen.getByTestId("instrument-card-trumpet"));
+    expect(
+      (screen.getByTestId("start-practice-button") as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("Start Practice invokes start_practice_session and navigates to session", async () => {
+    mockInvoke.mockResolvedValueOnce("new-session-id");
+    render(<InstrumentSelector />);
+    fireEvent.click(screen.getByTestId("instrument-card-violin"));
+    fireEvent.click(screen.getByTestId("start-practice-button"));
+
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
+        instrument: "Violin",
+        coachingEnabled: true,
+      });
+    });
+    await vi.waitFor(() => {
+      expect(usePracticeStore.getState().status).toBe("listening");
+    });
+    expect(usePracticeStore.getState().screen).toBe("session");
+    expect(usePracticeStore.getState().sessionId).toBe("new-session-id");
+  });
+
+  it("surfaces a backend error if start fails", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("mic busy"));
+    render(<InstrumentSelector />);
+    fireEvent.click(screen.getByTestId("instrument-card-piano"));
+    fireEvent.click(screen.getByTestId("start-practice-button"));
+
+    const err = await screen.findByTestId("start-error");
+    expect(err.textContent).toContain("mic busy");
+    // And we stayed on the selector screen.
+    expect(usePracticeStore.getState().screen).toBe("selector");
+    expect(usePracticeStore.getState().status).toBe("idle");
   });
 });

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
+import { usePracticeStore } from "../stores/practiceStore";
 
 /** All available instruments (hardcoded for Phase 1; will come from profiles later). */
 export const INSTRUMENTS: InstrumentInfo[] = [
@@ -39,6 +41,22 @@ function familyColor(family: string): string {
 export default function InstrumentSelector() {
   const selectedInstrument = useAudioStore((s) => s.selectedInstrument);
   const setInstrument = useAudioStore((s) => s.setInstrument);
+  const startSession = usePracticeStore((s) => s.startSession);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  const onStart = async () => {
+    if (!selectedInstrument) return;
+    setStartError(null);
+    setStarting(true);
+    try {
+      await startSession(selectedInstrument);
+    } catch (err) {
+      setStartError(String(err));
+    } finally {
+      setStarting(false);
+    }
+  };
 
   return (
     <section className="w-full max-w-3xl px-4" data-testid="instrument-selector">
@@ -102,6 +120,29 @@ export default function InstrumentSelector() {
             </button>
           );
         })}
+      </div>
+
+      {/* Start Practice — enabled only once an instrument is picked. */}
+      <div className="mt-6 flex flex-col items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void onStart()}
+          disabled={!selectedInstrument || starting}
+          data-testid="start-practice-button"
+          className={`rounded-full px-6 py-2 text-base font-semibold transition-colors
+            ${
+              !selectedInstrument || starting
+                ? "cursor-not-allowed bg-gray-700 text-gray-400"
+                : "bg-blue-600 text-white hover:bg-blue-500"
+            }`}
+        >
+          {starting ? "Starting…" : "Start Practice"}
+        </button>
+        {startError && (
+          <p className="text-sm text-red-400" role="alert" data-testid="start-error">
+            {startError}
+          </p>
+        )}
       </div>
     </section>
   );
