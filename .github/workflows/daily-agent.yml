@@ -11,10 +11,12 @@ name: Daily engineering agent
 
 on:
   schedule:
-    # 10:00 UTC = 05:00 EST (winter) / 06:00 EDT (summer).
-    # GitHub Actions only speaks UTC, so we accept the one-hour DST drift
-    # rather than maintain two crons.
-    - cron: '0 10 * * *'
+    # Every 6 hours — 04, 10, 16, 22 UTC. Maps to roughly 23:00 / 05:00 /
+    # 11:00 / 17:00 ET (±1h DST). The queue-full pre-flight below keeps
+    # this from flooding the review queue: at most N open drafts can
+    # coexist, so quadrupling the schedule just means work resumes
+    # sooner after you clear a PR.
+    - cron: '0 4,10,16,22 * * *'
   workflow_dispatch:
     # Lets you kick off a run manually from the Actions tab at any time.
     inputs:
@@ -30,6 +32,11 @@ on:
         options:
           - haiku
           - sonnet
+      max_open_drafts:
+        description: 'Skip this run if this many open agent drafts already exist (default 3; set 99 to force)'
+        required: false
+        type: string
+        default: '3'
 
 permissions:
   contents: write       # push the new branch
@@ -54,7 +61,42 @@ jobs:
           fetch-depth: 0
           ref: main
 
+      # Pre-flight: don't flood the review queue. Count the bot's open
+      # draft PRs; if it's at or above the cap, skip the run with a
+      # clean "notice" annotation so the Actions page shows why.
+      # Without this, 4 runs/day × N days of unreviewed work = PR
+      # avalanche and a brittle set of interdependent branches.
+      #
+      # Cap is a workflow_dispatch input (default 3). Set to 99 to
+      # force a run regardless.
+      - name: Queue-full pre-flight
+        id: queue_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # workflow_dispatch inputs come through as strings, and there's
+          # no `type: number` for that trigger (only for workflow_call).
+          # So validate and coerce to an integer before the -ge test,
+          # otherwise a typo like "three" blows up `test -ge` with
+          # "integer expression expected" and turns the run red.
+          THRESHOLD_RAW="${{ github.event.inputs.max_open_drafts || '3' }}"
+          if [[ "$THRESHOLD_RAW" =~ ^[0-9]+$ ]]; then
+            THRESHOLD="$THRESHOLD_RAW"
+          else
+            echo "::warning::Invalid max_open_drafts='$THRESHOLD_RAW' (must be a non-negative integer). Falling back to 3."
+            THRESHOLD=3
+          fi
+          OPEN=$(gh pr list --draft --author '@me' --state open --json number -q 'length')
+          echo "Open agent draft PRs: $OPEN  (cap: $THRESHOLD)"
+          if [ "$OPEN" -ge "$THRESHOLD" ]; then
+            echo "::notice::Skipping run — review queue full ($OPEN >= $THRESHOLD open drafts). Clear some PRs, then re-dispatch or wait for the next cron."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Rust (stable)
+        if: steps.queue_check.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -66,6 +108,7 @@ jobs:
       # alsa-sys (pulled by cpal in crates/ears) needs libasound;
       # reqwest native-tls needs libssl.
       - name: Install system dependencies
+        if: steps.queue_check.outputs.skip != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -73,14 +116,17 @@ jobs:
             libssl-dev
 
       - name: Install Node + pnpm
+        if: steps.queue_check.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - uses: pnpm/action-setup@v4
+        if: steps.queue_check.outputs.skip != 'true'
         with:
           version: 9
 
       - name: Cache cargo registry + target
+        if: steps.queue_check.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -98,6 +144,7 @@ jobs:
       # versions. Bump these when a newer snapshot is stable.
       - name: Resolve model
         id: model
+        if: steps.queue_check.outputs.skip != 'true'
         run: |
           CHOICE="${{ github.event.inputs.model || 'haiku' }}"
           case "$CHOICE" in
@@ -109,6 +156,7 @@ jobs:
 
       - name: Run the engineering agent
         id: agent
+        if: steps.queue_check.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -214,10 +262,17 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "### Daily agent run: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "### Daily agent run: $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.queue_check.outputs.skip }}" = "true" ]; then
+            echo "**Skipped — review queue at cap.**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Clear some open draft PRs (merge, close, or convert to ready), then re-dispatch or wait for the next scheduled run." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "Open draft PR(s) by this author (may include older drafts — check CI status on each):" >> $GITHUB_STEP_SUMMARY
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
