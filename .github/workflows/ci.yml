@@ -97,7 +97,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/desktop
-        run: pnpm install --frozen-lockfile || pnpm install
+        # --frozen-lockfile with no fallback: if pnpm-lock.yaml drifts from
+        # package.json (somebody updated a dep and forgot to commit the lock),
+        # CI fails loudly instead of silently regenerating the lock mid-run.
+        run: pnpm install --frozen-lockfile
 
       - name: Lint
         working-directory: apps/desktop
