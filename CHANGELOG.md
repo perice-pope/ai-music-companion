@@ -1,3 +1,9 @@
+## [1.9.0](https://github.com/perice-pope/ai-music-companion/compare/v1.8.0...v1.9.0) (2026-04-21)
+
+### Features
+
+* **ci:** throttle daily agent — 4×/day with 3-open-draft cap (clean rebase) ([#56](https://github.com/perice-pope/ai-music-companion/issues/56)) ([a8dade4](https://github.com/perice-pope/ai-music-companion/commit/a8dade4c4b8f5f43bcc5d106dd52ebc07eed00a8)), closes [#3](https://github.com/perice-pope/ai-music-companion/issues/3) [#4-10](https://github.com/perice-pope/ai-music-companion/issues/4-10)
+
 ## [1.8.0](https://github.com/perice-pope/ai-music-companion/compare/v1.7.0...v1.8.0) (2026-04-21)
 
 ### Features
