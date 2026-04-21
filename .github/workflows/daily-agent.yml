@@ -119,8 +119,12 @@ jobs:
             # Workflow
 
             1. `git pull origin main` to make sure you're current.
-            2. Read `CLAUDE.md`, `ai-music-companion-architecture-v2.md`, and
-               `docs/testing-standards.md` to refresh context.
+            2. Read `CLAUDE.md` first (small, ~3KB) for the project rules.
+               Only read the larger spec docs when you actually need them for
+               the picked story: `docs/architecture/architecture-v2.md`,
+               `docs/architecture/README.md`, `docs/testing-standards.md`,
+               `docs/design/decisions-log.md`. Don't greedily preload —
+               it wastes input tokens.
             3. Optional: if `${{ inputs.focus }}` is set, prioritize that issue.
             4. `gh issue list --state open --label phase-1 --json number,title`
                to see the backlog. Filter out anything with an open PR.

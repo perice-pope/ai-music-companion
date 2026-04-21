@@ -51,3 +51,18 @@ apps/desktop/src-tauri/icons/
 coverage/
 *.lcov
 tarpaulin-report.html
+
+# Claude Code local agent state (sessions, worktrees, transcripts).
+# Must never be committed — nested git repos would register as broken
+# submodules and run logs are noisy / potentially sensitive.
+.claude/
+
+# Locally-cloned sibling repos placed under this project root
+# (e.g. the pitch-deck repo cloned here for cross-working).
+# They have their own history.
+ai-music-companion-pitch/
+
+# Pitch-deck / strategy drafts that live in the pitch repo
+# (perice-pope/ai-music-companion-pitch), not this one.
+/pitch-deck-v2.html
+/AI_Music_Companion_Platform_Strategy_v3.docx
