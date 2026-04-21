@@ -21,7 +21,7 @@ pub enum PhraseError {
 }
 
 /// Configuration for phrase boundary detection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhraseConfig {
     /// Minimum silence duration (seconds) to split phrases. Default: 0.3 (300ms).
     pub silence_gap_secs: f64,
@@ -52,7 +52,7 @@ impl PhraseConfig {
 }
 
 /// Summary statistics for pitches within a phrase.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchStats {
     /// Mean pitch in Hz across all voiced events.
     pub mean_hz: f64,
@@ -67,7 +67,7 @@ pub struct PitchStats {
 }
 
 /// Summary statistics for dynamics (amplitude) within a phrase.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamicsStats {
     /// Mean amplitude across all events in the phrase.
     pub mean_amplitude: f64,
@@ -80,7 +80,7 @@ pub struct DynamicsStats {
 }
 
 /// Summary of a completed musical phrase.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhraseSummary {
     /// Index of this phrase within the session (0-based).
     pub phrase_index: usize,

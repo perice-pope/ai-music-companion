@@ -73,6 +73,23 @@ Silence is honest. Generic filler is a little lie that compounds.
 
 ---
 
+## 2026-04-20 — PR 0 scope: in-memory data model first, SQLite schema grows later
+
+**Decision:** PR 0 lands the new `Participant → InstrumentSegment` shape in the Rust types AND on the `CompletedSession` public surface, but does NOT grow the SQLite schema with new `participants` / `instrument_segments` tables. Persistence still flows through the unchanged `SessionRecap` JSON blob stored on the existing `sessions` row.
+
+**Rejected alternative:** Do the schema migration in this PR too, as the original brief described. ~200 extra lines of SQL + migration + tests + round-trip fidelity coverage.
+
+**Reasoning:** The schema change is an *optimization* on top of a working system. The recap blob already preserves what a history UI needs (phrase count, duration, instrument, tips). Growing the schema lets us query phrases directly (useful for analytics / progress dashboards), but NO current consumer needs that — story #17 (practice history dashboard) is the first one that would, and it's not started yet. Shipping a smaller, lower-risk PR 0 unblocks PR 1-3 of the free-play feature sooner; the schema PR becomes a targeted follow-up that gets its own review focus.
+
+**Consequence:** 
+- A completed session round-trips through JSON, not through typed SQL rows. If you're reading phrase stats for analytics, you pay a JSON parse.
+- When we ship the schema growth PR later, the `load()` path will prefer typed tables when present and fall back to lazy JSON parse for old-shape rows.
+- No DB migration risk in this PR — `sessions` schema unchanged.
+
+**Related:** [Story #14 design §2.5](./story-14-free-play-mode.md), Story #17 (practice history UI) will trigger the follow-up schema PR.
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:
