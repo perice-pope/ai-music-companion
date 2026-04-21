@@ -1,3 +1,10 @@
+## [1.6.0](https://github.com/perice-pope/ai-music-companion/compare/v1.5.3...v1.6.0) (2026-04-21)
+
+### Features
+
+* **ci:** default daily agent to Haiku, allow Sonnet via manual dispatch ([#47](https://github.com/perice-pope/ai-music-companion/issues/47)) ([f555c6f](https://github.com/perice-pope/ai-music-companion/commit/f555c6fd5f79ec8c35f1d24732d83eb095f4341e))
+* **story-14:** PR 1 — scaffolding, timer, mock pipeline ([#48](https://github.com/perice-pope/ai-music-companion/issues/48)) ([b2ada68](https://github.com/perice-pope/ai-music-companion/commit/b2ada68843023f7e4ce727a2fc29e934496b825f))
+
 ## [1.5.3](https://github.com/perice-pope/ai-music-companion/compare/v1.5.2...v1.5.3) (2026-04-21)
 
 ### Bug Fixes
