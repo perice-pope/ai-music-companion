@@ -56,8 +56,9 @@ jobs:
             # Read first (in order)
 
             - `CLAUDE.md` — project rules, latency budget, audio-thread discipline
-            - `ai-music-companion-architecture-v2.md` — current architecture spec
-            - `ai-music-companion-architecture.md` — original spec (for drift tracking)
+            - `docs/architecture/architecture-v2.md` — current architecture spec
+            - `docs/architecture/architecture-v1.md` — original spec (for drift tracking)
+            - `docs/architecture/platform-modules-addendum.md` — modular platform addendum to v2
             - `docs/testing-standards.md` — testing bar we hold ourselves to
             - `docs/design/decisions-log.md` — settled design decisions; don't re-litigate
 

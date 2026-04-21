@@ -26,7 +26,7 @@ jobs:
 
       # TODO: Replace with actual Claude API call to generate story
       # The spec author agent reads:
-      #   - ai-music-companion-architecture.md
+      #   - docs/architecture/architecture-v2.md
       #   - Completed stories (closed issues)
       #   - .github/ISSUE_TEMPLATE/story.md (template)
       # And creates a new issue following the template.
