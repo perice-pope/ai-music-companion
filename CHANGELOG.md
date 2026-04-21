@@ -1,3 +1,9 @@
+## [1.8.0](https://github.com/perice-pope/ai-music-companion/compare/v1.7.0...v1.8.0) (2026-04-21)
+
+### Features
+
+* **story-16:** Online DTW score follower — Part 1 ([#53](https://github.com/perice-pope/ai-music-companion/issues/53)) ([6943581](https://github.com/perice-pope/ai-music-companion/commit/69435810e3421d85b864d802f898e70e3944f973)), closes [#16](https://github.com/perice-pope/ai-music-companion/issues/16) [#16](https://github.com/perice-pope/ai-music-companion/issues/16)
+
 ## [1.7.0](https://github.com/perice-pope/ai-music-companion/compare/v1.6.0...v1.7.0) (2026-04-21)
 
 ### Features
