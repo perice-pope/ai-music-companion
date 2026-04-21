@@ -1,3 +1,9 @@
+## [1.5.3](https://github.com/perice-pope/ai-music-companion/compare/v1.5.2...v1.5.3) (2026-04-21)
+
+### Bug Fixes
+
+* **ci:** commit pnpm-lock.yaml, drop sloppy --frozen-lockfile fallback ([#46](https://github.com/perice-pope/ai-music-companion/issues/46)) ([4861748](https://github.com/perice-pope/ai-music-companion/commit/4861748bc01046bef9b0285aa6837018745dc54d)), closes [#44](https://github.com/perice-pope/ai-music-companion/issues/44)
+
 ## [1.5.2](https://github.com/perice-pope/ai-music-companion/compare/v1.5.1...v1.5.2) (2026-04-21)
 
 ### Performance Improvements
