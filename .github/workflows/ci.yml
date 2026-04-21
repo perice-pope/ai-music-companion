@@ -9,6 +9,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental compilation is a waste on fresh CI runners — it adds disk
+  # overhead for no reuse benefit. Also cuts target/ cache size noticeably.
+  CARGO_INCREMENTAL: 0
+  # Strip non-essential debug info from dev builds for faster compile.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -22,42 +27,49 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # Swatinem/rust-cache is purpose-built for Rust: it fingerprints the
+      # workspace correctly, trims target/ so the cache stays under GitHub's
+      # 10GB limit, and invalidates on rustc/Cargo.lock changes cleanly.
+      # Much better hit rate than raw actions/cache for Rust work.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
+      # Trim the apt install list aggressively. The original workflow
+      # installed 7 packages (12 min cold) for a Tauri desktop build — but
+      # this job only runs `cargo test --workspace` against library crates
+      # (brain + ears). Tauri deps aren't exercised here.
+      #
+      # Keep:
+      #   - libasound2-dev  — cpal-sys links against libasound for mic capture
+      #   - libssl-dev       — reqwest (used by brain::coaching) links native-tls → openssl
+      #
+      # Drop (Tauri-only, saved ~10 min on cold cache):
+      #   libwebkit2gtk-4.1-dev, libappindicator3-dev, librsvg2-dev,
+      #   patchelf, libgtk-3-dev
+      #
+      # When the full Tauri app build lands (Story #14 PR 1+), it'll need
+      # its own job with the full dependency list.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev \
-            libasound2-dev
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libssl-dev
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
-      - name: Security audit
-        run: |
-          cargo install cargo-audit --locked || true
-          cargo audit
+      # Security audit moved to its own weekly workflow (.github/workflows/
+      # security-audit.yml). Running it on every PR added 3-5 min of
+      # cargo-install overhead for a scan that only changes when an
+      # advisory is published. Weekly scheduling matches industry norm
+      # and keeps the PR-blocking path lean.
 
   frontend:
     name: Frontend checks
@@ -74,6 +86,14 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 9
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
         working-directory: apps/desktop
@@ -101,10 +121,19 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        # Share the cache key with the rust job so we don't pay
+        # compilation twice when the rust job already built everything.
+        with:
+          shared-key: rust-workspace
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libssl-dev
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libssl-dev
 
       - name: Run benchmarks
         run: cargo bench --workspace 2>&1 || echo "No benchmarks yet — skipping"

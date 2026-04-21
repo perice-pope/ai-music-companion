@@ -1,0 +1,46 @@
+name: Security audit
+
+# Runs `cargo audit` weekly (Mondays 12:00 UTC) and on demand. Moved
+# out of the per-PR CI to keep the PR-blocking path lean — `cargo
+# install cargo-audit` was eating 3-5 min on cold-cache builds, and
+# the RustSec advisory set only changes when a new advisory is
+# published (not when a PR lands). Weekly cadence matches industry
+# norms (GitHub Dependabot, Snyk, etc).
+#
+# If the scan finds a vulnerability it opens an issue labeled
+# `security` so the daily-agent's tier-3 triage picks it up.
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustsec/audit-check pulls a prebuilt cargo-audit binary — no
+      # from-source compilation. Roughly 10 seconds of setup vs. the
+      # 3-5 min `cargo install cargo-audit` was costing us.
+      - name: Run cargo audit
+        id: audit
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Security audit: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.audit.outcome }}" = "success" ]; then
+            echo "✅ No known vulnerabilities." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Vulnerabilities detected.** See job log." >> $GITHUB_STEP_SUMMARY
+          fi
