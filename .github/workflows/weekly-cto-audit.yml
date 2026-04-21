@@ -125,14 +125,39 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "### Weekly CTO audit: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          DATE=$(date -u +%Y-%m-%d)
+          echo "### Weekly CTO audit: ${DATE}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Issue(s) opened by this run:" >> $GITHUB_STEP_SUMMARY
-          gh issue list --state open --label cto-audit --limit 1 --json number,title,url \
-            -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
+          echo "Today's audit issue (if created):" >> $GITHUB_STEP_SUMMARY
+          # Filter strictly by today's title so reruns don't falsely surface
+          # an older audit as this run's output.
+          gh issue list --state open --label cto-audit --limit 50 --json number,title,url \
+            -q "[.[] | select(.title == \"CTO audit — ${DATE}\")] | .[] | \"- #\(.number) \(.title) — \(.url)\"" \
+            >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Open hotspot issues (for daily-agent pickup):" >> $GITHUB_STEP_SUMMARY
           gh issue list --state open --label hotspot --limit 10 --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Deterministic post-check: the agent may report success from its own
+      # perspective while having silently failed to create the issue (bad
+      # gh auth, transient API error, model ignoring the instruction). Here
+      # we verify the invariant — an open issue titled `CTO audit —
+      # YYYY-MM-DD` for today must exist — and fail the job if not. Turns
+      # the prompt instruction from a hope into a gate.
+      - name: Fail if today's CTO audit issue was not created
+        if: steps.audit.conclusion == 'success'
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          COUNT=$(gh issue list --state open --label cto-audit --limit 50 --json title \
+            -q "[.[] | select(.title == \"CTO audit — ${DATE}\")] | length")
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "Expected issue 'CTO audit — ${DATE}' was not found." >&2
+            echo "The audit step reported success but produced no tracking issue." >&2
+            exit 1
+          fi
+          echo "Verified: audit issue for ${DATE} exists."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
