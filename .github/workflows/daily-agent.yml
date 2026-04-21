@@ -218,7 +218,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Draft PR(s) opened by this run (check CI status on each):" >> $GITHUB_STEP_SUMMARY
+          echo "Open draft PR(s) by this author (may include older drafts — check CI status on each):" >> $GITHUB_STEP_SUMMARY
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
         env:
