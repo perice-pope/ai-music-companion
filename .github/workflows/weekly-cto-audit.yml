@@ -1,0 +1,138 @@
+name: Weekly CTO audit
+
+# Runs every Sunday and produces a founder-facing audit of architecture
+# drift, code-quality hotspots, audio-thread discipline, and recommended
+# next moves. Output is a GitHub Issue titled `CTO audit — YYYY-MM-DD`
+# with the full report in the body and a `cto-audit` label.
+#
+# The daily engineering agent picks up issues labeled `hotspot` or
+# `priority:high` during its triage, so weekly findings flow naturally
+# into the next day's work without manual shepherding.
+
+on:
+  schedule:
+    # Sundays at 14:00 UTC. Picked deliberately outside of the
+    # daily-agent window (10:00 UTC) to avoid fighting for runners.
+    - cron: '0 14 * * 0'
+  workflow_dispatch:
+    # Manual trigger for when you want an audit on demand.
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write       # required by anthropics/claude-code-action@v1
+                        # to fetch an OIDC token for GitHub API calls
+
+concurrency:
+  group: weekly-cto-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Produce weekly CTO audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Run the audit
+        id: audit
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --permission-mode acceptEdits
+            --allowed-tools Bash,Read,Grep,Glob,Agent
+            --max-turns 120
+          prompt: |
+            Act as a CTO auditing the Musa / AI Music Companion codebase on `main`.
+            Produce a concise founder-facing report AND open a GitHub Issue
+            with it as the body.
+
+            # Read first (in order)
+
+            - `CLAUDE.md` — project rules, latency budget, audio-thread discipline
+            - `ai-music-companion-architecture-v2.md` — current architecture spec
+            - `ai-music-companion-architecture.md` — original spec (for drift tracking)
+            - `docs/testing-standards.md` — testing bar we hold ourselves to
+            - `docs/design/decisions-log.md` — settled design decisions; don't re-litigate
+
+            # Audit axes
+
+            ## 1. Architecture drift
+            Walk the v2 spec claim by claim. For each:
+            `Built ✅ / Partial ⚠️ / Missing ❌ / Diverged 🔀` with file:line evidence.
+
+            ## 2. Code-quality hotspots
+            Up to 10 most important CTO-level issues. Look for:
+              - `unwrap()` / `expect()` in library (non-test) code
+              - Allocations in `crates/ears` audio-thread hot paths
+                (`Vec::push`, `Box::new`, `format!`, `.to_string()`, etc.)
+              - `unsafe` without `// SAFETY:` comment
+              - Public items missing `///` docs
+              - Functions > 80 lines or nesting > 4 deep
+              - Commented-out code, `println!`/`dbg!` in production
+              - Tests asserting `.is_ok()` without checking the value
+              - `any` in TypeScript
+              - TODO/FIXME with a real age
+              - Error messages that aren't actionable
+
+            For each: location (file:line), 1-sentence problem, why it
+            matters (1 sentence), suggested fix (1 sentence).
+
+            ## 3. Audio-thread discipline audit
+            Explicit verdict: `Upheld ✅` or `Violated ❌`. Cite lines if violated.
+
+            ## 4. Readability sample
+            Pick ONE Rust module and ONE React component. Rate each on
+            Naming / Docs / Function length / Error handling, 1-5 scale,
+            one-sentence reasoning per rating.
+
+            ## 5. Next-week recommendation
+            Ranked list of 5 things you'd do with one week of engineering time.
+            Be opinionated.
+
+            ## 6. TL;DR
+            Three sentences. Maturity level. Biggest risk. Ready to invite
+            a second engineer into, yes/no.
+
+            # After writing the report
+
+            Write it to /tmp/audit.md, then open the report as a GitHub Issue:
+
+            DATE=$(date -u +%Y-%m-%d)
+            gh label create "cto-audit" --color "5319e7" --description "Weekly CTO audit reports" --force
+            gh issue create \
+              --title "CTO audit — $DATE" \
+              --label "cto-audit" \
+              --body-file /tmp/audit.md
+
+            ALSO: for any hotspot in section 2 severe enough to track, open
+            a separate issue labeled `hotspot` — but only for NEW findings
+            (check `gh issue list --state open --label hotspot --json title`
+            first; don't re-file existing ones).
+
+            # Scope control
+
+            - Skimmable. A founder reads this on their phone Sunday evening.
+            - No hedging. If something is great, say so. If embarrassing, say so.
+            - If an axis has no material findings, say "no material findings."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Weekly CTO audit: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Issue(s) opened by this run:" >> $GITHUB_STEP_SUMMARY
+          gh issue list --state open --label cto-audit --limit 1 --json number,title,url \
+            -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Open hotspot issues (for daily-agent pickup):" >> $GITHUB_STEP_SUMMARY
+          gh issue list --state open --label hotspot --limit 10 --json number,title,url \
+            -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
