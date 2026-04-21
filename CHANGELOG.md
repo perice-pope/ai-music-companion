@@ -1,3 +1,9 @@
+## [1.5.2](https://github.com/perice-pope/ai-music-companion/compare/v1.5.1...v1.5.2) (2026-04-21)
+
+### Performance Improvements
+
+* **ci:** trim apt install list + better caching (~10min off cold runs) ([#44](https://github.com/perice-pope/ai-music-companion/issues/44)) ([ae85d01](https://github.com/perice-pope/ai-music-companion/commit/ae85d01ee8389f9a71129e2423b8be75f1350b4d)), closes [#14](https://github.com/perice-pope/ai-music-companion/issues/14)
+
 ## [1.5.1](https://github.com/perice-pope/ai-music-companion/compare/v1.5.0...v1.5.1) (2026-04-21)
 
 ### Bug Fixes
