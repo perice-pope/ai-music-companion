@@ -59,6 +59,20 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Same apt deps as the main ci.yml workflow so the
+      # "Enforce CI gates on agent output" step can actually build
+      # the workspace. alsa-sys (pulled by cpal in the ears crate)
+      # needs libasound; reqwest's native-tls needs libssl. Without
+      # these the gates step panics on build.rs before running a
+      # single test, which turns the whole daily run red even if the
+      # agent's output is fine.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libssl-dev
+
       - name: Install Node + pnpm
         uses: actions/setup-node@v4
         with:
