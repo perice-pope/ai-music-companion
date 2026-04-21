@@ -95,4 +95,33 @@ describe("PracticeSession", () => {
     });
     expect(usePracticeStore.getState().recap?.phrase_count).toBe(2);
   });
+
+  it("renders the coaching tip panel", () => {
+    render(<PracticeSession />);
+    expect(screen.getByTestId("coaching-tip-panel-empty")).toBeDefined();
+  });
+
+  it("displays coaching tips when they are queued", async () => {
+    render(<PracticeSession />);
+
+    // Queue a coaching tip
+    usePracticeStore.setState({
+      tipQueue: [
+        {
+          id: "test-tip",
+          tip: {
+            text: "Keep steady breathing",
+            severity: "suggestion",
+            category: "technique",
+          },
+          receivedAt: Date.now(),
+          phraseIndex: 0,
+        },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(screen.getByText("Keep steady breathing")).toBeDefined();
+    });
+  });
 });

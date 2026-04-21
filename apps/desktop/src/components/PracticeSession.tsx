@@ -3,15 +3,12 @@ import { usePracticeStore } from "../stores/practiceStore";
 import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
+import CoachingTipPanel from "./CoachingTipPanel";
 import { INSTRUMENTS } from "./InstrumentSelector";
 
 /**
- * Active-session screen: timer + pitch display + end button, with a
+ * Active-session screen: timer + pitch display + coaching tips, with a
  * small header dropdown for mid-session instrument switching.
- *
- * PR 1 note: the `CoachingTipPanel` component (design doc §2
- * component tree) is intentionally deferred to PR 2. This component
- * only scaffolds the layout that panel will drop into.
  */
 export default function PracticeSession() {
   const instrumentName = usePracticeStore((s) => s.instrumentName);
@@ -91,8 +88,11 @@ export default function PracticeSession() {
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col items-center justify-center gap-8">
+      <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
         <PitchDisplay />
+        <div className="hidden lg:block">
+          <CoachingTipPanel />
+        </div>
       </div>
     </main>
   );
