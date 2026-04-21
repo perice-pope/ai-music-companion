@@ -8,6 +8,7 @@
 //! - Session recording and persistence (SQLite-backed)
 
 pub mod coaching;
+pub mod follower;
 pub mod phrase;
 pub mod score;
 pub mod scoring;
