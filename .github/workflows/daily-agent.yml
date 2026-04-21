@@ -27,6 +27,8 @@ permissions:
   contents: write       # push the new branch
   pull-requests: write  # open the draft PR
   issues: read          # read the story backlog
+  id-token: write       # required by anthropics/claude-code-action@v1
+                        # to fetch an OIDC token for GitHub API calls
 
 concurrency:
   group: daily-agent
