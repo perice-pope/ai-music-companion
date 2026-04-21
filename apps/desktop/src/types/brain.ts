@@ -110,3 +110,29 @@ export interface SegmentChangedPayload {
   /** RFC 3339 timestamp string. */
   started_at: string;
 }
+
+/** Session summary for history listing. Matches `commands::SessionSummaryDto`. */
+export interface SessionSummaryDto {
+  id: string;
+  instrument: string;
+  started_at: string; // RFC 3339
+  duration_secs: number;
+  phrase_count: number;
+}
+
+/** Full session with recap for detail view. Matches `commands::StoredSessionDto`. */
+export interface StoredSessionDto {
+  id: string;
+  started_at: string; // RFC 3339
+  ended_at: string; // RFC 3339
+  recap: SessionRecap;
+}
+
+/** Practice statistics dashboard. Matches `commands::PracticeStatsDto`. */
+export interface PracticeStatsDto {
+  total_sessions: number;
+  total_time_secs: number;
+  sessions_this_week: number;
+  avg_session_length_secs: number;
+  trend: "up" | "down" | "stable";
+}

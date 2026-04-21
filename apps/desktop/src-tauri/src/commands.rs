@@ -11,13 +11,17 @@
 //! PR 3 replaces the mocks with real implementations behind the same
 //! trait (`CoachingService`) and [`brain::session::RecapGenerator`].
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use brain::coaching::{CoachingCategory, CoachingSeverity, CoachingTip, SessionContext};
 use brain::session::{
-    CompletedSession, RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder,
+    CompletedSession, RecapGenerator, RecapInput, SessionError, SessionId, SessionRecap,
+    SessionRecorder,
 };
+use brain::stats::PracticeStats;
+use brain::store::{SessionStore, SessionSummary, StoredSession};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime, State};
@@ -50,6 +54,75 @@ pub struct SegmentChangedPayload {
     pub started_at: DateTime<Utc>,
 }
 
+/// IPC representation of a session summary for history listing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionSummaryDto {
+    pub id: String,
+    pub instrument: String,
+    pub started_at: DateTime<Utc>,
+    pub duration_secs: f64,
+    pub phrase_count: usize,
+}
+
+impl From<SessionSummary> for SessionSummaryDto {
+    fn from(s: SessionSummary) -> Self {
+        Self {
+            id: s.id.as_str().to_owned(),
+            instrument: s.instrument,
+            started_at: s.started_at,
+            duration_secs: s.duration_secs,
+            phrase_count: s.phrase_count,
+        }
+    }
+}
+
+/// IPC representation of a full session with recap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSessionDto {
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub recap: SessionRecap,
+}
+
+impl From<StoredSession> for StoredSessionDto {
+    fn from(s: StoredSession) -> Self {
+        Self {
+            id: s.id.as_str().to_owned(),
+            started_at: s.started_at,
+            ended_at: s.ended_at,
+            recap: s.recap,
+        }
+    }
+}
+
+/// IPC representation of practice statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PracticeStatsDto {
+    pub total_sessions: usize,
+    pub total_time_secs: f64,
+    pub sessions_this_week: usize,
+    pub avg_session_length_secs: f64,
+    pub trend: String,
+}
+
+impl From<PracticeStats> for PracticeStatsDto {
+    fn from(s: PracticeStats) -> Self {
+        let trend = match s.trend {
+            brain::stats::Trend::Up => "up",
+            brain::stats::Trend::Down => "down",
+            brain::stats::Trend::Stable => "stable",
+        };
+        Self {
+            total_sessions: s.total_sessions,
+            total_time_secs: s.total_time_secs,
+            sessions_this_week: s.sessions_this_week,
+            avg_session_length_secs: s.avg_session_length_secs,
+            trend: trend.to_owned(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -71,6 +144,8 @@ pub enum CommandError {
     UnknownInstrument(String),
     #[error("recorder error: {0}")]
     Recorder(#[from] SessionError),
+    #[error("session store error: {0}")]
+    Store(#[from] brain::store::StoreError),
 }
 
 impl CommandError {
@@ -232,22 +307,35 @@ pub struct AppState {
     active_session: Mutex<Option<ActiveSession>>,
     coaching_factory: Arc<dyn Fn() -> Arc<dyn CoachingService> + Send + Sync>,
     recap_generator: Arc<dyn RecapGenerator>,
+    session_store: SessionStore,
 }
 
 impl AppState {
-    /// Production constructor — mocks everywhere in PR 1. PR 3 adds a
-    /// variant that swaps in the real coaching engine when an API key
-    /// is configured.
+    /// Production constructor — opens the SessionStore at the platform
+    /// default location and wires coaching.
     pub fn new() -> Self {
-        Self::with_mocks()
+        let session_store = SessionStore::open(&SessionStore::default_path().unwrap_or_else(|_| {
+            // Fallback: use in-memory if default path unavailable
+            // (extremely rare — headless/no data dir).
+            std::path::PathBuf::from(":memory:")
+        }))
+        .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
+
+        Self {
+            active_session: Mutex::new(None),
+            coaching_factory: Arc::new(|| Arc::new(MockCoachingService::new())),
+            recap_generator: Arc::new(MockRecapGenerator),
+            session_store,
+        }
     }
 
-    /// Wire entirely with mocks. Used by tests and by PR 1 `main.rs`.
+    /// Wire entirely with mocks and in-memory store. Used by tests.
     pub fn with_mocks() -> Self {
         Self {
             active_session: Mutex::new(None),
             coaching_factory: Arc::new(|| Arc::new(MockCoachingService::new())),
             recap_generator: Arc::new(MockRecapGenerator),
+            session_store: SessionStore::in_memory().expect("in-memory store must succeed"),
         }
     }
 
@@ -429,6 +517,53 @@ fn empty_state_recap() -> SessionRecap {
 }
 
 // ---------------------------------------------------------------------------
+// History command implementations (Story #17)
+// ---------------------------------------------------------------------------
+
+/// Pure implementation of `get_session_history`.
+///
+/// Returns filtered session summaries. If `instrument_filter` is None,
+/// all sessions are returned. If date range is None, no date filtering.
+pub fn get_session_history_impl(
+    state: &AppState,
+    instrument_filter: Option<String>,
+    start_date: Option<DateTime<Utc>>,
+    end_date: Option<DateTime<Utc>>,
+) -> Result<Vec<SessionSummaryDto>, CommandError> {
+    let sessions = if let Some(instrument) = instrument_filter {
+        state.session_store.list_by_instrument(Some(&instrument))?
+    } else if start_date.is_some() || end_date.is_some() {
+        state.session_store.list_by_date_range(start_date, end_date)?
+    } else {
+        // No filters — return all sessions, reasonable limit for UI
+        state.session_store.list_recent(1000)?
+    };
+
+    Ok(sessions.into_iter().map(SessionSummaryDto::from).collect())
+}
+
+/// Pure implementation of `get_session_detail`.
+pub fn get_session_detail_impl(
+    state: &AppState,
+    session_id: String,
+) -> Result<StoredSessionDto, CommandError> {
+    use brain::session::SessionId;
+    let id = SessionId::from_str(&session_id)
+        .map_err(|_| CommandError::Store(brain::store::StoreError::NotFound(session_id)))?;
+    let session = state.session_store.load(id)?;
+    Ok(StoredSessionDto::from(session))
+}
+
+/// Pure implementation of `get_practice_stats`.
+pub fn get_practice_stats_impl(
+    state: &AppState,
+) -> Result<PracticeStatsDto, CommandError> {
+    let all_sessions = state.session_store.list_recent(10000)?;
+    let stats = PracticeStats::calculate(&all_sessions, Utc::now());
+    Ok(PracticeStatsDto::from(stats))
+}
+
+// ---------------------------------------------------------------------------
 // Tauri command wrappers
 // ---------------------------------------------------------------------------
 
@@ -492,6 +627,37 @@ pub async fn end_practice_session<R: Runtime>(
 #[tauri::command]
 pub fn list_instruments() -> Result<Vec<InstrumentInfo>, String> {
     Ok(list_instruments_impl())
+}
+
+/// Get filtered session history for the history page.
+///
+/// If `instrument_filter` is provided, only sessions with that instrument
+/// are returned. If `start_date` and `end_date` are provided, only sessions
+/// within that range are returned. Returns in reverse chronological order.
+#[tauri::command]
+pub fn get_session_history(
+    state: State<'_, AppState>,
+    instrument_filter: Option<String>,
+    start_date: Option<DateTime<Utc>>,
+    end_date: Option<DateTime<Utc>>,
+) -> Result<Vec<SessionSummaryDto>, String> {
+    get_session_history_impl(state.inner(), instrument_filter, start_date, end_date)
+        .map_err(|e| e.to_frontend())
+}
+
+/// Get full details (recap) for a specific session.
+#[tauri::command]
+pub fn get_session_detail(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<StoredSessionDto, String> {
+    get_session_detail_impl(state.inner(), session_id).map_err(|e| e.to_frontend())
+}
+
+/// Get practice statistics (total sessions, total time, trends, etc.).
+#[tauri::command]
+pub fn get_practice_stats(state: State<'_, AppState>) -> Result<PracticeStatsDto, String> {
+    get_practice_stats_impl(state.inner()).map_err(|e| e.to_frontend())
 }
 
 // ===========================================================================

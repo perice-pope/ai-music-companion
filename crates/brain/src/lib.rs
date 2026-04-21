@@ -13,6 +13,7 @@ pub mod phrase;
 pub mod score;
 pub mod scoring;
 pub mod session;
+pub mod stats;
 pub mod store;
 
 #[cfg(test)]

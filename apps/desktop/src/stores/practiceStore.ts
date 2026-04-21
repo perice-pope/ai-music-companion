@@ -8,10 +8,10 @@ import type {
 
 /**
  * Screen routing enum — keeps Free Play as a state-machine in the
- * store instead of pulling in react-router for three screens (see
+ * store instead of pulling in react-router for four screens (see
  * design doc §2).
  */
-export type AppScreen = "selector" | "session" | "recap";
+export type AppScreen = "selector" | "session" | "recap" | "history";
 
 /**
  * Finite lifecycle states for a session. `recap_ready` exists so we
@@ -72,6 +72,7 @@ export interface PracticeState {
   tick: () => void;
   returnToSelector: () => void;
   setCoachingEnabled: (on: boolean) => void;
+  goToHistory: () => void;
 }
 
 /** localStorage key for the coaching-on/off preference. */
@@ -243,4 +244,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     saveCoachingPref(on);
     set({ coachingEnabled: on });
   },
+
+  goToHistory: () =>
+    set({
+      screen: "history",
+    }),
 }));
