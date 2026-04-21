@@ -22,6 +22,14 @@ on:
         description: 'Optional: force the agent to work on a specific issue number (leave blank to auto-pick)'
         required: false
         type: string
+      model:
+        description: 'Model: haiku (fast/cheap/default, fits tier-1 TPM) or sonnet (sharp, needs tier 2+)'
+        required: false
+        type: choice
+        default: haiku
+        options:
+          - haiku
+          - sonnet
 
 permissions:
   contents: write       # push the new branch
@@ -68,6 +76,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # Resolve the model: scheduled runs always use Haiku (fits tier-1
+      # rate limits, ~10× cheaper per token). Manual workflow_dispatch
+      # runs use whatever the user picked (defaults to haiku; can be
+      # "sonnet" for a sharper one-off run that actually needs reasoning).
+      #
+      # The model shortnames map to the currently-recommended pinned
+      # versions. Bump these when a newer snapshot is stable.
+      - name: Resolve model
+        id: model
+        run: |
+          CHOICE="${{ github.event.inputs.model || 'haiku' }}"
+          case "$CHOICE" in
+            sonnet) RESOLVED="claude-sonnet-4-6" ;;
+            haiku|*) RESOLVED="claude-haiku-4-5" ;;
+          esac
+          echo "resolved=$RESOLVED" >> $GITHUB_OUTPUT
+          echo "Agent will run with model: $RESOLVED"
+
       - name: Run the engineering agent
         id: agent
         uses: anthropics/claude-code-action@v1
@@ -76,13 +102,12 @@ jobs:
           # The `prompt` input puts the action in direct/headless mode:
           # there's no issue/comment trigger, no mid-run approvals, and
           # the agent writes + pushes + opens the PR on its own.
-          # `claude_args` are forwarded verbatim to the Claude Code CLI;
-          # `--permission-mode acceptEdits` lets it edit files without
-          # prompting, and `--allowed-tools` is the whitelist we want.
+          # `claude_args` are forwarded verbatim to the Claude Code CLI.
           claude_args: >-
             --permission-mode acceptEdits
             --allowed-tools Bash,Edit,Read,Write,Grep,Glob,Agent
             --max-turns 200
+            --model ${{ steps.model.outputs.resolved }}
           prompt: |
             You are the daily engineering agent for the AI Music Companion ("Musa") codebase.
             The human founder reviews your work every morning as a Draft PR on GitHub.
@@ -201,6 +226,8 @@ jobs:
         if: always()
         run: |
           echo "### Daily agent run: $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.gates.outcome }}" = "failure" ]; then
             echo "⚠️ **CI gates failed on the agent's output.** Review the PR carefully — it won't pass CI on the feature branch either." >> $GITHUB_STEP_SUMMARY
