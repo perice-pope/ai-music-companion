@@ -18,8 +18,8 @@ pub mod store;
 
 #[cfg(test)]
 mod tests {
-    use crate::phrase::{PhraseAggregator, PhraseConfig};
-    use crate::scoring::{score_note, ScoringThresholds, Verdict};
+    use crate::phrase::{DynamicsStats, PhraseAggregator, PhraseConfig, PhraseSummary, PitchStats};
+    use crate::scoring::score_phrase;
     use crate::session::SessionId;
     use crate::store::SessionStore;
 
@@ -27,8 +27,35 @@ mod tests {
     fn phrase_and_scoring_modules_are_accessible() {
         let agg = PhraseAggregator::new(PhraseConfig::default());
         assert!(agg.is_ok());
-        let score = score_note(0, 0.0, 0.0, &ScoringThresholds::default());
-        assert_eq!(score.verdict, Verdict::Green);
+
+        // Test phrase-level scoring with a minimal phrase summary.
+        let phrase = PhraseSummary {
+            phrase_index: 0,
+            start_time: 0.0,
+            end_time: 1.0,
+            duration_secs: 1.0,
+            note_count: 5,
+            pitch_stats: PitchStats {
+                mean_hz: 440.0,
+                min_hz: 435.0,
+                max_hz: 445.0,
+                range_cents: 50.0,
+                pitches: vec![440.0; 5],
+            },
+            dynamics: DynamicsStats {
+                mean_amplitude: 0.5,
+                min_amplitude: 0.4,
+                max_amplitude: 0.6,
+                dynamic_range: 0.2,
+            },
+            stability: 0.85,
+        };
+
+        let score = score_phrase(&phrase);
+        assert!(
+            score.intonation_tendency > 0.8,
+            "stable phrase should score high"
+        );
     }
 
     #[test]
