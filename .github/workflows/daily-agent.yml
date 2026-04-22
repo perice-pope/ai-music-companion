@@ -160,12 +160,30 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Surface the agent's full tool-by-tool reasoning in the Actions
+          # log. Default is to hide it, which means when the agent silently
+          # exits with zero artifacts (as happened on the 04:53 UTC and
+          # 13:15 UTC runs on 2026-04-22), we have no way to diagnose what
+          # it decided. This repo has no secrets in docs; the Anthropic API
+          # key never appears in agent output. Keep this on until the
+          # agent's behavior is reliably observable without it.
+          show_full_output: true
           # The `prompt` input puts the action in direct/headless mode:
           # there's no issue/comment trigger, no mid-run approvals, and
           # the agent writes + pushes + opens the PR on its own.
           # `claude_args` are forwarded verbatim to the Claude Code CLI.
+          #
+          # --permission-mode bypassPermissions is the right mode for
+          # headless autonomous runs. `acceptEdits` only auto-approves
+          # file edits; any Bash invocation (git push, gh pr create,
+          # gh pr comment, cargo test) can still fall through to a
+          # permission prompt — and in CI there's no human to answer it,
+          # so the SDK counts it as a denial. That's what produced the
+          # `permission_denials_count: 1` + zero-artifacts pattern on
+          # multiple runs. With bypass, the agent can actually follow
+          # through on the workflow the prompt describes.
           claude_args: >-
-            --permission-mode acceptEdits
+            --permission-mode bypassPermissions
             --allowed-tools Bash,Edit,Read,Write,Grep,Glob,Agent
             --max-turns 200
             --model ${{ steps.model.outputs.resolved }}
@@ -229,7 +247,11 @@ jobs:
             6. `git push -u origin <branch>` → `gh pr create --draft`.
                PR body: what shipped, why this design, test summary,
                `Part of #<n>` or `Closes #<n>` if it maps to an issue.
-            7. One-paragraph summary to stdout for the morning reviewer.
+            7. One-paragraph summary to stdout AND to `/tmp/agent-summary.md`.
+               The Summary step reads that file and surfaces it on the run
+               page so the founder can read it on their phone without
+               digging through the full log. Write it ALWAYS, including
+               on the "nothing tractable" exit path below.
 
             # Rules
 
@@ -255,7 +277,11 @@ jobs:
                 --body "daily-agent: nothing clear to pick up — review queue
                 is the bottleneck."
 
-            One-line summary to stdout and done.
+            Then write a one-paragraph summary to `/tmp/agent-summary.md`
+            explaining WHY — which stories you considered, why you skipped
+            each one (open PR? open question? blocked dep?) — so the morning
+            reviewer can see the triage rather than just "nothing happened."
+            Exit 0.
 
       # Why this workflow no longer runs its own cargo/pnpm gates:
       #
@@ -284,6 +310,27 @@ jobs:
             echo "Model: \`${{ steps.model.outputs.resolved }}\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
+          # Surface the agent's own one-paragraph summary at the top of
+          # the run page. This is what the founder actually reads on their
+          # phone over morning coffee — everything below is operational
+          # metadata for debugging. The prompt instructs the agent to
+          # write this file ALWAYS, including on the "nothing tractable"
+          # exit path, so if it's missing that itself is a signal (the
+          # agent crashed before it got to the reporting step).
+          if [ -f /tmp/agent-summary.md ]; then
+            echo "## What the agent did" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat /tmp/agent-summary.md >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## What the agent did" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "_No summary file found at \`/tmp/agent-summary.md\` — the agent likely exited before writing one. Check the \"Run the engineering agent\" step above for raw output._" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "Open draft PR(s) by this author (may include older drafts — check CI status on each):" >> $GITHUB_STEP_SUMMARY
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
