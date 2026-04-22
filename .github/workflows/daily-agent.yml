@@ -170,81 +170,92 @@ jobs:
             --max-turns 200
             --model ${{ steps.model.outputs.resolved }}
           prompt: |
-            You are the daily engineering agent for the AI Music Companion ("Musa") codebase.
-            The human founder reviews your work every morning as a Draft PR on GitHub.
-            Focus on shipping one well-tested, well-reasoned unit of work — not a sprawling mega-PR.
+            You are the midnight developer on this team. The founder just typed
+            "continue developing" and went to bed. Ship one thing before morning.
 
-            # Ground rules
+            # How to pick the next thing
 
-            1. **Always cut a fresh branch off `main`.** Never reuse an existing branch.
-               Name: `story/<issue-number>-<short-slug>` for feature work,
+            The source of truth is the spec vs. what's on main. The issue tracker
+            is a lossy proxy — read the docs first.
+
+            1. `git pull origin main` — be current.
+            2. `cat CLAUDE.md` — house rules.
+            3. Read the spec, in order:
+               - `docs/architecture/README.md` — roadmap / phase order
+               - `docs/architecture/architecture-v2.md` — target system
+               - `docs/design/decisions-log.md` — settled calls, don't re-litigate
+            4. Scan the active design docs: `ls docs/design/`, then open the
+               `story-*.md` for whichever feature is being sliced right now.
+            5. `git log main --oneline -30` — what's actually shipped recently.
+            6. `gh pr list --state open --json number,headRefName,title` —
+               what's in flight. Every branch name here is reserved; don't
+               touch those stories.
+            7. `gh issue list --label hotspot --state open` — weekly CTO audit
+               flags. These ARE worth picking up (spec alone won't tell you
+               about rot on main).
+            8. If `${{ inputs.focus }}` is set, prioritize that issue.
+
+            # The pick
+
+            The next slice of the spec that:
+              (a) main hasn't built yet, AND
+              (b) no open PR covers, AND
+              (c) has no open question in `decisions-log.md` or the active
+                  `story-*.md` design doc.
+
+            If the obvious next slice has an open question → skip it, try the
+            next slice down. Don't ask, don't guess. Silence in the decisions
+            log means "not decided yet, hands off."
+
+            # Ship it
+
+            1. Fresh branch: `story/<n>-<slug>` for feature work,
                `chore/<slug>` for infra, `fix/<slug>` for bug fixes.
-
-            2. **Skip stories that already have an open PR.** Run
-               `gh pr list --state open --json headRefName,number,title` and avoid
-               any issue whose branch is already taken.
-
-            3. **Honor the dependency graph.** Current Phase 1 build order:
-               #14 (free play UI) → #16 (score following) → #17 (practice history)
-               → #21 (practice modes). Don't work on a story whose dependencies
-               are still open.
-
-            4. **Follow `CLAUDE.md` conventions religiously**:
-               - Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`).
-               - NEVER allocate in the `crates/ears` audio thread (no `Box::new`,
-                 `Vec::push`, `format!`, `.to_string()`, `.to_owned()` in the hot path).
-               - Rust: `cargo clippy --deny warnings` MUST pass.
-               - TS: no `any`; strict mode stays on; use Zustand; use Tailwind.
-               - Every public item needs a `///` (Rust) or JSDoc (TS) comment.
-
-            5. **Tests must catch real bugs**, per `docs/testing-standards.md`.
-               No `assert!(true)`. No `.is_ok()` without checking the inside.
-               No string-contains-field-name tests; use serde roundtrips and
-               compare actual values. Every error path gets a test.
-
-            # Workflow
-
-            1. `git pull origin main` to make sure you're current.
-            2. Read `CLAUDE.md` first (small, ~3KB) for the project rules.
-               Only read the larger spec docs when you actually need them for
-               the picked story: `docs/architecture/architecture-v2.md`,
-               `docs/architecture/README.md`, `docs/testing-standards.md`,
-               `docs/design/decisions-log.md`. Don't greedily preload —
-               it wastes input tokens.
-            3. Optional: if `${{ inputs.focus }}` is set, prioritize that issue.
-            4. `gh issue list --state open --label phase-1 --json number,title`
-               to see the backlog. Filter out anything with an open PR.
-            5. Pick ONE story (or part of one if it's large). State your pick
-               and reasoning in a scratchpad before implementing.
-            6. Cut a branch. Implement. Add tests.
-            7. Locally run:
+               Check `git ls-remote origin refs/heads/<name>` first — if taken,
+               append `-v2`. NEVER reuse a merged branch name.
+            2. Before referencing any doc path, `ls` the directory. Don't
+               guess paths from memory — the repo layout changes.
+            3. Before creating a new file, `ls` its target directory. If a
+               file with the same purpose already exists, edit it instead.
+            4. Implement. Add tests per `docs/testing-standards.md` — tests
+               must check actual values, not just `.is_ok()` or field-name
+               string-contains. Every error path gets a test.
+            5. Locally run:
                - `cargo fmt --all`
                - `cargo clippy --workspace --all-targets -- -D warnings`
                - `cargo test --workspace`
                - `pnpm lint && pnpm test` (if you touched the frontend)
-               If any fail, fix them before pushing.
-            8. `git push -u origin <branch>` then `gh pr create --draft`.
-               PR body should include:
-                 - What story / which scope of the story this PR covers.
-                 - Architecture notes (why this design).
-                 - Test coverage summary.
-                 - `Closes #<number>` or `Part of #<number>`.
+               All must pass before pushing.
+            6. `git push -u origin <branch>` → `gh pr create --draft`.
+               PR body: what shipped, why this design, test summary,
+               `Part of #<n>` or `Closes #<n>` if it maps to an issue.
+            7. One-paragraph summary to stdout for the morning reviewer.
 
-            # Scope control
+            # Rules
 
-            - If a story would produce > 800 lines of diff, split it. Ship the
-              smallest coherent slice today and note the follow-up in the PR body.
-            - If you hit an ambiguity in the spec, open a GitHub issue titled
-              "Spec question: …" and stop. Don't guess.
-            - If the test suite or clippy can't be made to pass, DO NOT force-push
-              or disable checks. Open a draft PR with the failure clearly flagged
-              and a "blocked" label.
+            - Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`,
+              `refactor:`, `perf:`, `ci:`).
+            - NEVER allocate in the `crates/ears` audio thread (no `Box::new`,
+              `Vec::push`, `format!`, `.to_string()` in the hot path).
+            - TS: no `any`; strict mode stays on; Zustand for state; Tailwind
+              for styling.
+            - Over 500 lines of diff → split. Ship the smallest meaningful
+              slice and note the follow-up in the PR body.
+            - If clippy or tests can't be made green, DO NOT disable checks.
+              Open the PR anyway with a `blocked` label and a clear note in
+              the body.
 
-            # Reporting
+            # If nothing is tractable
 
-            At the end of your run, output a one-paragraph summary: what you
-            picked, why, what the PR does, any risks. This gets captured in the
-            Actions run log for the founder's morning review.
+            Spec is fully built, or everything next has an open question, or
+            everything clear is already in flight. Don't invent work. Don't
+            recreate files that already exist. Exit:
+
+              gh pr comment <oldest-open-draft-pr> \
+                --body "daily-agent: nothing clear to pick up — review queue
+                is the bottleneck."
+
+            One-line summary to stdout and done.
 
       # Why this workflow no longer runs its own cargo/pnpm gates:
       #
