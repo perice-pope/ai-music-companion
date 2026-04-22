@@ -28,6 +28,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -262,9 +263,10 @@ pub struct SessionRecap {
 /// Production implementations will call an LLM. Tests use a canned
 /// mock. Using a trait here decouples [`SessionRecorder`] from the
 /// coaching module so these can land as independent PRs.
+#[async_trait]
 pub trait RecapGenerator: Send + Sync {
     /// Produce a recap from accumulated session data.
-    fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError>;
+    async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,12 +343,12 @@ impl CompletedSession {
     /// `phrase_count`, and `instrument` are overwritten with the values
     /// from this [`CompletedSession`]. An LLM can hallucinate or
     /// miscalculate these; the recorder is the source of truth.
-    pub fn generate_recap(
+    pub async fn generate_recap(
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
         let input = self.to_recap_input();
-        let mut recap = generator.generate_recap(&input)?;
+        let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
         recap.instrument = self.primary_instrument().to_owned();
@@ -596,8 +598,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl RecapGenerator for RecordingMockGenerator {
-        fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             *self.last_input.lock().unwrap() = Some(input.clone());
             Ok(self.canned.clone())
@@ -606,8 +609,9 @@ mod tests {
 
     struct FailingGenerator;
 
+    #[async_trait]
     impl RecapGenerator for FailingGenerator {
-        fn generate_recap(&self, _input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        async fn generate_recap(&self, _input: &RecapInput) -> Result<SessionRecap, SessionError> {
             Err(SessionError::RecapFailed("llm blew up".to_owned()))
         }
     }
@@ -851,8 +855,8 @@ mod tests {
         assert_eq!(recorder.phrase_count(), 3);
     }
 
-    #[test]
-    fn record_tip_lands_in_input_after_complete() {
+    #[tokio::test]
+    async fn record_tip_lands_in_input_after_complete() {
         let mut recorder = SessionRecorder::new("trumpet".to_owned());
         let mock = RecordingMockGenerator::new(canned_recap());
         let input_handle = mock.last_input_handle();
@@ -870,15 +874,15 @@ mod tests {
         assert_eq!(recorder.tip_count(), 1);
 
         let completed = recorder.complete().unwrap();
-        completed.generate_recap(&mock).unwrap();
+        completed.generate_recap(&mock).await.unwrap();
         let captured = input_handle.lock().unwrap().clone().unwrap();
         assert_eq!(captured.tips.len(), 1);
         assert_eq!(captured.tips[0].phrase_index, 1);
         assert_eq!(captured.tips[0].text, "Breathe before this entrance.");
     }
 
-    #[test]
-    fn generate_recap_flattens_multi_segment_into_input() {
+    #[tokio::test]
+    async fn generate_recap_flattens_multi_segment_into_input() {
         let canned = canned_recap();
         let mock = RecordingMockGenerator::new(canned);
         let input_handle = mock.last_input_handle();
@@ -906,7 +910,7 @@ mod tests {
             .unwrap();
 
         let completed = recorder.complete().unwrap();
-        completed.generate_recap(&mock).unwrap();
+        completed.generate_recap(&mock).await.unwrap();
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
         let captured = input_handle.lock().unwrap().clone().unwrap();
@@ -956,21 +960,21 @@ mod tests {
         assert_ne!(ids[1], ids[2]);
     }
 
-    #[test]
-    fn recap_generator_failure_propagates_as_session_error() {
+    #[tokio::test]
+    async fn recap_generator_failure_propagates_as_session_error() {
         let mut recorder = SessionRecorder::new("trumpet".to_owned());
         recorder.record_phrase(phrase(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
-        let err = completed.generate_recap(&FailingGenerator).unwrap_err();
+        let err = completed.generate_recap(&FailingGenerator).await.unwrap_err();
         match err {
             SessionError::RecapFailed(msg) => assert_eq!(msg, "llm blew up"),
             other => panic!("expected RecapFailed, got {other:?}"),
         }
     }
 
-    #[test]
-    fn generate_recap_overwrites_authoritative_fields() {
+    #[tokio::test]
+    async fn generate_recap_overwrites_authoritative_fields() {
         let mut lying_recap = canned_recap();
         lying_recap.duration_secs = 999.0;
         lying_recap.phrase_count = 42;
@@ -983,7 +987,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
 
         let completed = recorder.complete().unwrap();
-        let recap = completed.generate_recap(&mock).unwrap();
+        let recap = completed.generate_recap(&mock).await.unwrap();
 
         assert_eq!(recap.instrument, "trumpet");
         assert_eq!(recap.phrase_count, 2);
@@ -991,8 +995,8 @@ mod tests {
         assert!(!recap.overall_assessment.is_empty());
     }
 
-    #[test]
-    fn session_data_survives_recap_generator_failure() {
+    #[tokio::test]
+    async fn session_data_survives_recap_generator_failure() {
         let mut recorder = SessionRecorder::new("flute".to_owned());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
@@ -1001,14 +1005,14 @@ mod tests {
         let saved_id = completed.id;
         let saved_count = completed.phrase_count();
 
-        let err = completed.generate_recap(&FailingGenerator).unwrap_err();
+        let err = completed.generate_recap(&FailingGenerator).await.unwrap_err();
         assert!(matches!(err, SessionError::RecapFailed(_)));
 
         assert_eq!(completed.id, saved_id);
         assert_eq!(completed.phrase_count(), saved_count);
 
         let retry_mock = RecordingMockGenerator::new(canned_recap());
-        let recap = completed.generate_recap(&retry_mock).unwrap();
+        let recap = completed.generate_recap(&retry_mock).await.unwrap();
         assert_eq!(recap.phrase_count, saved_count);
     }
 
