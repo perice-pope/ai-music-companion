@@ -1,3 +1,9 @@
+## [1.11.0](https://github.com/perice-pope/ai-music-companion/compare/v1.10.0...v1.11.0) (2026-04-22)
+
+### Features
+
+* **coaching:** instrument-specific prompts and enhanced testing ([#61](https://github.com/perice-pope/ai-music-companion/issues/61)) ([720287f](https://github.com/perice-pope/ai-music-companion/commit/720287f75a7238ee9795a7a170095bb5d0446318))
+
 ## [1.10.0](https://github.com/perice-pope/ai-music-companion/compare/v1.9.0...v1.10.0) (2026-04-22)
 
 ### Features
