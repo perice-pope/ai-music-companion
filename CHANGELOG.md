@@ -1,3 +1,9 @@
+## [1.11.1](https://github.com/perice-pope/ai-music-companion/compare/v1.11.0...v1.11.1) (2026-04-22)
+
+### Bug Fixes
+
+* **scoring:** replace per-note verdicts with phrase-level assessment ([#63](https://github.com/perice-pope/ai-music-companion/issues/63)) ([a4f5efc](https://github.com/perice-pope/ai-music-companion/commit/a4f5efc13adea0b6a6ec68ae959bb271ecee3821)), closes [#32](https://github.com/perice-pope/ai-music-companion/issues/32)
+
 ## [1.11.0](https://github.com/perice-pope/ai-music-companion/compare/v1.10.0...v1.11.0) (2026-04-22)
 
 ### Features
