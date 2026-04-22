@@ -17,6 +17,9 @@ fn main() {
             ai_music_companion::commands::switch_instrument,
             ai_music_companion::commands::end_practice_session,
             ai_music_companion::commands::list_instruments,
+            ai_music_companion::commands::get_session_history,
+            ai_music_companion::commands::get_session_detail,
+            ai_music_companion::commands::get_practice_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

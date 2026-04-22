@@ -2,6 +2,7 @@ import { usePracticeStore } from "../stores/practiceStore";
 import InstrumentSelector from "./InstrumentSelector";
 import PracticeSession from "./PracticeSession";
 import SessionRecap from "./SessionRecap";
+import History from "../pages/History";
 
 /**
  * Top-level router for the free-play flow.
@@ -18,6 +19,8 @@ export default function PracticeShell() {
       return <PracticeSession />;
     case "recap":
       return <SessionRecap />;
+    case "history":
+      return <History />;
     case "selector":
     default:
       return (

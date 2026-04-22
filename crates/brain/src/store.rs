@@ -288,6 +288,161 @@ impl SessionStore {
         Ok(summaries)
     }
 
+    /// Return session summaries filtered by instrument, ordered by `started_at DESC`.
+    ///
+    /// If `instrument` is `None`, no instrument filter is applied (returns all).
+    /// If `instrument` is `Some("")`, only sessions with empty instrument are returned.
+    pub fn list_by_instrument(
+        &self,
+        instrument: Option<&str>,
+    ) -> Result<Vec<SessionSummary>, StoreError> {
+        let mut summaries = Vec::new();
+        let query = if instrument.is_some() {
+            "SELECT id, instrument, started_at, duration_secs, phrase_count \
+             FROM sessions WHERE instrument = ?1 ORDER BY started_at DESC"
+        } else {
+            "SELECT id, instrument, started_at, duration_secs, phrase_count \
+             FROM sessions ORDER BY started_at DESC"
+        };
+
+        let mut stmt = self.conn.prepare(query)?;
+        let rows = if let Some(inst) = instrument {
+            stmt.query(params![inst])?
+        } else {
+            stmt.query([])?
+        };
+
+        let mut rows_iter = rows;
+        while let Some(row) = rows_iter.next()? {
+            let id_str: String = row.get(0)?;
+            let instrument: String = row.get(1)?;
+            let started_at_str: String = row.get(2)?;
+            let duration_secs: f64 = row.get(3)?;
+            let phrase_count: i64 = row.get(4)?;
+
+            let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
+                StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
+            })?;
+            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+                .map_err(|e| {
+                    StoreError::CorruptRow(format!(
+                        "invalid RFC3339 started_at {started_at_str}: {e}"
+                    ))
+                })?
+                .with_timezone(&Utc);
+            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
+                StoreError::CorruptRow(format!(
+                    "invalid phrase_count {phrase_count} for session {id_str}"
+                ))
+            })?;
+            summaries.push(SessionSummary {
+                id,
+                instrument,
+                started_at,
+                duration_secs,
+                phrase_count,
+            });
+        }
+        Ok(summaries)
+    }
+
+    /// Return session summaries within a date range [start_at, end_at), ordered by `started_at DESC`.
+    ///
+    /// If `start_at` is `None`, no lower bound is applied.
+    /// If `end_at` is `None`, no upper bound is applied.
+    pub fn list_by_date_range(
+        &self,
+        start_at: Option<DateTime<Utc>>,
+        end_at: Option<DateTime<Utc>>,
+    ) -> Result<Vec<SessionSummary>, StoreError> {
+        let mut summaries = Vec::new();
+        let (query, start_str, end_str) = match (&start_at, &end_at) {
+            (Some(s), Some(e)) => (
+                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                 FROM sessions WHERE started_at >= ?1 AND started_at < ?2 ORDER BY started_at DESC",
+                Some(s.to_rfc3339()),
+                Some(e.to_rfc3339()),
+            ),
+            (Some(s), None) => (
+                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                 FROM sessions WHERE started_at >= ?1 ORDER BY started_at DESC",
+                Some(s.to_rfc3339()),
+                None,
+            ),
+            (None, Some(e)) => (
+                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                 FROM sessions WHERE started_at < ?1 ORDER BY started_at DESC",
+                Some(e.to_rfc3339()),
+                None,
+            ),
+            (None, None) => (
+                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                 FROM sessions ORDER BY started_at DESC",
+                None,
+                None,
+            ),
+        };
+
+        let mut stmt = self.conn.prepare(query)?;
+        let rows_iter = match (&start_str, &end_str) {
+            (Some(s), Some(e)) => stmt.query(params![s.as_str(), e.as_str()])?,
+            (Some(s), None) => stmt.query(params![s.as_str()])?,
+            (None, Some(e)) => stmt.query(params![e.as_str()])?,
+            (None, None) => stmt.query([])?,
+        };
+
+        let mut rows_iter = rows_iter;
+        while let Some(row) = rows_iter.next()? {
+            let id_str: String = row.get(0)?;
+            let instrument: String = row.get(1)?;
+            let started_at_str: String = row.get(2)?;
+            let duration_secs: f64 = row.get(3)?;
+            let phrase_count: i64 = row.get(4)?;
+
+            let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
+                StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
+            })?;
+            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+                .map_err(|e| {
+                    StoreError::CorruptRow(format!(
+                        "invalid RFC3339 started_at {started_at_str}: {e}"
+                    ))
+                })?
+                .with_timezone(&Utc);
+            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
+                StoreError::CorruptRow(format!(
+                    "invalid phrase_count {phrase_count} for session {id_str}"
+                ))
+            })?;
+            summaries.push(SessionSummary {
+                id,
+                instrument,
+                started_at,
+                duration_secs,
+                phrase_count,
+            });
+        }
+        Ok(summaries)
+    }
+
+    /// Count total sessions in the database.
+    pub fn count_sessions(&self) -> Result<usize, StoreError> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Sum total practice duration in seconds across all sessions.
+    pub fn total_duration_secs(&self) -> Result<f64, StoreError> {
+        let total: Option<f64> =
+            self.conn
+                .query_row("SELECT SUM(duration_secs) FROM sessions", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(total.unwrap_or(0.0))
+    }
+
     /// The default on-disk path for the sessions database.
     ///
     /// Follows the platform data-directory convention:
@@ -629,6 +784,143 @@ mod tests {
         // text survives, but the indexable column is authoritative.
         let loaded = store.load(id).unwrap();
         assert!((loaded.recap.duration_secs - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn list_by_instrument_filters_correctly() {
+        let store = SessionStore::in_memory().unwrap();
+        let now = Utc::now();
+
+        let trumpet_id = SessionId::new();
+        let violin_id = SessionId::new();
+        let trumpet_id_2 = SessionId::new();
+
+        store
+            .save(
+                trumpet_id,
+                now - Duration::minutes(3),
+                now - Duration::minutes(2),
+                &recap_with("trumpet", 60.0, 1),
+            )
+            .unwrap();
+        store
+            .save(
+                violin_id,
+                now - Duration::minutes(2),
+                now - Duration::minutes(1),
+                &recap_with("violin", 60.0, 1),
+            )
+            .unwrap();
+        store
+            .save(
+                trumpet_id_2,
+                now,
+                now + Duration::minutes(1),
+                &recap_with("trumpet", 60.0, 1),
+            )
+            .unwrap();
+
+        let trumpet_sessions = store.list_by_instrument(Some("trumpet")).unwrap();
+        assert_eq!(trumpet_sessions.len(), 2);
+        assert_eq!(trumpet_sessions[0].instrument, "trumpet");
+        assert_eq!(trumpet_sessions[1].instrument, "trumpet");
+
+        let violin_sessions = store.list_by_instrument(Some("violin")).unwrap();
+        assert_eq!(violin_sessions.len(), 1);
+        assert_eq!(violin_sessions[0].instrument, "violin");
+
+        let all_sessions = store.list_by_instrument(None).unwrap();
+        assert_eq!(all_sessions.len(), 3);
+    }
+
+    #[test]
+    fn list_by_date_range_filters_correctly() {
+        let store = SessionStore::in_memory().unwrap();
+        let base = Utc::now();
+        let day1 = base - Duration::days(2);
+        let day2 = base - Duration::days(1);
+        let day3 = base;
+
+        store
+            .save(
+                SessionId::new(),
+                day1,
+                day1 + Duration::minutes(10),
+                &recap_with("trumpet", 600.0, 1),
+            )
+            .unwrap();
+        store
+            .save(
+                SessionId::new(),
+                day2,
+                day2 + Duration::minutes(10),
+                &recap_with("trumpet", 600.0, 1),
+            )
+            .unwrap();
+        store
+            .save(
+                SessionId::new(),
+                day3,
+                day3 + Duration::minutes(10),
+                &recap_with("trumpet", 600.0, 1),
+            )
+            .unwrap();
+
+        let all = store.list_by_date_range(None, None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let recent_two_days = store.list_by_date_range(Some(day2), None).unwrap();
+        assert_eq!(recent_two_days.len(), 2);
+
+        let one_day_only = store.list_by_date_range(Some(day2), Some(day3)).unwrap();
+        assert_eq!(one_day_only.len(), 1);
+    }
+
+    #[test]
+    fn count_sessions_returns_correct_total() {
+        let store = SessionStore::in_memory().unwrap();
+        assert_eq!(store.count_sessions().unwrap(), 0);
+
+        let now = Utc::now();
+        for i in 0..5 {
+            store
+                .save(
+                    SessionId::new(),
+                    now - Duration::minutes(i as i64),
+                    now - Duration::minutes((i as i64) - 1),
+                    &recap_with("trumpet", 60.0, 1),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(store.count_sessions().unwrap(), 5);
+    }
+
+    #[test]
+    fn total_duration_secs_sums_all_sessions() {
+        let store = SessionStore::in_memory().unwrap();
+        assert_eq!(store.total_duration_secs().unwrap(), 0.0);
+
+        let now = Utc::now();
+        store
+            .save(
+                SessionId::new(),
+                now,
+                now + Duration::seconds(30),
+                &recap_with("trumpet", 30.0, 1),
+            )
+            .unwrap();
+        store
+            .save(
+                SessionId::new(),
+                now + Duration::seconds(30),
+                now + Duration::seconds(90),
+                &recap_with("trumpet", 60.0, 1),
+            )
+            .unwrap();
+
+        let total = store.total_duration_secs().unwrap();
+        assert!((total - 90.0).abs() < 0.1);
     }
 
     #[test]
