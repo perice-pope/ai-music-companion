@@ -1,3 +1,9 @@
+## [1.10.0](https://github.com/perice-pope/ai-music-companion/compare/v1.9.0...v1.10.0) (2026-04-22)
+
+### Features
+
+* **story-17:** Practice history + progress dashboard ([#57](https://github.com/perice-pope/ai-music-companion/issues/57)) ([4d3b001](https://github.com/perice-pope/ai-music-companion/commit/4d3b0018347eb54af25d77328a009697cf3b3c3f)), closes [#17](https://github.com/perice-pope/ai-music-companion/issues/17) [#17](https://github.com/perice-pope/ai-music-companion/issues/17)
+
 ## [1.9.0](https://github.com/perice-pope/ai-music-companion/compare/v1.8.0...v1.9.0) (2026-04-21)
 
 ### Features
