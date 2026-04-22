@@ -60,6 +60,24 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          # Check out with USER_PAT so git operations (push, PR create)
+          # run under the founder's identity instead of the default
+          # Claude GitHub App installation. Without this, every commit
+          # the agent makes shows up as `claude[bot]` in git history
+          # and PRs get opened by `app/claude`. With USER_PAT, commits
+          # are authored by the founder and PRs attributed to them.
+          token: ${{ secrets.USER_PAT }}
+
+      # All `gh` / `git` commands that run inside the agent's bash loop
+      # (push, pr create, pr comment, issue create) inherit this identity.
+      # Set it BEFORE the claude-code-action runs so the action's
+      # internal "Setting git user as claude[bot]" step is preempted.
+      # The claude-code-action respects an existing git config rather
+      # than forcing its own when a user token is in play.
+      - name: Set git identity to founder
+        run: |
+          git config user.name "Perice Pope"
+          git config user.email "42249832+perice-pope@users.noreply.github.com"
 
       # Pre-flight: don't flood the review queue. Count the bot's open
       # draft PRs; if it's at or above the cap, skip the run with a
@@ -72,7 +90,10 @@ jobs:
       - name: Queue-full pre-flight
         id: queue_check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use USER_PAT here too so the "open drafts by @me" query
+          # resolves to the founder (USER_PAT's owner) — which is
+          # who'll open drafts from now on.
+          GH_TOKEN: ${{ secrets.USER_PAT }}
         run: |
           # workflow_dispatch inputs come through as strings, and there's
           # no `type: number` for that trigger (only for workflow_call).
@@ -160,6 +181,13 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use the founder's PAT for all GitHub API operations the action
+          # performs (PR creation, branch push, comments, issue filing).
+          # Without this the action falls back to an OIDC-fetched Claude
+          # GitHub App installation token, and every artifact is attributed
+          # to `claude[bot]` / `app/claude`. With this, commits and PRs
+          # show up as the founder.
+          github_token: ${{ secrets.USER_PAT }}
           # Surface the agent's full tool-by-tool reasoning in the Actions
           # log. Default is to hide it, which means when the agent silently
           # exits with zero artifacts (as happened on the 04:53 UTC and
@@ -190,6 +218,22 @@ jobs:
           prompt: |
             You are the midnight developer on this team. The founder just typed
             "continue developing" and went to bed. Ship one thing before morning.
+
+            # Identity
+
+            You work under the founder's git identity. This was configured
+            for you before this step ran; do NOT re-set it to `claude[bot]`
+            or anything else. If you need to verify, run `git config user.name`
+            and `git config user.email`; expected values are "Perice Pope"
+            and `42249832+perice-pope@users.noreply.github.com`. If those
+            are ever wrong, fix them:
+
+              git config user.name "Perice Pope"
+              git config user.email "42249832+perice-pope@users.noreply.github.com"
+
+            NEVER add a `Co-Authored-By: Claude ...` trailer (or any other
+            Claude attribution) to commit messages or PR bodies. All work
+            is authored by the founder alone. This is non-negotiable.
 
             # How to pick the next thing
 
@@ -335,4 +379,8 @@ jobs:
           gh pr list --draft --author '@me' --state open --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # USER_PAT so `@me` resolves to the founder — which is who the
+          # agent now opens drafts as. Using GITHUB_TOKEN here would
+          # silently list zero drafts because @me would be the actions
+          # bot instead.
+          GH_TOKEN: ${{ secrets.USER_PAT }}

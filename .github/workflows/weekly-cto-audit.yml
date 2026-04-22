@@ -38,14 +38,21 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          # Run under the founder's identity so audit issues get filed
+          # by them, not by `claude[bot]`. See daily-agent.yml for the
+          # rationale — same pattern.
+          token: ${{ secrets.USER_PAT }}
 
       - name: Run the audit
         id: audit
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use the founder's PAT for `gh issue create` so weekly audit
+          # issues appear under their account.
+          github_token: ${{ secrets.USER_PAT }}
           claude_args: >-
-            --permission-mode acceptEdits
+            --permission-mode bypassPermissions
             --allowed-tools Bash,Read,Grep,Glob,Agent
             --max-turns 120
           prompt: |
@@ -140,7 +147,9 @@ jobs:
           gh issue list --state open --label hotspot --limit 10 --json number,title,url \
             -q '.[] | "- #\(.number) \(.title) — \(.url)"' >> $GITHUB_STEP_SUMMARY || true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # USER_PAT so `gh issue list` resolves "author = @me" to the
+          # founder (the identity audit issues are now filed under).
+          GH_TOKEN: ${{ secrets.USER_PAT }}
 
       # Deterministic post-check: the agent may report success from its own
       # perspective while having silently failed to create the issue (bad
@@ -161,4 +170,6 @@ jobs:
           fi
           echo "Verified: audit issue for ${DATE} exists."
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # USER_PAT so `gh issue list` resolves "author = @me" to the
+          # founder (the identity audit issues are now filed under).
+          GH_TOKEN: ${{ secrets.USER_PAT }}
