@@ -306,7 +306,7 @@ impl CoachingEngine {
             }
         }
 
-        let system_prompt = Self::build_system_prompt();
+        let system_prompt = Self::build_system_prompt_for_instrument(&context.instrument);
         let user_prompt = Self::build_user_prompt(phrase, context);
 
         let request_body = self.build_request_body(&system_prompt, &user_prompt);
@@ -335,10 +335,10 @@ impl CoachingEngine {
     // Prompt construction
     // -----------------------------------------------------------------------
 
-    /// Build the system prompt that shapes the LLM's coaching personality.
+    /// Build a generic system prompt that shapes the LLM's coaching personality.
     ///
-    /// This is public for testing so we can verify it contains required
-    /// anti-grading language.
+    /// This is the fallback when instrument-specific prompts are not needed.
+    /// For real coaching, use `build_system_prompt_for_instrument`.
     pub fn build_system_prompt() -> String {
         "\
 You are a warm, experienced music teacher providing real-time coaching \
@@ -370,6 +370,124 @@ Choose severity based on the data:
 
 Choose the category that best matches the most notable aspect of the phrase data."
             .to_owned()
+    }
+
+    /// Build an instrument-specific system prompt for coaching.
+    ///
+    /// Different instruments have different pedagogical priorities:
+    /// - Brass: embouchure, breath support, resonance, tonguing, range extension
+    /// - Voice: breath management, resonance, vowel placement, vibrato control, projection
+    /// - Strings: bow control, intonation stability, vibrato quality, articulation, shifting
+    /// - Woodwinds: embouchure flexibility, tone centering, articulation clarity, vibrato control
+    /// - Piano: hand position, voicing clarity, pedal timing, evenness across registers
+    ///
+    /// Each prompt includes instrument-specific vocabulary and emphasis while maintaining
+    /// the "coach, don't judge" philosophy.
+    pub fn build_system_prompt_for_instrument(instrument: &str) -> String {
+        let instrument_lower = instrument.to_lowercase();
+        let instrument_guidance = match instrument_lower.as_str() {
+            // Brass family (trumpet, french horn, trombone, tuba)
+            _ if instrument_lower.contains("trumpet")
+                || instrument_lower.contains("horn")
+                || instrument_lower.contains("trombone")
+                || instrument_lower.contains("tuba")
+                || instrument_lower.contains("brass") =>
+            {
+                "You are coaching a brass player. Focus on: embouchure consistency, breath support, \
+                resonance and tone projection, clean articulation (tonguing), range extensions, and \
+                intonation stability in the upper register. Reference these technical terms naturally \
+                when appropriate. Emphasize that a strong embouchure comes from relaxation and \
+                air pressure, not tension."
+            }
+
+            // Voice
+            _ if instrument_lower.contains("voice")
+                || instrument_lower.contains("vocal")
+                || instrument_lower.contains("singer")
+                || instrument_lower.contains("soprano")
+                || instrument_lower.contains("alto")
+                || instrument_lower.contains("tenor")
+                || instrument_lower.contains("bass") =>
+            {
+                "You are coaching a vocalist. Focus on: breath management and phrasing, resonance \
+                and projection (not pushing), vowel placement and consistency, vibrato control and \
+                speed, legit versus belted production, and register transitions. Use the language \
+                a voice teacher would use: open throat, supported breath, resonant space, etc. \
+                Emphasize that good tone comes from efficient use of airflow, not muscular tension."
+            }
+
+            // Strings (violin, viola, cello, bass)
+            _ if instrument_lower.contains("violin")
+                || instrument_lower.contains("viola")
+                || instrument_lower.contains("cello")
+                || instrument_lower.contains("bass")
+                || instrument_lower.contains("string") =>
+            {
+                "You are coaching a string player. Focus on: bow control and balance, intonation \
+                stability (especially double stops), vibrato quality and width, clean articulation \
+                and bow changes, position shifts and accuracy, and tone color variation. Reference \
+                bow techniques, string crossing, and left-hand position naturally. Emphasize that \
+                good intonation comes from listening and micro-adjustments, not from tension."
+            }
+
+            // Woodwinds (flute, clarinet, oboe, saxophone)
+            _ if instrument_lower.contains("flute")
+                || instrument_lower.contains("clarinet")
+                || instrument_lower.contains("oboe")
+                || instrument_lower.contains("saxophone")
+                || instrument_lower.contains("bassoon")
+                || instrument_lower.contains("woodwind") =>
+            {
+                "You are coaching a woodwind player. Focus on: embouchure flexibility and tone \
+                centering, breath support and phrasing, tone color and articulation clarity, vibrato \
+                control (for appropriate instruments), and register transitions. Use woodwind-specific \
+                language: air stream, voicing, response. Emphasize that tone comes from the air \
+                moving efficiently through an open, flexible embouchure."
+            }
+
+            // Piano
+            _ if instrument_lower.contains("piano") || instrument_lower.contains("keyboard") => {
+                "You are coaching a pianist. Focus on: hand position and relaxation, even touch \
+                across registers, voicing and balance in chords, pedal timing and clarity, runs \
+                and passages with rhythmic precision, and legato/staccato articulation. Reference \
+                weight distribution, finger independence, and arm rotation naturally. Emphasize \
+                that technical fluency comes from relaxed efficiency and musical listening, not speed."
+            }
+
+            // Unknown instrument: use generic prompt
+            _ => {
+                return Self::build_system_prompt();
+            }
+        };
+
+        format!(
+            "You are a warm, experienced music teacher providing real-time coaching \
+            during a practice session. Your role is to be an encouraging mentor \
+            who helps the student improve through positive, actionable feedback.\n\n\
+            INSTRUMENT-SPECIFIC GUIDANCE:\n\
+            {}\n\n\
+            IMPORTANT RULES:\n\
+            - NEVER give letter grades (A, B, C, D, F) or percentage scores.\n\
+            - NEVER say things like \"you scored 85%\" or \"that was a B+\".\n\
+            - NEVER use judgmental language like \"poor\", \"bad\", or \"failing\".\n\
+            - Focus on ONE actionable improvement at a time.\n\
+            - Be encouraging FIRST, then constructive.\n\
+            - Reference specific musical aspects you observe in the data.\n\
+            - Use warm, conversational language as if speaking to the student in person.\n\
+            - Keep tips concise — one to three sentences maximum.\n\n\
+            Respond with valid JSON in this exact format:\n\
+            {{\n\
+              \"text\": \"Your coaching tip here\",\n\
+              \"severity\": \"encouragement\" | \"suggestion\" | \"focus\",\n\
+              \"category\": \"tone\" | \"intonation\" | \"rhythm\" | \"dynamics\" | \"expression\" | \"technique\"\n\
+            }}\n\n\
+            Choose severity based on the data:\n\
+            - \"encouragement\" when the student is doing well in an area\n\
+            - \"suggestion\" for gentle improvements\n\
+            - \"focus\" when an area clearly needs attention\n\n\
+            Choose the category that best matches the most notable aspect of the phrase data.",
+            instrument_guidance
+        )
     }
 
     /// Build the user prompt from phrase data and session context.
@@ -1030,6 +1148,228 @@ mod tests {
         assert!(
             user_prompt.contains("12"),
             "User prompt should include note count"
+        );
+    }
+
+    #[test]
+    fn trumpet_uses_brass_specific_prompt() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("trumpet");
+        assert!(
+            prompt.contains("embouchure"),
+            "Trumpet prompt should mention embouchure"
+        );
+        assert!(
+            prompt.contains("breath support"),
+            "Trumpet prompt should mention breath support"
+        );
+        assert!(
+            prompt.contains("resonance"),
+            "Trumpet prompt should mention resonance"
+        );
+        assert!(
+            prompt.contains("tonguing"),
+            "Trumpet prompt should mention tonguing/articulation"
+        );
+    }
+
+    #[test]
+    fn voice_uses_vocal_specific_prompt() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("Voice");
+        assert!(
+            prompt.contains("breath management"),
+            "Voice prompt should mention breath management"
+        );
+        assert!(
+            prompt.contains("resonance"),
+            "Voice prompt should mention resonance"
+        );
+        assert!(
+            prompt.contains("projection"),
+            "Voice prompt should mention projection"
+        );
+        assert!(
+            prompt.contains("vibrato"),
+            "Voice prompt should mention vibrato control"
+        );
+    }
+
+    #[test]
+    fn violin_uses_string_specific_prompt() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("Violin");
+        assert!(
+            prompt.contains("bow control"),
+            "String prompt should mention bow control"
+        );
+        assert!(
+            prompt.contains("intonation"),
+            "String prompt should mention intonation"
+        );
+        assert!(
+            prompt.contains("vibrato"),
+            "String prompt should mention vibrato quality"
+        );
+        assert!(
+            prompt.contains("position shift"),
+            "String prompt should mention position shifts"
+        );
+    }
+
+    #[test]
+    fn flute_uses_woodwind_specific_prompt() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("flute");
+        assert!(
+            prompt.contains("embouchure"),
+            "Woodwind prompt should mention embouchure"
+        );
+        assert!(
+            prompt.contains("articulation"),
+            "Woodwind prompt should mention articulation clarity"
+        );
+        assert!(
+            prompt.contains("register"),
+            "Woodwind prompt should mention register transitions"
+        );
+    }
+
+    #[test]
+    fn piano_uses_keyboard_specific_prompt() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("piano");
+        assert!(
+            prompt.contains("hand position"),
+            "Piano prompt should mention hand position"
+        );
+        assert!(
+            prompt.contains("pedal"),
+            "Piano prompt should mention pedal timing"
+        );
+        assert!(
+            prompt.contains("voicing"),
+            "Piano prompt should mention voicing"
+        );
+    }
+
+    #[test]
+    fn unknown_instrument_falls_back_to_generic() {
+        let prompt = CoachingEngine::build_system_prompt_for_instrument("theremin");
+        let generic = CoachingEngine::build_system_prompt();
+        assert_eq!(
+            prompt, generic,
+            "Unknown instrument should use generic prompt"
+        );
+    }
+
+    #[test]
+    fn all_instrument_prompts_forbid_grading() {
+        let instruments = vec!["trumpet", "Voice", "violin", "Flute", "piano", "Saxophone"];
+        for instrument in instruments {
+            let prompt = CoachingEngine::build_system_prompt_for_instrument(instrument);
+            assert!(
+                prompt.contains("NEVER give letter grades"),
+                "Prompt for {} must forbid letter grades",
+                instrument
+            );
+            assert!(
+                prompt.contains("NEVER say things like"),
+                "Prompt for {} must forbid percentage scores",
+                instrument
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_blocks_rapid_calls() {
+        let mock = MockHttpClient::succeeding(&mock_anthropic_response());
+        let call_count = mock.call_count.clone();
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 10.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let phrase = sample_phrase();
+        let context = sample_context();
+
+        let _tip1 = engine.get_tip(&phrase, &context).await.unwrap();
+        let initial_calls = call_count.load(Ordering::Acquire);
+
+        let tip2 = engine.get_tip(&phrase, &context).await.unwrap();
+        let after_rapid_calls = call_count.load(Ordering::Acquire);
+
+        assert_eq!(
+            initial_calls, after_rapid_calls,
+            "Rate limiting should prevent second API call within window"
+        );
+        assert_eq!(
+            tip2.severity,
+            CoachingSeverity::Encouragement,
+            "Rate-limited response should be encouragement"
+        );
+        assert!(
+            tip2.text.contains("momentum"),
+            "Rate-limited tip should have characteristic wording"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_failure_returns_fallback_tip() {
+        let mock = MockHttpClient::failing("Service unavailable");
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let phrase = sample_phrase();
+        let context = sample_context();
+
+        let result = engine.get_tip(&phrase, &context).await;
+        assert!(result.is_ok(), "API failure should not propagate error");
+
+        let tip = result.unwrap();
+        assert!(
+            !tip.text.is_empty(),
+            "Fallback tip should have non-empty text"
+        );
+        assert_eq!(
+            tip.severity,
+            CoachingSeverity::Encouragement,
+            "Fallback tip should be encouraging"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_response_returns_fallback() {
+        let mock = MockHttpClient::succeeding("{\"invalid\": \"json\"}");
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let phrase = sample_phrase();
+        let context = sample_context();
+
+        let result = engine.get_tip(&phrase, &context).await;
+        assert!(
+            result.is_ok(),
+            "Malformed response should not propagate error"
+        );
+        let tip = result.unwrap();
+        assert!(
+            !tip.text.is_empty(),
+            "Fallback should be provided for malformed response"
         );
     }
 }
