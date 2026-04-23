@@ -6,6 +6,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
+use crossbeam_channel::Sender;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use thiserror::Error;
@@ -55,13 +56,31 @@ pub struct AudioCapture {
     sample_rate: u32,
     /// Number of channels being captured.
     channels: u16,
+    /// Error reporting channel. Preserved to keep receiver alive if one was provided.
+    #[allow(dead_code)]
+    error_sender: Option<Sender<String>>,
 }
 
 impl AudioCapture {
     /// Open the default input device and start capturing audio.
     ///
     /// Returns a handle with a consumer for reading samples from another thread.
+    ///
+    /// This is a convenience method that calls [`new_with_error_channel`] with no error reporting.
     pub fn new(config: CaptureConfig) -> Result<Self, CaptureError> {
+        Self::new_with_error_channel(config, None)
+    }
+
+    /// Open the default input device and start capturing audio.
+    ///
+    /// Returns a handle with a consumer for reading samples from another thread.
+    ///
+    /// `error_sender` is optional. If provided, stream errors will be sent to this channel
+    /// (non-blocking via try_send). If not provided, errors are silently dropped.
+    pub fn new_with_error_channel(
+        config: CaptureConfig,
+        error_sender: Option<Sender<String>>,
+    ) -> Result<Self, CaptureError> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -85,8 +104,15 @@ impl AudioCapture {
         let rb = HeapRb::<f32>::new(config.buffer_capacity);
         let (mut producer, consumer) = rb.split();
 
-        let err_fn = |err: cpal::StreamError| {
-            eprintln!("audio stream error: {err}");
+        let err_sender = error_sender.clone();
+        let err_fn = move |err: cpal::StreamError| {
+            let msg = format!("audio stream error: {err}");
+            if let Some(ref sender) = err_sender {
+                // Non-blocking send; if channel is full or closed, silently drop the error.
+                // This avoids deadlock in the audio callback and matches Windows behavior
+                // where stderr is unavailable in GUI apps.
+                let _ = sender.try_send(msg);
+            }
         };
 
         // Build the stream based on the device's native sample format.
@@ -143,6 +169,7 @@ impl AudioCapture {
             consumer,
             sample_rate,
             channels,
+            error_sender,
         })
     }
 

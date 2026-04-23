@@ -28,5 +28,8 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread"] }
 async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
+dirs = "5"
 ears = { path = "../../../crates/ears" }
 brain = { path = "../../../crates/brain" }
