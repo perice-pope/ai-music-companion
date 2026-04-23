@@ -197,7 +197,11 @@ impl PitchDetector {
         // Fallback: global minimum
         let best_tau = best_tau.unwrap_or_else(|| {
             (tau_min..=tau_max)
-                .min_by(|&a, &b| self.cmnd[a].partial_cmp(&self.cmnd[b]).unwrap())
+                .min_by(|&a, &b| {
+                    self.cmnd[a]
+                        .partial_cmp(&self.cmnd[b])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .unwrap_or(tau_min)
         });
 
