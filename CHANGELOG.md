@@ -1,3 +1,13 @@
+## [1.12.0](https://github.com/perice-pope/ai-music-companion/compare/v1.11.1...v1.12.0) (2026-04-23)
+
+### Features
+
+* **story-14:** PR 3 — real LLM coaching and graceful degradation ([#68](https://github.com/perice-pope/ai-music-companion/issues/68)) ([23714d5](https://github.com/perice-pope/ai-music-companion/commit/23714d5fac70cd523e7e4b6eef3f3e521df919d7))
+
+### Bug Fixes
+
+* **hotspots:** prevent NaN panic in audio thread + align PitchDisplay with v2 design ([#69](https://github.com/perice-pope/ai-music-companion/issues/69)) ([863a8e4](https://github.com/perice-pope/ai-music-companion/commit/863a8e44cb7ff734f2823b4bcb71047a80025871))
+
 ## [1.11.1](https://github.com/perice-pope/ai-music-companion/compare/v1.11.0...v1.11.1) (2026-04-22)
 
 ### Bug Fixes
