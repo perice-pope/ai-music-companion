@@ -966,7 +966,10 @@ mod tests {
         recorder.record_phrase(phrase(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
-        let err = completed.generate_recap(&FailingGenerator).await.unwrap_err();
+        let err = completed
+            .generate_recap(&FailingGenerator)
+            .await
+            .unwrap_err();
         match err {
             SessionError::RecapFailed(msg) => assert_eq!(msg, "llm blew up"),
             other => panic!("expected RecapFailed, got {other:?}"),
@@ -1005,7 +1008,10 @@ mod tests {
         let saved_id = completed.id;
         let saved_count = completed.phrase_count();
 
-        let err = completed.generate_recap(&FailingGenerator).await.unwrap_err();
+        let err = completed
+            .generate_recap(&FailingGenerator)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::RecapFailed(_)));
 
         assert_eq!(completed.id, saved_id);
