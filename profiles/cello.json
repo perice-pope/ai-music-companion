@@ -1,0 +1,9 @@
+{
+  "name": "Cello",
+  "family": "strings",
+  "freq_min_hz": 65.0,
+  "freq_max_hz": 988.0,
+  "vibrato_tolerance_cents": 30.0,
+  "attack_type": "bowed",
+  "tuning_corrections": []
+}

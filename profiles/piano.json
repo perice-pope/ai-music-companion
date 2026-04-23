@@ -1,0 +1,9 @@
+{
+  "name": "Piano",
+  "family": "keyboard",
+  "freq_min_hz": 28.0,
+  "freq_max_hz": 4186.0,
+  "vibrato_tolerance_cents": 10.0,
+  "attack_type": "struck",
+  "tuning_corrections": []
+}
