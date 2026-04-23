@@ -1,3 +1,9 @@
+## [1.13.0](https://github.com/perice-pope/ai-music-companion/compare/v1.12.0...v1.13.0) (2026-04-23)
+
+### Features
+
+* **profiles:** add 6 missing instrument profiles (trombone, french-horn, cello, flute, clarinet, piano) ([#73](https://github.com/perice-pope/ai-music-companion/issues/73)) ([64f6c4c](https://github.com/perice-pope/ai-music-companion/commit/64f6c4cf6b83f2c0b28e588774924d19d4c2aa3a)), closes [#3](https://github.com/perice-pope/ai-music-companion/issues/3)
+
 ## [1.12.0](https://github.com/perice-pope/ai-music-companion/compare/v1.11.1...v1.12.0) (2026-04-23)
 
 ### Features
