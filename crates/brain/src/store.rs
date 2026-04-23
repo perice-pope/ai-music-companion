@@ -11,11 +11,96 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::session::{SessionId, SessionRecap};
+
+// ---------------------------------------------------------------------------
+// Shared row decoder
+// ---------------------------------------------------------------------------
+
+/// Decode a single summary row from the `sessions` table into a
+/// [`SessionSummary`]. All three list_* methods query the same five
+/// columns in the same order (`id, instrument, started_at,
+/// duration_secs, phrase_count`), so the decode logic lives here once.
+///
+/// Every malformed field escalates to [`StoreError::CorruptRow`] —
+/// we never silently coerce bad data into a neutral value, because a
+/// fabricated zero (phrase_count, for instance) would lie to the
+/// history UI about what actually happened in a session.
+fn decode_summary_row(row: &Row<'_>) -> Result<SessionSummary, StoreError> {
+    // Map raw rusqlite::Error into CorruptRow so the helper's contract is
+    // uniform: any row we can't decode escalates to CorruptRow, regardless
+    // of whether the fault is a type mismatch (row.get), a malformed UUID,
+    // a bad RFC3339 timestamp, or a signed/unsigned conversion. Letting
+    // the initial reads fall through as StoreError::Sqlite would mean an
+    // externally-mutated row with a NULL or wrong SQLite type reports a
+    // different variant than the exact same row with a parseable-but-
+    // impossible value — callers shouldn't need to distinguish those.
+    let id_str: String = row
+        .get(0)
+        .map_err(|e| StoreError::CorruptRow(format!("invalid id column: {e}")))?;
+    let instrument: String = row.get(1).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid instrument column for session {id_str}: {e}"
+        ))
+    })?;
+    let started_at_str: String = row.get(2).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid started_at column for session {id_str}: {e}"
+        ))
+    })?;
+    let duration_secs: f64 = row.get(3).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid duration_secs column for session {id_str}: {e}"
+        ))
+    })?;
+    let phrase_count: i64 = row.get(4).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid phrase_count column for session {id_str}: {e}"
+        ))
+    })?;
+
+    let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
+        StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
+    })?;
+    let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+        .map_err(|e| {
+            StoreError::CorruptRow(format!("invalid RFC3339 started_at {started_at_str}: {e}"))
+        })?
+        .with_timezone(&Utc);
+    let phrase_count = usize::try_from(phrase_count).map_err(|_| {
+        StoreError::CorruptRow(format!(
+            "invalid phrase_count {phrase_count} for session {id_str}"
+        ))
+    })?;
+    Ok(SessionSummary {
+        id,
+        instrument,
+        started_at,
+        duration_secs,
+        phrase_count,
+    })
+}
+
+/// Escalate a signed SQLite `COUNT(*)` result into an unsigned count.
+///
+/// A negative value from SQLite is impossible under normal operation,
+/// so if one appears it's data corruption — we surface it as
+/// [`StoreError::CorruptRow`] rather than silently returning zero,
+/// which would lie to callers about the size of their history.
+///
+/// Extracted so the regression test can exercise the conversion logic
+/// directly. Calling `count_sessions()` inserts rows through the real
+/// table, which can't actually produce a negative count; testing the
+/// helper in isolation is the only way to keep this code path covered.
+fn decode_session_count(count: i64) -> Result<usize, StoreError> {
+    usize::try_from(count).map_err(|_| {
+        StoreError::CorruptRow(format!("negative session count {count} from COUNT(*)"))
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -245,45 +330,11 @@ impl SessionStore {
              FROM sessions ORDER BY started_at DESC LIMIT ?1",
         )?;
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = stmt.query_map(params![limit_i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, f64>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
+        let mut rows = stmt.query(params![limit_i64])?;
 
         let mut summaries = Vec::new();
-        for row in rows {
-            let (id_str, instrument, started_at_str, duration_secs, phrase_count) = row?;
-            let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
-                StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
-            })?;
-            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
-                .map_err(|e| {
-                    StoreError::CorruptRow(format!(
-                        "invalid RFC3339 started_at {started_at_str}: {e}"
-                    ))
-                })?
-                .with_timezone(&Utc);
-            // Don't silently coerce a corrupt (e.g. negative) phrase_count
-            // into a real zero — every other decode path in this module
-            // escalates malformed data to CorruptRow, and this one should
-            // be consistent so callers don't see fabricated summaries.
-            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
-                StoreError::CorruptRow(format!(
-                    "invalid phrase_count {phrase_count} for session {id_str}"
-                ))
-            })?;
-            summaries.push(SessionSummary {
-                id,
-                instrument,
-                started_at,
-                duration_secs,
-                phrase_count,
-            });
+        while let Some(row) = rows.next()? {
+            summaries.push(decode_summary_row(row)?);
         }
         Ok(summaries)
     }
@@ -296,7 +347,6 @@ impl SessionStore {
         &self,
         instrument: Option<&str>,
     ) -> Result<Vec<SessionSummary>, StoreError> {
-        let mut summaries = Vec::new();
         let query = if instrument.is_some() {
             "SELECT id, instrument, started_at, duration_secs, phrase_count \
              FROM sessions WHERE instrument = ?1 ORDER BY started_at DESC"
@@ -306,42 +356,15 @@ impl SessionStore {
         };
 
         let mut stmt = self.conn.prepare(query)?;
-        let rows = if let Some(inst) = instrument {
+        let mut rows = if let Some(inst) = instrument {
             stmt.query(params![inst])?
         } else {
             stmt.query([])?
         };
 
-        let mut rows_iter = rows;
-        while let Some(row) = rows_iter.next()? {
-            let id_str: String = row.get(0)?;
-            let instrument: String = row.get(1)?;
-            let started_at_str: String = row.get(2)?;
-            let duration_secs: f64 = row.get(3)?;
-            let phrase_count: i64 = row.get(4)?;
-
-            let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
-                StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
-            })?;
-            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
-                .map_err(|e| {
-                    StoreError::CorruptRow(format!(
-                        "invalid RFC3339 started_at {started_at_str}: {e}"
-                    ))
-                })?
-                .with_timezone(&Utc);
-            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
-                StoreError::CorruptRow(format!(
-                    "invalid phrase_count {phrase_count} for session {id_str}"
-                ))
-            })?;
-            summaries.push(SessionSummary {
-                id,
-                instrument,
-                started_at,
-                duration_secs,
-                phrase_count,
-            });
+        let mut summaries = Vec::new();
+        while let Some(row) = rows.next()? {
+            summaries.push(decode_summary_row(row)?);
         }
         Ok(summaries)
     }
@@ -355,7 +378,6 @@ impl SessionStore {
         start_at: Option<DateTime<Utc>>,
         end_at: Option<DateTime<Utc>>,
     ) -> Result<Vec<SessionSummary>, StoreError> {
-        let mut summaries = Vec::new();
         let (query, start_str, end_str) = match (&start_at, &end_at) {
             (Some(s), Some(e)) => (
                 "SELECT id, instrument, started_at, duration_secs, phrase_count \
@@ -384,53 +406,33 @@ impl SessionStore {
         };
 
         let mut stmt = self.conn.prepare(query)?;
-        let rows_iter = match (&start_str, &end_str) {
+        let mut rows = match (&start_str, &end_str) {
             (Some(s), Some(e)) => stmt.query(params![s.as_str(), e.as_str()])?,
             (Some(s), None) => stmt.query(params![s.as_str()])?,
             (None, Some(e)) => stmt.query(params![e.as_str()])?,
             (None, None) => stmt.query([])?,
         };
 
-        let mut rows_iter = rows_iter;
-        while let Some(row) = rows_iter.next()? {
-            let id_str: String = row.get(0)?;
-            let instrument: String = row.get(1)?;
-            let started_at_str: String = row.get(2)?;
-            let duration_secs: f64 = row.get(3)?;
-            let phrase_count: i64 = row.get(4)?;
-
-            let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
-                StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
-            })?;
-            let started_at = DateTime::parse_from_rfc3339(&started_at_str)
-                .map_err(|e| {
-                    StoreError::CorruptRow(format!(
-                        "invalid RFC3339 started_at {started_at_str}: {e}"
-                    ))
-                })?
-                .with_timezone(&Utc);
-            let phrase_count = usize::try_from(phrase_count).map_err(|_| {
-                StoreError::CorruptRow(format!(
-                    "invalid phrase_count {phrase_count} for session {id_str}"
-                ))
-            })?;
-            summaries.push(SessionSummary {
-                id,
-                instrument,
-                started_at,
-                duration_secs,
-                phrase_count,
-            });
+        let mut summaries = Vec::new();
+        while let Some(row) = rows.next()? {
+            summaries.push(decode_summary_row(row)?);
         }
         Ok(summaries)
     }
 
     /// Count total sessions in the database.
+    ///
+    /// A negative count from SQLite is impossible under normal
+    /// operation, but if one appears it's data corruption — we
+    /// escalate to [`StoreError::CorruptRow`] instead of silently
+    /// returning zero, which would lie to callers about the size
+    /// of their history. Matches the pattern used by every other
+    /// decode path in this module.
     pub fn count_sessions(&self) -> Result<usize, StoreError> {
         let count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
-        Ok(usize::try_from(count).unwrap_or(0))
+        decode_session_count(count)
     }
 
     /// Sum total practice duration in seconds across all sessions.
@@ -958,5 +960,90 @@ mod tests {
             ),
             other => panic!("expected CorruptRow, got {other:?}"),
         }
+    }
+
+    // All three list_* methods share a single decode_summary_row helper —
+    // these two tests lock the invariant that the other two paths escalate
+    // corrupt data the same way `list_recent` does.
+
+    #[test]
+    fn list_by_instrument_rejects_corrupt_phrase_count() {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        store
+            .save(
+                id,
+                now,
+                now + Duration::seconds(10),
+                &recap_with("trumpet", 10.0, 0),
+            )
+            .unwrap();
+
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET phrase_count = -1 WHERE id = ?1",
+                params![id.as_str()],
+            )
+            .unwrap();
+
+        let err = store.list_by_instrument(Some("trumpet")).unwrap_err();
+        assert!(
+            matches!(err, StoreError::CorruptRow(ref msg) if msg.contains("phrase_count")),
+            "expected CorruptRow(phrase_count), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn list_by_date_range_rejects_corrupt_phrase_count() {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        store
+            .save(
+                id,
+                now,
+                now + Duration::seconds(10),
+                &recap_with("trumpet", 10.0, 0),
+            )
+            .unwrap();
+
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET phrase_count = -1 WHERE id = ?1",
+                params![id.as_str()],
+            )
+            .unwrap();
+
+        let err = store.list_by_date_range(None, None).unwrap_err();
+        assert!(
+            matches!(err, StoreError::CorruptRow(ref msg) if msg.contains("phrase_count")),
+            "expected CorruptRow(phrase_count), got {err:?}"
+        );
+    }
+
+    // Regression for the CTO-audit finding: `count_sessions` was returning
+    // `Ok(0)` on a negative SQLite count (silent data-corruption concealment).
+    // A bare `SELECT COUNT(*)` can't actually return a negative value in
+    // normal operation, so we exercise the real `decode_session_count`
+    // helper that `count_sessions` delegates to — that way the production
+    // code path (not a duplicated `usize::try_from`) is covered and a
+    // future refactor that weakens the guard will fail this test.
+    #[test]
+    fn count_sessions_escalates_negative_count_to_corrupt_row() {
+        let store = SessionStore::in_memory().unwrap();
+        // Happy path: real call through the real query still works.
+        assert_eq!(store.count_sessions().unwrap(), 0);
+        assert_eq!(decode_session_count(0).unwrap(), 0);
+        assert_eq!(decode_session_count(5).unwrap(), 5);
+
+        // Negative signals corruption — must escalate, not silently clamp.
+        let err = decode_session_count(-1);
+        assert!(
+            matches!(err, Err(StoreError::CorruptRow(ref msg)) if msg.contains("negative")),
+            "expected CorruptRow(negative...), got {err:?}"
+        );
     }
 }
