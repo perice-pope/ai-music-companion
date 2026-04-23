@@ -1,3 +1,9 @@
+## [1.13.1](https://github.com/perice-pope/ai-music-companion/compare/v1.13.0...v1.13.1) (2026-04-23)
+
+### Bug Fixes
+
+* **hotspots:** replace eprintln! with tracing to fix Windows silent drops and deadlock risk ([#74](https://github.com/perice-pope/ai-music-companion/issues/74)) ([5e40cb2](https://github.com/perice-pope/ai-music-companion/commit/5e40cb27226af13292cab5250157e6472b2cae64))
+
 ## [1.13.0](https://github.com/perice-pope/ai-music-companion/compare/v1.12.0...v1.13.0) (2026-04-23)
 
 ### Features
