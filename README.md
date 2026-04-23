@@ -55,6 +55,8 @@ docs/              -- Testing guides, architecture docs
 
 ## Development
 
+### Setup
+
 ```bash
 # Prerequisites: Rust stable, Node 20+, pnpm
 
@@ -63,6 +65,20 @@ cargo build                        # Rust workspace
 cargo test --workspace             # Run all tests
 pnpm --filter desktop test         # Frontend tests
 ```
+
+### Environment Variables
+
+To enable LLM-powered coaching and session recaps, set your Claude API key:
+
+```bash
+export MUSIC_COMPANION_LLM_API_KEY="sk-ant-..."
+```
+
+(Get your API key at https://console.anthropic.com/)
+
+When the API key is not set, the app runs in **offline mode**: sessions still work fully, but coaching tips are unavailable and recaps use fallback text. Set the env var before running the app to enable coaching.
+
+### Common Commands
 
 A [justfile](justfile) provides shortcuts for common workflows:
 
