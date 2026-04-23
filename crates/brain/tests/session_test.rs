@@ -4,6 +4,7 @@
 //! guarantee the types remain usable from downstream crates such as the
 //! Tauri shell.
 
+use async_trait::async_trait;
 use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
 use brain::session::{RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder};
 use brain::store::SessionStore;
@@ -31,8 +32,9 @@ impl MockRecapGenerator {
     }
 }
 
+#[async_trait]
 impl RecapGenerator for MockRecapGenerator {
-    fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+    async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         Ok(SessionRecap {
             overall_assessment: format!(
@@ -82,8 +84,8 @@ fn phrase_at(idx: usize) -> PhraseSummary {
 // Integration tests
 // ---------------------------------------------------------------------------
 
-#[test]
-fn end_to_end_record_and_persist() {
+#[tokio::test]
+async fn end_to_end_record_and_persist() {
     // 1. Build a recorder (NO longer owns the recap generator).
     let mut recorder = SessionRecorder::new("trumpet".to_owned());
     let started_at = recorder.started_at();
@@ -121,7 +123,7 @@ fn end_to_end_record_and_persist() {
     // 4. Generate recap separately. Authoritative fields from
     //    CompletedSession must override anything the generator emitted.
     let generator = MockRecapGenerator::new();
-    let recap = completed.generate_recap(&generator).expect("recap");
+    let recap = completed.generate_recap(&generator).await.expect("recap");
     assert_eq!(recap.phrase_count, 2);
     assert_eq!(recap.instrument, "trumpet");
     assert!((recap.duration_secs - completed.duration_secs).abs() < 1e-9);
@@ -158,8 +160,8 @@ fn end_to_end_record_and_persist() {
     );
 }
 
-#[test]
-fn multiple_sessions_coexist_in_store() {
+#[tokio::test]
+async fn multiple_sessions_coexist_in_store() {
     let store = SessionStore::in_memory().unwrap();
     let base = Utc::now();
 
@@ -171,7 +173,7 @@ fn multiple_sessions_coexist_in_store() {
         let completed = recorder.complete().unwrap();
 
         let generator = MockRecapGenerator::new();
-        let recap = completed.generate_recap(&generator).unwrap();
+        let recap = completed.generate_recap(&generator).await.unwrap();
 
         let started = base - Duration::hours(i64::try_from(i).unwrap());
         let ended = started + Duration::seconds(30);
