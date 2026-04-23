@@ -10,6 +10,8 @@ This folder holds the living architecture for Musa / AI Music Companion.
 | [`architecture-v1.md`](./architecture-v1.md) | Original pre-pivot architecture. Kept for diff / decision tracking. |
 | [`research-notes.md`](./research-notes.md) | Early product + market research that fed into v1/v2. |
 | [`platform-modules-addendum.md`](./platform-modules-addendum.md) | Addendum to v2 — modular platform thinking (teacher/student/group modes, tone-quality model, etc.). |
+| [`eyes.md`](./eyes.md) | RFC (exploration): computer vision as a third sensor for technique analysis — landmarks live, VLM async. |
+| [`mobile.md`](./mobile.md) | RFC (committed): iOS + Android via Tauri 2. iPad-first for schools, then phone. |
 | [`sdlc-automation-loop.md`](./sdlc-automation-loop.md) | How we build: daily engineering agent, weekly CTO audit, testing standards, PR hygiene. |
 
 ## Related
