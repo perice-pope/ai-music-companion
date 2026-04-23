@@ -90,6 +90,30 @@ Silence is honest. Generic filler is a little lie that compounds.
 
 ---
 
+## 2026-04-23 — CRM is off-the-shelf (Airtable / Attio / Pipedrive), not a custom build
+
+**Decision:** Sales lead tracking and outbound pipeline management lives in an **off-the-shelf CRM** (Airtable as the likely v0, upgrading to Attio or Pipedrive if the sales workflow outgrows it). We are **not** building a leads tracker as another page on the pitch site, even though the infrastructure (Supabase + GitHub Pages + magic-link auth) would make it cheap to start.
+
+**Rejected alternative:** A `/leads/` page in the `ai-music-companion-pitch` repo, auth-gated, writing to new `leads` / `lead_activities` / `team_members` tables in the existing Supabase project. Inbound `pilot_signups` rows would auto-create leads via an Edge Function. Proposed schema and UI were scoped in the conversation that produced this entry.
+
+**Reasoning:**
+- Building a CRM is a **classic founder trap**. The domain is deceptively deep — email sync, calendar sync, activity logs, reporting, mobile, bulk import, deduplication, pipeline configurability. We'd spend months chasing parity with tools that cost $25–40/mo/seat and work today.
+- **Sales muscle memory matters.** A competent salesperson already has a CRM workflow. Making them learn our table costs momentum we don't have. Their tool preference is a data point, not a design constraint we fight.
+- **Engineering time is the scarce resource.** Every hour on CRM internals is an hour not on the Rust core, Eyes, or mobile. Leads tooling is not a moat.
+- **Cost math doesn't justify a build.** At 2 seats the savings are ~$50/mo — a rounding error vs. the engineering opportunity cost. Only at ~10+ seats does the math get interesting, and by then we'll know exactly what we need and can build deliberately.
+- **Off-the-shelf still integrates.** Airtable has a REST API; Attio/Pipedrive have webhooks. Inbound `pilot_signups` → CRM pipe can be wired with a 20-line Supabase Edge Function if/when we want that automation.
+
+**What we DID keep from the design discussion:** the schema shape (`org_type`, `instrument_focus`, `student_count`, `status`, `next_action_date`, etc.) is a useful reference for configuring whichever tool we pick. Don't invent a new schema from scratch — start from the one in the conversation that produced this decision.
+
+**Consequence:**
+- Any future "I want a dashboard showing how sales is going" ask is answered by the CRM's reporting, not by us building a page.
+- If the sales flow outgrows Airtable's view/filter ergonomics, the next stop is **Attio or Pipedrive**, not a custom build. The trigger for revisiting "build it ourselves" is a concrete capability the off-the-shelf tool cannot support, not general dissatisfaction.
+- Inbound `pilot_signups` currently stays in Supabase; any CRM integration is wired as an explicit follow-up, not assumed.
+
+**Related:** [`ai-music-companion-pitch/README.md`](../../ai-music-companion-pitch/README.md) (pitch site + signup backend), `pilot_signups` table in the Supabase `musa` project.
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:
