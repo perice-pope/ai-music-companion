@@ -200,4 +200,59 @@ mod tests {
         assert_eq!(profile.name, "Trumpet");
         assert_eq!(profile.tuning_corrections.len(), 1);
     }
+
+    /// Locks the real-file invariant for every workspace-shipped profile.
+    ///
+    /// The repo's `profiles/` directory is the source of truth for which
+    /// instruments the product supports. If a JSON file is malformed, its
+    /// frequency range nonsensical, or its family enum unknown, this test
+    /// fails with the offending filename — preventing a silent regression
+    /// where a new profile is checked in but fails to parse at runtime.
+    ///
+    /// Update the expected count below when you add or remove a profile.
+    #[test]
+    fn all_workspace_profiles_load_cleanly() {
+        // CARGO_MANIFEST_DIR is crates/ears — profiles/ lives at the workspace root.
+        let profiles_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("ears crate has a parent")
+            .parent()
+            .expect("workspace root exists")
+            .join("profiles");
+
+        let loaded =
+            ProfileLoader::load_all(&profiles_dir).expect("every checked-in profile must parse");
+
+        // If you add or remove a profile file, update this count. The
+        // explicit number guards against accidental deletion as strongly
+        // as it guards against accidental addition.
+        assert_eq!(
+            loaded.len(),
+            9,
+            "expected 9 profiles in {:?}, got {:?}",
+            profiles_dir,
+            loaded.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+
+        // Every expected instrument by display name must be present — the
+        // filename-to-display-name mapping is silent otherwise.
+        let names: Vec<&str> = loaded.iter().map(|p| p.name.as_str()).collect();
+        for expected in &[
+            "Trumpet",
+            "Trombone",
+            "French Horn",
+            "Violin",
+            "Cello",
+            "Flute",
+            "Clarinet",
+            "Soprano Voice",
+            "Piano",
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing profile {expected} in {:?}",
+                names
+            );
+        }
+    }
 }

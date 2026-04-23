@@ -1,0 +1,9 @@
+{
+  "name": "Flute",
+  "family": "woodwind",
+  "freq_min_hz": 262.0,
+  "freq_max_hz": 2093.0,
+  "vibrato_tolerance_cents": 20.0,
+  "attack_type": "breath",
+  "tuning_corrections": []
+}

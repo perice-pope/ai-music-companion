@@ -1,0 +1,9 @@
+{
+  "name": "Trombone",
+  "family": "brass",
+  "freq_min_hz": 58.0,
+  "freq_max_hz": 587.0,
+  "vibrato_tolerance_cents": 20.0,
+  "attack_type": "tongued",
+  "tuning_corrections": []
+}
