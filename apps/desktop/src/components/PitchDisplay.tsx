@@ -5,13 +5,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-/** Color based on cents deviation: green (in tune) → yellow → red (out of tune). */
-function deviationColor(cents: number): string {
-  const absCents = Math.abs(cents);
-  if (absCents <= 10) return "text-green-400";
-  if (absCents <= 25) return "text-yellow-400";
-  return "text-red-400";
-}
+// NOTE: The note name and cents-deviation text are intentionally rendered in a
+// neutral color. Per-note green/yellow/red is the Tonestro/SmartMusic pattern
+// we explicitly do NOT do — see `docs/architecture/architecture-v2.md` §4a and
+// §8 ("We do not color individual notes green/yellow/red during performance...
+// That's the Tonestro/SmartMusic approach and users hate it. We assess phrases,
+// not notes."). Coaching judgments happen at the phrase layer, surfaced via
+// CoachingTipPanel / SessionRecap.
+//
+// The small continuous tuning-meter indicator below keeps its color: that's a
+// real-time tuning aid (needle position), not a per-note judgment.
 
 export default function PitchDisplay() {
   const { currentNote, latestEvent, isListening } = useAudioStore();
@@ -45,9 +48,12 @@ export default function PitchDisplay() {
       aria-live="polite"
       aria-atomic="true"
     >
-      {/* Note name */}
+      {/* Note name — neutral color; coaching judgments happen at the phrase layer */}
       <div className="text-center">
-        <span className={`text-6xl font-bold ${deviationColor(cents_deviation)}`}>
+        <span
+          className="text-6xl font-bold text-gray-100"
+          data-testid="pitch-note-name"
+        >
           {name}
         </span>
         <span className="text-2xl text-gray-400">{octave}</span>
@@ -56,8 +62,11 @@ export default function PitchDisplay() {
       {/* Frequency */}
       <p className="text-sm text-gray-500">{frequency_hz} Hz</p>
 
-      {/* Cents deviation */}
-      <p className={`text-lg font-mono ${deviationColor(cents_deviation)}`}>
+      {/* Cents deviation — neutral numeric readout, not a verdict */}
+      <p
+        className="text-lg font-mono text-gray-300"
+        data-testid="pitch-cents-text"
+      >
         {cents_deviation > 0 ? "+" : ""}
         {cents_deviation.toFixed(1)} cents
       </p>
