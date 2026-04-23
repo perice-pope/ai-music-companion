@@ -31,11 +31,37 @@ use crate::session::{SessionId, SessionRecap};
 /// fabricated zero (phrase_count, for instance) would lie to the
 /// history UI about what actually happened in a session.
 fn decode_summary_row(row: &Row<'_>) -> Result<SessionSummary, StoreError> {
-    let id_str: String = row.get(0)?;
-    let instrument: String = row.get(1)?;
-    let started_at_str: String = row.get(2)?;
-    let duration_secs: f64 = row.get(3)?;
-    let phrase_count: i64 = row.get(4)?;
+    // Map raw rusqlite::Error into CorruptRow so the helper's contract is
+    // uniform: any row we can't decode escalates to CorruptRow, regardless
+    // of whether the fault is a type mismatch (row.get), a malformed UUID,
+    // a bad RFC3339 timestamp, or a signed/unsigned conversion. Letting
+    // the initial reads fall through as StoreError::Sqlite would mean an
+    // externally-mutated row with a NULL or wrong SQLite type reports a
+    // different variant than the exact same row with a parseable-but-
+    // impossible value — callers shouldn't need to distinguish those.
+    let id_str: String = row
+        .get(0)
+        .map_err(|e| StoreError::CorruptRow(format!("invalid id column: {e}")))?;
+    let instrument: String = row.get(1).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid instrument column for session {id_str}: {e}"
+        ))
+    })?;
+    let started_at_str: String = row.get(2).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid started_at column for session {id_str}: {e}"
+        ))
+    })?;
+    let duration_secs: f64 = row.get(3).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid duration_secs column for session {id_str}: {e}"
+        ))
+    })?;
+    let phrase_count: i64 = row.get(4).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid phrase_count column for session {id_str}: {e}"
+        ))
+    })?;
 
     let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
         StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
@@ -56,6 +82,23 @@ fn decode_summary_row(row: &Row<'_>) -> Result<SessionSummary, StoreError> {
         started_at,
         duration_secs,
         phrase_count,
+    })
+}
+
+/// Escalate a signed SQLite `COUNT(*)` result into an unsigned count.
+///
+/// A negative value from SQLite is impossible under normal operation,
+/// so if one appears it's data corruption — we surface it as
+/// [`StoreError::CorruptRow`] rather than silently returning zero,
+/// which would lie to callers about the size of their history.
+///
+/// Extracted so the regression test can exercise the conversion logic
+/// directly. Calling `count_sessions()` inserts rows through the real
+/// table, which can't actually produce a negative count; testing the
+/// helper in isolation is the only way to keep this code path covered.
+fn decode_session_count(count: i64) -> Result<usize, StoreError> {
+    usize::try_from(count).map_err(|_| {
+        StoreError::CorruptRow(format!("negative session count {count} from COUNT(*)"))
     })
 }
 
@@ -389,9 +432,7 @@ impl SessionStore {
         let count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
-        usize::try_from(count).map_err(|_| {
-            StoreError::CorruptRow(format!("negative session count {count} from COUNT(*)"))
-        })
+        decode_session_count(count)
     }
 
     /// Sum total practice duration in seconds across all sessions.
@@ -986,24 +1027,20 @@ mod tests {
     // Regression for the CTO-audit finding: `count_sessions` was returning
     // `Ok(0)` on a negative SQLite count (silent data-corruption concealment).
     // A bare `SELECT COUNT(*)` can't actually return a negative value in
-    // normal operation, but we verify the escalation path by querying a
-    // synthetic negative through a literal — the `usize::try_from` guard
-    // fires regardless of source, so this proves the method no longer
-    // swallows the failure.
+    // normal operation, so we exercise the real `decode_session_count`
+    // helper that `count_sessions` delegates to — that way the production
+    // code path (not a duplicated `usize::try_from`) is covered and a
+    // future refactor that weakens the guard will fail this test.
     #[test]
     fn count_sessions_escalates_negative_count_to_corrupt_row() {
         let store = SessionStore::in_memory().unwrap();
-        // Prove the happy path is unaffected first.
+        // Happy path: real call through the real query still works.
         assert_eq!(store.count_sessions().unwrap(), 0);
+        assert_eq!(decode_session_count(0).unwrap(), 0);
+        assert_eq!(decode_session_count(5).unwrap(), 5);
 
-        // Force a negative i64 through a literal to exercise the try_from guard.
-        let bad: i64 = store
-            .conn
-            .query_row("SELECT -1", [], |row| row.get(0))
-            .unwrap();
-        let err = usize::try_from(bad).map_err(|_| {
-            StoreError::CorruptRow(format!("negative session count {bad} from COUNT(*)"))
-        });
+        // Negative signals corruption — must escalate, not silently clamp.
+        let err = decode_session_count(-1);
         assert!(
             matches!(err, Err(StoreError::CorruptRow(ref msg)) if msg.contains("negative")),
             "expected CorruptRow(negative...), got {err:?}"
