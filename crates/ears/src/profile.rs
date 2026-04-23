@@ -223,6 +223,27 @@ mod tests {
         let loaded =
             ProfileLoader::load_all(&profiles_dir).expect("every checked-in profile must parse");
 
+        // `load_all` is lenient: individual parse errors are collected and it
+        // still returns Ok when at least one profile loaded. That means a
+        // malformed canonical file could be silently skipped if some other
+        // `.json` happened to parse in its place. Cross-check the loaded
+        // count against the number of JSON files on disk so any skipped
+        // file fails the test, regardless of the expected-count assertion
+        // below.
+        let json_count = std::fs::read_dir(&profiles_dir)
+            .expect("profiles dir should be readable")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .count();
+        assert_eq!(
+            loaded.len(),
+            json_count,
+            "every checked-in JSON profile in {:?} should parse; loaded {} of {}",
+            profiles_dir,
+            loaded.len(),
+            json_count,
+        );
+
         // If you add or remove a profile file, update this count. The
         // explicit number guards against accidental deletion as strongly
         // as it guards against accidental addition.
