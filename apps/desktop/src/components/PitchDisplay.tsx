@@ -5,14 +5,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-/** Color based on cents deviation: green (in tune) → yellow → red (out of tune). */
-function deviationColor(cents: number): string {
-  const absCents = Math.abs(cents);
-  if (absCents <= 10) return "text-green-400";
-  if (absCents <= 25) return "text-yellow-400";
-  return "text-red-400";
-}
-
 export default function PitchDisplay() {
   const { currentNote, latestEvent, isListening } = useAudioStore();
 
@@ -47,7 +39,7 @@ export default function PitchDisplay() {
     >
       {/* Note name */}
       <div className="text-center">
-        <span className={`text-6xl font-bold ${deviationColor(cents_deviation)}`}>
+        <span className="text-6xl font-bold text-gray-100">
           {name}
         </span>
         <span className="text-2xl text-gray-400">{octave}</span>
@@ -57,7 +49,7 @@ export default function PitchDisplay() {
       <p className="text-sm text-gray-500">{frequency_hz} Hz</p>
 
       {/* Cents deviation */}
-      <p className={`text-lg font-mono ${deviationColor(cents_deviation)}`}>
+      <p className="text-lg font-mono text-gray-300">
         {cents_deviation > 0 ? "+" : ""}
         {cents_deviation.toFixed(1)} cents
       </p>
