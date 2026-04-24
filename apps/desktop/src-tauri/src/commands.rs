@@ -335,38 +335,8 @@ impl RecapGenerator for LlmRecapGenerator {
         };
 
         // Call the LLM coaching engine for the full recap.
-        // This is a simplified placeholder — the real implementation will
-        // format the RecapInput as a detailed prompt and parse the LLM response.
-        // For now, we return the canned text to avoid blocking on an actual
-        // API call during testing.
         let engine = engine_arc.lock().await;
-
-        // TODO: Build a comprehensive recap prompt from the input (phrases,
-        // tips, session duration, instrument) and call the LLM.
-        // For now, return placeholder that indicates the engine is present.
-        drop(engine);
-
-        Ok(SessionRecap {
-            overall_assessment: format!(
-                "Strong practice session in {}. You demonstrated consistent focus and technical discipline over {} minutes.",
-                input.instrument,
-                (input.duration_secs / 60.0).round().max(1.0) as u32,
-            ),
-            strengths: vec![
-                "Maintained steady tone and good breath support throughout.".to_owned(),
-                "Showed improvement in phrase shaping.".to_owned(),
-            ],
-            areas_to_improve: vec![
-                "Continue refining intonation in the upper register.".to_owned(),
-            ],
-            next_session_suggestions: vec![
-                "Work with a drone to anchor your intonation.".to_owned(),
-                "Practice the challenging passage from today at half-speed.".to_owned(),
-            ],
-            duration_secs: 0.0,
-            phrase_count: 0,
-            instrument: String::new(),
-        })
+        engine.generate_recap(input).await
     }
 }
 
