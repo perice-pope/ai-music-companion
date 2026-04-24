@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
 import { usePracticeStore } from "../stores/practiceStore";
+import { PRACTICE_MODES } from "../types/brain";
 
 /** Format a frequency range for display (e.g., "165 – 1047 Hz"). */
 function formatRange(min: number, max: number): string {
@@ -30,6 +31,8 @@ export default function InstrumentSelector() {
   const selectedInstrument = useAudioStore((s) => s.selectedInstrument);
   const setInstrument = useAudioStore((s) => s.setInstrument);
   const startSession = usePracticeStore((s) => s.startSession);
+  const practiceMode = usePracticeStore((s) => s.practiceMode);
+  const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Catalog is fetched from the Rust backend on mount. `null` means
@@ -64,6 +67,9 @@ export default function InstrumentSelector() {
       setStarting(false);
     }
   };
+
+  const activeMode =
+    PRACTICE_MODES.find((m) => m.value === practiceMode) ?? PRACTICE_MODES[1];
 
   return (
     <section className="w-full max-w-3xl px-4" data-testid="instrument-selector">
@@ -146,6 +152,51 @@ export default function InstrumentSelector() {
             </button>
           );
         })}
+      </div>
+
+      {/* Practice mode — three-way segmented control. Persisted across
+          launches via the store. The active mode's description is shown
+          beneath so the distinction between modes is clear to new users. */}
+      <div
+        className="mt-6 flex flex-col items-center gap-2"
+        data-testid="practice-mode-selector"
+      >
+        <span className="text-xs uppercase tracking-wider text-gray-500">
+          Practice mode
+        </span>
+        <div
+          role="radiogroup"
+          aria-label="Practice mode"
+          className="inline-flex rounded-full border border-gray-700 bg-gray-800/60 p-1"
+        >
+          {PRACTICE_MODES.map((mode) => {
+            const isActive = mode.value === practiceMode;
+            return (
+              <button
+                key={mode.value}
+                type="button"
+                role="radio"
+                aria-checked={isActive}
+                onClick={() => setPracticeMode(mode.value)}
+                data-testid={`practice-mode-${mode.value}`}
+                className={`rounded-full px-4 py-1 text-sm font-medium transition-colors
+                  ${
+                    isActive
+                      ? "bg-blue-600 text-white shadow"
+                      : "text-gray-300 hover:text-white"
+                  }`}
+              >
+                {mode.label}
+              </button>
+            );
+          })}
+        </div>
+        <p
+          className="text-center text-xs text-gray-400"
+          data-testid="practice-mode-description"
+        >
+          {activeMode.description}
+        </p>
       </div>
 
       {/* Start Practice — enabled only once an instrument is picked. */}

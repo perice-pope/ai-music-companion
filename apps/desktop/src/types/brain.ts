@@ -10,6 +10,43 @@
  */
 
 /**
+ * Practice mode the session is running in. Mirrors
+ * `brain::session::PracticeMode`, which serialises in `snake_case`.
+ *
+ * - `warmup` — AI monitors silently, only surfaces readiness indicators.
+ * - `practice` — default: full phrase-level coaching.
+ * - `run_through` — AI stays silent, full recap at end only.
+ */
+export type PracticeMode = "warmup" | "practice" | "run_through";
+
+/**
+ * Display metadata for each `PracticeMode`. Rendering code imports this
+ * so copy stays in one place and matches the product voice agreed in
+ * story #21.
+ */
+export const PRACTICE_MODES: Array<{
+  value: PracticeMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "warmup",
+    label: "Warm-up",
+    description: "Silent monitoring. Readiness cues only — no critique.",
+  },
+  {
+    value: "practice",
+    label: "Practice",
+    description: "Full coaching with phrase-level feedback and tips.",
+  },
+  {
+    value: "run_through",
+    label: "Run-through",
+    description: "Performance mode. Silent now, full recap at the end.",
+  },
+];
+
+/**
  * Coaching severity. Matches `brain::coaching::CoachingSeverity` which
  * serialises in `snake_case`.
  */

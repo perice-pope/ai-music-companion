@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import SessionTimer, { formatMmSs } from "./SessionTimer";
 import { usePracticeStore } from "../stores/practiceStore";
 
@@ -41,7 +41,7 @@ describe("SessionTimer", () => {
     expect(screen.getByTestId("session-timer").textContent).toBe("00:00");
   });
 
-  it("ticks once per second while listening", () => {
+  it("ticks once per second while listening", async () => {
     const start = 1_000_000;
     vi.setSystemTime(start);
     usePracticeStore.setState({
@@ -53,16 +53,25 @@ describe("SessionTimer", () => {
     // First tick on mount.
     expect(screen.getByTestId("session-timer").textContent).toBe("00:00");
 
-    vi.setSystemTime(start + 1_000);
-    vi.advanceTimersByTime(1_000);
+    // Under React 18, store updates from interval callbacks aren't
+    // flushed synchronously by `advanceTimersByTime`. The async variant
+    // inside `await act(async ...)` yields control between the fake
+    // timer firing and the assertion so React can commit. Note that
+    // `advanceTimersByTimeAsync(N)` also moves the system clock forward
+    // by N, so we do NOT also call `setSystemTime` — doing both would
+    // double-advance the clock.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
     expect(screen.getByTestId("session-timer").textContent).toBe("00:01");
 
-    vi.setSystemTime(start + 65_000);
-    vi.advanceTimersByTime(64_000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(64_000);
+    });
     expect(screen.getByTestId("session-timer").textContent).toBe("01:05");
   });
 
-  it("stops ticking when status moves to ending", () => {
+  it("stops ticking when status moves to ending", async () => {
     const start = 2_000_000;
     vi.setSystemTime(start);
     usePracticeStore.setState({
@@ -72,16 +81,20 @@ describe("SessionTimer", () => {
     });
     const { rerender } = render(<SessionTimer />);
 
-    vi.setSystemTime(start + 3_000);
-    vi.advanceTimersByTime(3_000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
     expect(screen.getByTestId("session-timer").textContent).toBe("00:03");
 
     // Freeze: status → ending, elapsed should stop advancing.
-    usePracticeStore.setState({ status: "ending" });
+    act(() => {
+      usePracticeStore.setState({ status: "ending" });
+    });
     rerender(<SessionTimer />);
 
-    vi.setSystemTime(start + 20_000);
-    vi.advanceTimersByTime(17_000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(17_000);
+    });
     expect(screen.getByTestId("session-timer").textContent).toBe("00:03");
   });
 });

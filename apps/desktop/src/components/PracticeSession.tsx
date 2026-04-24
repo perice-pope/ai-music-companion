@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { InstrumentInfo } from "../stores/audioStore";
+import { PRACTICE_MODES, type PracticeMode } from "../types/brain";
 import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
@@ -14,7 +15,10 @@ import CoachingTipPanel from "./CoachingTipPanel";
 export default function PracticeSession() {
   const instrumentName = usePracticeStore((s) => s.instrumentName);
   const switchInstrument = usePracticeStore((s) => s.switchInstrument);
+  const practiceMode = usePracticeStore((s) => s.practiceMode);
+  const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
   // Catalog is fetched from the backend. Starts as `null` (loading);
   // we don't render the dropdown list items until it resolves.
@@ -45,6 +49,28 @@ export default function PracticeSession() {
       setSwitchError(String(err));
     }
   };
+
+  /**
+   * Changing the mode mid-session closes the current segment and opens
+   * a new one under the new mode — so the recorder captures "mode was X
+   * for the first Y seconds, then Z". We re-invoke `switchInstrument`
+   * with the *current* instrument to trigger that segment boundary.
+   */
+  const onPickMode = async (mode: PracticeMode) => {
+    setModeMenuOpen(false);
+    setSwitchError(null);
+    if (mode === practiceMode) return;
+    setPracticeMode(mode);
+    if (!instrumentName) return;
+    try {
+      await switchInstrument(instrumentName);
+    } catch (err) {
+      setSwitchError(String(err));
+    }
+  };
+
+  const activeMode =
+    PRACTICE_MODES.find((m) => m.value === practiceMode) ?? PRACTICE_MODES[1];
 
   return (
     <main
@@ -98,6 +124,52 @@ export default function PracticeSession() {
             <p className="mt-1 text-xs text-red-400" role="alert">
               {switchError}
             </p>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setModeMenuOpen((v) => !v)}
+            data-testid="practice-mode-switch-button"
+            aria-expanded={modeMenuOpen}
+            aria-haspopup="listbox"
+            className="flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/60 px-3 py-1 text-xs font-medium uppercase tracking-wider text-gray-200 hover:bg-gray-800"
+          >
+            <span>{activeMode.label}</span>
+            <span aria-hidden="true" className="text-gray-500">
+              ▾
+            </span>
+          </button>
+          {modeMenuOpen && (
+            <ul
+              role="listbox"
+              data-testid="practice-mode-switch-menu"
+              className="absolute left-1/2 top-full z-10 mt-1 w-64 -translate-x-1/2 overflow-hidden rounded border border-gray-700 bg-gray-900 shadow-lg"
+            >
+              {PRACTICE_MODES.map((mode) => {
+                const isActive = mode.value === practiceMode;
+                return (
+                  <li key={mode.value}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isActive}
+                      onClick={() => void onPickMode(mode.value)}
+                      data-testid={`practice-mode-switch-option-${mode.value}`}
+                      className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-800 ${
+                        isActive ? "text-blue-300" : "text-gray-200"
+                      }`}
+                    >
+                      <div className="font-medium">{mode.label}</div>
+                      <div className="text-xs text-gray-500">
+                        {mode.description}
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </div>
 

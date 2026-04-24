@@ -714,7 +714,9 @@ pub async fn switch_instrument_impl(
     }
 
     session.practice_mode = practice_mode;
-    let new_segment_id = session.recorder.switch_instrument(instrument, practice_mode)?;
+    let new_segment_id = session
+        .recorder
+        .switch_instrument(instrument, practice_mode)?;
     Ok((new_segment_id.as_str(), Utc::now()))
 }
 
@@ -850,7 +852,9 @@ pub async fn start_practice_session<R: Runtime>(
     coaching_enabled: bool,
 ) -> Result<String, String> {
     emit_session_status(&app, SessionPhase::Starting);
-    match start_practice_session_impl(state.inner(), instrument, practice_mode, coaching_enabled).await {
+    match start_practice_session_impl(state.inner(), instrument, practice_mode, coaching_enabled)
+        .await
+    {
         Ok(id) => {
             emit_session_status(&app, SessionPhase::Listening);
             Ok(id)
@@ -989,9 +993,10 @@ mod tests {
     async fn start_session_then_end_session_produces_recap() {
         // Happy path with phrases exercises the rich-recap branch.
         let s = state();
-        let session_id = start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
-            .await
-            .expect("start should succeed");
+        let session_id =
+            start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
+                .await
+                .expect("start should succeed");
         assert!(!session_id.is_empty(), "session id must be non-empty");
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
 
@@ -1021,9 +1026,10 @@ mod tests {
         start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
-        let err = start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap_err();
+        let err =
+            start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false)
+                .await
+                .unwrap_err();
         assert!(matches!(err, CommandError::AlreadyActive), "{err:?}");
         // Error message must be human-readable — frontend surfaces it
         // directly.
@@ -1053,9 +1059,10 @@ mod tests {
         start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
-        let (new_segment_id, _) = switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
-            .await
-            .unwrap();
+        let (new_segment_id, _) =
+            switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
+                .await
+                .unwrap();
         assert!(!new_segment_id.is_empty());
 
         let guard = s.active_session.lock().await;
@@ -1113,9 +1120,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(empty, CommandError::EmptyInstrument));
 
-        let unknown = start_practice_session_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap_err();
+        let unknown =
+            start_practice_session_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice, false)
+                .await
+                .unwrap_err();
         match unknown {
             CommandError::UnknownInstrument(name) => assert_eq!(name, "Kazoo"),
             other => panic!("expected UnknownInstrument, got {other:?}"),
