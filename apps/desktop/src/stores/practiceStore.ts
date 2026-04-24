@@ -6,6 +6,7 @@ import type {
   PracticeMode,
   SessionRecap,
 } from "../types/brain";
+import { useAudioStore } from "./audioStore";
 
 /**
  * Screen routing enum — keeps Free Play as a state-machine in the
@@ -187,10 +188,17 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         phrases: [],
         tipQueue: [],
       });
+      // Mic pipeline is live on the Rust side by the time `invoke`
+      // resolves — flip `isListening` so `PitchDisplay` switches from
+      // its idle copy to the live meter. Kept outside the set() so the
+      // two stores remain independent (practice store knows about
+      // audio store, not the other way around).
+      useAudioStore.getState().setListening(true);
     } catch (err) {
       // Roll back to idle so the UI can retry. Store the error text so
       // the caller (or a future error banner) can surface it.
       set({ status: "idle", recapError: String(err) });
+      useAudioStore.getState().setListening(false);
       throw err;
     }
   },
@@ -203,6 +211,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       );
     }
     set({ status: "ending" });
+    // Mic pipeline is torn down on the Rust side by the time the
+    // `end_practice_session` command even starts executing — flip the
+    // listening flag immediately so `PitchDisplay` drops back to its
+    // idle copy while the recap round-trip is in flight.
+    useAudioStore.getState().setListening(false);
     try {
       const recap = await invoke<SessionRecap>("end_practice_session");
       set({

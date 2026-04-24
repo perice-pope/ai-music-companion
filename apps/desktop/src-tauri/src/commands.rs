@@ -27,6 +27,8 @@ use brain::stats::PracticeStats;
 use brain::store::{SessionStore, SessionSummary, StoredSession};
 use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
+
+use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime, State};
 use thiserror::Error;
@@ -453,6 +455,14 @@ pub struct AppState {
     /// `list_instruments` command and by session-validation paths.
     /// Held behind Arc so clones into IPC responses are cheap.
     instruments: Arc<Vec<InstrumentInfo>>,
+    /// Live mic → pitch-detector → `audio-event` pipeline. `Some` only
+    /// between `start_practice_session` and `end_practice_session`;
+    /// swapped in place by `switch_instrument`. Held in a separate
+    /// mutex from `active_session` because the pipeline only needs the
+    /// instrument profile (not the recorder), and we prefer to hand the
+    /// profile in from the command wrapper without briefly holding two
+    /// locks at once.
+    audio_pipeline: Mutex<Option<AudioPipeline>>,
 }
 
 impl AppState {
@@ -479,6 +489,7 @@ impl AppState {
             session_store: std::sync::Mutex::new(session_store),
             coaching_available,
             instruments: Arc::new(load_instrument_catalog()),
+            audio_pipeline: Mutex::new(None),
         }
     }
 
@@ -493,6 +504,7 @@ impl AppState {
             ),
             coaching_available: false,
             instruments: Arc::new(test_instrument_catalog()),
+            audio_pipeline: Mutex::new(None),
         }
     }
 
@@ -501,6 +513,59 @@ impl AppState {
     /// reject unknown names before touching the session recorder.
     pub fn is_known_instrument(&self, name: &str) -> bool {
         self.instruments.iter().any(|i| i.name == name)
+    }
+
+    /// Look up the frequency window for the named instrument. Returns
+    /// `None` for unknown names — callers should validate via
+    /// `is_known_instrument` first. Used by the audio pipeline to size
+    /// the pitch detector's window.
+    pub fn detector_profile_for(&self, name: &str) -> Option<DetectorProfile> {
+        self.instruments
+            .iter()
+            .find(|i| i.name == name)
+            .map(|i| DetectorProfile {
+                // YIN threshold of 0.15 is the ears-crate default and
+                // works across brass/strings/voice. Per-instrument
+                // overrides belong in `profiles/*.json` later — for now
+                // the detector config is purely frequency-windowed.
+                threshold: 0.15,
+                freq_min_hz: i.freq_min_hz,
+                freq_max_hz: i.freq_max_hz,
+            })
+    }
+
+    /// Install the audio pipeline for the currently-active session.
+    /// Replaces any previous pipeline in place so mic hot-swap
+    /// (e.g. end_session after a failed switch) is safe.
+    pub(crate) async fn install_audio_pipeline(&self, pipeline: AudioPipeline) {
+        let mut guard = self.audio_pipeline.lock().await;
+        // Drop-old happens at assignment; `AudioPipeline::Drop` joins
+        // the worker so the old mic is fully released before the new
+        // one takes over.
+        *guard = Some(pipeline);
+    }
+
+    /// Swap the detector profile on the currently-running pipeline
+    /// without tearing down the mic stream. No-op if no pipeline is
+    /// running (e.g. if capture init failed at session start — we don't
+    /// want a mid-session switch to fail loudly because of that).
+    pub(crate) async fn reconfigure_audio_pipeline(
+        &self,
+        profile: DetectorProfile,
+    ) -> Result<(), PipelineError> {
+        let guard = self.audio_pipeline.lock().await;
+        if let Some(p) = guard.as_ref() {
+            p.reconfigure(profile)?;
+        }
+        Ok(())
+    }
+
+    /// Tear down the audio pipeline (stops mic, joins worker thread).
+    pub(crate) async fn stop_audio_pipeline(&self) {
+        let mut guard = self.audio_pipeline.lock().await;
+        if let Some(pipeline) = guard.take() {
+            pipeline.stop();
+        }
     }
 
     /// Clone the full instrument catalog for an IPC response.
@@ -842,7 +907,15 @@ pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, Com
 // ---------------------------------------------------------------------------
 
 /// Start a new practice session. Emits `session-status` as
-/// `starting` then `listening`.
+/// `starting` then `listening`, and spins up the mic → pitch →
+/// `audio-event` pipeline so the UI's pitch display comes alive.
+///
+/// Mic failure is non-fatal by design: the session still starts (so
+/// the user can practise "silently" and still get an end-of-session
+/// recap) and the failure is logged via `tracing`. We consciously
+/// reject the alternative of failing the whole session start —
+/// "lost audio pipeline" shouldn't look like "lost session" to the
+/// user mid-practice.
 #[tauri::command]
 pub async fn start_practice_session<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -852,10 +925,34 @@ pub async fn start_practice_session<R: Runtime>(
     coaching_enabled: bool,
 ) -> Result<String, String> {
     emit_session_status(&app, SessionPhase::Starting);
-    match start_practice_session_impl(state.inner(), instrument, practice_mode, coaching_enabled)
-        .await
+    let detector_profile = state.detector_profile_for(&instrument);
+    match start_practice_session_impl(
+        state.inner(),
+        instrument.clone(),
+        practice_mode,
+        coaching_enabled,
+    )
+    .await
     {
         Ok(id) => {
+            // Spin up the pipeline only after state-machine commit —
+            // if we can't open the mic we at least want the recorder
+            // in a consistent state.
+            if let Some(profile) = detector_profile {
+                let app_for_emit = app.clone();
+                match AudioPipeline::start(profile, move |event| {
+                    let _ = app_for_emit.emit("audio-event", event);
+                }) {
+                    Ok(pipeline) => state.install_audio_pipeline(pipeline).await,
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            instrument = %instrument,
+                            "audio pipeline failed to start; session continues without live pitch"
+                        );
+                    }
+                }
+            }
             emit_session_status(&app, SessionPhase::Listening);
             Ok(id)
         }
@@ -864,7 +961,14 @@ pub async fn start_practice_session<R: Runtime>(
 }
 
 /// Close the current instrument segment and open a new one. Emits
-/// `segment-changed`.
+/// `segment-changed` and hot-swaps the pitch detector's frequency
+/// window on the running audio pipeline so the UI stops filtering out
+/// notes that are in-range for the *new* instrument but were out-of-range
+/// for the old one.
+///
+/// Pipeline reconfigure failures are logged but non-fatal — the segment
+/// switch itself still succeeds. If the pipeline isn't running (mic
+/// failed to open at session start) the reconfigure is a silent no-op.
 #[tauri::command]
 pub async fn switch_instrument<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -872,8 +976,22 @@ pub async fn switch_instrument<R: Runtime>(
     instrument: String,
     practice_mode: PracticeMode,
 ) -> Result<String, String> {
+    // Look up the new profile before touching the state machine so a
+    // successful `_impl` result and a reconfigurable pipeline move in
+    // lockstep; validation of the instrument name itself is the
+    // recorder's job.
+    let new_profile = state.detector_profile_for(&instrument);
     match switch_instrument_impl(state.inner(), instrument.clone(), practice_mode).await {
         Ok((segment_id, started_at)) => {
+            if let Some(profile) = new_profile {
+                if let Err(e) = state.reconfigure_audio_pipeline(profile).await {
+                    tracing::warn!(
+                        error = %e,
+                        instrument = %instrument,
+                        "audio pipeline reconfigure failed; segment switch proceeds"
+                    );
+                }
+            }
             emit_segment_changed(
                 &app,
                 SegmentChangedPayload {
@@ -890,12 +1008,18 @@ pub async fn switch_instrument<R: Runtime>(
 
 /// Finalise the active session and return its recap. Always leaves
 /// the backend in `Idle`, even on failure.
+///
+/// Audio pipeline is torn down *first* so the mic is released
+/// immediately when the user clicks "End" — the recap generation that
+/// follows may take a beat (LLM round-trip), and we'd rather not hold
+/// the input device for that whole time.
 #[tauri::command]
 pub async fn end_practice_session<R: Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<SessionRecap, String> {
     emit_session_status(&app, SessionPhase::Ending);
+    state.stop_audio_pipeline().await;
     end_practice_session_impl(state.inner())
         .await
         .map_err(|e| e.to_frontend())
@@ -1218,5 +1342,64 @@ mod tests {
         assert_ne!(first.text, second.text);
         // Rotation wraps at len boundary.
         assert_eq!(first.text, wrap.text);
+    }
+
+    // ---------------------------------------------------------------
+    // Audio pipeline wiring
+    //
+    // We can't open a real mic under `cargo test` — CI has no input
+    // device. So these cover the surface that *doesn't* require the
+    // pipeline to actually be started: profile lookup + the no-op
+    // reconfigure/stop paths when no pipeline is installed.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn detector_profile_for_known_instrument_mirrors_catalog_range() {
+        let s = state();
+        let profile = s
+            .detector_profile_for("Trumpet")
+            .expect("Trumpet must resolve to a profile");
+        // Mock catalog has Trumpet at 165–1047 Hz — the detector profile
+        // has to round-trip those exact bounds or the pitch window in
+        // the running pipeline won't match the instrument.
+        assert_eq!(profile.freq_min_hz, 165.0);
+        assert_eq!(profile.freq_max_hz, 1047.0);
+        // Threshold is defaulted for now (per-instrument overrides are a
+        // future-profile-schema concern) — regression-assert the default
+        // so a silent change here is caught.
+        assert!(
+            (profile.threshold - 0.15).abs() < f64::EPSILON,
+            "threshold default must stay 0.15 until per-profile overrides ship"
+        );
+    }
+
+    #[test]
+    fn detector_profile_for_unknown_instrument_returns_none() {
+        let s = state();
+        assert!(s.detector_profile_for("Kazoo").is_none());
+    }
+
+    #[tokio::test]
+    async fn reconfigure_audio_pipeline_without_running_pipeline_is_a_noop() {
+        // Invariant: if the mic failed to open at session start, a later
+        // instrument switch must not fail just because the pipeline is
+        // absent — the segment-level state still moves forward.
+        let s = state();
+        let profile = s
+            .detector_profile_for("Trumpet")
+            .expect("Trumpet must resolve");
+        s.reconfigure_audio_pipeline(profile)
+            .await
+            .expect("reconfigure with no pipeline should be a silent no-op");
+    }
+
+    #[tokio::test]
+    async fn stop_audio_pipeline_without_running_pipeline_is_a_noop() {
+        // Symmetrical invariant for end_practice_session: tearing down
+        // the pipeline must never explode when there's nothing to tear
+        // down.
+        let s = state();
+        s.stop_audio_pipeline().await;
+        s.stop_audio_pipeline().await; // Double-stop, still fine.
     }
 }
