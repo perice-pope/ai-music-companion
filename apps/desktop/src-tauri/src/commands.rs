@@ -16,16 +16,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use brain::coaching::{
-    CoachingCategory, CoachingConfig, CoachingEngine, CoachingError, CoachingSeverity,
-    CoachingTip, ReqwestClient, SessionContext,
+    CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, ReqwestClient,
+    SessionContext,
 };
 use brain::session::{
-    CompletedSession, RecapGenerator, RecapInput, SessionError, SessionId, SessionRecap,
-    SessionRecorder,
+    CompletedSession, RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder,
 };
 use brain::stats::PracticeStats;
 use brain::store::{SessionStore, SessionSummary, StoredSession};
 use chrono::{DateTime, Utc};
+use ears::profile::{InstrumentProfile, ProfileLoader};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime, State};
 use thiserror::Error;
@@ -37,10 +37,19 @@ use tokio::sync::Mutex;
 
 /// UI-facing instrument descriptor. Matches the TS `InstrumentInfo` in
 /// `apps/desktop/src/types/brain.ts`.
+///
+/// Sourced from `profiles/*.json` at startup — see `AppState::new`.
+/// Every field reflects what the `profiles/` files contain, so adding
+/// an instrument stays a one-file change: drop a JSON in `profiles/`,
+/// the UI picks it up on next launch.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct InstrumentInfo {
     pub name: String,
     pub family: String,
+    pub freq_min_hz: f64,
+    pub freq_max_hz: f64,
+    pub emoji: String,
 }
 
 /// Payload of the `session-status` Tauri event.
@@ -168,8 +177,7 @@ impl CommandError {
 pub trait CoachingService: Send + Sync {
     /// May return `None` to indicate "no tip worth showing" (e.g.
     /// rate-limited, empty phrase).
-    async fn get_tip(&self, phrase_index: usize, context: &SessionContext)
-        -> Option<CoachingTip>;
+    async fn get_tip(&self, phrase_index: usize, context: &SessionContext) -> Option<CoachingTip>;
 }
 
 /// Real coaching service backed by the Claude API.
@@ -182,13 +190,11 @@ impl LlmCoachingService {
     /// coaching engine. If no API key is configured, coaching tips will
     /// not be generated (coaching will be disabled).
     pub fn new() -> Self {
-        let engine = match CoachingEngine::new(
-            CoachingConfig::default(),
-            Box::new(ReqwestClient::new()),
-        ) {
-            Ok(e) => Some(Arc::new(Mutex::new(e))),
-            Err(_) => None,
-        };
+        let engine =
+            match CoachingEngine::new(CoachingConfig::default(), Box::new(ReqwestClient::new())) {
+                Ok(e) => Some(Arc::new(Mutex::new(e))),
+                Err(_) => None,
+            };
         Self { engine }
     }
 
@@ -206,7 +212,11 @@ impl Default for LlmCoachingService {
 
 #[async_trait]
 impl CoachingService for LlmCoachingService {
-    async fn get_tip(&self, _phrase_index: usize, _context: &SessionContext) -> Option<CoachingTip> {
+    async fn get_tip(
+        &self,
+        _phrase_index: usize,
+        _context: &SessionContext,
+    ) -> Option<CoachingTip> {
         // For now, return None to indicate no tip is available.
         // In a full implementation, this would:
         // 1. Lock the engine
@@ -227,14 +237,12 @@ impl MockCoachingService {
         Self {
             tips: vec![
                 CoachingTip {
-                    text: "Nice steady tone. Try letting the end of the phrase breathe."
-                        .to_owned(),
+                    text: "Nice steady tone. Try letting the end of the phrase breathe.".to_owned(),
                     severity: CoachingSeverity::Encouragement,
                     category: CoachingCategory::Tone,
                 },
                 CoachingTip {
-                    text: "Watch the intonation on the top note — a touch sharp there."
-                        .to_owned(),
+                    text: "Watch the intonation on the top note — a touch sharp there.".to_owned(),
                     severity: CoachingSeverity::Suggestion,
                     category: CoachingCategory::Intonation,
                 },
@@ -257,11 +265,7 @@ impl Default for MockCoachingService {
 
 #[async_trait]
 impl CoachingService for MockCoachingService {
-    async fn get_tip(
-        &self,
-        phrase_index: usize,
-        _context: &SessionContext,
-    ) -> Option<CoachingTip> {
+    async fn get_tip(&self, phrase_index: usize, _context: &SessionContext) -> Option<CoachingTip> {
         self.tips.get(phrase_index % self.tips.len()).cloned()
     }
 }
@@ -282,13 +286,11 @@ impl LlmRecapGenerator {
     /// coaching engine. If no API key is configured, returns a generator
     /// with no engine (coaching_available() will return false).
     pub fn new() -> Self {
-        let engine = match CoachingEngine::new(
-            CoachingConfig::default(),
-            Box::new(ReqwestClient::new()),
-        ) {
-            Ok(e) => Some(Arc::new(Mutex::new(e))),
-            Err(_) => None,
-        };
+        let engine =
+            match CoachingEngine::new(CoachingConfig::default(), Box::new(ReqwestClient::new())) {
+                Ok(e) => Some(Arc::new(Mutex::new(e))),
+                Err(_) => None,
+            };
         Self { engine }
     }
 
@@ -320,7 +322,7 @@ impl RecapGenerator for LlmRecapGenerator {
                     "Good breath support and phrasing.".to_owned(),
                 ],
                 areas_to_improve: vec![
-                    "Intonation wandered slightly on the upper register.".to_owned(),
+                    "Intonation wandered slightly on the upper register.".to_owned()
                 ],
                 next_session_suggestions: vec![
                     "Open with long tones in the key you ended on.".to_owned(),
@@ -337,7 +339,7 @@ impl RecapGenerator for LlmRecapGenerator {
         // format the RecapInput as a detailed prompt and parse the LLM response.
         // For now, we return the canned text to avoid blocking on an actual
         // API call during testing.
-        let mut engine = engine_arc.lock().await;
+        let engine = engine_arc.lock().await;
 
         // TODO: Build a comprehensive recap prompt from the input (phrases,
         // tips, session duration, instrument) and call the LLM.
@@ -397,9 +399,7 @@ impl MockRecapGenerator {
                 "Consistent, focused tone throughout the session.".to_owned(),
                 "Good breath support and phrasing.".to_owned(),
             ],
-            areas_to_improve: vec![
-                "Intonation wandered slightly on the upper register.".to_owned(),
-            ],
+            areas_to_improve: vec!["Intonation wandered slightly on the upper register.".to_owned()],
             next_session_suggestions: vec![
                 "Open with long tones in the key you ended on.".to_owned(),
                 "Try a slow scale with a drone to tune up the top of the range.".to_owned(),
@@ -465,20 +465,31 @@ pub struct AppState {
     active_session: Mutex<Option<ActiveSession>>,
     coaching_factory: Arc<dyn Fn() -> Arc<dyn CoachingService> + Send + Sync>,
     recap_generator: Arc<dyn RecapGenerator>,
-    session_store: SessionStore,
+    /// `std::sync::Mutex` because rusqlite's `Connection` wraps a
+    /// `RefCell` internally, making `SessionStore: !Sync`. Tauri's
+    /// managed `State<T>` requires `T: Sync`, so we interpose a mutex.
+    /// Critical sections are short (single SQL query) and we never hold
+    /// this lock across an `.await`.
+    session_store: std::sync::Mutex<SessionStore>,
     coaching_available: bool,
+    /// Instrument catalog loaded once at construction, shared by the
+    /// `list_instruments` command and by session-validation paths.
+    /// Held behind Arc so clones into IPC responses are cheap.
+    instruments: Arc<Vec<InstrumentInfo>>,
 }
 
 impl AppState {
     /// Production constructor — opens the SessionStore at the platform
-    /// default location and wires the real coaching engine.
+    /// default location, wires the real coaching engine, and loads the
+    /// instrument catalog from `profiles/*.json`.
     pub fn new() -> Self {
-        let session_store = SessionStore::open(&SessionStore::default_path().unwrap_or_else(|_| {
-            // Fallback: use in-memory if default path unavailable
-            // (extremely rare — headless/no data dir).
-            std::path::PathBuf::from(":memory:")
-        }))
-        .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
+        let session_store =
+            SessionStore::open(&SessionStore::default_path().unwrap_or_else(|_| {
+                // Fallback: use in-memory if default path unavailable
+                // (extremely rare — headless/no data dir).
+                std::path::PathBuf::from(":memory:")
+            }))
+            .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
 
         let coaching_svc = LlmCoachingService::new();
         let coaching_available = coaching_svc.coaching_available();
@@ -488,8 +499,9 @@ impl AppState {
             active_session: Mutex::new(None),
             coaching_factory: Arc::new(move || Arc::new(LlmCoachingService::new())),
             recap_generator: Arc::new(recap_gen),
-            session_store,
+            session_store: std::sync::Mutex::new(session_store),
             coaching_available,
+            instruments: Arc::new(load_instrument_catalog()),
         }
     }
 
@@ -499,9 +511,31 @@ impl AppState {
             active_session: Mutex::new(None),
             coaching_factory: Arc::new(|| Arc::new(MockCoachingService::new())),
             recap_generator: Arc::new(MockRecapGenerator),
-            session_store: SessionStore::in_memory().expect("in-memory store must succeed"),
+            session_store: std::sync::Mutex::new(
+                SessionStore::in_memory().expect("in-memory store must succeed"),
+            ),
             coaching_available: false,
+            instruments: Arc::new(test_instrument_catalog()),
         }
+    }
+
+    /// Check whether a given instrument name is present in the catalog.
+    /// Used by `start_practice_session` and `switch_instrument` to
+    /// reject unknown names before touching the session recorder.
+    pub fn is_known_instrument(&self, name: &str) -> bool {
+        self.instruments.iter().any(|i| i.name == name)
+    }
+
+    /// Clone the full instrument catalog for an IPC response.
+    pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
+        (*self.instruments).clone()
+    }
+
+    /// Count of instruments in the catalog. Tests use this to assert
+    /// the catalog was loaded.
+    #[cfg(test)]
+    fn instrument_count(&self) -> usize {
+        self.instruments.len()
     }
 
     /// Check if coaching (LLM tips and recap) is available.
@@ -528,25 +562,106 @@ impl Default for AppState {
 }
 
 // ---------------------------------------------------------------------------
-// Instrument catalog (hard-coded in PR 1)
+// Instrument catalog (loaded from `profiles/*.json` at startup)
 // ---------------------------------------------------------------------------
 
-/// Matches `apps/desktop/src/components/InstrumentSelector.tsx`.
-/// Replaced by a `profiles/*.json` scan in a follow-up story.
-pub const KNOWN_INSTRUMENTS: &[(&str, &str)] = &[
-    ("Trumpet", "Brass"),
-    ("Trombone", "Brass"),
-    ("French Horn", "Brass"),
-    ("Violin", "Strings"),
-    ("Cello", "Strings"),
-    ("Flute", "Woodwind"),
-    ("Clarinet", "Woodwind"),
-    ("Voice", "Voice"),
-    ("Piano", "Keyboard"),
-];
+/// Convert an [`InstrumentProfile`] into the UI-facing [`InstrumentInfo`].
+///
+/// The profile's `family` is serde-snake_case on disk; the IPC surface
+/// uses title-case display names (matches the TS expectation and the
+/// existing family-badge coloring in `InstrumentSelector.tsx`).
+fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
+    InstrumentInfo {
+        name: profile.name.clone(),
+        family: profile.family.display_name().to_owned(),
+        freq_min_hz: profile.freq_min_hz,
+        freq_max_hz: profile.freq_max_hz,
+        emoji: profile.emoji.clone(),
+    }
+}
 
-fn is_known_instrument(name: &str) -> bool {
-    KNOWN_INSTRUMENTS.iter().any(|(n, _)| *n == name)
+/// Locate the `profiles/` directory on disk.
+///
+/// Resolution order:
+/// 1. `$AI_MUSIC_COMPANION_PROFILES_DIR` — explicit override hook.
+/// 2. `CARGO_MANIFEST_DIR/../../../profiles` — workspace-root walk.
+///    `CARGO_MANIFEST_DIR` is baked in at compile time for cargo builds
+///    (including `cargo tauri dev`) and points at this crate
+///    (`apps/desktop/src-tauri`); three hops up reach the workspace root.
+///
+/// TODO: bundled-prod resolution. When we start shipping installers via
+/// `cargo tauri build`, the `profiles/` directory needs to be declared
+/// in `tauri.conf.json` `bundle.resources` and resolved via
+/// `tauri::AppHandle::path().resource_dir()`. That requires moving the
+/// initial `.manage(AppState::new())` call into a `Builder::setup`
+/// closure so the handle is available. Not shipping installers yet —
+/// capture as a follow-up when the release pipeline lands.
+fn locate_profiles_dir() -> std::path::PathBuf {
+    if let Ok(explicit) = std::env::var("AI_MUSIC_COMPANION_PROFILES_DIR") {
+        return std::path::PathBuf::from(explicit);
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .expect("workspace root should exist three levels above this crate")
+        .join("profiles")
+}
+
+/// Load the canonical instrument catalog from `profiles/*.json`.
+///
+/// Panics with a clear message on failure — the app is unusable without
+/// instruments, and silent degradation to an empty catalog would leave
+/// the user staring at an empty selector with no feedback about why.
+fn load_instrument_catalog() -> Vec<InstrumentInfo> {
+    let dir = locate_profiles_dir();
+    let profiles = ProfileLoader::load_all(&dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to load instrument profiles from {}: {}. \
+             Set AI_MUSIC_COMPANION_PROFILES_DIR to override the location.",
+            dir.display(),
+            e
+        )
+    });
+    if profiles.is_empty() {
+        panic!(
+            "no instrument profiles found in {}. Check that the profiles/ \
+             directory is populated; set AI_MUSIC_COMPANION_PROFILES_DIR to override.",
+            dir.display()
+        );
+    }
+    profiles.iter().map(profile_to_info).collect()
+}
+
+/// Deterministic catalog used by `AppState::with_mocks` so tests don't
+/// touch the filesystem. Covers every instrument any test in this
+/// module refers to (Trumpet, Piano, Voice, Violin, Flute, Cello) plus
+/// the rest of the prod catalog for coverage. Must stay in sync with
+/// the names used in `profiles/*.json`.
+fn test_instrument_catalog() -> Vec<InstrumentInfo> {
+    // Keep shapes similar to the real profiles so tests that round-trip
+    // through IPC payloads don't surprise us later. Emoji is cosmetic
+    // and doesn't need to match the real catalog exactly.
+    [
+        ("Trumpet", "Brass", 165.0, 1047.0),
+        ("Trombone", "Brass", 58.0, 587.0),
+        ("French Horn", "Brass", 87.0, 880.0),
+        ("Violin", "Strings", 196.0, 3136.0),
+        ("Cello", "Strings", 65.0, 988.0),
+        ("Flute", "Woodwind", 262.0, 2093.0),
+        ("Clarinet", "Woodwind", 147.0, 1568.0),
+        ("Voice", "Voice", 82.0, 1047.0),
+        ("Piano", "Keyboard", 28.0, 4186.0),
+    ]
+    .into_iter()
+    .map(|(name, family, lo, hi)| InstrumentInfo {
+        name: name.to_owned(),
+        family: family.to_owned(),
+        freq_min_hz: lo,
+        freq_max_hz: hi,
+        emoji: String::new(),
+    })
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +695,7 @@ pub async fn start_practice_session_impl(
     if instrument.trim().is_empty() {
         return Err(CommandError::EmptyInstrument);
     }
-    if !is_known_instrument(&instrument) {
+    if !state.is_known_instrument(&instrument) {
         return Err(CommandError::UnknownInstrument(instrument));
     }
 
@@ -609,7 +724,7 @@ pub async fn switch_instrument_impl(
     if instrument.trim().is_empty() {
         return Err(CommandError::EmptyInstrument);
     }
-    if !is_known_instrument(&instrument) {
+    if !state.is_known_instrument(&instrument) {
         return Err(CommandError::UnknownInstrument(instrument));
     }
 
@@ -628,9 +743,7 @@ pub async fn switch_instrument_impl(
 /// Per design doc §8 q3, a session with zero phrases returns a calm
 /// empty-state recap rather than erroring — the recorder would
 /// normally return `SessionError::Empty`, which we intercept.
-pub async fn end_practice_session_impl(
-    state: &AppState,
-) -> Result<SessionRecap, CommandError> {
+pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap, CommandError> {
     let taken = {
         let mut guard = state.active_session.lock().await;
         let Some(session) = guard.as_mut() else {
@@ -649,22 +762,21 @@ pub async fn end_practice_session_impl(
     }
 }
 
-/// Pure implementation of `list_instruments`.
-pub fn list_instruments_impl() -> Vec<InstrumentInfo> {
-    KNOWN_INSTRUMENTS
-        .iter()
-        .map(|(name, family)| InstrumentInfo {
-            name: (*name).to_owned(),
-            family: (*family).to_owned(),
-        })
-        .collect()
+/// Pure implementation of `list_instruments`. Returns a clone of the
+/// catalog cached on `AppState` — catalog loading happens once in
+/// `AppState::new` and is shared across IPC calls.
+pub fn list_instruments_impl(state: &AppState) -> Vec<InstrumentInfo> {
+    state.list_instruments()
 }
 
 async fn build_recap(
     completed: &CompletedSession,
     generator: &dyn RecapGenerator,
 ) -> Result<SessionRecap, CommandError> {
-    completed.generate_recap(generator).await.map_err(CommandError::from)
+    completed
+        .generate_recap(generator)
+        .await
+        .map_err(CommandError::from)
 }
 
 /// Minimal recap for the zero-phrase case. Tone is intentionally
@@ -673,8 +785,7 @@ async fn build_recap(
 fn empty_state_recap() -> SessionRecap {
     SessionRecap {
         overall_assessment:
-            "Looks like you didn't get to play this time — come back when you're ready."
-                .to_owned(),
+            "Looks like you didn't get to play this time — come back when you're ready.".to_owned(),
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),
         next_session_suggestions: vec![
@@ -701,13 +812,17 @@ pub fn get_session_history_impl(
     start_date: Option<DateTime<Utc>>,
     end_date: Option<DateTime<Utc>>,
 ) -> Result<Vec<SessionSummaryDto>, CommandError> {
+    let store = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned");
     let sessions = if let Some(instrument) = instrument_filter {
-        state.session_store.list_by_instrument(Some(&instrument))?
+        store.list_by_instrument(Some(&instrument))?
     } else if start_date.is_some() || end_date.is_some() {
-        state.session_store.list_by_date_range(start_date, end_date)?
+        store.list_by_date_range(start_date, end_date)?
     } else {
         // No filters — return all sessions, reasonable limit for UI
-        state.session_store.list_recent(1000)?
+        store.list_recent(1000)?
     };
 
     Ok(sessions.into_iter().map(SessionSummaryDto::from).collect())
@@ -721,15 +836,21 @@ pub fn get_session_detail_impl(
     use brain::session::SessionId;
     let id = SessionId::from_str(&session_id)
         .map_err(|_| CommandError::Store(brain::store::StoreError::NotFound(session_id)))?;
-    let session = state.session_store.load(id)?;
+    let session = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .load(id)?;
     Ok(StoredSessionDto::from(session))
 }
 
 /// Pure implementation of `get_practice_stats`.
-pub fn get_practice_stats_impl(
-    state: &AppState,
-) -> Result<PracticeStatsDto, CommandError> {
-    let all_sessions = state.session_store.list_recent(10000)?;
+pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, CommandError> {
+    let all_sessions = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .list_recent(10000)?;
     let stats = PracticeStats::calculate(&all_sessions, Utc::now());
     Ok(PracticeStatsDto::from(stats))
 }
@@ -796,8 +917,8 @@ pub async fn end_practice_session<R: Runtime>(
 
 /// Return the instrument catalog for the selector grid.
 #[tauri::command]
-pub fn list_instruments() -> Result<Vec<InstrumentInfo>, String> {
-    Ok(list_instruments_impl())
+pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo>, String> {
+    Ok(list_instruments_impl(state.inner()))
 }
 
 /// Check app capabilities (coaching availability, etc.).
@@ -993,7 +1114,9 @@ mod tests {
         // audio-stream wait yet); PR 2 will insert the real pause.
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
 
-        switch_instrument_impl(&s, "Piano".to_owned()).await.unwrap();
+        switch_instrument_impl(&s, "Piano".to_owned())
+            .await
+            .unwrap();
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
 
         end_practice_session_impl(&s).await.unwrap();
@@ -1031,8 +1154,13 @@ mod tests {
 
     #[test]
     fn list_instruments_returns_expected_catalog() {
-        let list = list_instruments_impl();
-        assert_eq!(list.len(), KNOWN_INSTRUMENTS.len());
+        let s = state();
+        let list = list_instruments_impl(&s);
+        assert_eq!(
+            list.len(),
+            s.instrument_count(),
+            "list_instruments must return every cached entry"
+        );
         let by_name: std::collections::HashMap<_, _> = list
             .iter()
             .map(|i| (i.name.as_str(), i.family.as_str()))
@@ -1040,6 +1168,49 @@ mod tests {
         assert_eq!(by_name.get("Trumpet"), Some(&"Brass"));
         assert_eq!(by_name.get("Piano"), Some(&"Keyboard"));
         assert_eq!(by_name.get("Voice"), Some(&"Voice"));
+
+        // Every returned entry must have a real frequency range. Defends
+        // against a future regression where the mock catalog drifts from
+        // the IPC shape (zeroes would pass a naive check but break the UI
+        // range labels).
+        for info in &list {
+            assert!(
+                info.freq_max_hz > info.freq_min_hz,
+                "catalog entry {:?} has invalid freq range [{}, {}]",
+                info.name,
+                info.freq_min_hz,
+                info.freq_max_hz,
+            );
+        }
+    }
+
+    /// Directly exercises the production catalog loader. The regular
+    /// tests use `with_mocks`, which short-circuits the disk read — this
+    /// one asserts the real `profiles/*.json` → `InstrumentInfo` path
+    /// stays working end-to-end so a profile-schema change can't silently
+    /// break the desktop catalog.
+    #[test]
+    fn production_catalog_loads_from_workspace_profiles() {
+        // CARGO_MANIFEST_DIR is apps/desktop/src-tauri — workspace root
+        // is three hops up, matching the locate_profiles_dir() default.
+        let loaded = load_instrument_catalog();
+        assert!(
+            !loaded.is_empty(),
+            "load_instrument_catalog must return every profile in profiles/"
+        );
+        let names: Vec<&str> = loaded.iter().map(|i| i.name.as_str()).collect();
+        for expected in ["Trumpet", "Violin", "Piano", "Voice"] {
+            assert!(
+                names.contains(&expected),
+                "expected {expected} in loaded catalog, got {names:?}"
+            );
+        }
+        // Emoji + frequency range come from profile JSON — assert at
+        // least one non-empty emoji to prove the field wires through.
+        assert!(
+            loaded.iter().any(|i| !i.emoji.is_empty()),
+            "at least one profile should ship with a non-empty emoji"
+        );
     }
 
     #[tokio::test]

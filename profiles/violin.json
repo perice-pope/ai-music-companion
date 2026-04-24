@@ -5,5 +5,6 @@
   "freq_max_hz": 3136.0,
   "vibrato_tolerance_cents": 30.0,
   "attack_type": "bowed",
-  "tuning_corrections": []
+  "tuning_corrections": [],
+  "emoji": "🎻"
 }

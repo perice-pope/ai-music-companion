@@ -1,13 +1,45 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import InstrumentSelector, { INSTRUMENTS } from "./InstrumentSelector";
-import { useAudioStore } from "../stores/audioStore";
+import InstrumentSelector from "./InstrumentSelector";
+import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
 import { usePracticeStore } from "../stores/practiceStore";
+
+/**
+ * Fixture catalog that mirrors the real `profiles/*.json` shape. The
+ * frontend is now data-driven by the backend, so the test supplies the
+ * catalog through the mocked `invoke("list_instruments")` call. Add a
+ * row here when you add a new profile JSON and the component should
+ * render it.
+ */
+const TEST_INSTRUMENTS: InstrumentInfo[] = [
+  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, emoji: "\uD83C\uDFBA" },
+  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "\uD83C\uDFB5" },
+  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "\uD83D\uDCEF" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, emoji: "\uD83C\uDFBB" },
+  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, emoji: "\uD83C\uDFB6" },
+  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "\uD83C\uDFB6" },
+  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "\uD83C\uDFB5" },
+  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "\uD83C\uDFA4" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, emoji: "\uD83C\uDFB9" },
+];
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
+
+// Route `list_instruments` to the fixture and forward everything else
+// to per-test `.mockResolvedValueOnce` setups.
+function installDefaultInvokeMock() {
+  mockInvoke.mockImplementation((cmd: string) => {
+    if (cmd === "list_instruments") {
+      return Promise.resolve(TEST_INSTRUMENTS);
+    }
+    return Promise.reject(
+      new Error(`no mock configured for invoke("${cmd}")`),
+    );
+  });
+}
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -36,6 +68,7 @@ describe("InstrumentSelector", () => {
   beforeEach(() => {
     localStorageMock.clear();
     vi.clearAllMocks();
+    installDefaultInvokeMock();
     useAudioStore.setState({
       latestEvent: null,
       currentNote: null,
@@ -57,28 +90,28 @@ describe("InstrumentSelector", () => {
     });
   });
 
-  it("renders all instrument cards", () => {
+  it("renders all instrument cards from the backend catalog", async () => {
     render(<InstrumentSelector />);
 
-    for (const instrument of INSTRUMENTS) {
+    for (const instrument of TEST_INSTRUMENTS) {
       const testId = `instrument-card-${instrument.name.toLowerCase().replace(/\s+/g, "-")}`;
-      expect(screen.getByTestId(testId)).toBeDefined();
+      expect(await screen.findByTestId(testId)).toBeDefined();
     }
   });
 
-  it("renders correct number of instruments", () => {
+  it("renders correct number of instruments", async () => {
     render(<InstrumentSelector />);
 
-    // All 9 instruments should be rendered
-    expect(INSTRUMENTS.length).toBe(9);
-    for (const instrument of INSTRUMENTS) {
+    expect(TEST_INSTRUMENTS.length).toBe(9);
+    for (const instrument of TEST_INSTRUMENTS) {
       const testId = `instrument-card-${instrument.name.toLowerCase().replace(/\s+/g, "-")}`;
-      expect(screen.getByTestId(testId)).toBeDefined();
+      expect(await screen.findByTestId(testId)).toBeDefined();
     }
   });
 
-  it("displays family badges", () => {
+  it("displays family badges", async () => {
     render(<InstrumentSelector />);
+    await screen.findByTestId("instrument-card-trumpet");
 
     expect(screen.getAllByText("Brass").length).toBe(3);
     expect(screen.getAllByText("Strings").length).toBe(2);
@@ -88,21 +121,53 @@ describe("InstrumentSelector", () => {
     expect(screen.getAllByText("Keyboard").length).toBe(1);
   });
 
-  it("clicking an instrument updates the store", () => {
+  it("invokes list_instruments exactly once on mount", async () => {
+    render(<InstrumentSelector />);
+    await screen.findByTestId("instrument-card-trumpet");
+
+    const catalogCalls = mockInvoke.mock.calls.filter(
+      (args) => args[0] === "list_instruments",
+    );
+    expect(catalogCalls.length).toBe(1);
+  });
+
+  it("renders a loading indicator before the catalog resolves", () => {
+    // Override so the promise never resolves within the assertion window.
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return new Promise(() => {});
+      return Promise.reject(new Error("unexpected"));
+    });
+    render(<InstrumentSelector />);
+    expect(screen.getByTestId("catalog-loading")).toBeDefined();
+  });
+
+  it("surfaces a catalog-load error", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") {
+        return Promise.reject(new Error("no profiles dir"));
+      }
+      return Promise.reject(new Error("unexpected"));
+    });
+    render(<InstrumentSelector />);
+    const err = await screen.findByTestId("catalog-error");
+    expect(err.textContent).toContain("no profiles dir");
+  });
+
+  it("clicking an instrument updates the store", async () => {
     render(<InstrumentSelector />);
 
-    const trumpetCard = screen.getByTestId("instrument-card-trumpet");
+    const trumpetCard = await screen.findByTestId("instrument-card-trumpet");
     fireEvent.click(trumpetCard);
 
     const state = useAudioStore.getState();
     expect(state.selectedInstrument).toBe("Trumpet");
   });
 
-  it("selected instrument is visually highlighted", () => {
+  it("selected instrument is visually highlighted", async () => {
     useAudioStore.setState({ selectedInstrument: "Violin" });
     render(<InstrumentSelector />);
 
-    const violinCard = screen.getByTestId("instrument-card-violin");
+    const violinCard = await screen.findByTestId("instrument-card-violin");
     expect(violinCard.getAttribute("aria-pressed")).toBe("true");
 
     // Check that unselected card is not pressed
@@ -110,17 +175,17 @@ describe("InstrumentSelector", () => {
     expect(trumpetCard.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("shows selected indicator on chosen instrument", () => {
+  it("shows selected indicator on chosen instrument", async () => {
     useAudioStore.setState({ selectedInstrument: "Piano" });
     render(<InstrumentSelector />);
 
-    expect(screen.getByTestId("selected-indicator")).toBeDefined();
+    expect(await screen.findByTestId("selected-indicator")).toBeDefined();
   });
 
-  it("persists selection to localStorage", () => {
+  it("persists selection to localStorage", async () => {
     render(<InstrumentSelector />);
 
-    const celloCard = screen.getByTestId("instrument-card-cello");
+    const celloCard = await screen.findByTestId("instrument-card-cello");
     fireEvent.click(celloCard);
 
     expect(localStorageMock.setItem).toHaveBeenCalledWith(
@@ -129,11 +194,11 @@ describe("InstrumentSelector", () => {
     );
   });
 
-  it("switching instruments updates store and localStorage", () => {
+  it("switching instruments updates store and localStorage", async () => {
     render(<InstrumentSelector />);
 
     // Select trumpet
-    fireEvent.click(screen.getByTestId("instrument-card-trumpet"));
+    fireEvent.click(await screen.findByTestId("instrument-card-trumpet"));
     expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");
 
     // Switch to flute
@@ -145,8 +210,9 @@ describe("InstrumentSelector", () => {
     );
   });
 
-  it("displays frequency ranges", () => {
+  it("displays frequency ranges", async () => {
     render(<InstrumentSelector />);
+    await screen.findByTestId("instrument-card-trumpet");
 
     // Check that trumpet frequency range is displayed
     expect(screen.getByText(/165 .* 1047 Hz/)).toBeDefined();
@@ -157,21 +223,25 @@ describe("InstrumentSelector", () => {
     expect(screen.getByText("Select Your Instrument")).toBeDefined();
   });
 
-  it("Start Practice is disabled until an instrument is selected", () => {
+  it("Start Practice is disabled until an instrument is selected", async () => {
     render(<InstrumentSelector />);
     const btn = screen.getByTestId("start-practice-button") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
 
-    fireEvent.click(screen.getByTestId("instrument-card-trumpet"));
+    fireEvent.click(await screen.findByTestId("instrument-card-trumpet"));
     expect(
       (screen.getByTestId("start-practice-button") as HTMLButtonElement).disabled,
     ).toBe(false);
   });
 
   it("Start Practice invokes start_practice_session and navigates to session", async () => {
-    mockInvoke.mockResolvedValueOnce("new-session-id");
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_practice_session") return Promise.resolve("new-session-id");
+      return Promise.reject(new Error(`unexpected cmd ${cmd}`));
+    });
     render(<InstrumentSelector />);
-    fireEvent.click(screen.getByTestId("instrument-card-violin"));
+    fireEvent.click(await screen.findByTestId("instrument-card-violin"));
     fireEvent.click(screen.getByTestId("start-practice-button"));
 
     await vi.waitFor(() => {
@@ -188,9 +258,14 @@ describe("InstrumentSelector", () => {
   });
 
   it("surfaces a backend error if start fails", async () => {
-    mockInvoke.mockRejectedValueOnce(new Error("mic busy"));
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_practice_session")
+        return Promise.reject(new Error("mic busy"));
+      return Promise.reject(new Error(`unexpected cmd ${cmd}`));
+    });
     render(<InstrumentSelector />);
-    fireEvent.click(screen.getByTestId("instrument-card-piano"));
+    fireEvent.click(await screen.findByTestId("instrument-card-piano"));
     fireEvent.click(screen.getByTestId("start-practice-button"));
 
     const err = await screen.findByTestId("start-error");

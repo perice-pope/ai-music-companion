@@ -1,19 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
 import { usePracticeStore } from "../stores/practiceStore";
-
-/** All available instruments (hardcoded for Phase 1; will come from profiles later). */
-export const INSTRUMENTS: InstrumentInfo[] = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, emoji: "\uD83C\uDFBA" },
-  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "\uD83C\uDFB5" },
-  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "\uD83D\uDCEF" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, emoji: "\uD83C\uDFBB" },
-  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, emoji: "\uD83C\uDFB6" },
-  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "\uD83C\uDFB6" },
-  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "\uD83C\uDFB5" },
-  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "\uD83C\uDFA4" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, emoji: "\uD83C\uDFB9" },
-];
 
 /** Format a frequency range for display (e.g., "165 – 1047 Hz"). */
 function formatRange(min: number, max: number): string {
@@ -44,6 +32,25 @@ export default function InstrumentSelector() {
   const startSession = usePracticeStore((s) => s.startSession);
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Catalog is fetched from the Rust backend on mount. `null` means
+  // "still loading"; `[]` would mean "loaded but empty" which would be
+  // an error state — the backend panics rather than returning empty.
+  const [instruments, setInstruments] = useState<InstrumentInfo[] | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke<InstrumentInfo[]>("list_instruments")
+      .then((list) => {
+        if (!cancelled) setInstruments(list);
+      })
+      .catch((err) => {
+        if (!cancelled) setCatalogError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onStart = async () => {
     if (!selectedInstrument) return;
@@ -64,8 +71,27 @@ export default function InstrumentSelector() {
         Select Your Instrument
       </h2>
 
+      {catalogError && (
+        <p
+          className="mb-4 text-center text-sm text-red-400"
+          role="alert"
+          data-testid="catalog-error"
+        >
+          Failed to load instruments: {catalogError}
+        </p>
+      )}
+
+      {instruments === null && !catalogError && (
+        <p
+          className="mb-4 text-center text-sm text-gray-400"
+          data-testid="catalog-loading"
+        >
+          Loading instruments…
+        </p>
+      )}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {INSTRUMENTS.map((instrument) => {
+        {(instruments ?? []).map((instrument) => {
           const isSelected = selectedInstrument === instrument.name;
           return (
             <button
