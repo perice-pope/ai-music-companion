@@ -228,7 +228,11 @@ fn run_worker<F>(
         let mono_slice: &[f32] = if channels == 1 {
             &interleaved[..window]
         } else {
-            downmix_to_mono(&interleaved[..needed], channels as usize, &mut mono[..window]);
+            downmix_to_mono(
+                &interleaved[..needed],
+                channels as usize,
+                &mut mono[..window],
+            );
             &mono[..window]
         };
 

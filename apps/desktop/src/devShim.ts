@@ -19,20 +19,53 @@
  * guard (Vite dead-code-eliminates the whole function body).
  */
 
+// Families are title-case here to match the real `InstrumentInfo`
+// contract emitted by `apps/desktop/src-tauri/src/commands.rs` —
+// `InstrumentFamily::display_name()` returns "Brass", "Strings", etc.
+// The UI's family-badge coloring keys off those exact strings, so
+// lowercase values here would exercise a different render path in
+// preview than the production app.
 const MOCK_INSTRUMENTS = [
-  { name: "Trumpet", family: "brass", freqMinHz: 155, freqMaxHz: 988, emoji: "🎺" },
-  { name: "Trombone", family: "brass", freqMinHz: 58, freqMaxHz: 587, emoji: "🎺" },
-  { name: "French Horn", family: "brass", freqMinHz: 87, freqMaxHz: 880, emoji: "📯" },
-  { name: "Voice", family: "voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "🎤" },
-  { name: "Violin", family: "strings", freqMinHz: 196, freqMaxHz: 2637, emoji: "🎻" },
-  { name: "Cello", family: "strings", freqMinHz: 65, freqMaxHz: 988, emoji: "🎻" },
-  { name: "Flute", family: "woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "🪈" },
-  { name: "Clarinet", family: "woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "🎷" },
-  { name: "Piano", family: "keyboard", freqMinHz: 27, freqMaxHz: 4186, emoji: "🎹" },
+  { name: "Trumpet", family: "Brass", freqMinHz: 155, freqMaxHz: 988, emoji: "🎺" },
+  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "🎺" },
+  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "📯" },
+  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "🎤" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 2637, emoji: "🎻" },
+  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, emoji: "🎻" },
+  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "🪈" },
+  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "🎷" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 27, freqMaxHz: 4186, emoji: "🎹" },
 ];
 
 interface InvokeArgs {
   [key: string]: unknown;
+}
+
+/**
+ * Shape of the `__TAURI_INTERNALS__` global. Only the subset this
+ * shim needs to fake — the real internals object is much larger, but
+ * `@tauri-apps/api` only touches these fields for `invoke()` and
+ * `listen()`.
+ */
+interface DevTauriInternals {
+  invoke: (cmd: string, args?: InvokeArgs) => Promise<unknown>;
+  transformCallback: (cb: unknown, once?: boolean) => number;
+  ipc: { postMessage: () => void };
+  metadata: {
+    currentWindow: { label: string };
+    currentWebview: { label: string };
+  };
+}
+
+declare global {
+  interface Window {
+    __TAURI_INTERNALS__?: DevTauriInternals;
+    // Vite's transformCallback pattern: the Tauri API stores each
+    // registered listener at `window._<id>` keyed by the integer id
+    // handed back from `transformCallback`. Typed here so we don't
+    // need `as any` to assign into the slot.
+    [key: `_${number}`]: unknown;
+  }
 }
 
 async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
@@ -88,24 +121,21 @@ export function installDevShimIfNeeded(): void {
   if (!import.meta.env.DEV) return;
   if (typeof window === "undefined") return;
   // Real Tauri already injected its internals — leave well alone.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if ((window as any).__TAURI_INTERNALS__) return;
+  if (window.__TAURI_INTERNALS__) return;
 
   // eslint-disable-next-line no-console
   console.warn(
     "[devShim] No Tauri shell detected — installing mock IPC for browser preview.",
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).__TAURI_INTERNALS__ = {
+  window.__TAURI_INTERNALS__ = {
     invoke: handleInvoke,
     // `listen()` calls transformCallback to register a JS callback
     // by id, then invokes `plugin:event|listen` with that id. In the
     // shim the events never fire, so we just hand out a throwaway id.
     transformCallback: (cb: unknown, _once?: boolean) => {
       const id = Math.floor(Math.random() * 1_000_000);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any)[`_${id}`] = cb;
+      window[`_${id}`] = cb;
       return id;
     },
     ipc: { postMessage: () => {} },

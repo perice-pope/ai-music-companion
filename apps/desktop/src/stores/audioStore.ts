@@ -96,7 +96,14 @@ export const useAudioStore = create<AudioState>((set) => ({
       hz !== null && Number.isFinite(hz) && hz > 0
         ? frequencyToNote(hz)
         : null;
-    set({ latestEvent: event, currentNote });
+    // Flip `isListening` on first event — an arriving event is proof
+    // that the backend pipeline is hot. This keeps the flag
+    // self-regulating: if the mic never opened (start_practice_session
+    // logged the failure but continued the session), no events arrive
+    // and `isListening` stays false, so `PitchDisplay` shows its
+    // idle copy instead of lying about a dead mic. `setListening(false)`
+    // on session end clears it back.
+    set({ latestEvent: event, currentNote, isListening: true });
   },
 
   setListening: (listening: boolean) => set({ isListening: listening }),

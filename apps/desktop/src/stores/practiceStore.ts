@@ -188,15 +188,17 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         phrases: [],
         tipQueue: [],
       });
-      // Mic pipeline is live on the Rust side by the time `invoke`
-      // resolves — flip `isListening` so `PitchDisplay` switches from
-      // its idle copy to the live meter. Kept outside the set() so the
-      // two stores remain independent (practice store knows about
-      // audio store, not the other way around).
-      useAudioStore.getState().setListening(true);
+      // NOTE: `isListening` is *not* flipped here. It's driven by the
+      // `audio-event` listener — the first event that arrives is
+      // evidence that the backend pipeline actually opened the mic.
+      // If the mic failed to open, the Rust side logs and continues
+      // the session without emitting events, and `isListening` stays
+      // false (so `PitchDisplay` shows the idle copy instead of lying
+      // about a dead mic).
     } catch (err) {
       // Roll back to idle so the UI can retry. Store the error text so
-      // the caller (or a future error banner) can surface it.
+      // the caller (or a future error banner) can surface it. Clear
+      // any stale listening flag from a previous session.
       set({ status: "idle", recapError: String(err) });
       useAudioStore.getState().setListening(false);
       throw err;

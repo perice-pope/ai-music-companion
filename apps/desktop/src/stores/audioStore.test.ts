@@ -111,6 +111,23 @@ describe("audioStore", () => {
     expect(useAudioStore.getState().isListening).toBe(false);
   });
 
+  it("setEvent flips isListening to true — arriving events mean the mic is hot", () => {
+    // Invariant: the store shouldn't assume the mic opened just because
+    // the practice session started. It's the first event that proves
+    // the backend pipeline is live. Failing to open the mic on Rust's
+    // side means no events come, which means PitchDisplay must NOT
+    // flip out of its idle state.
+    expect(useAudioStore.getState().isListening).toBe(false);
+    useAudioStore.getState().setEvent({
+      pitch_hz: 440,
+      confidence: 0.95,
+      amplitude: 0.8,
+      timestamp_secs: 1.0,
+      is_onset: false,
+    });
+    expect(useAudioStore.getState().isListening).toBe(true);
+  });
+
   it("setInstrument updates selectedInstrument", () => {
     useAudioStore.getState().setInstrument("Trumpet");
     expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");

@@ -34,6 +34,17 @@ use tauri::{Emitter, Runtime, State};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+/// Realtime-safe lower bound on the YIN detector's frequency window.
+///
+/// YIN's window scales as `2 × sample_rate / freq_min_hz`; at 44.1 kHz
+/// a 60 Hz floor is ~1470 samples (~33 ms), which fits alongside the
+/// rest of the pipeline inside the project's latency budget. Lower
+/// floors (e.g. Piano's 28 Hz) would explode the window and miss the
+/// budget on exactly the instruments that need the widest UI range.
+/// Matches the `PitchConfig::default()` floor shipped by the `ears`
+/// crate — keep them in sync.
+const DETECTOR_MIN_HZ: f64 = 60.0;
+
 // ---------------------------------------------------------------------------
 // IPC types
 // ---------------------------------------------------------------------------
@@ -519,6 +530,17 @@ impl AppState {
     /// `None` for unknown names — callers should validate via
     /// `is_known_instrument` first. Used by the audio pipeline to size
     /// the pitch detector's window.
+    ///
+    /// The detector's `freq_min_hz` is *clamped up* from the catalog's
+    /// absolute floor to a realtime-safe minimum. Rationale: YIN's
+    /// `window_size ≈ 2 × sample_rate / freq_min_hz`, so letting
+    /// Piano's 28 Hz floor through would give a 3150-sample window
+    /// (~71 ms at 44.1 kHz) per detect — blowing past the project's
+    /// <25 ms latency budget for exactly the instruments with the
+    /// widest ranges. The UI catalog still shows the full instrument
+    /// range; only the detector gets the clamped floor. Notes below
+    /// the floor arrive as `pitch_hz: None` (below-range), which the UI
+    /// already handles.
     pub fn detector_profile_for(&self, name: &str) -> Option<DetectorProfile> {
         self.instruments
             .iter()
@@ -529,20 +551,42 @@ impl AppState {
                 // overrides belong in `profiles/*.json` later — for now
                 // the detector config is purely frequency-windowed.
                 threshold: 0.15,
-                freq_min_hz: i.freq_min_hz,
+                freq_min_hz: i.freq_min_hz.max(DETECTOR_MIN_HZ),
                 freq_max_hz: i.freq_max_hz,
             })
     }
 
-    /// Install the audio pipeline for the currently-active session.
-    /// Replaces any previous pipeline in place so mic hot-swap
-    /// (e.g. end_session after a failed switch) is safe.
-    pub(crate) async fn install_audio_pipeline(&self, pipeline: AudioPipeline) {
+    /// Install the audio pipeline for the currently-active session,
+    /// but only if the session is still live.
+    ///
+    /// Returns the pipeline back to the caller if the session was torn
+    /// down while mic startup was in flight — the caller is expected
+    /// to drop it (which joins the worker + releases the mic), so we
+    /// don't leak a hot pipeline into an idle app.
+    ///
+    /// Replaces any previous pipeline in place when installed, so
+    /// edge cases like a failed mid-session reconfigure followed by a
+    /// retry stay safe — `AudioPipeline::Drop` joins the old worker
+    /// before the new one takes over.
+    pub(crate) async fn install_audio_pipeline(
+        &self,
+        pipeline: AudioPipeline,
+    ) -> Result<(), AudioPipeline> {
+        // Taking the session lock briefly keeps this check atomic with
+        // respect to `end_practice_session_impl`, which drains the
+        // session under the same lock before calling
+        // `stop_audio_pipeline`.
+        let session_guard = self.active_session.lock().await;
+        if !matches!(
+            session_guard.as_ref().map(|s| s.phase),
+            Some(SessionPhase::Listening)
+        ) {
+            return Err(pipeline);
+        }
+        drop(session_guard);
         let mut guard = self.audio_pipeline.lock().await;
-        // Drop-old happens at assignment; `AudioPipeline::Drop` joins
-        // the worker so the old mic is fully released before the new
-        // one takes over.
         *guard = Some(pipeline);
+        Ok(())
     }
 
     /// Swap the detector profile on the currently-running pipeline
@@ -943,7 +987,23 @@ pub async fn start_practice_session<R: Runtime>(
                 match AudioPipeline::start(profile, move |event| {
                     let _ = app_for_emit.emit("audio-event", event);
                 }) {
-                    Ok(pipeline) => state.install_audio_pipeline(pipeline).await,
+                    Ok(pipeline) => {
+                        // Install only if the session is still live —
+                        // a concurrent `end_practice_session` could
+                        // have fired while `AudioPipeline::start`
+                        // blocked on mic init, and we must not leave a
+                        // hot mic open on an idle `AppState`. If the
+                        // session is gone, the pipeline is dropped
+                        // here, which joins the worker and releases
+                        // the mic.
+                        if let Err(pipeline) = state.install_audio_pipeline(pipeline).await {
+                            tracing::info!(
+                                instrument = %instrument,
+                                "session ended before mic startup completed; stopping pipeline"
+                            );
+                            pipeline.stop();
+                        }
+                    }
                     Err(e) => {
                         tracing::error!(
                             error = %e,
@@ -1359,9 +1419,9 @@ mod tests {
         let profile = s
             .detector_profile_for("Trumpet")
             .expect("Trumpet must resolve to a profile");
-        // Mock catalog has Trumpet at 165–1047 Hz — the detector profile
-        // has to round-trip those exact bounds or the pitch window in
-        // the running pipeline won't match the instrument.
+        // Mock catalog has Trumpet at 165–1047 Hz. Trumpet's floor is
+        // already above DETECTOR_MIN_HZ, so the clamp is a no-op here
+        // and the detector freq window round-trips the catalog exactly.
         assert_eq!(profile.freq_min_hz, 165.0);
         assert_eq!(profile.freq_max_hz, 1047.0);
         // Threshold is defaulted for now (per-instrument overrides are a
@@ -1374,10 +1434,35 @@ mod tests {
     }
 
     #[test]
+    fn detector_profile_clamps_low_floor_instruments_to_realtime_minimum() {
+        // Piano's 28 Hz catalog floor would give the YIN detector a
+        // ~71 ms window at 44.1 kHz — blowing the project's 25 ms
+        // latency budget. The clamp pulls the *detector* floor up to
+        // DETECTOR_MIN_HZ without narrowing the UI catalog range.
+        let s = state();
+        let profile = s
+            .detector_profile_for("Piano")
+            .expect("Piano must resolve to a profile");
+        assert_eq!(
+            profile.freq_min_hz, DETECTOR_MIN_HZ,
+            "detector floor must clamp up to DETECTOR_MIN_HZ for low-range instruments"
+        );
+        // Upper bound stays authoritative — we want the detector to
+        // cover the full top of Piano's range.
+        assert_eq!(profile.freq_max_hz, 4186.0);
+    }
+
+    #[test]
     fn detector_profile_for_unknown_instrument_returns_none() {
         let s = state();
         assert!(s.detector_profile_for("Kazoo").is_none());
     }
+
+    // Note on `install_audio_pipeline` coverage: the race-guard
+    // (reject install when session was drained during mic init) can't
+    // be exercised here without a real mic to build an `AudioPipeline`
+    // from. The wrapper's integration path is exercised manually on
+    // hardware; capture-level coverage lives in the `ears` crate.
 
     #[tokio::test]
     async fn reconfigure_audio_pipeline_without_running_pipeline_is_a_noop() {
