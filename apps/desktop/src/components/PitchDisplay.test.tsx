@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import PitchDisplay from "./PitchDisplay";
 import { useAudioStore } from "../stores/audioStore";
@@ -14,13 +14,13 @@ describe("PitchDisplay", () => {
 
   it("shows not listening when inactive", () => {
     render(<PitchDisplay />);
-    expect(screen.getByText("Not listening")).toBeDefined();
+    screen.getByText("Not listening");
   });
 
   it("shows listening state when active but no data", () => {
     useAudioStore.setState({ isListening: true });
     render(<PitchDisplay />);
-    expect(screen.getByText("Listening...")).toBeDefined();
+    screen.getByText("Listening...");
   });
 
   it("displays note name when pitch is detected", () => {
@@ -42,9 +42,9 @@ describe("PitchDisplay", () => {
     });
 
     render(<PitchDisplay />);
-    expect(screen.getByText("A")).toBeDefined();
-    expect(screen.getByText("4")).toBeDefined();
-    expect(screen.getByText("440 Hz")).toBeDefined();
+    screen.getByText("A");
+    screen.getByText("4");
+    screen.getByText("440 Hz");
   });
 
   it("displays cents deviation", () => {
@@ -66,7 +66,7 @@ describe("PitchDisplay", () => {
     });
 
     render(<PitchDisplay />);
-    expect(screen.getByText("+19.6 cents")).toBeDefined();
+    screen.getByText("+19.6 cents");
   });
 
   it("has a pitch meter indicator", () => {
@@ -88,8 +88,7 @@ describe("PitchDisplay", () => {
     });
 
     render(<PitchDisplay />);
-    const indicator = screen.getByTestId("pitch-meter-indicator");
-    expect(indicator).toBeDefined();
+    screen.getByTestId("pitch-meter-indicator");
   });
 
   it("shows confidence percentage", () => {
@@ -111,6 +110,6 @@ describe("PitchDisplay", () => {
     });
 
     render(<PitchDisplay />);
-    expect(screen.getByText("confidence: 92%")).toBeDefined();
+    screen.getByText("confidence: 92%");
   });
 });

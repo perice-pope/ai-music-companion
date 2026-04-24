@@ -17,7 +17,7 @@ export default function History() {
   useEffect(() => {
     loadHistory();
     loadStats();
-  }, []);
+  }, [loadHistory, loadStats]);
 
   if (isLoading && !stats) {
     return (

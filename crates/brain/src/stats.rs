@@ -101,7 +101,7 @@ impl PracticeStats {
         let week_start = (dt - Duration::days(days_since_monday))
             .date_naive()
             .and_hms_opt(0, 0, 0)
-            .unwrap()
+            .expect("0:0:0 is always a valid time of day")
             .and_utc();
         let week_end = week_start + Duration::days(7);
         (week_start, week_end)
