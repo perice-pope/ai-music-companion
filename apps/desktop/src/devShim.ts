@@ -27,7 +27,11 @@
 // preview than the production app.
 const MOCK_INSTRUMENTS = [
   { name: "Trumpet", family: "Brass", freqMinHz: 155, freqMaxHz: 988, emoji: "🎺" },
-  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "🎺" },
+  // Trombone deliberately NOT 🎺 — that's a trumpet, not a trombone.
+  // Unicode has no dedicated trombone glyph; 🎶 is a neutral fallback
+  // until we ship custom SVG art for instruments. Keeps us honest
+  // toward trombonists in the meantime. Mirror in profiles/trombone.json.
+  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "🎶" },
   { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "📯" },
   { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "🎤" },
   { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 2637, emoji: "🎻" },
