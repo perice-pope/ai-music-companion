@@ -1,3 +1,10 @@
+## [1.15.0](https://github.com/perice-pope/ai-music-companion/compare/v1.14.0...v1.15.0) (2026-04-24)
+
+### Features
+
+* **story-14:** wire up LLM recap generation to Tauri command surface ([#79](https://github.com/perice-pope/ai-music-companion/issues/79)) ([9d8984a](https://github.com/perice-pope/ai-music-companion/commit/9d8984ae53ffda77f2a2686838821793f057ed00))
+* **story-21:** practice mode infrastructure — Warmup, Practice, RunThrough ([#81](https://github.com/perice-pope/ai-music-companion/issues/81)) ([e44c340](https://github.com/perice-pope/ai-music-companion/commit/e44c3402a11aba20aeab7a5c7fe56f567bad9d45))
+
 ## [1.14.0](https://github.com/perice-pope/ai-music-companion/compare/v1.13.1...v1.14.0) (2026-04-24)
 
 ### Features
