@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import type { InstrumentInfo } from "../types/brain";
+
+/** Re-exported so existing callers can keep `import ... from "./audioStore"`. */
+export type { InstrumentInfo };
 
 /** Mirrors the Rust AudioEvent struct sent over Tauri IPC. */
 export interface AudioEvent {
@@ -15,15 +19,6 @@ export interface NoteInfo {
   octave: number;
   cents_deviation: number;
   frequency_hz: number;
-}
-
-/** An instrument available for selection. */
-export interface InstrumentInfo {
-  name: string;
-  family: string;
-  freqMinHz: number;
-  freqMaxHz: number;
-  emoji: string;
 }
 
 interface AudioState {

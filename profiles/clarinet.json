@@ -5,5 +5,6 @@
   "freq_max_hz": 1568.0,
   "vibrato_tolerance_cents": 20.0,
   "attack_type": "breath",
-  "tuning_corrections": []
+  "tuning_corrections": [],
+  "emoji": "🎵"
 }

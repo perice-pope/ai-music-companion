@@ -92,10 +92,18 @@ export interface SessionRecap {
 /**
  * An instrument the user can choose at session start. Matches
  * `commands::InstrumentInfo` on the Rust side.
+ *
+ * Rust serialises with `rename_all = "camelCase"`, so `freqMinHz` /
+ * `freqMaxHz` on the wire map cleanly to the JSON fields the frontend
+ * reads. `emoji` is sourced from `profiles/*.json` — it's the string
+ * stored there, not a lookup.
  */
 export interface InstrumentInfo {
   name: string;
   family: string;
+  freqMinHz: number;
+  freqMaxHz: number;
+  emoji: string;
 }
 
 /** Payload of the `session-status` Tauri event. */

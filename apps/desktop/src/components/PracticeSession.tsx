@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { usePracticeStore } from "../stores/practiceStore";
+import type { InstrumentInfo } from "../stores/audioStore";
 import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
 import CoachingTipPanel from "./CoachingTipPanel";
-import { INSTRUMENTS } from "./InstrumentSelector";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
@@ -15,6 +16,24 @@ export default function PracticeSession() {
   const switchInstrument = usePracticeStore((s) => s.switchInstrument);
   const [menuOpen, setMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  // Catalog is fetched from the backend. Starts as `null` (loading);
+  // we don't render the dropdown list items until it resolves.
+  const [instruments, setInstruments] = useState<InstrumentInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke<InstrumentInfo[]>("list_instruments")
+      .then((list) => {
+        if (!cancelled) setInstruments(list);
+      })
+      .catch(() => {
+        // Swallow — the selector screen already surfaces catalog errors;
+        // here the worst case is an empty switch menu.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onPickInstrument = async (name: string) => {
     setMenuOpen(false);
@@ -53,7 +72,7 @@ export default function PracticeSession() {
               data-testid="instrument-switch-menu"
               className="absolute left-0 top-full z-10 mt-1 max-h-64 w-48 overflow-auto rounded border border-gray-700 bg-gray-900 shadow-lg"
             >
-              {INSTRUMENTS.map((inst) => (
+              {instruments.map((inst) => (
                 <li key={inst.name}>
                   <button
                     type="button"

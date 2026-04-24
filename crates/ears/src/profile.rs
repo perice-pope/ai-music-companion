@@ -33,9 +33,16 @@ pub enum ProfileError {
 }
 
 /// An instrument profile defining detection parameters.
+///
+/// Profiles are the **single source of truth** for which instruments the
+/// product supports. Adding an instrument = adding a JSON file, no code
+/// changes. The desktop app's instrument selector, the backend's
+/// validation, and the audio analysis pipeline all read from the same
+/// profiles directory — so `name`, `family`, and the frequency range
+/// stay authoritative.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstrumentProfile {
-    /// Display name (e.g., "Trumpet", "Soprano Voice")
+    /// Display name (e.g., "Trumpet", "Voice")
     pub name: String,
     /// Instrument family
     pub family: InstrumentFamily,
@@ -50,9 +57,14 @@ pub struct InstrumentProfile {
     /// Tuning corrections for known intonation quirks
     #[serde(default)]
     pub tuning_corrections: Vec<TuningCorrection>,
+    /// UI emoji (single glyph) — display-only. Lives on the profile so
+    /// adding an instrument stays a one-file change. Defaults to empty
+    /// string when a profile predates this field.
+    #[serde(default)]
+    pub emoji: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentFamily {
     Brass,
@@ -60,6 +72,21 @@ pub enum InstrumentFamily {
     Strings,
     Woodwind,
     Keyboard,
+}
+
+impl InstrumentFamily {
+    /// Human-readable, title-cased name used for UI badges and the
+    /// `InstrumentInfo` IPC surface. The serde representation is
+    /// snake_case (JSON on disk); this is the display form.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Brass => "Brass",
+            Self::Voice => "Voice",
+            Self::Strings => "Strings",
+            Self::Woodwind => "Woodwind",
+            Self::Keyboard => "Keyboard",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,7 +293,7 @@ mod tests {
             "Cello",
             "Flute",
             "Clarinet",
-            "Soprano Voice",
+            "Voice",
             "Piano",
         ] {
             assert!(

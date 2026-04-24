@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import PracticeSession from "./PracticeSession";
 import { usePracticeStore } from "../stores/practiceStore";
+import type { InstrumentInfo } from "../stores/audioStore";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -10,6 +11,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
+
+const TEST_INSTRUMENTS: InstrumentInfo[] = [
+  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, emoji: "\uD83C\uDFBA" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, emoji: "\uD83C\uDFB9" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, emoji: "\uD83C\uDFBB" },
+];
 
 function seedListeningSession() {
   usePracticeStore.setState({
@@ -31,6 +38,12 @@ describe("PracticeSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     seedListeningSession();
+    // Default: only `list_instruments` is handled; every other command
+    // must be explicitly mocked by the test that triggers it.
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
   });
 
   it("renders the current instrument in the header", () => {
@@ -39,8 +52,12 @@ describe("PracticeSession", () => {
     expect(btn.textContent).toContain("Trumpet");
   });
 
-  it("toggles the instrument-switch menu on click", () => {
+  it("toggles the instrument-switch menu on click", async () => {
     render(<PracticeSession />);
+    // Let the `list_instruments` effect resolve so the menu can render.
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("list_instruments");
+    });
     expect(screen.queryByTestId("instrument-switch-menu")).toBeNull();
 
     fireEvent.click(screen.getByTestId("instrument-switch-button"));
@@ -51,10 +68,18 @@ describe("PracticeSession", () => {
   });
 
   it("switching instrument mid-session calls invoke and updates header", async () => {
-    mockInvoke.mockResolvedValueOnce("seg-piano-1");
+    mockInvoke.mockImplementation((cmd: string, _args?: unknown) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "switch_instrument") return Promise.resolve("seg-piano-1");
+      return Promise.reject(new Error(`unexpected cmd ${cmd}`));
+    });
     render(<PracticeSession />);
+    // Wait for the switch menu items to be populated before opening it.
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("list_instruments");
+    });
     fireEvent.click(screen.getByTestId("instrument-switch-button"));
-    fireEvent.click(screen.getByTestId("instrument-switch-option-piano"));
+    fireEvent.click(await screen.findByTestId("instrument-switch-option-piano"));
 
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("switch_instrument", {
@@ -73,6 +98,7 @@ describe("PracticeSession", () => {
 
   it("clicking End Session triggers end flow and navigates to recap", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
       if (cmd === "end_practice_session") {
         return Promise.resolve({
           overall_assessment: "Done",
