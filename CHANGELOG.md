@@ -1,3 +1,9 @@
+## [1.16.0](https://github.com/perice-pope/ai-music-companion/compare/v1.15.0...v1.16.0) (2026-04-24)
+
+### Features
+
+* **story-21:** practice mode UI — selector + in-session switcher ([#82](https://github.com/perice-pope/ai-music-companion/issues/82)) ([d699984](https://github.com/perice-pope/ai-music-companion/commit/d6999842ae18c15f8bb3b948e0913f4d8dedf1a9)), closes [#81](https://github.com/perice-pope/ai-music-companion/issues/81)
+
 ## [1.15.0](https://github.com/perice-pope/ai-music-companion/compare/v1.14.0...v1.15.0) (2026-04-24)
 
 ### Features
