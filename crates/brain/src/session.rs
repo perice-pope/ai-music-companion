@@ -37,6 +37,43 @@ use uuid::Uuid;
 use crate::phrase::PhraseSummary;
 
 // ---------------------------------------------------------------------------
+// Practice mode
+// ---------------------------------------------------------------------------
+
+/// Coaching behavior mode during a practice session.
+///
+/// Different modes adjust how the AI coaches:
+/// - **Warmup:** Monitors silently, only suggests readiness indicators.
+/// - **Practice:** Full coaching with phrase-level feedback.
+/// - **RunThrough:** Silent during performance, recap only at end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PracticeMode {
+    /// Monitor silently, comment only on readiness (tone stabilizing, range).
+    Warmup,
+    /// Full coaching — phrase-level feedback, tips, technique suggestions.
+    Practice,
+    /// Stay silent during performance, full recap at end.
+    RunThrough,
+}
+
+impl PracticeMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Warmup => "warmup",
+            Self::Practice => "practice",
+            Self::RunThrough => "run_through",
+        }
+    }
+}
+
+impl Default for PracticeMode {
+    fn default() -> Self {
+        Self::Practice
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -181,6 +218,8 @@ pub struct InstrumentSegment {
     /// `None` while the segment is still open. Set when a newer segment
     /// starts or the session ends.
     pub ended_at: Option<DateTime<Utc>>,
+    /// Practice mode (Warmup, Practice, RunThrough).
+    pub practice_mode: PracticeMode,
     /// Phrases recorded while this segment was open.
     pub phrases: Vec<PhraseSummary>,
     /// Coaching tips recorded while this segment was open.
@@ -221,6 +260,8 @@ pub struct RecapInput {
     pub instrument: String,
     /// Total session duration in seconds.
     pub duration_secs: f64,
+    /// Practice mode during the session (affects coaching style).
+    pub practice_mode: PracticeMode,
     /// All phrase summaries recorded during the session, flattened
     /// across all segments in segment order.
     pub phrases: Vec<PhraseSummary>,
@@ -326,11 +367,13 @@ impl CompletedSession {
     /// Build a [`RecapInput`] from this completed session. The LLM
     /// prompt still receives flat phrases + tips, so we flatten the
     /// participants tree here. `instrument` is the primary instrument
-    /// (first segment) — see [`Self::primary_instrument`].
+    /// (first segment) and `practice_mode` is from the first segment as well.
     pub fn to_recap_input(&self) -> RecapInput {
+        let primary_segment = &self.participants[0].segments[0];
         RecapInput {
-            instrument: self.primary_instrument().to_owned(),
+            instrument: primary_segment.instrument.clone(),
             duration_secs: self.duration_secs,
+            practice_mode: primary_segment.practice_mode,
             phrases: self.all_phrases(),
             tips: self.all_tips(),
         }
@@ -375,16 +418,17 @@ pub struct SessionRecorder {
 }
 
 impl SessionRecorder {
-    /// Create a new recorder for the given instrument. The start time
-    /// is captured as `Utc::now()` at construction, and the first
-    /// [`InstrumentSegment`] is opened immediately with `initial_instrument`.
-    pub fn new(initial_instrument: String) -> Self {
+    /// Create a new recorder for the given instrument and practice mode.
+    /// The start time is captured as `Utc::now()` at construction, and the
+    /// first [`InstrumentSegment`] is opened immediately.
+    pub fn new(initial_instrument: String, practice_mode: PracticeMode) -> Self {
         let started_at = Utc::now();
         let first_segment = InstrumentSegment {
             id: SegmentId::new(),
             instrument: initial_instrument,
             started_at,
             ended_at: None,
+            practice_mode,
             phrases: Vec::new(),
             tips: Vec::new(),
         };
@@ -456,11 +500,15 @@ impl SessionRecorder {
     }
 
     /// Close the currently open segment and open a new one with
-    /// `new_instrument`. Returns the new segment's id.
+    /// `new_instrument` and `new_mode`. Returns the new segment's id.
     ///
     /// Errors with [`SessionError::NoOpenSegment`] if the previous
     /// segment was already closed (shouldn't happen in the MVP flow).
-    pub fn switch_instrument(&mut self, new_instrument: String) -> Result<SegmentId, SessionError> {
+    pub fn switch_instrument(
+        &mut self,
+        new_instrument: String,
+        new_mode: PracticeMode,
+    ) -> Result<SegmentId, SessionError> {
         let now = Utc::now();
         {
             // Close the current segment.
@@ -472,6 +520,7 @@ impl SessionRecorder {
             instrument: new_instrument,
             started_at: now,
             ended_at: None,
+            practice_mode: new_mode,
             phrases: Vec::new(),
             tips: Vec::new(),
         };
