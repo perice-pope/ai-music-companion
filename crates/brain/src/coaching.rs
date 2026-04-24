@@ -10,10 +10,12 @@
 use std::env;
 use std::time::Instant;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::phrase::PhraseSummary;
+use crate::session::{RecapGenerator, RecapInput, SessionError, SessionRecap};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -653,6 +655,248 @@ Choose the category that best matches the most notable aspect of the phrase data
                 .to_owned(),
             severity: CoachingSeverity::Encouragement,
             category: CoachingCategory::Expression,
+        }
+    }
+}
+
+// ===========================================================================
+// RecapGenerator implementation
+// ===========================================================================
+
+#[async_trait]
+impl RecapGenerator for CoachingEngine {
+    async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        let system_prompt = Self::build_recap_system_prompt();
+        let user_prompt = Self::build_recap_user_prompt(input);
+
+        let request_body = self.build_request_body(&system_prompt, &user_prompt);
+
+        let url = self.api_url();
+        let headers = self.api_headers();
+        let header_refs: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let response = self
+            .http_client
+            .post_json(&url, &request_body, &header_refs)
+            .await;
+
+        match response {
+            Ok(body) => Self::parse_recap_from_response(&body, input)
+                .or_else(|_| Ok(Self::fallback_recap(input))),
+            Err(_) => Ok(Self::fallback_recap(input)),
+        }
+    }
+}
+
+// ===========================================================================
+// Recap-specific prompt and parsing
+// ===========================================================================
+
+impl CoachingEngine {
+    /// Build a system prompt for session recap generation.
+    fn build_recap_system_prompt() -> String {
+        "\
+You are a warm, experienced music teacher writing end-of-session notes for a student.
+Your role is to provide honest, encouraging feedback that celebrates progress and
+identifies clear next steps for improvement.
+
+IMPORTANT RULES:
+- NEVER give letter grades (A, B, C, D, F) or percentage scores.
+- NEVER say things like \"you scored 85%\" or \"that was a B+\".
+- NEVER use judgmental language like \"poor\", \"bad\", or \"failing\".
+- Write as if you're leaving handwritten notes on a practice journal.
+- Be specific and reference actual things you heard in their performance.
+- Celebrate genuine progress and specific strengths.
+- For areas to improve, be constructive and give concrete next steps.
+- Use warm, conversational language.
+
+Respond with valid JSON in this exact format:
+{
+  \"overall_assessment\": \"One paragraph capturing the overall arc of the session\",
+  \"strengths\": [\"specific strength 1\", \"specific strength 2\"],
+  \"areas_to_improve\": [\"area 1\", \"area 2\"],
+  \"next_session_suggestions\": [\"focus 1\", \"focus 2\"]
+}
+
+All text should be written as a teacher would speak — warm, specific, and actionable."
+            .to_owned()
+    }
+
+    /// Build a user prompt for session recap generation from session input.
+    fn build_recap_user_prompt(input: &RecapInput) -> String {
+        let tip_summary = if input.tips.is_empty() {
+            "No tips were recorded during this session.".to_owned()
+        } else {
+            let tip_texts: Vec<String> = input
+                .tips
+                .iter()
+                .take(5)
+                .map(|tip| format!("- {}", tip.text))
+                .collect();
+            format!(
+                "Coaching tips from this session (sample of {} total):\n{}",
+                input.tips.len(),
+                tip_texts.join("\n")
+            )
+        };
+
+        let phrase_count = input.phrases.len();
+        let duration_mins = (input.duration_secs / 60.0).round();
+
+        format!(
+            "Please write end-of-session notes for a student who just finished practicing {}. \
+            They played {} phrases over approximately {} minutes.\n\n\
+            Phrase data summary:\n\
+            - Phrase count: {}\n\
+            - Average intonation tendency: {:.2}\n\
+            - Average rhythmic stability: {:.2}\n\
+            - Average dynamic control: {:.2}\n\n\
+            {}\n\n\
+            Based on this practice session, write encouraging, specific, handwritten-style notes \
+            that celebrate what went well and identify clear next steps.",
+            input.instrument,
+            phrase_count,
+            duration_mins as i32,
+            phrase_count,
+            Self::average_metric(&input.phrases, |p| p.stability),
+            Self::average_metric(&input.phrases, |p| p.stability),
+            Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
+            tip_summary
+        )
+    }
+
+    /// Helper to compute average of a metric across phrases.
+    fn average_metric<F>(phrases: &[PhraseSummary], f: F) -> f64
+    where
+        F: Fn(&PhraseSummary) -> f64,
+    {
+        if phrases.is_empty() {
+            0.0
+        } else {
+            phrases.iter().map(f).sum::<f64>() / phrases.len() as f64
+        }
+    }
+
+    /// Parse a session recap from the raw LLM response JSON.
+    fn parse_recap_from_response(
+        response_body: &str,
+        input: &RecapInput,
+    ) -> Result<SessionRecap, SessionError> {
+        // Try Anthropic response format first
+        if let Ok(anthropic) = serde_json::from_str::<serde_json::Value>(response_body) {
+            // Anthropic: { "content": [ { "type": "text", "text": "..." } ] }
+            if let Some(text) = anthropic
+                .get("content")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|block| block.get("text"))
+                .and_then(|t| t.as_str())
+            {
+                return Self::parse_recap_json(text, input);
+            }
+
+            // OpenAI: { "choices": [ { "message": { "content": "..." } } ] }
+            if let Some(text) = anthropic
+                .get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|choice| choice.get("message"))
+                .and_then(|msg| msg.get("content"))
+                .and_then(|t| t.as_str())
+            {
+                return Self::parse_recap_json(text, input);
+            }
+        }
+
+        Err(SessionError::RecapFailed(
+            "unrecognized response format".to_owned(),
+        ))
+    }
+
+    /// Parse the inner JSON recap from the LLM's text output.
+    fn parse_recap_json(text: &str, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        // The LLM may include markdown fences; strip them.
+        let cleaned = text
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+
+        let parsed: serde_json::Value = serde_json::from_str(cleaned)
+            .map_err(|e| SessionError::RecapFailed(format!("JSON parse error: {}", e)))?;
+
+        let recap = SessionRecap {
+            overall_assessment: parsed
+                .get("overall_assessment")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Great session! Keep building on your progress.")
+                .to_owned(),
+            strengths: parsed
+                .get("strengths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["Consistent focus during practice.".to_owned()]),
+            areas_to_improve: parsed
+                .get("areas_to_improve")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    vec!["Consider recording yourself to hear progress over time.".to_owned()]
+                }),
+            next_session_suggestions: parsed
+                .get("next_session_suggestions")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["Focus on one phrase at a time.".to_owned()]),
+            duration_secs: input.duration_secs,
+            phrase_count: input.phrases.len(),
+            instrument: input.instrument.clone(),
+        };
+
+        Ok(recap)
+    }
+
+    /// Fallback recap returned when the API fails.
+    fn fallback_recap(input: &RecapInput) -> SessionRecap {
+        SessionRecap {
+            overall_assessment: format!(
+                "You completed a {} minute practice session on {}. \
+                 That's excellent dedication! You played {} phrases and showed consistent engagement.",
+                (input.duration_secs / 60.0).round() as i32,
+                input.instrument,
+                input.phrases.len()
+            ),
+            strengths: vec![
+                "Consistent practice and focus.".to_owned(),
+                "You showed up and played — that's what matters most.".to_owned(),
+            ],
+            areas_to_improve: vec![
+                "Every session builds on the last one.".to_owned(),
+                "Keep recording yourself to track progress.".to_owned(),
+            ],
+            next_session_suggestions: vec![
+                "Work on the passages that felt most challenging.".to_owned(),
+                "Try breaking difficult sections into smaller chunks.".to_owned(),
+            ],
+            duration_secs: input.duration_secs,
+            phrase_count: input.phrases.len(),
+            instrument: input.instrument.clone(),
         }
     }
 }
@@ -1371,5 +1615,166 @@ mod tests {
             !tip.text.is_empty(),
             "Fallback should be provided for malformed response"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RecapGenerator tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn generate_recap_parses_anthropic_response() {
+        use crate::session::RecapInput;
+
+        let recap_content = serde_json::json!({
+            "overall_assessment": "Strong session with good focus.",
+            "strengths": ["Consistent tone", "Great rhythm"],
+            "areas_to_improve": ["High register confidence", "Dynamic control"],
+            "next_session_suggestions": ["Work on high passages", "Focus on dynamics"]
+        });
+
+        let anthropic_response = serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": recap_content.to_string()
+            }]
+        });
+
+        let mock = MockHttpClient::succeeding(&anthropic_response.to_string());
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 1800.0,
+            phrases: vec![sample_phrase()],
+            tips: vec![],
+        };
+
+        let recap = engine.generate_recap(&input).await.unwrap();
+
+        assert_eq!(recap.instrument, "trumpet");
+        assert_eq!(recap.duration_secs, 1800.0);
+        assert_eq!(recap.phrase_count, 1);
+        assert_eq!(recap.strengths.len(), 2);
+        assert_eq!(recap.areas_to_improve.len(), 2);
+        assert_eq!(recap.next_session_suggestions.len(), 2);
+        assert!(recap.overall_assessment.contains("Strong"));
+    }
+
+    #[tokio::test]
+    async fn generate_recap_parses_openai_response() {
+        use crate::session::RecapInput;
+
+        let recap_content = serde_json::json!({
+            "overall_assessment": "Great progress today!",
+            "strengths": ["Good intonation"],
+            "areas_to_improve": ["Articulation clarity"],
+            "next_session_suggestions": ["Focus on tonguing"]
+        });
+
+        let openai_response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": recap_content.to_string()
+                }
+            }]
+        });
+
+        let mock = MockHttpClient::succeeding(&openai_response.to_string());
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "gpt-4".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let input = RecapInput {
+            instrument: "violin".to_owned(),
+            duration_secs: 2400.0,
+            phrases: vec![sample_phrase(); 3],
+            tips: vec![],
+        };
+
+        let recap = engine.generate_recap(&input).await.unwrap();
+
+        assert_eq!(recap.instrument, "violin");
+        assert_eq!(recap.phrase_count, 3);
+        assert!(recap.overall_assessment.contains("progress"));
+    }
+
+    #[tokio::test]
+    async fn generate_recap_gracefully_handles_api_failure() {
+        use crate::session::RecapInput;
+
+        let mock = MockHttpClient::failing("Service unavailable");
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let input = RecapInput {
+            instrument: "voice".to_owned(),
+            duration_secs: 1500.0,
+            phrases: vec![sample_phrase(); 5],
+            tips: vec![],
+        };
+
+        let recap = engine.generate_recap(&input).await.unwrap();
+
+        assert_eq!(recap.instrument, "voice");
+        assert_eq!(recap.phrase_count, 5);
+        assert!(recap.duration_secs > 0.0);
+        assert!(!recap.overall_assessment.is_empty());
+        assert!(!recap.strengths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn generate_recap_handles_malformed_response() {
+        use crate::session::RecapInput;
+
+        let malformed = r#"{"invalid": "json", "structure": true}"#;
+        let anthropic_response = format!(
+            r#"{{"content": [{{"type": "text", "text": "{}"}}]}}"#,
+            malformed.replace('"', "\\\"")
+        );
+
+        let mock = MockHttpClient::succeeding(&anthropic_response);
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        )
+        .unwrap();
+
+        let input = RecapInput {
+            instrument: "piano".to_owned(),
+            duration_secs: 3600.0,
+            phrases: vec![sample_phrase(); 2],
+            tips: vec![],
+        };
+
+        let recap = engine.generate_recap(&input).await.unwrap();
+
+        assert_eq!(recap.instrument, "piano");
+        assert!(!recap.overall_assessment.is_empty());
+        assert!(recap.strengths.is_empty() || !recap.strengths[0].is_empty());
     }
 }
