@@ -7,6 +7,7 @@
 //! command *implementations* (see [`commands::start_practice_session_impl`]
 //! and friends), not the `#[tauri::command]` wrappers themselves.
 
+pub mod audio_pipeline;
 pub mod commands;
 
 pub use commands::{
