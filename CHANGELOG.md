@@ -1,3 +1,9 @@
+## [1.14.0](https://github.com/perice-pope/ai-music-companion/compare/v1.13.1...v1.14.0) (2026-04-24)
+
+### Features
+
+* **story-14:** implement RecapGenerator for CoachingEngine ([#78](https://github.com/perice-pope/ai-music-companion/issues/78)) ([1e956f9](https://github.com/perice-pope/ai-music-companion/commit/1e956f98b8eca0088b91424cfd3865d6db6f338e)), closes [#14](https://github.com/perice-pope/ai-music-companion/issues/14)
+
 ## [1.13.1](https://github.com/perice-pope/ai-music-companion/compare/v1.13.0...v1.13.1) (2026-04-23)
 
 ### Bug Fixes
