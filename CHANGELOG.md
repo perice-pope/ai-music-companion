@@ -1,3 +1,9 @@
+## [1.17.1](https://github.com/perice-pope/ai-music-companion/compare/v1.17.0...v1.17.1) (2026-04-24)
+
+### Bug Fixes
+
+* address CTO audit hotspots — error handling, deps, testing patterns ([efeae0b](https://github.com/perice-pope/ai-music-companion/commit/efeae0b418aeec927677c743a8914ecf1c8f774f)), closes [#64](https://github.com/perice-pope/ai-music-companion/issues/64)
+
 ## [1.17.0](https://github.com/perice-pope/ai-music-companion/compare/v1.16.0...v1.17.0) (2026-04-24)
 
 ### Features
