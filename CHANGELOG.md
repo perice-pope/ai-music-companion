@@ -1,3 +1,9 @@
+## [1.17.0](https://github.com/perice-pope/ai-music-companion/compare/v1.16.0...v1.17.0) (2026-04-24)
+
+### Features
+
+* **audio:** live pitch IPC — mic → pitch detector → audio-event ([#83](https://github.com/perice-pope/ai-music-companion/issues/83)) ([f2dd302](https://github.com/perice-pope/ai-music-companion/commit/f2dd302a113917f4241ad25ed6b11a829e6bd503))
+
 ## [1.16.0](https://github.com/perice-pope/ai-music-companion/compare/v1.15.0...v1.16.0) (2026-04-24)
 
 ### Features
