@@ -1653,6 +1653,7 @@ mod tests {
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
             duration_secs: 1800.0,
+            practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
             tips: vec![],
         };
@@ -1701,6 +1702,7 @@ mod tests {
         let input = RecapInput {
             instrument: "violin".to_owned(),
             duration_secs: 2400.0,
+            practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 3],
             tips: vec![],
         };
@@ -1730,6 +1732,7 @@ mod tests {
         let input = RecapInput {
             instrument: "voice".to_owned(),
             duration_secs: 1500.0,
+            practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 5],
             tips: vec![],
         };
@@ -1767,6 +1770,7 @@ mod tests {
         let input = RecapInput {
             instrument: "piano".to_owned(),
             duration_secs: 3600.0,
+            practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 2],
             tips: vec![],
         };

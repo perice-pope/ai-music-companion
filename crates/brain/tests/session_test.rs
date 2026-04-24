@@ -6,7 +6,9 @@
 
 use async_trait::async_trait;
 use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
-use brain::session::{RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder};
+use brain::session::{
+    PracticeMode, RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder,
+};
 use brain::store::SessionStore;
 use chrono::{Duration, Utc};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,7 +89,7 @@ fn phrase_at(idx: usize) -> PhraseSummary {
 #[tokio::test]
 async fn end_to_end_record_and_persist() {
     // 1. Build a recorder (NO longer owns the recap generator).
-    let mut recorder = SessionRecorder::new("trumpet".to_owned());
+    let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
     let started_at = recorder.started_at();
 
     // 2. Record 2 phrases and 2 tips.
@@ -168,7 +170,7 @@ async fn multiple_sessions_coexist_in_store() {
     // Save 3 sessions with different timestamps and instruments.
     let mut ids = Vec::new();
     for (i, instrument) in ["trumpet", "violin", "voice"].iter().enumerate() {
-        let mut recorder = SessionRecorder::new((*instrument).to_owned());
+        let mut recorder = SessionRecorder::new((*instrument).to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase_at(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
@@ -204,7 +206,7 @@ async fn multiple_sessions_coexist_in_store() {
 #[test]
 fn empty_session_cannot_be_completed() {
     // Proves the whole pipeline refuses to produce a zero-phrase recap.
-    let recorder = SessionRecorder::new("trumpet".to_owned());
+    let recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
     let err = recorder.complete().unwrap_err();
     assert!(
         matches!(err, SessionError::Empty),
@@ -218,7 +220,7 @@ fn completed_session_persists_without_recap_when_generator_fails() {
     // data must still be persistable. We simulate a transient LLM failure
     // by constructing a CompletedSession but never generating a recap —
     // callers can synthesize a minimal recap and still save the timing.
-    let mut recorder = SessionRecorder::new("voice".to_owned());
+    let mut recorder = SessionRecorder::new("voice".to_owned(), PracticeMode::default());
     recorder.record_phrase(phrase_at(0)).unwrap();
     recorder.record_phrase(phrase_at(1)).unwrap();
 
