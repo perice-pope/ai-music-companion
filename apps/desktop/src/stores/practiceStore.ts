@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CoachingTip,
   PhraseSummary,
+  PracticeMode,
   SessionRecap,
 } from "../types/brain";
 
@@ -61,6 +62,12 @@ export interface PracticeState {
 
   // UI prefs (persisted) --------------------------------------------------
   coachingEnabled: boolean;
+  /**
+   * Current practice mode. Persisted so a user's last choice survives
+   * a restart. Defaults to `"practice"` on first run (matches the Rust
+   * `PracticeMode::default()`).
+   */
+  practiceMode: PracticeMode;
 
   // Actions ---------------------------------------------------------------
   startSession: (instrument: string) => Promise<void>;
@@ -72,11 +79,21 @@ export interface PracticeState {
   tick: () => void;
   returnToSelector: () => void;
   setCoachingEnabled: (on: boolean) => void;
+  /**
+   * Update the mode. If a session is already running, this only updates
+   * local state — the Rust side is notified on the next `switchInstrument`
+   * (which now carries the mode). Callers that want an immediate mid-session
+   * change should call `switchInstrument` with the current instrument after
+   * setting the new mode.
+   */
+  setPracticeMode: (mode: PracticeMode) => void;
   goToHistory: () => void;
 }
 
 /** localStorage key for the coaching-on/off preference. */
 const COACHING_PREF_KEY = "ai-music-companion:coaching-enabled";
+/** localStorage key for the last-used practice mode. */
+const PRACTICE_MODE_PREF_KEY = "ai-music-companion:practice-mode";
 
 function loadCoachingPref(): boolean {
   try {
@@ -91,6 +108,27 @@ function loadCoachingPref(): boolean {
 function saveCoachingPref(on: boolean): void {
   try {
     localStorage.setItem(COACHING_PREF_KEY, on ? "true" : "false");
+  } catch {
+    // localStorage unavailable — silently ignore.
+  }
+}
+
+function isPracticeMode(v: string | null): v is PracticeMode {
+  return v === "warmup" || v === "practice" || v === "run_through";
+}
+
+function loadPracticeModePref(): PracticeMode {
+  try {
+    const raw = localStorage.getItem(PRACTICE_MODE_PREF_KEY);
+    return isPracticeMode(raw) ? raw : "practice";
+  } catch {
+    return "practice";
+  }
+}
+
+function savePracticeModePref(mode: PracticeMode): void {
+  try {
+    localStorage.setItem(PRACTICE_MODE_PREF_KEY, mode);
   } catch {
     // localStorage unavailable — silently ignore.
   }
@@ -122,6 +160,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   recap: null,
   recapError: null,
   coachingEnabled: loadCoachingPref(),
+  practiceMode: loadPracticeModePref(),
 
   startSession: async (instrument: string) => {
     const { status } = get();
@@ -134,6 +173,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     try {
       const sessionId = await invoke<string>("start_practice_session", {
         instrument,
+        practiceMode: get().practiceMode,
         coachingEnabled: get().coachingEnabled,
       });
       set({
@@ -195,6 +235,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     const segmentId = await invoke<string>("switch_instrument", {
       instrument: name,
+      practiceMode: get().practiceMode,
     });
     set({ instrumentName: name, segmentId });
   },
@@ -243,6 +284,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   setCoachingEnabled: (on) => {
     saveCoachingPref(on);
     set({ coachingEnabled: on });
+  },
+
+  setPracticeMode: (mode) => {
+    savePracticeModePref(mode);
+    set({ practiceMode: mode });
   },
 
   goToHistory: () =>

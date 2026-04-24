@@ -64,6 +64,7 @@ describe("practiceStore — state machine", () => {
     // invoke called with the right command + args
     expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
       instrument: "Trumpet",
+      practiceMode: "practice",
       coachingEnabled: true,
     });
   });
@@ -163,6 +164,7 @@ describe("practiceStore — state machine", () => {
     expect(s.status).toBe("listening");
     expect(mockInvoke).toHaveBeenLastCalledWith("switch_instrument", {
       instrument: "Piano",
+      practiceMode: "practice",
     });
   });
 
@@ -274,5 +276,66 @@ describe("practiceStore — coachingEnabled persistence", () => {
   it("defaults to true when no preference is saved", async () => {
     const useStore = await freshStore();
     expect(useStore.getState().coachingEnabled).toBe(true);
+  });
+});
+
+describe("practiceStore — practiceMode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  it("defaults to 'practice' on first run", async () => {
+    const useStore = await freshStore();
+    expect(useStore.getState().practiceMode).toBe("practice");
+  });
+
+  it("persists the chosen mode across fresh store instantiations", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setPracticeMode("warmup");
+    expect(useStore.getState().practiceMode).toBe("warmup");
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "ai-music-companion:practice-mode",
+      "warmup",
+    );
+
+    const useStore2 = await freshStore();
+    expect(useStore2.getState().practiceMode).toBe("warmup");
+  });
+
+  it("falls back to 'practice' if a garbage value is persisted", async () => {
+    // Force-write junk — simulates a future value we don't recognise.
+    localStorageMock.setItem("ai-music-companion:practice-mode", "bogus");
+    const useStore = await freshStore();
+    expect(useStore.getState().practiceMode).toBe("practice");
+  });
+
+  it("startSession sends the currently-selected mode to invoke", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setPracticeMode("run_through");
+
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+
+    expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
+      instrument: "Trumpet",
+      practiceMode: "run_through",
+      coachingEnabled: true,
+    });
+  });
+
+  it("switchInstrument sends the currently-selected mode to invoke", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+
+    useStore.getState().setPracticeMode("warmup");
+    mockInvoke.mockResolvedValueOnce("seg-piano");
+    await useStore.getState().switchInstrument("Piano");
+
+    expect(mockInvoke).toHaveBeenLastCalledWith("switch_instrument", {
+      instrument: "Piano",
+      practiceMode: "warmup",
+    });
   });
 });

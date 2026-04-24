@@ -31,6 +31,7 @@ function seedListeningSession() {
     tipQueue: [],
     recap: null,
     recapError: null,
+    practiceMode: "practice",
   });
 }
 
@@ -84,6 +85,7 @@ describe("PracticeSession", () => {
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("switch_instrument", {
         instrument: "Piano",
+        practiceMode: "practice",
       });
     });
     await vi.waitFor(() => {
@@ -125,6 +127,49 @@ describe("PracticeSession", () => {
   it("renders the coaching tip panel", () => {
     render(<PracticeSession />);
     expect(screen.getByTestId("coaching-tip-panel-empty")).toBeDefined();
+  });
+
+  it("renders the current practice mode in the header", () => {
+    render(<PracticeSession />);
+    const btn = screen.getByTestId("practice-mode-switch-button");
+    expect(btn.textContent).toContain("Practice");
+  });
+
+  it("switching mode mid-session re-invokes switch_instrument under the new mode", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "switch_instrument") return Promise.resolve("seg-new");
+      return Promise.reject(new Error(`unexpected cmd ${cmd}`));
+    });
+    render(<PracticeSession />);
+
+    fireEvent.click(screen.getByTestId("practice-mode-switch-button"));
+    fireEvent.click(
+      await screen.findByTestId("practice-mode-switch-option-run_through"),
+    );
+
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("switch_instrument", {
+        instrument: "Trumpet",
+        practiceMode: "run_through",
+      });
+    });
+    expect(usePracticeStore.getState().practiceMode).toBe("run_through");
+  });
+
+  it("picking the currently-active mode is a no-op (no invoke)", async () => {
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("practice-mode-switch-button"));
+    fireEvent.click(
+      await screen.findByTestId("practice-mode-switch-option-practice"),
+    );
+
+    // No switch_instrument call should have fired (only list_instruments
+    // from the mount effect).
+    const switchCalls = mockInvoke.mock.calls.filter(
+      (args) => args[0] === "switch_instrument",
+    );
+    expect(switchCalls.length).toBe(0);
   });
 
   it("displays coaching tips when they are queued", async () => {

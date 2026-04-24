@@ -87,6 +87,10 @@ describe("InstrumentSelector", () => {
       tipQueue: [],
       recap: null,
       recapError: null,
+      // Reset practiceMode explicitly — the store loads it from
+      // localStorage at module-init time, and one test flipping it
+      // would otherwise leak into the next.
+      practiceMode: "practice",
     });
   });
 
@@ -247,6 +251,7 @@ describe("InstrumentSelector", () => {
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
         instrument: "Violin",
+        practiceMode: "practice",
         coachingEnabled: true,
       });
     });
@@ -255,6 +260,54 @@ describe("InstrumentSelector", () => {
     });
     expect(usePracticeStore.getState().screen).toBe("session");
     expect(usePracticeStore.getState().sessionId).toBe("new-session-id");
+  });
+
+  it("renders the practice mode selector with 'Practice' active by default", async () => {
+    render(<InstrumentSelector />);
+    const selector = await screen.findByTestId("practice-mode-selector");
+    expect(selector).toBeDefined();
+
+    const practiceBtn = screen.getByTestId("practice-mode-practice");
+    expect(practiceBtn.getAttribute("aria-checked")).toBe("true");
+
+    const warmupBtn = screen.getByTestId("practice-mode-warmup");
+    expect(warmupBtn.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("clicking a mode updates the store and the description", async () => {
+    render(<InstrumentSelector />);
+    fireEvent.click(await screen.findByTestId("practice-mode-warmup"));
+
+    expect(usePracticeStore.getState().practiceMode).toBe("warmup");
+    expect(
+      screen
+        .getByTestId("practice-mode-warmup")
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    // The description copy swaps to the Warm-up blurb.
+    const desc = screen.getByTestId("practice-mode-description");
+    expect(desc.textContent).toMatch(/silent/i);
+  });
+
+  it("Start Practice passes the selected mode through to invoke", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_practice_session")
+        return Promise.resolve("sid-run-through");
+      return Promise.reject(new Error(`unexpected cmd ${cmd}`));
+    });
+    render(<InstrumentSelector />);
+    fireEvent.click(await screen.findByTestId("instrument-card-trumpet"));
+    fireEvent.click(screen.getByTestId("practice-mode-run_through"));
+    fireEvent.click(screen.getByTestId("start-practice-button"));
+
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
+        instrument: "Trumpet",
+        practiceMode: "run_through",
+        coachingEnabled: true,
+      });
+    });
   });
 
   it("surfaces a backend error if start fails", async () => {
