@@ -4,10 +4,14 @@
 use ai_music_companion::commands::AppState;
 use std::fs::OpenOptions;
 use std::io;
+use std::sync::Mutex;
 use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+// `Layer` as a trait is needed for `.boxed()`; imported anonymously so it
+// doesn't clash with the `Layer` struct from `tracing_subscriber::fmt`.
+use tracing_subscriber::Layer as _;
 
 #[tauri::command]
 fn ping() -> String {
@@ -15,11 +19,14 @@ fn ping() -> String {
 }
 
 fn init_tracing() {
-    // Determine log file path
-    let log_dir = if let Some(cache_dir) = dirs::cache_dir().to_str() {
-        format!("{}/ai-music-companion", cache_dir)
-    } else {
-        "/tmp".to_string()
+    // Determine log file path. `dirs::cache_dir()` returns an
+    // `Option<PathBuf>`; fall back to `/tmp` on platforms without one.
+    let log_dir = match dirs::cache_dir() {
+        Some(cache_dir) => cache_dir
+            .join("ai-music-companion")
+            .to_string_lossy()
+            .into_owned(),
+        None => "/tmp".to_string(),
     };
 
     // Create log directory if it doesn't exist
@@ -38,24 +45,19 @@ fn init_tracing() {
         }
     };
 
-    // Build file layer if log file was successfully opened
-    let file_layer = log_file
-        .map(|file| {
-            Layer::new()
-                .with_writer(io::LineWriter::new(file))
-                .with_ansi(false)
-                .boxed()
-        })
-        .boxed();
+    // Build file layer if log file was successfully opened.
+    // `tracing_subscriber::MakeWriter` is implemented for `Mutex<W: Write>`
+    // but not for a bare `LineWriter<File>`, so wrap in a Mutex.
+    let file_layer = log_file.map(|file| {
+        Layer::new()
+            .with_writer(Mutex::new(io::LineWriter::new(file)))
+            .with_ansi(false)
+            .boxed()
+    });
 
     // Build console layer for debug builds
     let console_layer = if cfg!(debug_assertions) {
-        Some(
-            Layer::new()
-                .with_writer(io::stderr)
-                .with_ansi(true)
-                .boxed(),
-        )
+        Some(Layer::new().with_writer(io::stderr).with_ansi(true).boxed())
     } else {
         None
     };
