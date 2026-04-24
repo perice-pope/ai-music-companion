@@ -20,7 +20,8 @@ use brain::coaching::{
     SessionContext,
 };
 use brain::session::{
-    CompletedSession, RecapGenerator, RecapInput, SessionError, SessionRecap, SessionRecorder,
+    CompletedSession, PracticeMode, RecapGenerator, RecapInput, SessionError, SessionRecap,
+    SessionRecorder,
 };
 use brain::stats::PracticeStats;
 use brain::store::{SessionStore, SessionSummary, StoredSession};
@@ -411,6 +412,7 @@ impl SessionPhase {
 pub struct ActiveSession {
     phase: SessionPhase,
     recorder: SessionRecorder,
+    practice_mode: PracticeMode,
     /// Held so PR 2 can spawn tokio tasks off a phrase completion.
     /// Unused directly in PR 1 — hence the `allow(dead_code)`.
     #[allow(dead_code)]
@@ -418,10 +420,15 @@ pub struct ActiveSession {
 }
 
 impl ActiveSession {
-    fn new(instrument: String, coaching: Arc<dyn CoachingService>) -> Self {
+    fn new(
+        instrument: String,
+        practice_mode: PracticeMode,
+        coaching: Arc<dyn CoachingService>,
+    ) -> Self {
         Self {
             phase: SessionPhase::Starting,
-            recorder: SessionRecorder::new(instrument),
+            recorder: SessionRecorder::new(instrument, practice_mode),
+            practice_mode,
             coaching,
         }
     }
@@ -660,6 +667,7 @@ fn emit_segment_changed<R: Runtime>(app: &tauri::AppHandle<R>, payload: SegmentC
 pub async fn start_practice_session_impl(
     state: &AppState,
     instrument: String,
+    practice_mode: PracticeMode,
     _coaching_enabled: bool,
 ) -> Result<String, CommandError> {
     if instrument.trim().is_empty() {
@@ -675,7 +683,7 @@ pub async fn start_practice_session_impl(
     }
 
     let coaching = (state.coaching_factory)();
-    let mut session = ActiveSession::new(instrument, coaching);
+    let mut session = ActiveSession::new(instrument, practice_mode, coaching);
     let session_id = session.recorder.session_id().as_str();
     // Starting → Listening is synchronous in PR 1. PR 2 inserts a real
     // pause once audio capture startup is async.
@@ -690,6 +698,7 @@ pub async fn start_practice_session_impl(
 pub async fn switch_instrument_impl(
     state: &AppState,
     instrument: String,
+    practice_mode: PracticeMode,
 ) -> Result<(String, DateTime<Utc>), CommandError> {
     if instrument.trim().is_empty() {
         return Err(CommandError::EmptyInstrument);
@@ -704,7 +713,8 @@ pub async fn switch_instrument_impl(
         return Err(CommandError::AlreadyEnding);
     }
 
-    let new_segment_id = session.recorder.switch_instrument(instrument)?;
+    session.practice_mode = practice_mode;
+    let new_segment_id = session.recorder.switch_instrument(instrument, practice_mode)?;
     Ok((new_segment_id.as_str(), Utc::now()))
 }
 
@@ -836,10 +846,11 @@ pub async fn start_practice_session<R: Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     instrument: String,
+    practice_mode: PracticeMode,
     coaching_enabled: bool,
 ) -> Result<String, String> {
     emit_session_status(&app, SessionPhase::Starting);
-    match start_practice_session_impl(state.inner(), instrument, coaching_enabled).await {
+    match start_practice_session_impl(state.inner(), instrument, practice_mode, coaching_enabled).await {
         Ok(id) => {
             emit_session_status(&app, SessionPhase::Listening);
             Ok(id)
@@ -855,8 +866,9 @@ pub async fn switch_instrument<R: Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     instrument: String,
+    practice_mode: PracticeMode,
 ) -> Result<String, String> {
-    match switch_instrument_impl(state.inner(), instrument.clone()).await {
+    match switch_instrument_impl(state.inner(), instrument.clone(), practice_mode).await {
         Ok((segment_id, started_at)) => {
             emit_segment_changed(
                 &app,
@@ -977,7 +989,7 @@ mod tests {
     async fn start_session_then_end_session_produces_recap() {
         // Happy path with phrases exercises the rich-recap branch.
         let s = state();
-        let session_id = start_practice_session_impl(&s, "Trumpet".to_owned(), false)
+        let session_id = start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .expect("start should succeed");
         assert!(!session_id.is_empty(), "session id must be non-empty");
@@ -1006,10 +1018,10 @@ mod tests {
     #[tokio::test]
     async fn double_start_is_rejected_with_clear_error() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), false)
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
-        let err = start_practice_session_impl(&s, "Piano".to_owned(), false)
+        let err = start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::AlreadyActive), "{err:?}");
@@ -1029,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn switch_without_start_is_rejected() {
         let s = state();
-        let err = switch_instrument_impl(&s, "Piano".to_owned())
+        let err = switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotActive), "{err:?}");
@@ -1038,10 +1050,10 @@ mod tests {
     #[tokio::test]
     async fn switch_instrument_closes_old_segment_opens_new() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), false)
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
-        let (new_segment_id, _) = switch_instrument_impl(&s, "Piano".to_owned())
+        let (new_segment_id, _) = switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
             .await
             .unwrap();
         assert!(!new_segment_id.is_empty());
@@ -1057,7 +1069,7 @@ mod tests {
         // Per design doc §8 q3: zero phrases = calm empty-state recap,
         // NOT an error.
         let s = state();
-        start_practice_session_impl(&s, "Voice".to_owned(), false)
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
         let recap = end_practice_session_impl(&s).await.unwrap();
@@ -1077,14 +1089,14 @@ mod tests {
         let s = state();
         assert_eq!(s.current_phase().await, SessionPhase::Idle);
 
-        start_practice_session_impl(&s, "Trumpet".to_owned(), true)
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true)
             .await
             .unwrap();
         // PR 1 collapses Starting → Listening synchronously (no
         // audio-stream wait yet); PR 2 will insert the real pause.
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
 
-        switch_instrument_impl(&s, "Piano".to_owned())
+        switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
             .await
             .unwrap();
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
@@ -1096,12 +1108,12 @@ mod tests {
     #[tokio::test]
     async fn start_rejects_empty_or_unknown_instrument() {
         let s = state();
-        let empty = start_practice_session_impl(&s, "  ".to_owned(), false)
+        let empty = start_practice_session_impl(&s, "  ".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap_err();
         assert!(matches!(empty, CommandError::EmptyInstrument));
 
-        let unknown = start_practice_session_impl(&s, "Kazoo".to_owned(), false)
+        let unknown = start_practice_session_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap_err();
         match unknown {
@@ -1113,10 +1125,10 @@ mod tests {
     #[tokio::test]
     async fn switch_rejects_unknown_instrument() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), false)
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
             .await
             .unwrap();
-        let err = switch_instrument_impl(&s, "Kazoo".to_owned())
+        let err = switch_instrument_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::UnknownInstrument(_)), "{err:?}");

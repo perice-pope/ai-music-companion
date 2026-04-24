@@ -37,6 +37,38 @@ use uuid::Uuid;
 use crate::phrase::PhraseSummary;
 
 // ---------------------------------------------------------------------------
+// Practice mode
+// ---------------------------------------------------------------------------
+
+/// Coaching behavior mode during a practice session.
+///
+/// Different modes adjust how the AI coaches:
+/// - **Warmup:** Monitors silently, only suggests readiness indicators.
+/// - **Practice:** Full coaching with phrase-level feedback.
+/// - **RunThrough:** Silent during performance, recap only at end.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PracticeMode {
+    /// Monitor silently, comment only on readiness (tone stabilizing, range).
+    Warmup,
+    /// Full coaching — phrase-level feedback, tips, technique suggestions.
+    #[default]
+    Practice,
+    /// Stay silent during performance, full recap at end.
+    RunThrough,
+}
+
+impl PracticeMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Warmup => "warmup",
+            Self::Practice => "practice",
+            Self::RunThrough => "run_through",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -181,6 +213,8 @@ pub struct InstrumentSegment {
     /// `None` while the segment is still open. Set when a newer segment
     /// starts or the session ends.
     pub ended_at: Option<DateTime<Utc>>,
+    /// Practice mode (Warmup, Practice, RunThrough).
+    pub practice_mode: PracticeMode,
     /// Phrases recorded while this segment was open.
     pub phrases: Vec<PhraseSummary>,
     /// Coaching tips recorded while this segment was open.
@@ -221,6 +255,8 @@ pub struct RecapInput {
     pub instrument: String,
     /// Total session duration in seconds.
     pub duration_secs: f64,
+    /// Practice mode during the session (affects coaching style).
+    pub practice_mode: PracticeMode,
     /// All phrase summaries recorded during the session, flattened
     /// across all segments in segment order.
     pub phrases: Vec<PhraseSummary>,
@@ -326,11 +362,13 @@ impl CompletedSession {
     /// Build a [`RecapInput`] from this completed session. The LLM
     /// prompt still receives flat phrases + tips, so we flatten the
     /// participants tree here. `instrument` is the primary instrument
-    /// (first segment) — see [`Self::primary_instrument`].
+    /// (first segment) and `practice_mode` is from the first segment as well.
     pub fn to_recap_input(&self) -> RecapInput {
+        let primary_segment = &self.participants[0].segments[0];
         RecapInput {
-            instrument: self.primary_instrument().to_owned(),
+            instrument: primary_segment.instrument.clone(),
             duration_secs: self.duration_secs,
+            practice_mode: primary_segment.practice_mode,
             phrases: self.all_phrases(),
             tips: self.all_tips(),
         }
@@ -375,16 +413,17 @@ pub struct SessionRecorder {
 }
 
 impl SessionRecorder {
-    /// Create a new recorder for the given instrument. The start time
-    /// is captured as `Utc::now()` at construction, and the first
-    /// [`InstrumentSegment`] is opened immediately with `initial_instrument`.
-    pub fn new(initial_instrument: String) -> Self {
+    /// Create a new recorder for the given instrument and practice mode.
+    /// The start time is captured as `Utc::now()` at construction, and the
+    /// first [`InstrumentSegment`] is opened immediately.
+    pub fn new(initial_instrument: String, practice_mode: PracticeMode) -> Self {
         let started_at = Utc::now();
         let first_segment = InstrumentSegment {
             id: SegmentId::new(),
             instrument: initial_instrument,
             started_at,
             ended_at: None,
+            practice_mode,
             phrases: Vec::new(),
             tips: Vec::new(),
         };
@@ -456,11 +495,15 @@ impl SessionRecorder {
     }
 
     /// Close the currently open segment and open a new one with
-    /// `new_instrument`. Returns the new segment's id.
+    /// `new_instrument` and `new_mode`. Returns the new segment's id.
     ///
     /// Errors with [`SessionError::NoOpenSegment`] if the previous
     /// segment was already closed (shouldn't happen in the MVP flow).
-    pub fn switch_instrument(&mut self, new_instrument: String) -> Result<SegmentId, SessionError> {
+    pub fn switch_instrument(
+        &mut self,
+        new_instrument: String,
+        new_mode: PracticeMode,
+    ) -> Result<SegmentId, SessionError> {
         let now = Utc::now();
         {
             // Close the current segment.
@@ -472,6 +515,7 @@ impl SessionRecorder {
             instrument: new_instrument,
             started_at: now,
             ended_at: None,
+            practice_mode: new_mode,
             phrases: Vec::new(),
             tips: Vec::new(),
         };
@@ -666,7 +710,7 @@ mod tests {
     #[test]
     fn recorder_opens_first_segment_on_new() {
         // new() opens exactly one participant with exactly one open segment.
-        let recorder = SessionRecorder::new("trumpet".to_owned());
+        let recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         assert_eq!(recorder.participants.len(), 1);
         let p = &recorder.participants[0];
         assert_eq!(p.display_name, "You");
@@ -682,9 +726,11 @@ mod tests {
 
     #[test]
     fn switch_instrument_closes_current_and_opens_new() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         let first_id = recorder.participants[0].segments[0].id;
-        let new_id = recorder.switch_instrument("piano".to_owned()).unwrap();
+        let new_id = recorder
+            .switch_instrument("piano".to_owned(), PracticeMode::default())
+            .unwrap();
 
         let p = &recorder.participants[0];
         assert_eq!(p.segments.len(), 2);
@@ -701,10 +747,12 @@ mod tests {
 
     #[test]
     fn switch_instrument_preserves_phrase_ordering() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
-        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder
+            .switch_instrument("piano".to_owned(), PracticeMode::default())
+            .unwrap();
         recorder.record_phrase(phrase(2)).unwrap();
         recorder.record_phrase(phrase(3)).unwrap();
 
@@ -738,7 +786,7 @@ mod tests {
         // After a switch, tips must land in the new segment, not the old
         // one. A naive implementation that kept a flat vec would misplace
         // them.
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder
             .record_tip(
@@ -748,7 +796,9 @@ mod tests {
                 "tone".to_owned(),
             )
             .unwrap();
-        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder
+            .switch_instrument("piano".to_owned(), PracticeMode::default())
+            .unwrap();
         recorder.record_phrase(phrase(0)).unwrap();
         recorder
             .record_tip(
@@ -769,7 +819,7 @@ mod tests {
 
     #[test]
     fn complete_closes_open_segment() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
 
         let completed = recorder.complete().unwrap();
@@ -789,7 +839,7 @@ mod tests {
         // The "no phrases ever recorded" check must still fire in the
         // new model — a session with an open segment but no phrases is
         // still empty.
-        let recorder = SessionRecorder::new("trumpet".to_owned());
+        let recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         let err = recorder.complete().unwrap_err();
         assert!(
             matches!(err, SessionError::Empty),
@@ -801,8 +851,10 @@ mod tests {
     fn empty_session_after_switch_still_errors() {
         // Regression guard: switching without ever recording a phrase
         // must not accidentally pass the Empty check.
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
-        recorder.switch_instrument("piano".to_owned()).unwrap();
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
+        recorder
+            .switch_instrument("piano".to_owned(), PracticeMode::default())
+            .unwrap();
         let err = recorder.complete().unwrap_err();
         assert!(matches!(err, SessionError::Empty));
     }
@@ -848,7 +900,7 @@ mod tests {
 
     #[test]
     fn record_phrase_accumulates() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
         recorder.record_phrase(phrase(2)).unwrap();
@@ -857,7 +909,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_tip_lands_in_input_after_complete() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         let mock = RecordingMockGenerator::new(canned_recap());
         let input_handle = mock.last_input_handle();
 
@@ -888,7 +940,7 @@ mod tests {
         let input_handle = mock.last_input_handle();
         let call_count = mock.call_count_handle();
 
-        let mut recorder = SessionRecorder::new("violin".to_owned());
+        let mut recorder = SessionRecorder::new("violin".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder
             .record_tip(
@@ -898,7 +950,9 @@ mod tests {
                 "technique".to_owned(),
             )
             .unwrap();
-        recorder.switch_instrument("piano".to_owned()).unwrap();
+        recorder
+            .switch_instrument("piano".to_owned(), PracticeMode::default())
+            .unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
         recorder
             .record_tip(
@@ -925,7 +979,7 @@ mod tests {
 
     #[test]
     fn complete_returns_completed_session_with_authoritative_timestamps() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         let expected_id = recorder.session_id();
         let expected_started = recorder.started_at();
         recorder.record_phrase(phrase(0)).unwrap();
@@ -940,7 +994,7 @@ mod tests {
 
     #[test]
     fn complete_calculates_duration_from_start_to_now() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(15));
 
@@ -951,9 +1005,9 @@ mod tests {
 
     #[test]
     fn session_id_is_unique_across_recorders() {
-        let a = SessionRecorder::new("trumpet".to_owned());
-        let b = SessionRecorder::new("trumpet".to_owned());
-        let c = SessionRecorder::new("trumpet".to_owned());
+        let a = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
+        let b = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
+        let c = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         let ids = [a.session_id(), b.session_id(), c.session_id()];
         assert_ne!(ids[0], ids[1]);
         assert_ne!(ids[0], ids[2]);
@@ -962,7 +1016,7 @@ mod tests {
 
     #[tokio::test]
     async fn recap_generator_failure_propagates_as_session_error() {
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         let completed = recorder.complete().unwrap();
 
@@ -984,7 +1038,7 @@ mod tests {
         lying_recap.instrument = "tuba".to_owned();
 
         let mock = RecordingMockGenerator::new(lying_recap);
-        let mut recorder = SessionRecorder::new("trumpet".to_owned());
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1000,7 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_data_survives_recap_generator_failure() {
-        let mut recorder = SessionRecorder::new("flute".to_owned());
+        let mut recorder = SessionRecorder::new("flute".to_owned(), PracticeMode::default());
         recorder.record_phrase(phrase(0)).unwrap();
         recorder.record_phrase(phrase(1)).unwrap();
 
