@@ -23,3 +23,8 @@ midly.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+criterion.workspace = true
+
+[[bench]]
+name = "score_follower_latency"
+harness = false

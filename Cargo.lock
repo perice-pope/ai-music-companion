@@ -138,6 +138,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "criterion",
  "dirs",
  "ears",
  "midly",
