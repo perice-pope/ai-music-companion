@@ -129,12 +129,13 @@ describe("audioStore", () => {
   });
 
   it("setInstrument updates selectedInstrument", () => {
-    useAudioStore.getState().setInstrument("Trumpet");
+    useAudioStore.getState().setInstrument("Trumpet", 20.0);
     expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");
+    expect(useAudioStore.getState().instrumentVibratoToleranceCents).toBe(20.0);
   });
 
   it("setInstrument persists to localStorage", () => {
-    useAudioStore.getState().setInstrument("Violin");
+    useAudioStore.getState().setInstrument("Violin", 15.0);
     expect(localStorageMock.setItem).toHaveBeenCalledWith(
       "ai-music-companion:selected-instrument",
       "Violin",
@@ -142,10 +143,12 @@ describe("audioStore", () => {
   });
 
   it("setInstrument can change selection", () => {
-    useAudioStore.getState().setInstrument("Trumpet");
+    useAudioStore.getState().setInstrument("Trumpet", 20.0);
     expect(useAudioStore.getState().selectedInstrument).toBe("Trumpet");
+    expect(useAudioStore.getState().instrumentVibratoToleranceCents).toBe(20.0);
 
-    useAudioStore.getState().setInstrument("Piano");
+    useAudioStore.getState().setInstrument("Piano", 10.0);
     expect(useAudioStore.getState().selectedInstrument).toBe("Piano");
+    expect(useAudioStore.getState().instrumentVibratoToleranceCents).toBe(10.0);
   });
 });

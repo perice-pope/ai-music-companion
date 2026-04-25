@@ -60,7 +60,8 @@ export default function InstrumentSelector() {
     setStartError(null);
     setStarting(true);
     try {
-      await startSession(selectedInstrument);
+      const inst = instruments?.find((i) => i.name === selectedInstrument);
+      await startSession(selectedInstrument, inst?.vibratoToleranceCents);
     } catch (err) {
       setStartError(String(err));
     } finally {
@@ -103,7 +104,7 @@ export default function InstrumentSelector() {
             <button
               key={instrument.name}
               type="button"
-              onClick={() => setInstrument(instrument.name)}
+              onClick={() => setInstrument(instrument.name, instrument.vibratoToleranceCents)}
               data-testid={`instrument-card-${instrument.name.toLowerCase().replace(/\s+/g, "-")}`}
               className={`
                 relative flex flex-col items-center gap-2 rounded-xl border-2 p-4

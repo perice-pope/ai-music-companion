@@ -44,7 +44,8 @@ export default function PracticeSession() {
     setSwitchError(null);
     if (!instrumentName || name === instrumentName) return;
     try {
-      await switchInstrument(name);
+      const inst = instruments.find((i) => i.name === name);
+      await switchInstrument(name, inst?.vibratoToleranceCents);
     } catch (err) {
       setSwitchError(String(err));
     }
@@ -63,7 +64,8 @@ export default function PracticeSession() {
     setPracticeMode(mode);
     if (!instrumentName) return;
     try {
-      await switchInstrument(instrumentName);
+      const inst = instruments.find((i) => i.name === instrumentName);
+      await switchInstrument(instrumentName, inst?.vibratoToleranceCents);
     } catch (err) {
       setSwitchError(String(err));
     }

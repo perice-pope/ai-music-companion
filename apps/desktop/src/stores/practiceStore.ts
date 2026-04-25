@@ -71,9 +71,9 @@ export interface PracticeState {
   practiceMode: PracticeMode;
 
   // Actions ---------------------------------------------------------------
-  startSession: (instrument: string) => Promise<void>;
+  startSession: (instrument: string, vibratoToleranceCents?: number) => Promise<void>;
   endSession: () => Promise<void>;
-  switchInstrument: (name: string) => Promise<void>;
+  switchInstrument: (name: string, vibratoToleranceCents?: number) => Promise<void>;
   pushPhrase: (phrase: PhraseSummary) => void;
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
   dismissTip: (id: string) => void;
@@ -163,7 +163,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   coachingEnabled: loadCoachingPref(),
   practiceMode: loadPracticeModePref(),
 
-  startSession: async (instrument: string) => {
+  startSession: async (instrument: string, vibratoToleranceCents = 15.0) => {
     const { status } = get();
     if (status !== "idle") {
       throw new Error(
@@ -188,6 +188,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         phrases: [],
         tipQueue: [],
       });
+      useAudioStore.getState().setInstrument(instrument, vibratoToleranceCents);
       // NOTE: `isListening` is *not* flipped here. It's driven by the
       // `audio-event` listener — the first event that arrives is
       // evidence that the backend pipeline actually opened the mic.
@@ -241,7 +242,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
-  switchInstrument: async (name: string) => {
+  switchInstrument: async (name: string, vibratoToleranceCents = 15.0) => {
     const { status } = get();
     if (status !== "listening") {
       throw new Error(
@@ -253,6 +254,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       practiceMode: get().practiceMode,
     });
     set({ instrumentName: name, segmentId });
+    useAudioStore.getState().setInstrument(name, vibratoToleranceCents);
   },
 
   pushPhrase: (phrase) =>

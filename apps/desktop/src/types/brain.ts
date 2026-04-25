@@ -140,6 +140,7 @@ export interface InstrumentInfo {
   family: string;
   freqMinHz: number;
   freqMaxHz: number;
+  vibratoToleranceCents: number;
   emoji: string;
 }
 

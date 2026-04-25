@@ -63,6 +63,7 @@ pub struct InstrumentInfo {
     pub family: String,
     pub freq_min_hz: f64,
     pub freq_max_hz: f64,
+    pub vibrato_tolerance_cents: f64,
     pub emoji: String,
 }
 
@@ -662,6 +663,7 @@ fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
         family: profile.family.display_name().to_owned(),
         freq_min_hz: profile.freq_min_hz,
         freq_max_hz: profile.freq_max_hz,
+        vibrato_tolerance_cents: profile.vibrato_tolerance_cents,
         emoji: profile.emoji.clone(),
     }
 }

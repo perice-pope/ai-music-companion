@@ -30,10 +30,12 @@ interface AudioState {
   isListening: boolean;
   /** Currently selected instrument name, or null if none. */
   selectedInstrument: string | null;
+  /** Vibrato tolerance in cents for the current instrument. */
+  instrumentVibratoToleranceCents: number;
 
   setEvent: (event: AudioEvent) => void;
   setListening: (listening: boolean) => void;
-  setInstrument: (name: string) => void;
+  setInstrument: (name: string, vibratoToleranceCents: number) => void;
 }
 
 const NOTE_NAMES = [
@@ -89,6 +91,7 @@ export const useAudioStore = create<AudioState>((set) => ({
   currentNote: null,
   isListening: false,
   selectedInstrument: loadSavedInstrument(),
+  instrumentVibratoToleranceCents: 15.0,
 
   setEvent: (event: AudioEvent) => {
     const hz = event.pitch_hz;
@@ -108,12 +111,12 @@ export const useAudioStore = create<AudioState>((set) => ({
 
   setListening: (listening: boolean) => set({ isListening: listening }),
 
-  setInstrument: (name: string) => {
+  setInstrument: (name: string, vibratoToleranceCents: number) => {
     try {
       localStorage.setItem(INSTRUMENT_STORAGE_KEY, name);
     } catch {
       // localStorage may be unavailable in some environments
     }
-    set({ selectedInstrument: name });
+    set({ selectedInstrument: name, instrumentVibratoToleranceCents: vibratoToleranceCents });
   },
 }));
