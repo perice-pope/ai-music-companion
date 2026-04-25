@@ -1,3 +1,9 @@
+## [1.17.2](https://github.com/perice-pope/ai-music-companion/compare/v1.17.1...v1.17.2) (2026-04-25)
+
+### Bug Fixes
+
+* **hotspot-6:** make pitch meter thresholds profile-based instead of hard-coded ([4f72189](https://github.com/perice-pope/ai-music-companion/commit/4f72189df60131446d6b9142b7394216bd82c623))
+
 ## [1.17.1](https://github.com/perice-pope/ai-music-companion/compare/v1.17.0...v1.17.1) (2026-04-24)
 
 ### Bug Fixes
