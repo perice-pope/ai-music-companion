@@ -19,6 +19,7 @@ use brain::coaching::{
     CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, ReqwestClient,
     SessionContext,
 };
+use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
 use brain::session::{
     CompletedSession, PracticeMode, RecapGenerator, RecapInput, SessionError, SessionRecap,
     SessionRecorder,
@@ -192,7 +193,11 @@ impl CommandError {
 pub trait CoachingService: Send + Sync {
     /// May return `None` to indicate "no tip worth showing" (e.g.
     /// rate-limited, empty phrase).
-    async fn get_tip(&self, phrase_index: usize, context: &SessionContext) -> Option<CoachingTip>;
+    async fn get_tip(
+        &self,
+        phrase: &PhraseSummary,
+        context: &SessionContext,
+    ) -> Option<CoachingTip>;
 }
 
 /// Real coaching service backed by the Claude API.
@@ -229,16 +234,16 @@ impl Default for LlmCoachingService {
 impl CoachingService for LlmCoachingService {
     async fn get_tip(
         &self,
-        _phrase_index: usize,
-        _context: &SessionContext,
+        phrase: &PhraseSummary,
+        context: &SessionContext,
     ) -> Option<CoachingTip> {
-        // For now, return None to indicate no tip is available.
-        // In a full implementation, this would:
-        // 1. Lock the engine
-        // 2. Build a coaching prompt from the phrase and context
-        // 3. Call engine.get_tip()
-        // 4. Return the tip or None on error/rate-limit
-        None
+        match &self.engine {
+            Some(engine_arc) => {
+                let mut engine = engine_arc.lock().await;
+                engine.get_tip(phrase, context).await.ok()
+            }
+            None => None,
+        }
     }
 }
 
@@ -280,8 +285,12 @@ impl Default for MockCoachingService {
 
 #[async_trait]
 impl CoachingService for MockCoachingService {
-    async fn get_tip(&self, phrase_index: usize, _context: &SessionContext) -> Option<CoachingTip> {
-        self.tips.get(phrase_index % self.tips.len()).cloned()
+    async fn get_tip(
+        &self,
+        phrase: &PhraseSummary,
+        _context: &SessionContext,
+    ) -> Option<CoachingTip> {
+        self.tips.get(phrase.phrase_index % self.tips.len()).cloned()
     }
 }
 
@@ -639,6 +648,25 @@ impl AppState {
             Some(s) => s.phase,
             None => SessionPhase::Idle,
         }
+    }
+
+    /// Get the current session's instrument name. Returns None if no session is active.
+    pub async fn active_session_instrument(&self) -> Option<String> {
+        self.active_session
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|s| s.recorder.current_instrument().map(|i| i.to_owned()))
+    }
+
+    /// Request a coaching tip from the coaching service for the given phrase.
+    pub async fn get_coaching_tip(
+        &self,
+        phrase: &PhraseSummary,
+        context: &SessionContext,
+    ) -> Result<Option<CoachingTip>, CommandError> {
+        let coaching = (self.coaching_factory)();
+        Ok(coaching.get_tip(phrase, context).await)
     }
 }
 
@@ -1088,6 +1116,29 @@ pub async fn end_practice_session<R: Runtime>(
         .map_err(|e| e.to_frontend())
 }
 
+/// Request a real-time coaching tip for a phrase. Called between phrases
+/// during a practice session. Returns None if coaching is disabled or
+/// rate-limited. Always succeeds operationally; graceful degradation for
+/// API failures.
+#[tauri::command]
+pub async fn get_coaching_tip(
+    state: State<'_, AppState>,
+    phrase: PhraseSummary,
+    session_duration_secs: f64,
+    phrases_played: usize,
+) -> Result<Option<CoachingTip>, String> {
+    let session_ctx = SessionContext {
+        instrument: state.active_session_instrument().await.unwrap_or_default(),
+        session_duration_secs,
+        phrases_played,
+        previous_tips: Vec::new(),
+    };
+    state
+        .get_coaching_tip(&phrase, &session_ctx)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Return the instrument catalog for the selector grid.
 #[tauri::command]
 pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo>, String> {
@@ -1399,9 +1450,38 @@ mod tests {
             phrases_played: 0,
             previous_tips: Vec::new(),
         };
-        let first = svc.get_tip(0, &ctx).await.unwrap();
-        let second = svc.get_tip(1, &ctx).await.unwrap();
-        let wrap = svc.get_tip(3, &ctx).await.unwrap();
+        let phrase_0 = PhraseSummary {
+            phrase_index: 0,
+            start_time: 0.0,
+            end_time: 1.0,
+            duration_secs: 1.0,
+            note_count: 8,
+            pitch_stats: PitchStats {
+                mean_hz: 440.0,
+                min_hz: 430.0,
+                max_hz: 450.0,
+                range_cents: 80.0,
+                pitches: vec![440.0; 8],
+            },
+            dynamics: DynamicsStats {
+                mean_amplitude: 0.6,
+                min_amplitude: 0.4,
+                max_amplitude: 0.8,
+                dynamic_range: 0.4,
+            },
+            stability: 0.85,
+        };
+        let phrase_1 = PhraseSummary {
+            phrase_index: 1,
+            ..phrase_0.clone()
+        };
+        let phrase_3 = PhraseSummary {
+            phrase_index: 3,
+            ..phrase_0.clone()
+        };
+        let first = svc.get_tip(&phrase_0, &ctx).await.unwrap();
+        let second = svc.get_tip(&phrase_1, &ctx).await.unwrap();
+        let wrap = svc.get_tip(&phrase_3, &ctx).await.unwrap();
         assert_ne!(first.text, second.text);
         // Rotation wraps at len boundary.
         assert_eq!(first.text, wrap.text);
