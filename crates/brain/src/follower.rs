@@ -159,7 +159,7 @@ impl OnlineDtw {
     fn new(num_score_notes: usize) -> Self {
         Self {
             played_window: VecDeque::with_capacity(100),
-            prev_cost_row: vec![],
+            prev_cost_row: vec![DtwCost::new(0.0, 0.0); num_score_notes],
             curr_cost_row: vec![DtwCost::new(0.0, 0.0); num_score_notes],
             score_index: 0,
             tempo_ratio: 1.0,
@@ -299,11 +299,14 @@ impl ScoreFollower {
             return;
         }
 
+        // Swap cost rows: prev now holds the last iteration's data,
+        // curr is ready to be cleared and rebuilt. This avoids allocation.
+        std::mem::swap(&mut self.dtw.prev_cost_row, &mut self.dtw.curr_cost_row);
+        self.dtw.curr_cost_row.clear();
+
         // Compute cost for the new played event against all score notes.
         // Use a simple approach: find the score note with minimum cost to this played note,
         // allowing for continuation from the previous state.
-        let mut new_cost_row: Vec<DtwCost> = vec![];
-
         for (score_idx, score_note) in self.score_notes.iter().enumerate() {
             let note_cost = self.dtw.note_cost(
                 played_event.midi_number as f64,
@@ -311,24 +314,24 @@ impl ScoreFollower {
             );
 
             // Cumulative cost: take the best path from previous state
-            let cumulative_cost = if self.dtw.curr_cost_row.is_empty() {
+            let cumulative_cost = if self.dtw.prev_cost_row.is_empty() {
                 note_cost
             } else {
                 // Allow continuing from this or nearby score positions in the previous row
                 let prev_cost = if score_idx > 0 {
-                    self.dtw.curr_cost_row[score_idx - 1].cumulative
+                    self.dtw.prev_cost_row[score_idx - 1].cumulative
                 } else {
-                    self.dtw.curr_cost_row[0].cumulative
+                    self.dtw.prev_cost_row[0].cumulative
                 };
                 let same_cost = self
                     .dtw
-                    .curr_cost_row
+                    .prev_cost_row
                     .get(score_idx)
                     .map(|c| c.cumulative)
                     .unwrap_or(f64::INFINITY);
                 let next_cost = self
                     .dtw
-                    .curr_cost_row
+                    .prev_cost_row
                     .get(score_idx + 1)
                     .map(|c| c.cumulative)
                     .unwrap_or(f64::INFINITY);
@@ -336,10 +339,10 @@ impl ScoreFollower {
                 note_cost + prev_cost.min(same_cost).min(next_cost)
             };
 
-            new_cost_row.push(DtwCost::new(note_cost, cumulative_cost));
+            self.dtw
+                .curr_cost_row
+                .push(DtwCost::new(note_cost, cumulative_cost));
         }
-
-        self.dtw.curr_cost_row = new_cost_row;
 
         // Find the best score position (minimum cumulative cost).
         if let Some((best_idx, best_cost)) =
