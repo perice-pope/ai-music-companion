@@ -1,3 +1,9 @@
+## [1.17.3](https://github.com/perice-pope/ai-music-companion/compare/v1.17.2...v1.17.3) (2026-04-27)
+
+### Performance Improvements
+
+* **hotspot-89:** eliminate Vec allocation in score follower DTW alignment step ([e1219f8](https://github.com/perice-pope/ai-music-companion/commit/e1219f8cecf816a48a5de28c650b85cf95f9675d))
+
 ## [1.17.2](https://github.com/perice-pope/ai-music-companion/compare/v1.17.1...v1.17.2) (2026-04-25)
 
 ### Bug Fixes
