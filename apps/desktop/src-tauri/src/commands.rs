@@ -747,6 +747,7 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         family: family.to_owned(),
         freq_min_hz: lo,
         freq_max_hz: hi,
+        vibrato_tolerance_cents: 25.0,
         emoji: String::new(),
     })
     .collect()
