@@ -1,3 +1,13 @@
+## [1.19.0](https://github.com/perice-pope/ai-music-companion/compare/v1.18.0...v1.19.0) (2026-04-30)
+
+### Features
+
+* **tauri:** grant core:default capability so frontend receives emitted events ([08cff87](https://github.com/perice-pope/ai-music-companion/commit/08cff8720d0b5f48ab42feb95ebf595385ef532b))
+
+### Bug Fixes
+
+* **audio:** only drain ringbuf when a full detector window is buffered ([f33d95f](https://github.com/perice-pope/ai-music-companion/commit/f33d95ff65777a4a442ef9cd954417507ed7785c))
+
 ## [1.18.0](https://github.com/perice-pope/ai-music-companion/compare/v1.17.3...v1.18.0) (2026-04-30)
 
 ### Features
