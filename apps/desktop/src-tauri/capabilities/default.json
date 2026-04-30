@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for the main window. Includes core:event so the frontend can subscribe to backend-emitted events (audio-event, session-status, etc.).",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
