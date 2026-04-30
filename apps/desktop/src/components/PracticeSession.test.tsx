@@ -13,9 +13,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const TEST_INSTRUMENTS: InstrumentInfo[] = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, emoji: "\uD83C\uDFBA" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, emoji: "\uD83C\uDFB9" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, emoji: "\uD83C\uDFBB" },
+  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, vibratoToleranceCents: 20, emoji: "\uD83C\uDFBA" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, vibratoToleranceCents: 10, emoji: "\uD83C\uDFB9" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, vibratoToleranceCents: 30, emoji: "\uD83C\uDFBB" },
 ];
 
 function seedListeningSession() {

@@ -12,15 +12,15 @@ import { usePracticeStore } from "../stores/practiceStore";
  * render it.
  */
 const TEST_INSTRUMENTS: InstrumentInfo[] = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, emoji: "\uD83C\uDFBA" },
-  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "\uD83C\uDFB5" },
-  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "\uD83D\uDCEF" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, emoji: "\uD83C\uDFBB" },
-  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, emoji: "\uD83C\uDFB6" },
-  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "\uD83C\uDFB6" },
-  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "\uD83C\uDFB5" },
-  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "\uD83C\uDFA4" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, emoji: "\uD83C\uDFB9" },
+  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, vibratoToleranceCents: 20, emoji: "\uD83C\uDFBA" },
+  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB5" },
+  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, vibratoToleranceCents: 20, emoji: "\uD83D\uDCEF" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, vibratoToleranceCents: 30, emoji: "\uD83C\uDFBB" },
+  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, vibratoToleranceCents: 30, emoji: "\uD83C\uDFB6" },
+  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB6" },
+  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB5" },
+  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, vibratoToleranceCents: 35, emoji: "\uD83C\uDFA4" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, vibratoToleranceCents: 10, emoji: "\uD83C\uDFB9" },
 ];
 
 const mockInvoke = vi.fn();
