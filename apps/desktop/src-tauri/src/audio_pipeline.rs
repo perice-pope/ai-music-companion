@@ -216,14 +216,18 @@ fn run_worker<F>(
             mono.resize(window, 0.0);
         }
 
-        let read = capture.read_samples(&mut interleaved[..needed]);
-        if read < needed {
-            // Underrun — give the ring buffer time to fill. 5 ms is
-            // well under the pitch-detect hop (~13–35 ms) so we don't
-            // starve the detector in steady state.
+        // Peek before draining: only pop a full detector window's worth
+        // in one go. Reading partial windows drops them on the floor —
+        // `pop_slice` removes whatever it returns from the ring buffer,
+        // and the rest of this iteration discards the read on `continue`.
+        // cpal delivers ~512 samples per callback while detector windows
+        // are typically ~1024+, so partial reads were the steady state.
+        if capture.available() < needed {
             thread::sleep(Duration::from_millis(5));
             continue;
         }
+        let read = capture.read_samples(&mut interleaved[..needed]);
+        debug_assert_eq!(read, needed, "available() guaranteed a full read");
 
         let mono_slice: &[f32] = if channels == 1 {
             &interleaved[..window]
