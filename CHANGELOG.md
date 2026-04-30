@@ -1,3 +1,9 @@
+## [1.18.0](https://github.com/perice-pope/ai-music-companion/compare/v1.17.3...v1.18.0) (2026-04-30)
+
+### Features
+
+* **macos:** add Info.plist with NSMicrophoneUsageDescription ([9408b2d](https://github.com/perice-pope/ai-music-companion/commit/9408b2d6375719c2bfd052df22b1a8631c08a645))
+
 ## [1.17.3](https://github.com/perice-pope/ai-music-companion/compare/v1.17.2...v1.17.3) (2026-04-27)
 
 ### Performance Improvements
