@@ -1,3 +1,9 @@
+## [1.19.1](https://github.com/perice-pope/ai-music-companion/compare/v1.19.0...v1.19.1) (2026-05-01)
+
+### Bug Fixes
+
+* **hotspot-34:** integrate score follower into phrase aggregator ([#85](https://github.com/perice-pope/ai-music-companion/issues/85)) ([0bf9f64](https://github.com/perice-pope/ai-music-companion/commit/0bf9f642f899422fe2acc993ab011a17cb9c6d44)), closes [#34](https://github.com/perice-pope/ai-music-companion/issues/34) [#34](https://github.com/perice-pope/ai-music-companion/issues/34)
+
 ## [1.19.0](https://github.com/perice-pope/ai-music-companion/compare/v1.18.0...v1.19.0) (2026-04-30)
 
 ### Features
