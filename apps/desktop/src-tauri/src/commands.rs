@@ -290,7 +290,9 @@ impl CoachingService for MockCoachingService {
         phrase: &PhraseSummary,
         _context: &SessionContext,
     ) -> Option<CoachingTip> {
-        self.tips.get(phrase.phrase_index % self.tips.len()).cloned()
+        self.tips
+            .get(phrase.phrase_index % self.tips.len())
+            .cloned()
     }
 }
 
