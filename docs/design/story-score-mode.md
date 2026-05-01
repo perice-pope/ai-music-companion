@@ -1,8 +1,14 @@
 # Story — Score Mode (MusicXML import + OSMD rendering + cursor follow): Design Proposal
 
-**Status:** Draft — pending founder + CTO review
+**Status:** Approved — implementation-ready
 **Author:** Design proposal generated for review
 **Target story:** *No GitHub issue yet — create one before kicking off PR 0. Suggested title: "Phase 1: Score Mode — MusicXML import, OSMD render, cursor follow." Suggested labels: `story`, `phase-1`.*
+
+**Revision notes (2026-05-01):**
+- ✅ **Library kept** (§4, PR 0). One-shot uploads rejected — practising the same piece across multiple sessions is the central use case.
+- ✅ **MIDI is a first-class import format** (§3, §6). The Rust parser already supports it; the MIDI→MusicXML emitter we'd build anyway is reused later by Phase 2's audio-to-MIDI pipeline.
+- ✅ **Cursor strategy: phrase-granularity in PR 2, per-event smoothing in PR 3** (§2 cursor delivery, §7 PR slicing). Keeps PRs under 600 lines and lets us validate the cursor-on-phrase feel before investing in higher-frequency IPC.
+
 **Dependencies landed:**
 - Free Play loop (`story-14`) — `practiceStore`, `PracticeShell` screen router, `start_practice_session`, `end_practice_session`, `switch_instrument`, recap.
 - Score parsing (`crates/brain/src/score/`) — `parse_musicxml_str`, `parse_musicxml_str_part`, `list_parts`, MIDI parser. Native Rust, no Python/PyO3 (architecture v2 line 141 punts `partitura` to Phase 2 — we already cleared that).
@@ -429,13 +435,19 @@ Target: 4 PRs, each <600 lines ideally, <800 max, each testable and mergeable al
 
 ## 8. Open questions for the founder
 
-1. **Is the library worth the complexity, or is "drop a file each time" simpler?** The library adds an SQLite migration, file copies on disk, and a delete UX. Alternative: every session is a one-shot upload and we drop the file when the session ends. *Recommendation: keep the library — practising the same piece across multiple sessions is the central use case.*
-2. **MIDI as a first-class import format, or only MusicXML?** The Rust parser supports both. MIDI as input opens up the "drop a phone-recording-of-a-piece" path later (via basic-pitch in Phase 2). *Recommendation: support `.mid` from day one. Cost is small (existing parser + the MIDI→XML exporter we need anyway), and it kills a "why isn't MIDI supported?" support question.*
-3. **Multi-part orchestral scores: pick-on-import, or pick-per-session?** *Recommendation: pick on import (keep state simple). Power users with multi-part needs can re-import.*
-4. **Cursor styling — single fixed colour, or grow to a small "moving spotlight" effect later?** I lean fixed colour for v1, with the cursor implemented as a CSS-styleable element so a designer can iterate without code changes.
-5. **What happens if the user starts a session with a score loaded but plays something completely different?** The follower will likely lose alignment. Options: (a) ignore — let the cursor freeze where it last had high confidence, (b) detect divergence, fall back to free-play behaviour silently. *Recommendation: (a) for v1; we'll learn from real practice sessions whether (b) is needed.*
-6. **Should the recap LLM prompt explicitly mention the score title?** "You played 'Haydn Trumpet Concerto, mvt 1' today." This personalises the recap and hooks into emotional buy-in. *Recommendation: yes — it's a one-line prompt change.*
-7. **Empty-state library: do we ship with a small built-in fixture (e.g. a single Bach minuet) so a brand-new user has something to practise with?** Could double as a demo/onboarding step. *Recommendation: ship one fixture, make it skippable, ensure it can be deleted.*
+### Resolved (2026-05-01)
+
+- ~~**Library vs. one-shot uploads.**~~ → **Library.** Practising the same piece across multiple sessions is the central use case. Carries the SQLite migration + file-copy cost in PR 0.
+- ~~**MIDI as a first-class import format.**~~ → **Yes.** Existing Rust parser plus the `score_model_to_musicxml` exporter we need anyway. Also unblocks Phase 2's audio-to-MIDI pipeline ending in the same loader.
+- ~~**Cursor delivery strategy.**~~ → **Phrase-granularity in PR 2, per-event smoothing in PR 3.** Keeps each PR under 600 lines and lets us validate the cursor-on-phrase feel before investing in 10Hz IPC.
+
+### Still open
+
+1. **Multi-part orchestral scores: pick-on-import, or pick-per-session?** *Recommendation: pick on import (keep state simple). Power users with multi-part needs can re-import.*
+2. **Cursor styling — single fixed colour, or grow to a small "moving spotlight" effect later?** I lean fixed colour for v1, with the cursor implemented as a CSS-styleable element so a designer can iterate without code changes.
+3. **What happens if the user starts a session with a score loaded but plays something completely different?** The follower will likely lose alignment. Options: (a) ignore — let the cursor freeze where it last had high confidence, (b) detect divergence, fall back to free-play behaviour silently. *Recommendation: (a) for v1; we'll learn from real practice sessions whether (b) is needed.*
+4. **Should the recap LLM prompt explicitly mention the score title?** "You played 'Haydn Trumpet Concerto, mvt 1' today." This personalises the recap and hooks into emotional buy-in. *Recommendation: yes — it's a one-line prompt change.*
+5. **Empty-state library: do we ship with a small built-in fixture (e.g. a single Bach minuet) so a brand-new user has something to practise with?** Could double as a demo/onboarding step. *Recommendation: ship one fixture, make it skippable, ensure it can be deleted.*
 
 ---
 
