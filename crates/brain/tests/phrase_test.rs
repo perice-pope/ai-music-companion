@@ -205,3 +205,85 @@ fn silence_gap_equal_to_threshold_does_not_split_phrase() {
     );
     assert_eq!(phrases[0].note_count, 4);
 }
+
+#[test]
+fn phrase_summary_carries_score_position_when_follower_is_set() {
+    use brain::follower::ScoreFollower;
+    use brain::score::{KeySignature, Measure, ScoreModel, ScoreNote, TimeSignature};
+
+    // Two-measure score so we can verify the captured measure_number is
+    // tied to the *position the follower aligned to*, not a default.
+    fn note(midi_number: u8, pitch_hz: f64, start_beat: f64) -> ScoreNote {
+        ScoreNote {
+            pitch_hz,
+            midi_number,
+            duration_beats: 0.5,
+            start_beat,
+            dynamic: None,
+            is_rest: false,
+        }
+    }
+    let score = ScoreModel {
+        title: "Test scale".to_string(),
+        composer: None,
+        instrument: None,
+        time_signature: TimeSignature::default(),
+        key_signature: KeySignature::default(),
+        tempo_bpm: 120.0,
+        measures: vec![
+            Measure {
+                number: 1,
+                notes: vec![note(60, 261.63, 0.0), note(62, 293.66, 0.5)],
+            },
+            Measure {
+                number: 2,
+                notes: vec![note(64, 329.63, 0.0), note(65, 349.23, 0.5)],
+            },
+        ],
+    };
+    let follower = ScoreFollower::new(score).expect("build follower");
+
+    let config = PhraseConfig {
+        silence_gap_secs: 0.3,
+        min_phrase_events: 2,
+    };
+    let mut agg = PhraseAggregator::new(config).unwrap();
+    agg.set_score_follower(follower);
+
+    // Push two events for measure 1's notes; the follower should align to
+    // measure 1, and the phrase that closes on flush carries that position.
+    agg.push(&voiced(261.63, 0.6, 0.0));
+    agg.push(&voiced(293.66, 0.6, 0.1));
+    agg.flush();
+
+    let phrases = agg.phrases();
+    assert_eq!(phrases.len(), 1, "expected exactly one phrase");
+    let pos = phrases[0]
+        .score_position
+        .as_ref()
+        .expect("score_position should be Some when a follower is set");
+    assert_eq!(
+        pos.measure_number, 1,
+        "phrase should anchor to the measure where it began"
+    );
+}
+
+#[test]
+fn phrase_summary_score_position_is_none_in_free_play_mode() {
+    let config = PhraseConfig {
+        silence_gap_secs: 0.3,
+        min_phrase_events: 2,
+    };
+    let mut agg = PhraseAggregator::new(config).unwrap();
+
+    agg.push(&voiced(440.0, 0.6, 0.0));
+    agg.push(&voiced(440.0, 0.6, 0.1));
+    agg.flush();
+
+    let phrases = agg.phrases();
+    assert_eq!(phrases.len(), 1);
+    assert!(
+        phrases[0].score_position.is_none(),
+        "free-play mode (no follower) should leave score_position as None"
+    );
+}

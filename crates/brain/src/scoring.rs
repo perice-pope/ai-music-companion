@@ -197,6 +197,7 @@ mod tests {
                 dynamic_range,
             },
             stability,
+            score_position: None,
         }
     }
 

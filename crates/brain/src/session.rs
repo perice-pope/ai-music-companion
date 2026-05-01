@@ -700,6 +700,7 @@ mod tests {
                 dynamic_range: 0.4,
             },
             stability: 0.9,
+            score_position: None,
         }
     }
 

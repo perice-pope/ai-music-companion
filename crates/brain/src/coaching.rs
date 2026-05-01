@@ -982,6 +982,7 @@ mod tests {
                 dynamic_range: 0.5,
             },
             stability: 0.92,
+            score_position: None,
         }
     }
 

@@ -79,6 +79,7 @@ fn phrase_at(idx: usize) -> PhraseSummary {
             dynamic_range: 0.5,
         },
         stability: 0.88,
+        score_position: None,
     }
 }
 
