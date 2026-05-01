@@ -27,3 +27,4 @@ roxmltree = "0.20"
 midly = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
+criterion = { version = "0.5", features = ["html_reports"] }

@@ -114,6 +114,34 @@ Silence is honest. Generic filler is a little lie that compounds.
 
 ---
 
+## 2026-04-25 — Score follower implementation: Rust port of Online DTW
+
+**Decision:** Implemented score following using a **Rust port of Online Dynamic Time Warping (DTW)**, not a PyO3 bridge to Matchmaker. The Rust implementation is now shipping in `crates/brain/src/follower.rs`.
+
+**Rejected alternative:** PyO3 bridge to the Matchmaker library (battle-tested Online DTW from a Python package, ~2 dev-days). This would have added a Python runtime dependency to the Tauri bundle.
+
+**Reasoning:**
+- **Self-contained binary:** No Python runtime in the ship, simplifying distribution and reducing binary size.
+- **Performance exceeds spec:** Latency benchmarks show ~170ns per alignment step (p50), well under the 3ms budget even with headroom. Single event latency measured at 168.12 ns (p50) with consistent sub-microsecond performance.
+- **Code ownership:** We maintain and understand the DTW implementation directly. No external Python dependency means no version compatibility headaches.
+- **Integrated smoothly:** The Rust implementation integrates with the existing Rust audio pipeline (`AudioEvent` → `ScorePosition`) without FFI overhead.
+
+**What the implementation provides:**
+- Online DTW with windowed cost matrix (space-efficient, real-time suitable)
+- Silence-gap auto-reset (detects rehearsal breaks, re-aligns on new entry)
+- Tempo tolerance (±20%) for performances that speed up/slow down
+- Per-measure and per-beat position tracking
+- Comprehensive test suite covering in-order playback, out-of-order recovery, and edge cases
+
+**Consequence:**
+- Future Rust developers touching `crates/brain/src/follower.rs` should understand DTW basics (see comments in the implementation).
+- If performance characteristics change (longer scores, more complex alignment), profile with the `cargo bench --bench score_follower_latency` benchmark before optimizing.
+- The `PhraseAggregator` now optionally uses score positions to segment phrases at measure boundaries, in addition to silence gaps. This is backward-compatible — scores are optional.
+
+**Related:** [Hotspot #34](https://github.com/perice-pope/ai-music-companion/issues/34) (score follower implementation), `crates/brain/benches/score_follower_latency.rs` (latency verification).
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:

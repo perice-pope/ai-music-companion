@@ -2,11 +2,13 @@
 //!
 //! A phrase boundary is detected when:
 //! 1. Silence gap > 300ms (no voiced audio)
-//! 2. The aggregator is explicitly flushed (end of session)
+//! 2. A new measure boundary is reached (if a score is loaded)
+//! 3. The aggregator is explicitly flushed (end of session)
 //!
 //! This module runs on the processing thread, NOT the audio thread,
 //! so heap allocation (Vec, String, etc.) is allowed.
 
+use crate::follower::ScoreFollower;
 use ears::AudioEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -100,7 +102,7 @@ pub struct PhraseSummary {
     pub stability: f64,
 }
 
-/// Groups [`AudioEvent`]s into musical phrases based on silence gaps.
+/// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
 ///
 /// This aggregator runs on the processing thread (not the audio thread),
 /// so `Vec` allocation is safe and expected.
@@ -118,6 +120,10 @@ pub struct PhraseAggregator {
     next_phrase_index: usize,
     /// Index in `phrases` of the first "new" (un-drained) phrase.
     new_phrases_start: usize,
+    /// Optional score follower for score-based phrase boundaries.
+    score_follower: Option<ScoreFollower>,
+    /// Last known position in the score (for detecting measure changes).
+    last_score_measure: Option<usize>,
 }
 
 impl PhraseAggregator {
@@ -134,13 +140,31 @@ impl PhraseAggregator {
             last_voiced_time: None,
             next_phrase_index: 0,
             new_phrases_start: 0,
+            score_follower: None,
+            last_score_measure: None,
         })
+    }
+
+    /// Set a score follower to enable score-based phrase boundaries.
+    ///
+    /// When a score is loaded, phrase boundaries are also triggered at measure
+    /// boundaries, in addition to silence gaps. This improves phrase segmentation
+    /// when the user is following a score.
+    pub fn set_score_follower(&mut self, follower: ScoreFollower) {
+        self.score_follower = Some(follower);
+        self.last_score_measure = None;
+    }
+
+    /// Clear the score follower (when the session ends or score is unloaded).
+    pub fn clear_score_follower(&mut self) {
+        self.score_follower = None;
+        self.last_score_measure = None;
     }
 
     /// Push an audio event into the aggregator.
     ///
-    /// The aggregator checks for phrase boundaries (silence gaps) and
-    /// automatically closes the current phrase when a gap is detected.
+    /// The aggregator checks for phrase boundaries (silence gaps and score measure
+    /// boundaries) and automatically closes the current phrase when detected.
     pub fn push(&mut self, event: &AudioEvent) {
         /// Tolerance for floating-point timestamp comparison (1 µs).
         /// Prevents false phrase splits from IEEE-754 rounding,
@@ -150,13 +174,23 @@ impl PhraseAggregator {
         let is_voiced = event.pitch_hz.is_some() && event.confidence > 0.5;
 
         if is_voiced {
+            // Check for score measure boundaries if a score is loaded
+            if let Some(follower) = &mut self.score_follower {
+                let pos = follower.align(event);
+                if let Some(last_measure) = self.last_score_measure {
+                    if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
+                        self.close_current_phrase();
+                    }
+                }
+                self.last_score_measure = Some(pos.measure_number);
+            }
+
             // Check if there's been a silence gap since the last voiced event
             if let Some(last_time) = self.last_voiced_time {
                 let gap = event.timestamp_secs - last_time;
                 if gap - self.config.silence_gap_secs > GAP_EPSILON
                     && !self.current_phrase_events.is_empty()
                 {
-                    // Close the current phrase before starting a new one
                     self.close_current_phrase();
                 }
             }
@@ -179,6 +213,7 @@ impl PhraseAggregator {
         if !self.current_phrase_events.is_empty() {
             self.close_current_phrase();
         }
+        self.clear_score_follower();
     }
 
     /// Get all completed phrases.
