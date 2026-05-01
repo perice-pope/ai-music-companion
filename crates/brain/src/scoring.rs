@@ -57,9 +57,14 @@ pub fn score_phrase(phrase: &PhraseSummary) -> PhraseScore {
     // The aggregator's `stability` score is 0.0-1.0 based on coefficient of variation.
     let intonation_tendency = phrase.stability;
 
-    // Rhythmic stability: currently mirrors intonation (pitch stability).
-    // When score follower lands, this will also incorporate inter-note timing variance.
-    let rhythmic_stability = phrase.stability;
+    // Rhythmic stability: returned as a neutral placeholder (1.0) until the
+    // score follower's position output is propagated into PhraseSummary so we
+    // can compute real inter-note timing variance. Previously this mirrored
+    // pitch stability, which fed the LLM coaching prompt a fake rhythm signal
+    // — quietly wrong rhythm feedback is worse than no rhythm feedback. See
+    // hotspot #91 for the rationale and #90 for the follow-up that replaces
+    // this placeholder with real timing variance.
+    let rhythmic_stability = 1.0;
 
     // Dynamic arc: based on whether the phrase has significant dynamic range.
     // Normalize the dynamic range to 0-1. A range of 0 = flat (0.0), larger ranges score higher.
@@ -211,13 +216,14 @@ mod tests {
     }
 
     #[test]
-    fn unstable_pitch_yields_low_rhythmic_stability() {
-        let phrase = make_phrase_summary(0.2, 0.1); // Unstable pitch
-        let score = score_phrase(&phrase);
-        assert!(
-            score.rhythmic_stability < 0.3,
-            "unstable pitch should give low rhythmic_stability"
-        );
+    fn rhythmic_stability_returns_neutral_placeholder() {
+        // Until the score follower's position output reaches PhraseSummary
+        // (see hotspots #90, #91), `rhythmic_stability` is a fixed neutral
+        // 1.0 — both unstable and stable pitch-only phrases must report it.
+        let unstable = score_phrase(&make_phrase_summary(0.2, 0.1));
+        let stable = score_phrase(&make_phrase_summary(0.95, 0.1));
+        assert_eq!(unstable.rhythmic_stability, 1.0);
+        assert_eq!(stable.rhythmic_stability, 1.0);
     }
 
     #[test]
@@ -259,7 +265,8 @@ mod tests {
         let phrase = make_phrase_summary(0.65, 0.3);
         let score = score_phrase(&phrase);
         assert!(score.intonation_tendency > 0.6 && score.intonation_tendency < 0.7);
-        assert!(score.rhythmic_stability > 0.6 && score.rhythmic_stability < 0.7);
+        // rhythmic_stability is currently a fixed placeholder — see #91.
+        assert_eq!(score.rhythmic_stability, 1.0);
         assert!(score.dynamic_arc > 0.2 && score.dynamic_arc < 0.4);
     }
 }
