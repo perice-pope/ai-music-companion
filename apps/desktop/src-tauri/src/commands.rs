@@ -19,7 +19,7 @@ use brain::coaching::{
     CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, ReqwestClient,
     SessionContext,
 };
-use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
+use brain::phrase::PhraseSummary;
 use brain::session::{
     CompletedSession, PracticeMode, RecapGenerator, RecapInput, SessionError, SessionRecap,
     SessionRecorder,
