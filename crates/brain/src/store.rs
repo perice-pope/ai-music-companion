@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::session::{SessionId, SessionRecap};
+use crate::session::{ScoreId, SessionId, SessionRecap};
 
 // ---------------------------------------------------------------------------
 // Shared row decoder
@@ -169,6 +169,31 @@ pub struct SessionSummary {
     pub phrase_count: usize,
 }
 
+/// A score in the library (MusicXML file).
+///
+/// Stores the loaded score metadata and parsed MusicXML content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreLibraryEntry {
+    /// Unique score id.
+    pub id: ScoreId,
+    /// Title of the piece.
+    pub title: String,
+    /// Composer, if known.
+    pub composer: Option<String>,
+    /// Original filename for display.
+    pub source_filename: String,
+    /// When the score was added to the library.
+    pub added_at: DateTime<Utc>,
+    /// Last time this score was used in a session.
+    pub last_practiced_at: Option<DateTime<Utc>>,
+    /// Part index (0 for single-part scores).
+    pub part_index: usize,
+    /// Number of measures in the score.
+    pub duration_measures: usize,
+    /// Raw MusicXML content.
+    pub music_xml: String,
+}
+
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
@@ -181,9 +206,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     ended_at TEXT NOT NULL,
     duration_secs REAL NOT NULL,
     phrase_count INTEGER NOT NULL,
-    recap_json TEXT NOT NULL
+    recap_json TEXT NOT NULL,
+    score_id TEXT REFERENCES scores(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC);
+CREATE TABLE IF NOT EXISTS scores (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    composer TEXT,
+    source_filename TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    last_practiced_at TEXT,
+    part_index INTEGER NOT NULL DEFAULT 0,
+    duration_measures INTEGER NOT NULL DEFAULT 0,
+    music_xml TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scores_last_practiced ON scores(last_practiced_at DESC, added_at DESC);
 ";
 
 // ---------------------------------------------------------------------------
@@ -456,6 +494,233 @@ impl SessionStore {
         path.push("ai-music-companion");
         path.push("sessions.db");
         Ok(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ScoreStore
+// ---------------------------------------------------------------------------
+
+/// SQLite-backed store of loaded musical scores.
+pub struct ScoreStore {
+    conn: Connection,
+}
+
+impl ScoreStore {
+    /// Open (or create) the shared database — uses the same connection
+    /// as [`SessionStore`] for simplicity. Both stores operate on
+    /// `sessions.db`, which contains both sessions and scores tables.
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let conn = Connection::open(path)?;
+        let store = Self { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Open an ephemeral in-memory database. Used by tests.
+    pub fn in_memory() -> Result<Self, StoreError> {
+        let conn = Connection::open_in_memory()?;
+        let store = Self { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Execute the schema migrations. Idempotent.
+    fn migrate(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch(SCHEMA)?;
+        Ok(())
+    }
+
+    /// Import a score: parse it, validate it, persist it to the library.
+    ///
+    /// Returns the [`ScoreLibraryEntry`] that was stored.
+    /// `music_xml` is the raw MusicXML string (parsed by the caller from file).
+    /// `title`, `composer`, and other metadata may come from the parsed content
+    /// or be inferred from the filename.
+    pub fn import(
+        &self,
+        title: String,
+        composer: Option<String>,
+        source_filename: String,
+        music_xml: String,
+        part_index: usize,
+        duration_measures: usize,
+    ) -> Result<ScoreLibraryEntry, StoreError> {
+        let id = ScoreId::new();
+        let now = Utc::now();
+
+        self.conn.execute(
+            "INSERT INTO scores \
+             (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id.as_str(),
+                title,
+                composer,
+                source_filename.clone(),
+                now.to_rfc3339(),
+                part_index as i64,
+                duration_measures as i64,
+                music_xml.clone(),
+            ],
+        )?;
+
+        Ok(ScoreLibraryEntry {
+            id,
+            title,
+            composer,
+            source_filename,
+            added_at: now,
+            last_practiced_at: None,
+            part_index,
+            duration_measures,
+            music_xml,
+        })
+    }
+
+    /// List all scores in the library, ordered by last_practiced_at desc,
+    /// then added_at desc. Returns both metadata and the raw MusicXML.
+    pub fn list(&self) -> Result<Vec<ScoreLibraryEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, composer, source_filename, added_at, last_practiced_at, \
+                    part_index, duration_measures, music_xml \
+             FROM scores \
+             ORDER BY last_practiced_at DESC NULLS LAST, added_at DESC",
+        )?;
+
+        let scores = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })?;
+
+        let mut result = Vec::new();
+        for row in scores {
+            let (id_str, title, composer, source_filename, added_at_str, last_practiced_at_str, part_index, duration_measures, music_xml) = row?;
+
+            let id: ScoreId = id_str.parse().map_err(|e: uuid::Error| {
+                StoreError::CorruptRow(format!("invalid score id {id_str}: {e}"))
+            })?;
+
+            let added_at = DateTime::parse_from_rfc3339(&added_at_str)
+                .map_err(|e| {
+                    StoreError::CorruptRow(format!("invalid RFC3339 added_at {added_at_str}: {e}"))
+                })?
+                .with_timezone(&Utc);
+
+            let last_practiced_at = last_practiced_at_str.and_then(|s| {
+                DateTime::parse_from_rfc3339(&s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+            });
+
+            result.push(ScoreLibraryEntry {
+                id,
+                title,
+                composer,
+                source_filename,
+                added_at,
+                last_practiced_at,
+                part_index: part_index as usize,
+                duration_measures: duration_measures as usize,
+                music_xml,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// Load a single score by id. Returns the full entry including MusicXML.
+    pub fn get(&self, id: ScoreId) -> Result<ScoreLibraryEntry, StoreError> {
+        let id_str = id.as_str();
+        let row: Option<(String, String, Option<String>, String, String, Option<String>, i64, i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT id, title, composer, source_filename, added_at, last_practiced_at, \
+                        part_index, duration_measures, music_xml FROM scores WHERE id = ?1",
+                params![id_str],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        match row {
+            Some((id_str, title, composer, source_filename, added_at_str, last_practiced_at_str, part_index, duration_measures, music_xml)) => {
+                let added_at = DateTime::parse_from_rfc3339(&added_at_str)
+                    .map_err(|e| {
+                        StoreError::CorruptRow(format!(
+                            "invalid RFC3339 added_at {added_at_str}: {e}"
+                        ))
+                    })?
+                    .with_timezone(&Utc);
+
+                let last_practiced_at = last_practiced_at_str.and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                });
+
+                Ok(ScoreLibraryEntry {
+                    id: id_str.parse().map_err(|e: uuid::Error| {
+                        StoreError::CorruptRow(format!("invalid score id {id_str}: {e}"))
+                    })?,
+                    title,
+                    composer,
+                    source_filename,
+                    added_at,
+                    last_practiced_at,
+                    part_index: part_index as usize,
+                    duration_measures: duration_measures as usize,
+                    music_xml,
+                })
+            }
+            None => Err(StoreError::NotFound(format!("score {id_str}"))),
+        }
+    }
+
+    /// Delete a score and its MusicXML from the library.
+    pub fn delete(&self, id: ScoreId) -> Result<(), StoreError> {
+        let id_str = id.as_str();
+        self.conn.execute(
+            "DELETE FROM scores WHERE id = ?1",
+            params![id_str],
+        )?;
+        Ok(())
+    }
+
+    /// Update the last_practiced_at timestamp for a score.
+    pub fn update_last_practiced(&self, id: ScoreId) -> Result<(), StoreError> {
+        let id_str = id.as_str();
+        let now = Utc::now();
+        self.conn.execute(
+            "UPDATE scores SET last_practiced_at = ?1 WHERE id = ?2",
+            params![now.to_rfc3339(), id_str],
+        )?;
+        Ok(())
     }
 }
 
@@ -1045,5 +1310,115 @@ mod tests {
             matches!(err, Err(StoreError::CorruptRow(ref msg)) if msg.contains("negative")),
             "expected CorruptRow(negative...), got {err:?}"
         );
+    }
+
+    // =========================================================================
+    // ScoreStore tests
+    // =========================================================================
+
+    #[test]
+    fn score_store_in_memory_opens_clean() {
+        let store = ScoreStore::in_memory().unwrap();
+        let scores = store.list().unwrap();
+        assert_eq!(scores.len(), 0, "fresh store has no scores");
+    }
+
+    #[test]
+    fn import_score_persists_and_retrieves() {
+        let store = ScoreStore::in_memory().unwrap();
+        let music_xml = r#"<?xml version="1.0" encoding="UTF-8"?><score-partwise/>"#.to_string();
+
+        let entry = store
+            .import(
+                "Haydn Trumpet Concerto".to_string(),
+                Some("Joseph Haydn".to_string()),
+                "haydn-trumpet.musicxml".to_string(),
+                music_xml.clone(),
+                0,
+                30,
+            )
+            .unwrap();
+
+        assert_eq!(entry.title, "Haydn Trumpet Concerto");
+        assert_eq!(entry.composer, Some("Joseph Haydn".to_string()));
+        assert_eq!(entry.part_index, 0);
+        assert_eq!(entry.duration_measures, 30);
+        assert_eq!(entry.last_practiced_at, None);
+
+        let retrieved = store.get(entry.id).unwrap();
+        assert_eq!(retrieved.id, entry.id);
+        assert_eq!(retrieved.title, entry.title);
+        assert_eq!(retrieved.music_xml, music_xml);
+    }
+
+    #[test]
+    fn list_scores_ordered_by_last_practiced() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
+
+        let id1 = store
+            .import("Score 1".to_string(), None, "s1.musicxml".to_string(), xml.clone(), 0, 10)
+            .unwrap()
+            .id;
+        let id2 = store
+            .import("Score 2".to_string(), None, "s2.musicxml".to_string(), xml.clone(), 0, 20)
+            .unwrap()
+            .id;
+
+        // Mark id2 as recently practiced.
+        store.update_last_practiced(id2).unwrap();
+
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, id2, "recently practiced should come first");
+        assert_eq!(list[1].id, id1, "unpracticed should come second");
+        assert!(list[0].last_practiced_at.is_some());
+        assert!(list[1].last_practiced_at.is_none());
+    }
+
+    #[test]
+    fn delete_score_removes_from_library() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
+
+        let id = store
+            .import("Test Score".to_string(), None, "test.musicxml".to_string(), xml, 0, 10)
+            .unwrap()
+            .id;
+
+        assert_eq!(store.list().unwrap().len(), 1);
+        store.delete(id).unwrap();
+        assert_eq!(store.list().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn get_missing_score_returns_not_found() {
+        let store = ScoreStore::in_memory().unwrap();
+        let unknown = ScoreId::new();
+        let err = store.get(unknown).unwrap_err();
+        match err {
+            StoreError::NotFound(msg) => assert!(msg.contains(&unknown.as_str())),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_last_practiced_timestamp_works() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
+
+        let id = store
+            .import("Test".to_string(), None, "test.musicxml".to_string(), xml, 0, 10)
+            .unwrap()
+            .id;
+
+        let before = store.get(id).unwrap();
+        assert_eq!(before.last_practiced_at, None);
+
+        store.update_last_practiced(id).unwrap();
+
+        let after = store.get(id).unwrap();
+        assert!(after.last_practiced_at.is_some());
+        assert!(after.last_practiced_at.unwrap() > before.added_at);
     }
 }

@@ -20,7 +20,7 @@ pub mod store;
 mod tests {
     use crate::phrase::{DynamicsStats, PhraseAggregator, PhraseConfig, PhraseSummary, PitchStats};
     use crate::scoring::score_phrase;
-    use crate::session::SessionId;
+    use crate::session::{SessionId, ScoreId};
     use crate::store::SessionStore;
 
     #[test]
@@ -64,7 +64,8 @@ mod tests {
         // Forcing the types to resolve means lib.rs must actually re-export
         // session and store. A dropped `pub mod` would break this at compile
         // time.
-        let _id = SessionId::new();
+        let _session_id = SessionId::new();
+        let _score_id = ScoreId::new();
         let store = SessionStore::in_memory();
         assert!(store.is_ok(), "in-memory SQLite must always open");
     }
