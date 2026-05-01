@@ -1,3 +1,9 @@
+## [1.20.0](https://github.com/perice-pope/ai-music-companion/compare/v1.19.2...v1.20.0) (2026-05-01)
+
+### Features
+
+* **story-14:** implement real-time whispered tips generation ([#87](https://github.com/perice-pope/ai-music-companion/issues/87)) ([6ac27e5](https://github.com/perice-pope/ai-music-companion/commit/6ac27e53cada5df4833b07117f426a656804065d)), closes [#14](https://github.com/perice-pope/ai-music-companion/issues/14) [#21](https://github.com/perice-pope/ai-music-companion/issues/21)
+
 ## [1.19.2](https://github.com/perice-pope/ai-music-companion/compare/v1.19.1...v1.19.2) (2026-05-01)
 
 ### Bug Fixes
