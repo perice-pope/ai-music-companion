@@ -6,7 +6,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export default function PitchDisplay() {
-  const { currentNote, latestEvent, isListening, instrumentVibratoToleranceCents } = useAudioStore();
+  const { currentNote, latestEvent, isListening } = useAudioStore();
 
   if (!isListening) {
     return (
@@ -25,10 +25,9 @@ export default function PitchDisplay() {
   }
 
   const { name, octave, cents_deviation, frequency_hz } = currentNote;
-  const tolerance = instrumentVibratoToleranceCents;
-  const meterOffset = clamp(cents_deviation, -tolerance * 2, tolerance * 2);
-  // Convert to 0..100% for the meter position (centered at 50%)
-  const meterPercent = 50 + (meterOffset / (tolerance * 4)) * 100;
+  const meterOffset = clamp(cents_deviation, -50, 50);
+  // Convert -50..+50 cents to 0..100% for the meter position
+  const meterPercent = ((meterOffset + 50) / 100) * 100;
 
   return (
     <div
@@ -59,15 +58,9 @@ export default function PitchDisplay() {
       <div className="relative h-3 w-64 rounded-full bg-gray-700">
         {/* Center line */}
         <div className="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 bg-gray-500" />
-        {/* Indicator */}
+        {/* Indicator — neutral color, no judgment on deviation */}
         <div
-          className={`absolute top-0 h-full w-2 -translate-x-1/2 rounded-full ${
-            Math.abs(cents_deviation) <= tolerance
-              ? "bg-green-400"
-              : Math.abs(cents_deviation) <= tolerance * 2
-                ? "bg-yellow-400"
-                : "bg-red-400"
-          }`}
+          className="absolute top-0 h-full w-2 -translate-x-1/2 rounded-full bg-gray-400"
           style={{ left: `${meterPercent}%` }}
           data-testid="pitch-meter-indicator"
         />
