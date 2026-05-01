@@ -1,3 +1,9 @@
+## [1.19.2](https://github.com/perice-pope/ai-music-companion/compare/v1.19.1...v1.19.2) (2026-05-01)
+
+### Bug Fixes
+
+* **pitch-display:** remove green/yellow/red coloring — enforce neutral meter ([#86](https://github.com/perice-pope/ai-music-companion/issues/86)) ([0779358](https://github.com/perice-pope/ai-music-companion/commit/07793588d216b33edfd7e514c6434ece52ab527e)), closes [#14](https://github.com/perice-pope/ai-music-companion/issues/14)
+
 ## [1.19.1](https://github.com/perice-pope/ai-music-companion/compare/v1.19.0...v1.19.1) (2026-05-01)
 
 ### Bug Fixes
