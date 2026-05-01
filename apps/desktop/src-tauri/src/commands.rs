@@ -1226,6 +1226,7 @@ mod tests {
                 dynamic_range: 0.5,
             },
             stability: 0.8,
+            score_position: None,
         }
     }
 
@@ -1472,6 +1473,7 @@ mod tests {
                 dynamic_range: 0.4,
             },
             stability: 0.85,
+            score_position: None,
         };
         let phrase_1 = PhraseSummary {
             phrase_index: 1,

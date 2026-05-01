@@ -8,7 +8,7 @@
 //! This module runs on the processing thread, NOT the audio thread,
 //! so heap allocation (Vec, String, etc.) is allowed.
 
-use crate::follower::ScoreFollower;
+use crate::follower::{ScoreFollower, ScorePosition};
 use ears::AudioEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -100,6 +100,11 @@ pub struct PhraseSummary {
     pub dynamics: DynamicsStats,
     /// Pitch stability score (0.0 = unstable, 1.0 = perfectly stable).
     pub stability: f64,
+    /// Score position at the moment this phrase began, when a score is loaded.
+    /// `None` in free-play mode (no score) or before the follower has aligned
+    /// any event in this phrase. Downstream consumers (LLM coaching, OSMD
+    /// cursor) use this to anchor feedback to a specific measure / beat.
+    pub score_position: Option<ScorePosition>,
 }
 
 /// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
@@ -124,6 +129,10 @@ pub struct PhraseAggregator {
     score_follower: Option<ScoreFollower>,
     /// Last known position in the score (for detecting measure changes).
     last_score_measure: Option<usize>,
+    /// Score position captured at the first aligned event of the current
+    /// phrase. Carried into the emitted [`PhraseSummary::score_position`] so
+    /// the LLM and OSMD cursor can anchor feedback to where the phrase began.
+    current_phrase_start_position: Option<ScorePosition>,
 }
 
 impl PhraseAggregator {
@@ -142,6 +151,7 @@ impl PhraseAggregator {
             new_phrases_start: 0,
             score_follower: None,
             last_score_measure: None,
+            current_phrase_start_position: None,
         })
     }
 
@@ -153,12 +163,14 @@ impl PhraseAggregator {
     pub fn set_score_follower(&mut self, follower: ScoreFollower) {
         self.score_follower = Some(follower);
         self.last_score_measure = None;
+        self.current_phrase_start_position = None;
     }
 
     /// Clear the score follower (when the session ends or score is unloaded).
     pub fn clear_score_follower(&mut self) {
         self.score_follower = None;
         self.last_score_measure = None;
+        self.current_phrase_start_position = None;
     }
 
     /// Push an audio event into the aggregator.
@@ -175,7 +187,7 @@ impl PhraseAggregator {
 
         if is_voiced {
             // Check for score measure boundaries if a score is loaded
-            if let Some(follower) = &mut self.score_follower {
+            let aligned_position = if let Some(follower) = &mut self.score_follower {
                 let pos = follower.align(event);
                 if let Some(last_measure) = self.last_score_measure {
                     if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
@@ -183,7 +195,10 @@ impl PhraseAggregator {
                     }
                 }
                 self.last_score_measure = Some(pos.measure_number);
-            }
+                Some(pos)
+            } else {
+                None
+            };
 
             // Check if there's been a silence gap since the last voiced event
             if let Some(last_time) = self.last_voiced_time {
@@ -195,9 +210,12 @@ impl PhraseAggregator {
                 }
             }
 
-            // Start a new phrase if needed
+            // Start a new phrase if needed. Capture the score position once
+            // per phrase, at the first aligned event — that's the anchor we
+            // surface in PhraseSummary::score_position.
             if self.phrase_start_time.is_none() {
                 self.phrase_start_time = Some(event.timestamp_secs);
+                self.current_phrase_start_position = aligned_position;
             }
 
             self.last_voiced_time = Some(event.timestamp_secs);
@@ -238,6 +256,7 @@ impl PhraseAggregator {
         if events.len() < self.config.min_phrase_events {
             self.current_phrase_events.clear();
             self.phrase_start_time = None;
+            self.current_phrase_start_position = None;
             return;
         }
 
@@ -260,6 +279,7 @@ impl PhraseAggregator {
             pitch_stats,
             dynamics,
             stability,
+            score_position: self.current_phrase_start_position.take(),
         };
 
         self.phrases.push(summary);

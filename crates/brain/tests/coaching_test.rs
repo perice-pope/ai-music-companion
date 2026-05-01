@@ -65,6 +65,7 @@ fn make_phrase(
             dynamic_range,
         },
         stability,
+        score_position: None,
     }
 }
 

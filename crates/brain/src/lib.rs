@@ -49,6 +49,7 @@ mod tests {
                 dynamic_range: 0.2,
             },
             stability: 0.85,
+            score_position: None,
         };
 
         let score = score_phrase(&phrase);
