@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/perice-pope/ai-music-companion/compare/v1.20.0...v1.20.1) (2026-05-01)
+
+### Bug Fixes
+
+* **phrase:** propagate ScorePosition into PhraseSummary when follower is set ([#94](https://github.com/perice-pope/ai-music-companion/issues/94)) ([8472042](https://github.com/perice-pope/ai-music-companion/commit/84720424b09a1b9173457c47f06def8f563c8d66)), closes [#90](https://github.com/perice-pope/ai-music-companion/issues/90) [#4](https://github.com/perice-pope/ai-music-companion/issues/4) [#91](https://github.com/perice-pope/ai-music-companion/issues/91)
+* **scoring:** return neutral rhythmic_stability placeholder until follower wires up ([#93](https://github.com/perice-pope/ai-music-companion/issues/93)) ([26e92ad](https://github.com/perice-pope/ai-music-companion/commit/26e92adefb28aaa1b6194cbcd25800d3040bad17)), closes [#90](https://github.com/perice-pope/ai-music-companion/issues/90)
+
 ## [1.20.0](https://github.com/perice-pope/ai-music-companion/compare/v1.19.2...v1.20.0) (2026-05-01)
 
 ### Features
