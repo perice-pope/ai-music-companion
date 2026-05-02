@@ -200,22 +200,38 @@ export default function InstrumentSelector() {
         </p>
       </div>
 
-      {/* Start Practice — enabled only once an instrument is picked. */}
-      <div className="mt-6 flex flex-col items-center gap-2">
-        <button
-          type="button"
-          onClick={() => void onStart()}
-          disabled={!selectedInstrument || starting}
-          data-testid="start-practice-button"
-          className={`rounded-full px-6 py-2 text-base font-semibold transition-colors
-            ${
-              !selectedInstrument || starting
-                ? "cursor-not-allowed bg-gray-700 text-gray-400"
-                : "bg-blue-600 text-white hover:bg-blue-500"
-            }`}
-        >
-          {starting ? "Starting…" : "Start Practice"}
-        </button>
+      {/* Start Practice or Practice with Score — enabled only once an instrument is picked. */}
+      <div className="mt-6 flex flex-col items-center gap-3">
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => void onStart()}
+            disabled={!selectedInstrument || starting}
+            data-testid="start-practice-button"
+            className={`rounded-full px-6 py-2 text-base font-semibold transition-colors
+              ${
+                !selectedInstrument || starting
+                  ? "cursor-not-allowed bg-gray-700 text-gray-400"
+                  : "bg-blue-600 text-white hover:bg-blue-500"
+              }`}
+          >
+            {starting ? "Starting…" : "Start Practice"}
+          </button>
+          <button
+            type="button"
+            onClick={() => usePracticeStore.setState({ screen: "score-picker" })}
+            disabled={!selectedInstrument}
+            data-testid="practice-with-score-button"
+            className={`rounded-full px-6 py-2 text-base font-semibold transition-colors
+              ${
+                !selectedInstrument
+                  ? "cursor-not-allowed bg-gray-700 text-gray-400"
+                  : "bg-purple-600 text-white hover:bg-purple-500"
+              }`}
+          >
+            Practice with Score
+          </button>
+        </div>
         {startError && (
           <p className="text-sm text-red-400" role="alert" data-testid="start-error">
             {startError}

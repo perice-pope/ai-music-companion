@@ -1,5 +1,6 @@
 import { usePracticeStore } from "../stores/practiceStore";
 import InstrumentSelector from "./InstrumentSelector";
+import ScorePicker from "./ScorePicker";
 import PracticeSession from "./PracticeSession";
 import SessionRecap from "./SessionRecap";
 import History from "../pages/History";
@@ -21,6 +22,8 @@ export default function PracticeShell() {
       return <SessionRecap />;
     case "history":
       return <History />;
+    case "score-picker":
+      return <ScorePicker />;
     case "selector":
     default:
       return (
