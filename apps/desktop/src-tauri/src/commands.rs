@@ -1143,6 +1143,7 @@ pub async fn get_coaching_tip(
         session_duration_secs,
         phrases_played,
         previous_tips: Vec::new(),
+        score_title: None,
     };
     state
         .get_coaching_tip(&phrase, &session_ctx)
@@ -1551,6 +1552,7 @@ mod tests {
             session_duration_secs: 0.0,
             phrases_played: 0,
             previous_tips: Vec::new(),
+            score_title: None,
         };
         let phrase_0 = PhraseSummary {
             phrase_index: 0,

@@ -75,6 +75,7 @@ fn make_context(instrument: &str) -> SessionContext {
         session_duration_secs: 180.0,
         phrases_played: 8,
         previous_tips: vec!["Focus on breath support.".to_owned()],
+        score_title: None,
     }
 }
 
@@ -161,6 +162,7 @@ async fn multiple_phrases_get_different_prompts() {
             "Focus on breath support.".to_owned(),
             "Keep your slide positions precise.".to_owned(),
         ],
+        score_title: None,
     };
 
     let _tip1 = engine.get_tip(&phrase1, &context1).await.unwrap();

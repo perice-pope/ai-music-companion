@@ -93,6 +93,8 @@ pub struct SessionContext {
     pub phrases_played: usize,
     /// Previous coaching tips already shown (to avoid repetition).
     pub previous_tips: Vec<String>,
+    /// Title of the score being practiced, if any.
+    pub score_title: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -499,17 +501,24 @@ Choose the category that best matches the most notable aspect of the phrase data
         let mut prompt = format!(
             "Instrument: {instrument}\n\
              Session duration: {duration:.0} seconds\n\
-             Phrases played so far: {phrases}\n\
-             \n\
+             Phrases played so far: {phrases}\n",
+            instrument = context.instrument,
+            duration = context.session_duration_secs,
+            phrases = context.phrases_played,
+        );
+
+        if let Some(score) = &context.score_title {
+            prompt.push_str(&format!("Score: {score}\n"));
+        }
+
+        prompt.push_str(&format!(
+            "\n\
              Current phrase analysis:\n\
              - Duration: {phrase_dur:.2}s\n\
              - Notes played: {notes}\n\
              - Pitch: mean {mean_hz:.1} Hz, range {range_cents:.0} cents\n\
              - Pitch stability: {stability:.2} (0 = unstable, 1 = perfectly stable)\n\
              - Dynamics: mean amplitude {mean_amp:.3}, range {dyn_range:.3}\n",
-            instrument = context.instrument,
-            duration = context.session_duration_secs,
-            phrases = context.phrases_played,
             phrase_dur = phrase.duration_secs,
             notes = phrase.note_count,
             mean_hz = phrase.pitch_stats.mean_hz,
@@ -517,7 +526,7 @@ Choose the category that best matches the most notable aspect of the phrase data
             stability = phrase.stability,
             mean_amp = phrase.dynamics.mean_amplitude,
             dyn_range = phrase.dynamics.dynamic_range,
-        );
+        ));
 
         if !context.previous_tips.is_empty() {
             prompt.push_str("\nPrevious tips already given (avoid repeating these):\n");
@@ -746,7 +755,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
         let phrase_count = input.phrases.len();
         let duration_mins = (input.duration_secs / 60.0).round();
 
-        format!(
+        let mut result = format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
             Phrase data summary:\n\
@@ -754,9 +763,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average rhythmic stability: {:.2}\n\
             - Average dynamic control: {:.2}\n\n\
-            {}\n\n\
-            Based on this practice session, write encouraging, specific, handwritten-style notes \
-            that celebrate what went well and identify clear next steps.",
+            {}\n\n",
             input.instrument,
             phrase_count,
             duration_mins as i32,
@@ -765,7 +772,33 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
             tip_summary
-        )
+        );
+
+        // Include phrases with score positions if available for measure-level coaching
+        let phrases_with_positions: Vec<String> = input
+            .phrases
+            .iter()
+            .filter_map(|p| {
+                p.score_position.as_ref().map(|pos| {
+                    format!(
+                        "- Measure {}: {} notes, stability {:.2}",
+                        pos.measure_number, p.note_count, p.stability
+                    )
+                })
+            })
+            .collect();
+
+        if !phrases_with_positions.is_empty() {
+            result.push_str("Phrases by score position:\n");
+            result.push_str(&phrases_with_positions.join("\n"));
+            result.push_str("\n\n");
+        }
+
+        result.push_str(
+            "Based on this practice session, write encouraging, specific, handwritten-style notes \
+            that celebrate what went well and identify clear next steps.",
+        );
+        result
     }
 
     /// Helper to compute average of a metric across phrases.
@@ -992,6 +1025,7 @@ mod tests {
             session_duration_secs: 120.0,
             phrases_played: 5,
             previous_tips: vec!["Try relaxing your embouchure on the high notes.".to_owned()],
+            score_title: None,
         }
     }
 
@@ -1133,6 +1167,7 @@ mod tests {
                 "Work on bow control near the frog.".to_owned(),
                 "Your vibrato is coming along nicely.".to_owned(),
             ],
+            score_title: None,
         };
 
         let prompt = CoachingEngine::build_user_prompt(&phrase, &context);
@@ -1152,6 +1187,25 @@ mod tests {
         assert!(
             prompt.contains("vibrato"),
             "User prompt must include all previous tips"
+        );
+    }
+
+    #[test]
+    fn score_title_included_in_coaching_prompt() {
+        let phrase = sample_phrase();
+        let context = SessionContext {
+            instrument: "trumpet".to_owned(),
+            session_duration_secs: 120.0,
+            phrases_played: 3,
+            previous_tips: Vec::new(),
+            score_title: Some("Hummel Trumpet Concerto, 1st Movement".to_owned()),
+        };
+
+        let prompt = CoachingEngine::build_user_prompt(&phrase, &context);
+
+        assert!(
+            prompt.contains("Hummel Trumpet Concerto"),
+            "User prompt must include score title when provided"
         );
     }
 
