@@ -74,7 +74,12 @@ fn main() {
     init_tracing();
 
     tauri::Builder::default()
-        .manage(AppState::new())
+        .setup(|app| {
+            // Initialize AppState with the AppHandle so bundled profiles
+            // can be resolved in packaged builds.
+            app.manage(AppState::new_with_app_handle(app.handle()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ping,
             ai_music_companion::commands::start_practice_session,

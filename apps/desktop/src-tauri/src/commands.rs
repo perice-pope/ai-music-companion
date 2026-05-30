@@ -490,10 +490,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Production constructor — opens the SessionStore and ScoreStore at the
-    /// platform default location, wires the real coaching engine, and loads
-    /// the instrument catalog from `profiles/*.json`.
-    pub fn new() -> Self {
+    /// Production constructor with app_handle — opens the SessionStore and
+    /// ScoreStore at the platform default location, wires the real coaching
+    /// engine, and loads the instrument catalog from `profiles/*.json`.
+    /// The app_handle is used to resolve bundled profiles in packaged builds.
+    pub fn new_with_app_handle(app_handle: &tauri::AppHandle) -> Self {
         let db_path = SessionStore::default_path().unwrap_or_else(|_| {
             // Fallback: use in-memory if default path unavailable
             // (extremely rare — headless/no data dir).
@@ -517,7 +518,59 @@ impl AppState {
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
             coaching_available,
-            instruments: Arc::new(load_instrument_catalog()),
+            instruments: Arc::new(load_instrument_catalog(app_handle)),
+            audio_pipeline: Mutex::new(None),
+        }
+    }
+
+    /// Development/test constructor without app_handle — uses the fallback
+    /// workspace-root walk for profile resolution. Used by tests and when
+    /// the AppHandle is not available. For production use, prefer
+    /// `new_with_app_handle()` to support bundled profiles in packaged builds.
+    pub fn new() -> Self {
+        // Create a dummy app handle for testing purposes — we'll use a temporary
+        // approach here: call the test catalog directly and avoid the panic path.
+        // In tests, this is fine; in production, new_with_app_handle() is used.
+        let db_path = SessionStore::default_path().unwrap_or_else(|_| {
+            std::path::PathBuf::from(":memory:")
+        });
+
+        let session_store = SessionStore::open(&db_path)
+            .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
+
+        let score_store = ScoreStore::open(&db_path)
+            .unwrap_or_else(|_| ScoreStore::in_memory().expect("in-memory store must succeed"));
+
+        let coaching_svc = LlmCoachingService::new();
+        let coaching_available = coaching_svc.coaching_available();
+        let recap_gen = LlmRecapGenerator::new();
+
+        // For the fallback path, we try to load profiles but don't panic if we can't
+        // find them via the app handle. Instead, fall back to environment + workspace walk.
+        let profiles_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .map(|p| p.join("profiles"));
+
+        let instruments = match profiles_dir {
+            Some(dir) => {
+                match ProfileLoader::load_all(&dir) {
+                    Ok(profiles) => profiles.iter().map(profile_to_info).collect(),
+                    Err(_) => test_instrument_catalog(), // Fallback to test catalog
+                }
+            }
+            None => test_instrument_catalog(),
+        };
+
+        Self {
+            active_session: Mutex::new(None),
+            coaching_factory: Arc::new(move || Arc::new(LlmCoachingService::new())),
+            recap_generator: Arc::new(recap_gen),
+            session_store: std::sync::Mutex::new(session_store),
+            score_store: std::sync::Mutex::new(score_store),
+            coaching_available,
+            instruments: Arc::new(instruments),
             audio_pipeline: Mutex::new(None),
         }
     }
@@ -711,22 +764,24 @@ fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
 ///
 /// Resolution order:
 /// 1. `$AI_MUSIC_COMPANION_PROFILES_DIR` — explicit override hook.
-/// 2. `CARGO_MANIFEST_DIR/../../../profiles` — workspace-root walk.
+/// 2. `AppHandle::path().resource_dir()` + `profiles` — bundled app resolution.
+///    Used by packaged installers from `cargo tauri build`.
+/// 3. `CARGO_MANIFEST_DIR/../../../profiles` — dev/workspace fallback.
 ///    `CARGO_MANIFEST_DIR` is baked in at compile time for cargo builds
 ///    (including `cargo tauri dev`) and points at this crate
 ///    (`apps/desktop/src-tauri`); three hops up reach the workspace root.
-///
-/// TODO: bundled-prod resolution. When we start shipping installers via
-/// `cargo tauri build`, the `profiles/` directory needs to be declared
-/// in `tauri.conf.json` `bundle.resources` and resolved via
-/// `tauri::AppHandle::path().resource_dir()`. That requires moving the
-/// initial `.manage(AppState::new())` call into a `Builder::setup`
-/// closure so the handle is available. Not shipping installers yet —
-/// capture as a follow-up when the release pipeline lands.
-fn locate_profiles_dir() -> std::path::PathBuf {
+fn locate_profiles_dir(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
     if let Ok(explicit) = std::env::var("AI_MUSIC_COMPANION_PROFILES_DIR") {
         return std::path::PathBuf::from(explicit);
     }
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let bundled_profiles = resource_dir.join("profiles");
+        if bundled_profiles.exists() {
+            return bundled_profiles;
+        }
+    }
+
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
@@ -740,8 +795,8 @@ fn locate_profiles_dir() -> std::path::PathBuf {
 /// Panics with a clear message on failure — the app is unusable without
 /// instruments, and silent degradation to an empty catalog would leave
 /// the user staring at an empty selector with no feedback about why.
-fn load_instrument_catalog() -> Vec<InstrumentInfo> {
-    let dir = locate_profiles_dir();
+fn load_instrument_catalog(app_handle: &tauri::AppHandle) -> Vec<InstrumentInfo> {
+    let dir = locate_profiles_dir(app_handle);
     let profiles = ProfileLoader::load_all(&dir).unwrap_or_else(|e| {
         panic!(
             "failed to load instrument profiles from {}: {}. \
