@@ -1,3 +1,9 @@
+## [1.22.0](https://github.com/perice-pope/ai-music-companion/compare/v1.21.1...v1.22.0) (2026-05-30)
+
+### Features
+
+* **score-mode:** live score following with on-screen cursor (PR 2 + 2.2) ([#117](https://github.com/perice-pope/ai-music-companion/issues/117)) ([c39d492](https://github.com/perice-pope/ai-music-companion/commit/c39d49294242d3302580892fb82023d20057d660))
+
 ## [1.21.1](https://github.com/perice-pope/ai-music-companion/compare/v1.21.0...v1.21.1) (2026-05-30)
 
 ### Bug Fixes
