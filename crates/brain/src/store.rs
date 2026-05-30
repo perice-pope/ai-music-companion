@@ -609,7 +609,17 @@ impl ScoreStore {
 
         let mut result = Vec::new();
         for row in scores {
-            let (id_str, title, composer, source_filename, added_at_str, last_practiced_at_str, part_index, duration_measures, music_xml) = row?;
+            let (
+                id_str,
+                title,
+                composer,
+                source_filename,
+                added_at_str,
+                last_practiced_at_str,
+                part_index,
+                duration_measures,
+                music_xml,
+            ) = row?;
 
             let id: ScoreId = id_str.parse().map_err(|e: uuid::Error| {
                 StoreError::CorruptRow(format!("invalid score id {id_str}: {e}"))
@@ -646,7 +656,17 @@ impl ScoreStore {
     /// Load a single score by id. Returns the full entry including MusicXML.
     pub fn get(&self, id: ScoreId) -> Result<ScoreLibraryEntry, StoreError> {
         let id_str = id.as_str();
-        let row: Option<(String, String, Option<String>, String, String, Option<String>, i64, i64, String)> = self
+        let row: Option<(
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        )> = self
             .conn
             .query_row(
                 "SELECT id, title, composer, source_filename, added_at, last_practiced_at, \
@@ -669,7 +689,17 @@ impl ScoreStore {
             .optional()?;
 
         match row {
-            Some((id_str, title, composer, source_filename, added_at_str, last_practiced_at_str, part_index, duration_measures, music_xml)) => {
+            Some((
+                id_str,
+                title,
+                composer,
+                source_filename,
+                added_at_str,
+                last_practiced_at_str,
+                part_index,
+                duration_measures,
+                music_xml,
+            )) => {
                 let added_at = DateTime::parse_from_rfc3339(&added_at_str)
                     .map_err(|e| {
                         StoreError::CorruptRow(format!(
@@ -705,10 +735,8 @@ impl ScoreStore {
     /// Delete a score and its MusicXML from the library.
     pub fn delete(&self, id: ScoreId) -> Result<(), StoreError> {
         let id_str = id.as_str();
-        self.conn.execute(
-            "DELETE FROM scores WHERE id = ?1",
-            params![id_str],
-        )?;
+        self.conn
+            .execute("DELETE FROM scores WHERE id = ?1", params![id_str])?;
         Ok(())
     }
 
@@ -1357,11 +1385,25 @@ mod tests {
         let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
 
         let id1 = store
-            .import("Score 1".to_string(), None, "s1.musicxml".to_string(), xml.clone(), 0, 10)
+            .import(
+                "Score 1".to_string(),
+                None,
+                "s1.musicxml".to_string(),
+                xml.clone(),
+                0,
+                10,
+            )
             .unwrap()
             .id;
         let id2 = store
-            .import("Score 2".to_string(), None, "s2.musicxml".to_string(), xml.clone(), 0, 20)
+            .import(
+                "Score 2".to_string(),
+                None,
+                "s2.musicxml".to_string(),
+                xml.clone(),
+                0,
+                20,
+            )
             .unwrap()
             .id;
 
@@ -1382,7 +1424,14 @@ mod tests {
         let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
 
         let id = store
-            .import("Test Score".to_string(), None, "test.musicxml".to_string(), xml, 0, 10)
+            .import(
+                "Test Score".to_string(),
+                None,
+                "test.musicxml".to_string(),
+                xml,
+                0,
+                10,
+            )
             .unwrap()
             .id;
 
@@ -1408,7 +1457,14 @@ mod tests {
         let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
 
         let id = store
-            .import("Test".to_string(), None, "test.musicxml".to_string(), xml, 0, 10)
+            .import(
+                "Test".to_string(),
+                None,
+                "test.musicxml".to_string(),
+                xml,
+                0,
+                10,
+            )
             .unwrap()
             .id;
 

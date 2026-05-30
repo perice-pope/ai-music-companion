@@ -154,7 +154,10 @@ uuid_newtype!(
     SegmentId,
     "Stable id for an instrument segment within one session."
 );
-uuid_newtype!(ScoreId, "Unique identifier for a loaded score in the library.");
+uuid_newtype!(
+    ScoreId,
+    "Unique identifier for a loaded score in the library."
+);
 
 // ---------------------------------------------------------------------------
 // Recorded tip

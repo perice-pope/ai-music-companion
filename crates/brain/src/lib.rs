@@ -20,7 +20,7 @@ pub mod store;
 mod tests {
     use crate::phrase::{DynamicsStats, PhraseAggregator, PhraseConfig, PhraseSummary, PitchStats};
     use crate::scoring::score_phrase;
-    use crate::session::{SessionId, ScoreId};
+    use crate::session::{ScoreId, SessionId};
     use crate::store::SessionStore;
 
     #[test]
