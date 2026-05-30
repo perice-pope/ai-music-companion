@@ -17,6 +17,22 @@ use thiserror::Error;
 
 use crate::session::{ScoreId, SessionId, SessionRecap};
 
+/// Raw column tuple for a `scores` row, in `SELECT` order: `id, title,
+/// composer, source_filename, added_at, last_practiced_at, part_index,
+/// duration_measures, music_xml`. Named to keep `ScoreStore::get` clear
+/// of `clippy::type_complexity`.
+type ScoreRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    String,
+);
+
 // ---------------------------------------------------------------------------
 // Shared row decoder
 // ---------------------------------------------------------------------------
@@ -656,17 +672,7 @@ impl ScoreStore {
     /// Load a single score by id. Returns the full entry including MusicXML.
     pub fn get(&self, id: ScoreId) -> Result<ScoreLibraryEntry, StoreError> {
         let id_str = id.as_str();
-        let row: Option<(
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            i64,
-            i64,
-            String,
-        )> = self
+        let row: Option<ScoreRow> = self
             .conn
             .query_row(
                 "SELECT id, title, composer, source_filename, added_at, last_practiced_at, \
