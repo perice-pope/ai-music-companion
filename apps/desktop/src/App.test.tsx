@@ -16,7 +16,14 @@ vi.mock("@tauri-apps/api/event", () => ({
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockResolvedValue("unused");
+    // The selector fetches the instrument catalog on mount; it must be an
+    // array (an empty one is a valid "loaded but empty" shape). Returning
+    // a scalar here would make InstrumentSelector's `.map` throw in an
+    // async microtask after the test, which is a test-mock bug, not a
+    // product one.
+    mockInvoke.mockImplementation(async (cmd: string) =>
+      cmd === "list_instruments" ? [] : "unused",
+    );
     mockListen.mockResolvedValue(() => {});
   });
 
@@ -27,12 +34,116 @@ describe("App", () => {
     screen.getByText(/Free Play/);
   });
 
-  it("sets up the audio-event listener on mount", async () => {
+  it("sets up the audio-event and phrase-detected listeners on mount", async () => {
     render(<App />);
     await vi.waitFor(() => {
-      expect(mockListen).toHaveBeenCalledTimes(1);
+      expect(mockListen).toHaveBeenCalledTimes(2);
     });
     expect(mockListen).toHaveBeenCalledWith("audio-event", expect.any(Function));
+    expect(mockListen).toHaveBeenCalledWith(
+      "phrase-detected",
+      expect.any(Function),
+    );
+  });
+
+  it("advances the cursor when a score-following phrase arrives", async () => {
+    // Capture the handler App registers for `phrase-detected`, fire a
+    // synthetic phrase carrying a score position, and assert the store's
+    // cursor moved — this is the live cursor-follow path end to end on the
+    // frontend side.
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(
+      async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      },
+    );
+
+    const { usePracticeStore } = await import("./stores/practiceStore");
+    usePracticeStore.getState().setCursorPosition(null);
+
+    render(<App />);
+    await vi.waitFor(() => expect(handlers["phrase-detected"]).toBeDefined());
+
+    handlers["phrase-detected"]({
+      payload: {
+        phrase_index: 0,
+        start_time: 0,
+        end_time: 1,
+        duration_secs: 1,
+        note_count: 4,
+        pitch_stats: {
+          mean_hz: 440,
+          min_hz: 440,
+          max_hz: 440,
+          range_cents: 0,
+          pitches: [440],
+        },
+        dynamics: {
+          mean_amplitude: 0.5,
+          min_amplitude: 0.4,
+          max_amplitude: 0.6,
+          dynamic_range: 0.2,
+        },
+        stability: 0.9,
+        score_position: { measure_number: 3, beat: 0 },
+      },
+    });
+
+    expect(usePracticeStore.getState().cursorPosition).toEqual({
+      measure_number: 3,
+      beat: 0,
+    });
+    expect(usePracticeStore.getState().phrases.length).toBe(1);
+  });
+
+  it("leaves the cursor put for a free-play phrase with no score position", async () => {
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(
+      async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      },
+    );
+
+    const { usePracticeStore } = await import("./stores/practiceStore");
+    usePracticeStore
+      .getState()
+      .setCursorPosition({ measure_number: 5, beat: 0 });
+
+    render(<App />);
+    await vi.waitFor(() => expect(handlers["phrase-detected"]).toBeDefined());
+
+    handlers["phrase-detected"]({
+      payload: {
+        phrase_index: 1,
+        start_time: 0,
+        end_time: 1,
+        duration_secs: 1,
+        note_count: 4,
+        pitch_stats: {
+          mean_hz: 440,
+          min_hz: 440,
+          max_hz: 440,
+          range_cents: 0,
+          pitches: [440],
+        },
+        dynamics: {
+          mean_amplitude: 0.5,
+          min_amplitude: 0.4,
+          max_amplitude: 0.6,
+          dynamic_range: 0.2,
+        },
+        stability: 0.9,
+        // no score_position → free play
+      },
+    });
+
+    // Unchanged — a free-play phrase must not yank the cursor to the start.
+    expect(usePracticeStore.getState().cursorPosition).toEqual({
+      measure_number: 5,
+      beat: 0,
+    });
   });
 
   it("still renders the UI when the event subscription fails", async () => {
