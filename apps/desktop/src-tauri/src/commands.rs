@@ -21,11 +21,11 @@ use brain::coaching::{
 };
 use brain::phrase::PhraseSummary;
 use brain::session::{
-    CompletedSession, PracticeMode, RecapGenerator, RecapInput, SessionError, SessionRecap,
-    SessionRecorder,
+    CompletedSession, PracticeMode, RecapGenerator, RecapInput, ScoreId, SessionError,
+    SessionRecap, SessionRecorder,
 };
 use brain::stats::PracticeStats;
-use brain::store::{SessionStore, SessionSummary, StoredSession};
+use brain::store::{ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession};
 use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
 
@@ -473,6 +473,7 @@ pub struct AppState {
     /// Critical sections are short (single SQL query) and we never hold
     /// this lock across an `.await`.
     session_store: std::sync::Mutex<SessionStore>,
+    score_store: std::sync::Mutex<ScoreStore>,
     coaching_available: bool,
     /// Instrument catalog loaded once at construction, shared by the
     /// `list_instruments` command and by session-validation paths.
@@ -489,17 +490,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Production constructor — opens the SessionStore at the platform
-    /// default location, wires the real coaching engine, and loads the
-    /// instrument catalog from `profiles/*.json`.
+    /// Production constructor — opens the SessionStore and ScoreStore at the
+    /// platform default location, wires the real coaching engine, and loads
+    /// the instrument catalog from `profiles/*.json`.
     pub fn new() -> Self {
-        let session_store =
-            SessionStore::open(&SessionStore::default_path().unwrap_or_else(|_| {
-                // Fallback: use in-memory if default path unavailable
-                // (extremely rare — headless/no data dir).
-                std::path::PathBuf::from(":memory:")
-            }))
+        let db_path = SessionStore::default_path().unwrap_or_else(|_| {
+            // Fallback: use in-memory if default path unavailable
+            // (extremely rare — headless/no data dir).
+            std::path::PathBuf::from(":memory:")
+        });
+
+        let session_store = SessionStore::open(&db_path)
             .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
+
+        let score_store = ScoreStore::open(&db_path)
+            .unwrap_or_else(|_| ScoreStore::in_memory().expect("in-memory store must succeed"));
 
         let coaching_svc = LlmCoachingService::new();
         let coaching_available = coaching_svc.coaching_available();
@@ -510,6 +515,7 @@ impl AppState {
             coaching_factory: Arc::new(move || Arc::new(LlmCoachingService::new())),
             recap_generator: Arc::new(recap_gen),
             session_store: std::sync::Mutex::new(session_store),
+            score_store: std::sync::Mutex::new(score_store),
             coaching_available,
             instruments: Arc::new(load_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
@@ -524,6 +530,9 @@ impl AppState {
             recap_generator: Arc::new(MockRecapGenerator),
             session_store: std::sync::Mutex::new(
                 SessionStore::in_memory().expect("in-memory store must succeed"),
+            ),
+            score_store: std::sync::Mutex::new(
+                ScoreStore::in_memory().expect("in-memory store must succeed"),
             ),
             coaching_available: false,
             instruments: Arc::new(test_instrument_catalog()),
@@ -1189,6 +1198,96 @@ pub fn get_session_detail(
 #[tauri::command]
 pub fn get_practice_stats(state: State<'_, AppState>) -> Result<PracticeStatsDto, String> {
     get_practice_stats_impl(state.inner()).map_err(|e| e.to_frontend())
+}
+
+// ---------------------------------------------------------------------------
+// Score management commands (Story: Score Mode)
+// ---------------------------------------------------------------------------
+
+/// IPC representation of a score library entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreLibraryEntryDto {
+    pub id: String,
+    pub title: String,
+    pub composer: Option<String>,
+    pub source_filename: String,
+    pub added_at: DateTime<Utc>,
+    pub last_practiced_at: Option<DateTime<Utc>>,
+    pub part_index: usize,
+    pub duration_measures: usize,
+}
+
+impl From<ScoreLibraryEntry> for ScoreLibraryEntryDto {
+    fn from(s: ScoreLibraryEntry) -> Self {
+        Self {
+            id: s.id.as_str().to_owned(),
+            title: s.title,
+            composer: s.composer,
+            source_filename: s.source_filename,
+            added_at: s.added_at,
+            last_practiced_at: s.last_practiced_at,
+            part_index: s.part_index,
+            duration_measures: s.duration_measures,
+        }
+    }
+}
+
+/// IPC representation of a fully-loaded score (entry + MusicXML).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadedScoreDto {
+    pub entry: ScoreLibraryEntryDto,
+    pub music_xml: String,
+}
+
+/// Import a score from a file or raw MusicXML.
+///
+/// Persists the score to the library and returns its entry + ID.
+/// `title`, `composer`, `music_xml`, `part_index`, and `duration_measures`
+/// come from the frontend after parsing the file.
+#[tauri::command]
+pub fn import_score(
+    state: State<'_, AppState>,
+    title: String,
+    composer: Option<String>,
+    source_filename: String,
+    music_xml: String,
+    part_index: usize,
+    duration_measures: usize,
+) -> Result<ScoreLibraryEntryDto, String> {
+    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    let entry = score_store
+        .import(title, composer, source_filename, music_xml, part_index, duration_measures)
+        .map_err(|e| e.to_string())?;
+    Ok(entry.into())
+}
+
+/// List all scores in the library.
+#[tauri::command]
+pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDto>, String> {
+    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    let entries = score_store.list().map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(|e| e.into()).collect())
+}
+
+/// Load a score by id (returns entry + MusicXML).
+#[tauri::command]
+pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDto, String> {
+    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    let entry = score_store.get(score_id).map_err(|e| e.to_string())?;
+    Ok(LoadedScoreDto {
+        music_xml: entry.music_xml.clone(),
+        entry: entry.into(),
+    })
+}
+
+/// Delete a score from the library.
+#[tauri::command]
+pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    score_store.delete(score_id).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ===========================================================================
