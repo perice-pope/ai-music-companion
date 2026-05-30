@@ -27,6 +27,8 @@ pub enum FollowerError {
     EmptyScore,
     #[error("invalid tempo: expected > 0, got {0}")]
     InvalidTempo(f64),
+    #[error("failed to parse score: {0}")]
+    Parse(#[from] crate::score::ScoreError),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,6 +232,17 @@ pub struct ScoreFollower {
 impl ScoreFollower {
     /// Create a new ScoreFollower for a given score.
     ///
+    /// Build a follower directly from an in-memory MusicXML string.
+    ///
+    /// Convenience for callers that hold the raw MusicXML (e.g. the
+    /// desktop app, which stores it inline in the score library) rather
+    /// than a file path. `part_index` selects the `<part>` to follow,
+    /// matching the part the score was imported under.
+    pub fn from_musicxml_str(xml: &str, part_index: usize) -> Result<Self, FollowerError> {
+        let score = crate::score::musicxml::parse_musicxml_str_part(xml, part_index)?;
+        Self::new(score)
+    }
+
     /// Extracts all non-rest notes from the score and initializes DTW state.
     pub fn new(score: ScoreModel) -> Result<Self, FollowerError> {
         if score.measures.is_empty() {
@@ -634,5 +647,31 @@ mod tests {
         let pos = follower.align(&correct_event);
 
         assert_eq!(pos.expected_note, Some(60)); // Should have recovered to the correct note.
+    }
+
+    #[test]
+    fn from_musicxml_str_parses_and_follows() {
+        // Build a follower straight from the raw MusicXML string the desktop
+        // app stores inline — no temp file, no path. The fixture is a real
+        // C-major scale, so aligning a C4 must land us on its measure.
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let mut follower =
+            ScoreFollower::from_musicxml_str(xml, 0).expect("fixture is valid MusicXML");
+
+        let c4 = create_audio_event(261.63, 0.9, 0.0);
+        let pos = follower.align(&c4);
+        assert_eq!(
+            pos.measure_number, 1,
+            "first aligned note should sit in measure 1"
+        );
+    }
+
+    #[test]
+    fn from_musicxml_str_rejects_garbage() {
+        let err = ScoreFollower::from_musicxml_str("not xml at all", 0).unwrap_err();
+        assert!(
+            matches!(err, FollowerError::Parse(_)),
+            "garbage input must surface as a Parse error, got {err:?}"
+        );
     }
 }
