@@ -62,6 +62,22 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The `transcribe` crate runs basic-pitch via ONNX Runtime, loaded
+      # dynamically at run time (ort `load-dynamic`). The default
+      # `download-binaries` backend fetches the runtime from a CDN that our
+      # network policy blocks, so we vendor the official Microsoft release here
+      # and point ort at it via ORT_DYLIB_PATH. TRANSCRIBE_REQUIRE_ORT=1 makes a
+      # missing runtime a hard test failure (no silent skips in CI). The version
+      # must match the C API ort 2.0.0-rc.10 targets (ONNX Runtime 1.24.x).
+      - name: Vendor ONNX Runtime (transcribe tests)
+        run: |
+          ORT_VERSION=1.24.2
+          curl -fsSL -o /tmp/onnxruntime.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+          tar xzf /tmp/onnxruntime.tgz -C /tmp
+          echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          echo "TRANSCRIBE_REQUIRE_ORT=1" >> "$GITHUB_ENV"
+
       - name: Tests
         run: cargo test --workspace --locked
 

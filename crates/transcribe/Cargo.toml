@@ -1,0 +1,36 @@
+[package]
+name = "transcribe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Audio-to-MIDI transcription (basic-pitch / ONNX) for AI Music Companion"
+
+[dependencies]
+# Audio-to-MIDI inference. basic-pitch ships a tf2onnx-exported model; we run
+# it through ONNX Runtime. `load-dynamic` makes ort dlopen libonnxruntime at
+# runtime (via ORT_DYLIB_PATH) instead of fetching a prebuilt binary from the
+# pyke CDN at build time — that CDN is blocked in our CI network policy, so the
+# default `download-binaries` path does not build here. See ci.yml, where the
+# official Microsoft ONNX Runtime release is vendored and ORT_DYLIB_PATH is set.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+    "load-dynamic",
+    "ndarray",
+    "std",
+] }
+ndarray = "0.16"
+# Pure-Rust audio decode (wav/mp3/flac/…) — no native codec libs to ship.
+symphonia = { version = "0.5", default-features = false, features = [
+    "wav",
+    "pcm",
+    "mp3",
+    "flac",
+    "isomp4",
+    "aac",
+] }
+# Emit a standard MIDI file the existing brain::score::midi path can parse.
+midly = { workspace = true }
+thiserror = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
