@@ -7,6 +7,7 @@ import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
 import CoachingTipPanel from "./CoachingTipPanel";
+import ScoreView from "./ScoreView";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
@@ -17,6 +18,10 @@ export default function PracticeSession() {
   const switchInstrument = usePracticeStore((s) => s.switchInstrument);
   const practiceMode = usePracticeStore((s) => s.practiceMode);
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
+  const activeScore = usePracticeStore((s) => s.activeScore);
+  const cursorPosition = usePracticeStore((s) => s.cursorPosition);
+  const phrases = usePracticeStore((s) => s.phrases);
+  const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -38,6 +43,16 @@ export default function PracticeSession() {
       cancelled = true;
     };
   }, []);
+
+  // Update cursor position when a new phrase is detected
+  useEffect(() => {
+    if (!activeScore || phrases.length === 0) return;
+
+    const lastPhrase = phrases[phrases.length - 1];
+    if (lastPhrase.score_position) {
+      setCursorPosition(lastPhrase.score_position);
+    }
+  }, [activeScore, phrases, setCursorPosition]);
 
   const onPickInstrument = async (name: string) => {
     setMenuOpen(false);
@@ -181,10 +196,23 @@ export default function PracticeSession() {
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
-        <PitchDisplay />
-        <div className="hidden lg:block">
-          <CoachingTipPanel />
+      <div
+        className={`flex flex-1 flex-col ${activeScore ? "gap-4 p-4" : "items-center justify-center gap-8 lg:flex-row lg:gap-12"}`}
+        data-testid="practice-session-content"
+      >
+        {activeScore && (
+          <div className="h-64 flex-shrink-0 lg:h-80">
+            <ScoreView
+              musicXml={activeScore.music_xml}
+              cursorPosition={cursorPosition}
+            />
+          </div>
+        )}
+        <div className={activeScore ? "flex flex-col gap-4 lg:flex-row lg:gap-8" : ""}>
+          <PitchDisplay />
+          <div className="hidden lg:block">
+            <CoachingTipPanel />
+          </div>
         </div>
       </div>
     </main>

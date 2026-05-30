@@ -7,6 +7,7 @@ import type {
   SessionRecap,
   ScoreLibraryEntry,
   ScorePosition,
+  LoadedScore,
 } from "../types/brain";
 import { useAudioStore } from "./audioStore";
 
@@ -63,8 +64,8 @@ export interface PracticeState {
   recap: SessionRecap | null;
   recapError: string | null;
 
-  // Score mode (story-score-mode PR 1) ------------------------------------
-  activeScore: ScoreLibraryEntry | null;
+  // Score mode (story-score-mode PR 1+) -----------------------------------
+  activeScore: LoadedScore | null;
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
 
@@ -182,8 +183,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   loadScoreFromFile: async (path: string) => {
     try {
       const entry = await invoke<ScoreLibraryEntry>("import_score", { path });
-      set({ activeScore: entry });
       set((state) => ({ scoreLibrary: [entry, ...state.scoreLibrary] }));
+      // Fetch the full loaded score (with music_xml)
+      const loaded = await invoke<LoadedScore>("get_score", { id: entry.id });
+      set({ activeScore: loaded });
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
     }
@@ -191,11 +194,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   loadScoreFromId: async (id: string) => {
     try {
-      const entry = get().scoreLibrary.find((s) => s.id === id);
-      if (!entry) {
-        throw new Error(`Score ${id} not found in library`);
-      }
-      set({ activeScore: entry });
+      const loaded = await invoke<LoadedScore>("get_score", { id });
+      set({ activeScore: loaded });
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
     }
