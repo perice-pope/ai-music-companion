@@ -159,8 +159,8 @@ impl OnlineDtw {
     fn new(num_score_notes: usize) -> Self {
         Self {
             played_window: VecDeque::with_capacity(100),
-            prev_cost_row: vec![DtwCost::new(0.0, 0.0); num_score_notes],
-            curr_cost_row: vec![DtwCost::new(0.0, 0.0); num_score_notes],
+            prev_cost_row: Vec::with_capacity(num_score_notes),
+            curr_cost_row: Vec::with_capacity(num_score_notes),
             score_index: 0,
             tempo_ratio: 1.0,
             silence_threshold_secs: 0.3,
