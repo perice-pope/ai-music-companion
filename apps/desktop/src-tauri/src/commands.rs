@@ -32,7 +32,7 @@ use ears::profile::{InstrumentProfile, ProfileLoader};
 
 use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError};
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Runtime, State};
+use tauri::{Emitter, Manager, Runtime, State};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -494,7 +494,28 @@ impl AppState {
     /// Production constructor — opens the SessionStore and ScoreStore at the
     /// platform default location, wires the real coaching engine, and loads
     /// the instrument catalog from `profiles/*.json`.
+    ///
+    /// Resolves profiles via env override → workspace walk (see
+    /// [`locate_profiles_dir`]). For a *packaged* build, prefer
+    /// [`AppState::new_with_app_handle`], which also checks the bundled
+    /// resource directory — a bare `new()` in an installed app would fail
+    /// to find profiles and panic (the bug behind #112).
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Production constructor for packaged builds. Identical to [`new`](Self::new)
+    /// except it can resolve `profiles/` from the app bundle's resource
+    /// directory via the `AppHandle`, which is the only location that
+    /// exists in an installed app. Wire this from `Builder::setup` so the
+    /// handle is available.
+    pub fn new_with_app_handle(app_handle: &tauri::AppHandle) -> Self {
+        Self::build(Some(app_handle))
+    }
+
+    /// Shared constructor body. `app_handle` is `Some` only for packaged
+    /// builds (enables bundled-resource profile resolution).
+    fn build(app_handle: Option<&tauri::AppHandle>) -> Self {
         let db_path = SessionStore::default_path().unwrap_or_else(|_| {
             // Fallback: use in-memory if default path unavailable
             // (extremely rare — headless/no data dir).
@@ -518,7 +539,7 @@ impl AppState {
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
             coaching_available,
-            instruments: Arc::new(load_instrument_catalog()),
+            instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
         }
     }
@@ -772,21 +793,30 @@ fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
 ///
 /// Resolution order:
 /// 1. `$AI_MUSIC_COMPANION_PROFILES_DIR` — explicit override hook.
-/// 2. `CARGO_MANIFEST_DIR/../../../profiles` — workspace-root walk.
+/// 2. Bundled app resources (`AppHandle::path().resource_dir()/profiles`) —
+///    only available when `app_handle` is `Some`, i.e. a packaged build
+///    from `cargo tauri build`. This is the only location that exists in
+///    an installed app, so resolving it here is what fixes #112 (the app
+///    panicking on every bundled install).
+/// 3. `CARGO_MANIFEST_DIR/../../../profiles` — dev/workspace fallback.
 ///    `CARGO_MANIFEST_DIR` is baked in at compile time for cargo builds
 ///    (including `cargo tauri dev`) and points at this crate
 ///    (`apps/desktop/src-tauri`); three hops up reach the workspace root.
-///
-/// TODO: bundled-prod resolution. When we start shipping installers via
-/// `cargo tauri build`, the `profiles/` directory needs to be declared
-/// in `tauri.conf.json` `bundle.resources` and resolved via
-/// `tauri::AppHandle::path().resource_dir()`. That requires moving the
-/// initial `.manage(AppState::new())` call into a `Builder::setup`
-/// closure so the handle is available. Not shipping installers yet —
-/// capture as a follow-up when the release pipeline lands.
-fn locate_profiles_dir() -> std::path::PathBuf {
+fn locate_profiles_dir(app_handle: Option<&tauri::AppHandle>) -> std::path::PathBuf {
     if let Ok(explicit) = std::env::var("AI_MUSIC_COMPANION_PROFILES_DIR") {
         return std::path::PathBuf::from(explicit);
+    }
+    // Packaged builds: profiles ship under the bundle's resource dir
+    // (declared in `tauri.conf.json` `bundle.resources`). Only take this
+    // path when the dir actually exists, so a dev build with a handle
+    // still falls through to the workspace walk.
+    if let Some(handle) = app_handle {
+        if let Ok(resource_dir) = handle.path().resource_dir() {
+            let bundled = resource_dir.join("profiles");
+            if bundled.is_dir() {
+                return bundled;
+            }
+        }
     }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -798,11 +828,14 @@ fn locate_profiles_dir() -> std::path::PathBuf {
 
 /// Load the canonical instrument catalog from `profiles/*.json`.
 ///
+/// `app_handle` is `Some` for packaged builds (enables bundled-resource
+/// resolution) and `None` for dev/test (workspace walk).
+///
 /// Panics with a clear message on failure — the app is unusable without
 /// instruments, and silent degradation to an empty catalog would leave
 /// the user staring at an empty selector with no feedback about why.
-fn load_instrument_catalog() -> Vec<InstrumentInfo> {
-    let dir = locate_profiles_dir();
+fn load_instrument_catalog(app_handle: Option<&tauri::AppHandle>) -> Vec<InstrumentInfo> {
+    let dir = locate_profiles_dir(app_handle);
     let profiles = ProfileLoader::load_all(&dir).unwrap_or_else(|e| {
         panic!(
             "failed to load instrument profiles from {}: {}. \
@@ -1685,7 +1718,8 @@ mod tests {
     fn production_catalog_loads_from_workspace_profiles() {
         // CARGO_MANIFEST_DIR is apps/desktop/src-tauri — workspace root
         // is three hops up, matching the locate_profiles_dir() default.
-        let loaded = load_instrument_catalog();
+        // `None` handle → workspace-walk resolution (the dev/test path).
+        let loaded = load_instrument_catalog(None);
         assert!(
             !loaded.is_empty(),
             "load_instrument_catalog must return every profile in profiles/"
