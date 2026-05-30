@@ -109,9 +109,9 @@ pub struct CoachingConfig {
     /// API key for the LLM provider. If empty, the engine will attempt to
     /// read `MUSIC_COMPANION_LLM_API_KEY` from the environment.
     pub api_key: String,
-    /// Model identifier (e.g. "claude-3-5-sonnet", "gpt-4").
+    /// Model identifier (e.g. "claude-opus-4-7", "gpt-4").
     /// Falls back to `MUSIC_COMPANION_LLM_MODEL` env var, then to
-    /// `"claude-3-5-sonnet"`.
+    /// `"claude-opus-4-7"`.
     pub model: String,
     /// Minimum seconds between consecutive API calls. Default: 3.0.
     pub rate_limit_secs: f64,
@@ -225,7 +225,7 @@ fn resolve_model(config_model: &str, env_value: Option<&str>) -> String {
     }
     match env_value {
         Some(v) if !v.is_empty() => v.to_owned(),
-        _ => "claude-3-5-sonnet".to_owned(),
+        _ => "claude-opus-4-7".to_owned(),
     }
 }
 
@@ -770,7 +770,6 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Phrase data summary:\n\
             - Phrase count: {}\n\
             - Average intonation tendency: {:.2}\n\
-            - Average rhythmic stability: {:.2}\n\
             - Average dynamic control: {:.2}\n\n\
             {}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
@@ -779,7 +778,6 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count,
             duration_mins as i32,
             phrase_count,
-            Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
             tip_summary,
@@ -1476,8 +1474,8 @@ mod tests {
         // Env wins when config empty
         assert_eq!(resolve_model("", Some("claude-3-opus")), "claude-3-opus");
         // Default when both empty
-        assert_eq!(resolve_model("", None), "claude-3-5-sonnet");
-        assert_eq!(resolve_model("", Some("")), "claude-3-5-sonnet");
+        assert_eq!(resolve_model("", None), "claude-opus-4-7");
+        assert_eq!(resolve_model("", Some("")), "claude-opus-4-7");
     }
 
     #[test]
