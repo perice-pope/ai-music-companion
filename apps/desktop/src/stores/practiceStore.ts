@@ -87,6 +87,15 @@ export interface PracticeState {
 
   // Actions ---------------------------------------------------------------
   loadScoreFromFile: (path: string) => Promise<void>;
+  /**
+   * Import a MIDI file by its raw bytes (read on the frontend) and make it
+   * the active score. The backend parses the MIDI, converts it to canonical
+   * MusicXML, and stores it — see `import_midi_file`.
+   */
+  importMidiFromFile: (
+    sourceFilename: string,
+    bytes: number[],
+  ) => Promise<ScoreLibraryEntry>;
   loadScoreFromId: (id: string) => Promise<void>;
   refreshScoreLibrary: () => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
@@ -202,6 +211,27 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       }));
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
+    }
+  },
+
+  importMidiFromFile: async (sourceFilename: string, bytes: number[]) => {
+    try {
+      const entry = await invoke<ScoreLibraryEntry>("import_midi_file", {
+        sourceFilename,
+        bytes,
+      });
+      // Load the freshly-imported MusicXML so ScoreView can render it
+      // without a second user action (mirrors loadScoreFromFile).
+      const loaded = await invoke<LoadedScore>("get_score", { id: entry.id });
+      set((state) => ({
+        activeScore: entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+        scoreLibrary: [entry, ...state.scoreLibrary],
+      }));
+      return entry;
+    } catch (err) {
+      throw new Error(`Failed to import MIDI: ${err}`);
     }
   },
 
