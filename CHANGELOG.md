@@ -1,3 +1,9 @@
+## [1.24.0](https://github.com/perice-pope/ai-music-companion/compare/v1.23.0...v1.24.0) (2026-05-30)
+
+### Features
+
+* **coaching:** score title in live whispered tips ([#119](https://github.com/perice-pope/ai-music-companion/issues/119)) ([30600ff](https://github.com/perice-pope/ai-music-companion/commit/30600ff7c3e47a97fda5c3e06886264c7d01826e))
+
 ## [1.23.0](https://github.com/perice-pope/ai-music-companion/compare/v1.22.0...v1.23.0) (2026-05-30)
 
 ### Features
