@@ -626,6 +626,13 @@ impl SessionRecorder {
             .filter(|s| s.ended_at.is_none())
             .map(|s| s.instrument.as_str())
     }
+
+    /// Title of the score being practised, if this is a score-backed
+    /// session. Set once at session start; `None` in free play. Lets the
+    /// live coach name the piece in its tips.
+    pub fn score_title(&self) -> Option<&str> {
+        self.score_title.as_deref()
+    }
 }
 
 // ===========================================================================
