@@ -169,6 +169,19 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      # The audio-import command transcribes via ONNX Runtime (the `transcribe`
+      # crate). Vendor the official runtime so the end-to-end import test runs
+      # for real here too; TRANSCRIBE_REQUIRE_ORT=1 makes a missing runtime a
+      # hard failure rather than a silent skip. Mirrors the `rust` job.
+      - name: Vendor ONNX Runtime (audio import test)
+        run: |
+          ORT_VERSION=1.24.2
+          curl -fsSL -o /tmp/onnxruntime.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+          tar xzf /tmp/onnxruntime.tgz -C /tmp
+          echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          echo "TRANSCRIBE_REQUIRE_ORT=1" >> "$GITHUB_ENV"
+
       - name: Tests
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 

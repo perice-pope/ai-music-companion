@@ -34,19 +34,70 @@ use midi_out::notes_to_midi;
 use notes::output_to_notes;
 use resample::resample_to_model_rate;
 
+/// A calm quality signal for a transcription — never a fake "accuracy score".
+///
+/// Audio transcription is approximate; these aggregates let the UI warn the
+/// user when a recording looks polyphonic or weak, without pretending to a
+/// precision we don't have.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TranscriptionQuality {
+    /// Number of notes detected.
+    pub note_count: usize,
+    /// Mean note activation (basic-pitch amplitude) in `[0, 1]` — a confidence proxy.
+    pub mean_confidence: f32,
+    /// Fraction of notes that overlap another note in time, in `[0, 1]`.
+    /// basic-pitch is monophonic-first, so a high value means the input was
+    /// likely polyphonic and the transcription is unreliable.
+    pub polyphony: f32,
+}
+
 /// Transcribe mono PCM `samples` (any `sample_rate`) into standard MIDI bytes.
 ///
 /// Returns [`TranscribeError::Empty`] when no notes are detected (silence or no
 /// clear pitch), and [`TranscribeError::Runtime`] when ONNX Runtime is
 /// unavailable. The returned bytes parse with `midly` / the brain MIDI importer.
 pub fn audio_to_midi(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, TranscribeError> {
+    audio_to_midi_with_quality(samples, sample_rate).map(|(bytes, _)| bytes)
+}
+
+/// Like [`audio_to_midi`], but also returns a [`TranscriptionQuality`] signal.
+pub fn audio_to_midi_with_quality(
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(Vec<u8>, TranscriptionQuality), TranscribeError> {
     let resampled = resample_to_model_rate(samples, sample_rate);
     let activations = infer(&resampled)?;
     let notes = output_to_notes(&activations.frames, &activations.onsets);
     if notes.is_empty() {
         return Err(TranscribeError::Empty);
     }
-    Ok(notes_to_midi(&notes))
+    let quality = quality_of(&notes);
+    Ok((notes_to_midi(&notes), quality))
+}
+
+/// Compute the quality aggregates from decoded note events.
+fn quality_of(notes: &[NoteEvent]) -> TranscriptionQuality {
+    let note_count = notes.len();
+    let mean_confidence = notes.iter().map(|n| n.amplitude).sum::<f32>() / note_count.max(1) as f32;
+
+    // A note is "overlapping" if its span intersects any other note's span.
+    let mut overlapping = 0usize;
+    for (i, a) in notes.iter().enumerate() {
+        let hit = notes
+            .iter()
+            .enumerate()
+            .any(|(j, b)| i != j && a.start_frame < b.end_frame && b.start_frame < a.end_frame);
+        if hit {
+            overlapping += 1;
+        }
+    }
+    let polyphony = overlapping as f32 / note_count as f32;
+
+    TranscriptionQuality {
+        note_count,
+        mean_confidence,
+        polyphony,
+    }
 }
 
 /// Decode `bytes` to mono samples, then transcribe to MIDI in one step.
@@ -56,6 +107,14 @@ pub fn transcribe_audio_bytes(
     bytes: Vec<u8>,
     extension: Option<&str>,
 ) -> Result<Vec<u8>, TranscribeError> {
+    transcribe_audio_bytes_with_quality(bytes, extension).map(|(bytes, _)| bytes)
+}
+
+/// Like [`transcribe_audio_bytes`], but also returns a [`TranscriptionQuality`].
+pub fn transcribe_audio_bytes_with_quality(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+) -> Result<(Vec<u8>, TranscriptionQuality), TranscribeError> {
     let (samples, sample_rate) = decode_audio(bytes, extension)?;
-    audio_to_midi(&samples, sample_rate)
+    audio_to_midi_with_quality(&samples, sample_rate)
 }

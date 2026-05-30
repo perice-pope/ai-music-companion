@@ -33,3 +33,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
 dirs = "5"
 ears = { path = "../../../crates/ears" }
 brain = { path = "../../../crates/brain" }
+transcribe = { path = "../../../crates/transcribe" }
