@@ -1,3 +1,14 @@
+## [1.21.0](https://github.com/perice-pope/ai-music-companion/compare/v1.20.1...v1.21.0) (2026-05-30)
+
+### Features
+
+* **story-score-mode:** score library backend — PR 1 ([#96](https://github.com/perice-pope/ai-music-companion/issues/96)) ([0c1219e](https://github.com/perice-pope/ai-music-companion/commit/0c1219e0aa9eba0e2972b62887c7e4302d2bf319))
+* **story-score-mode:** score picker UI + library list + load-into-session — PR 1 ([#98](https://github.com/perice-pope/ai-music-companion/issues/98)) ([c0dc00a](https://github.com/perice-pope/ai-music-companion/commit/c0dc00a0a43825e96fd9802858bc72504881fd27)), closes [#96](https://github.com/perice-pope/ai-music-companion/issues/96)
+
+### Bug Fixes
+
+* **hotspot-89:** eliminate vec allocation in DTW alignment hot path ([#97](https://github.com/perice-pope/ai-music-companion/issues/97)) ([655eec1](https://github.com/perice-pope/ai-music-companion/commit/655eec1de961e11705398c8f288c867d8fc9807d))
+
 ## [1.20.1](https://github.com/perice-pope/ai-music-companion/compare/v1.20.0...v1.20.1) (2026-05-01)
 
 ### Bug Fixes
