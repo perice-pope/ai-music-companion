@@ -1,3 +1,9 @@
+## [1.28.0](https://github.com/perice-pope/ai-music-companion/compare/v1.27.0...v1.28.0) (2026-05-30)
+
+### Features
+
+* **score:** import audio recordings via basic-pitch transcription ([#126](https://github.com/perice-pope/ai-music-companion/issues/126)) ([ca09688](https://github.com/perice-pope/ai-music-companion/commit/ca096882787a56e432bcbaca529d6224c2488fd0)), closes [#125](https://github.com/perice-pope/ai-music-companion/issues/125)
+
 ## [1.27.0](https://github.com/perice-pope/ai-music-companion/compare/v1.26.0...v1.27.0) (2026-05-30)
 
 ### Features
