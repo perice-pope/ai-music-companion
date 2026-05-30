@@ -1,3 +1,9 @@
+## [1.21.1](https://github.com/perice-pope/ai-music-companion/compare/v1.21.0...v1.21.1) (2026-05-30)
+
+### Bug Fixes
+
+* **brain:** extract ScoreRow type alias to satisfy clippy type_complexity ([#113](https://github.com/perice-pope/ai-music-companion/issues/113)) ([7c4bdfb](https://github.com/perice-pope/ai-music-companion/commit/7c4bdfb9cd9d95815a96a905db96dd0a9e6afc16))
+
 ## [1.21.0](https://github.com/perice-pope/ai-music-companion/compare/v1.20.1...v1.21.0) (2026-05-30)
 
 ### Features
