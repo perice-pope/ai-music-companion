@@ -1,3 +1,9 @@
+## [1.26.0](https://github.com/perice-pope/ai-music-companion/compare/v1.25.0...v1.26.0) (2026-05-30)
+
+### Features
+
+* **transcribe:** audio-to-MIDI transcription core (basic-pitch / ONNX) ([#125](https://github.com/perice-pope/ai-music-companion/issues/125)) ([782a445](https://github.com/perice-pope/ai-music-companion/commit/782a445b308189b8f47c5e1be0da7cbce110e228))
+
 ## [1.25.0](https://github.com/perice-pope/ai-music-companion/compare/v1.24.1...v1.25.0) (2026-05-30)
 
 ### Features
