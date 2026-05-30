@@ -750,6 +750,27 @@ impl AppState {
             .map_err(|e| e.to_string())
     }
 
+    /// Import an audio recording into the score library.
+    ///
+    /// Transcribes the recording to MIDI via basic-pitch (the [`transcribe`]
+    /// crate), then reuses [`import_midi`](Self::import_midi) (parse → MusicXML
+    /// → store) so the result behaves like any other library entry. Returns the
+    /// new entry alongside a [`transcribe::TranscriptionQuality`] signal so the
+    /// UI can warn calmly when the input looks polyphonic or weak. The title
+    /// falls back to the file's name stem — transcribed MIDI carries no track
+    /// name.
+    fn import_audio(
+        &self,
+        source_filename: String,
+        bytes: Vec<u8>,
+        extension: Option<&str>,
+    ) -> Result<(ScoreLibraryEntry, transcribe::TranscriptionQuality), String> {
+        let (midi, quality) = transcribe::transcribe_audio_bytes_with_quality(bytes, extension)
+            .map_err(|e| e.to_string())?;
+        let entry = self.import_midi(source_filename, midi)?;
+        Ok((entry, quality))
+    }
+
     /// Clone the full instrument catalog for an IPC response.
     pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
         (*self.instruments).clone()
@@ -934,6 +955,11 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
 // ---------------------------------------------------------------------------
 // Emit helpers
 // ---------------------------------------------------------------------------
+
+/// Emit an audio-import progress beat (`{ stage, pct }`). Non-fatal on error.
+fn emit_import_progress<R: Runtime>(app: &tauri::AppHandle<R>, stage: &'static str, pct: u8) {
+    let _ = app.emit("import-progress", ImportProgressPayload { stage, pct });
+}
 
 fn emit_session_status<R: Runtime>(app: &tauri::AppHandle<R>, phase: SessionPhase) {
     if let Some(status) = phase.status_label() {
@@ -1477,6 +1503,76 @@ pub fn import_midi_file(
     bytes: Vec<u8>,
 ) -> Result<ScoreLibraryEntryDto, String> {
     state.import_midi(source_filename, bytes).map(Into::into)
+}
+
+/// Extract a lowercase file extension (no dot) for the audio decode hint.
+fn filename_ext(name: &str) -> Option<String> {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+}
+
+/// Above this fraction of time-overlapping notes we call the input polyphonic.
+const POLYPHONIC_THRESHOLD: f32 = 0.15;
+/// Below this mean note activation we flag the transcription as low-confidence.
+const LOW_CONFIDENCE_THRESHOLD: f32 = 0.4;
+
+/// `import-progress` event payload (audio import only).
+#[derive(Clone, Serialize)]
+struct ImportProgressPayload {
+    stage: &'static str,
+    pct: u8,
+}
+
+/// IPC result of an audio import: the new library entry plus a calm quality
+/// signal. We surface approximate-ness; we never invent an accuracy score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedAudioDto {
+    pub entry: ScoreLibraryEntryDto,
+    pub note_count: usize,
+    pub mean_confidence: f32,
+    pub polyphony: f32,
+    /// Input looks polyphonic — basic-pitch is monophonic-first.
+    pub polyphonic: bool,
+    /// Transcription confidence looks weak.
+    pub low_confidence: bool,
+}
+
+impl ImportedAudioDto {
+    fn new(entry: ScoreLibraryEntryDto, quality: transcribe::TranscriptionQuality) -> Self {
+        Self {
+            entry,
+            note_count: quality.note_count,
+            mean_confidence: quality.mean_confidence,
+            polyphony: quality.polyphony,
+            polyphonic: quality.polyphony > POLYPHONIC_THRESHOLD,
+            low_confidence: quality.mean_confidence < LOW_CONFIDENCE_THRESHOLD,
+        }
+    }
+}
+
+/// Import an audio recording: transcribe → MIDI → MusicXML → library.
+///
+/// Heavier than MIDI/MusicXML import, so it emits `import-progress` events
+/// (`{ stage, pct }`) the UI shows as a live indicator. Returns the new entry
+/// plus a quality signal for a dismissible "this may be approximate" banner.
+/// `bytes` is the raw file content read on the frontend; `source_filename`
+/// supplies the decode hint and the title fallback.
+#[tauri::command]
+pub fn import_audio_file<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    source_filename: String,
+    bytes: Vec<u8>,
+) -> Result<ImportedAudioDto, String> {
+    let ext = filename_ext(&source_filename);
+    emit_import_progress(&app, "decoding", 15);
+    emit_import_progress(&app, "transcribing", 45);
+    let (entry, quality) = state.import_audio(source_filename, bytes, ext.as_deref())?;
+    emit_import_progress(&app, "converting", 85);
+    emit_import_progress(&app, "done", 100);
+    Ok(ImportedAudioDto::new(entry.into(), quality))
 }
 
 /// List all scores in the library.
@@ -2045,6 +2141,110 @@ mod tests {
             .expect_err("corrupt MIDI must error");
         assert!(!err.is_empty());
         // Nothing should have been written to the library.
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert!(listed.is_empty(), "failed import must not persist a row");
+    }
+
+    #[test]
+    fn filename_ext_lowercases_and_strips_dot() {
+        assert_eq!(filename_ext("Take 1.WAV").as_deref(), Some("wav"));
+        assert_eq!(filename_ext("song.mp3").as_deref(), Some("mp3"));
+        assert_eq!(filename_ext("noext"), None);
+    }
+
+    /// Build a minimal 16-bit PCM mono WAV in memory.
+    fn wav_mono_16(samples: &[i16], sample_rate: u32) -> Vec<u8> {
+        let data_len = (samples.len() * 2) as u32;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data_len).to_le_bytes());
+        b.extend_from_slice(b"WAVE");
+        b.extend_from_slice(b"fmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&sample_rate.to_le_bytes());
+        b.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data_len.to_le_bytes());
+        for s in samples {
+            b.extend_from_slice(&s.to_le_bytes());
+        }
+        b
+    }
+
+    /// ONNX Runtime is required at run time for transcription; `ort`'s
+    /// `load-dynamic` backend *panics* on a missing dylib, so gate before
+    /// calling in. CI sets `TRANSCRIBE_REQUIRE_ORT=1` to make a missing
+    /// runtime a hard failure rather than a silent skip.
+    fn skip_without_ort() -> bool {
+        let present = std::env::var("ORT_DYLIB_PATH")
+            .ok()
+            .map(|p| std::path::Path::new(&p).exists())
+            .unwrap_or(false);
+        if present {
+            return false;
+        }
+        if std::env::var("TRANSCRIBE_REQUIRE_ORT").as_deref() == Ok("1") {
+            panic!("ONNX Runtime required but ORT_DYLIB_PATH not set/found");
+        }
+        eprintln!("skipping audio-import test: ONNX Runtime unavailable");
+        true
+    }
+
+    #[test]
+    fn import_audio_transcribes_and_stores_with_quality() {
+        if skip_without_ort() {
+            return;
+        }
+        // A short monophonic sine scale at 22.05 kHz (the model rate).
+        let sr = 22_050u32;
+        let pitches = [60i32, 62, 64, 65, 67];
+        let mut pcm: Vec<i16> = Vec::new();
+        for &m in &pitches {
+            let hz = 440.0 * 2f64.powf((m as f64 - 69.0) / 12.0);
+            let n = (0.6 * sr as f64) as usize;
+            pcm.extend((0..n).map(|i| {
+                let t = i as f64 / sr as f64;
+                ((2.0 * std::f64::consts::PI * hz * t).sin() * 16_000.0) as i16
+            }));
+        }
+        let wav = wav_mono_16(&pcm, sr);
+
+        let s = state();
+        let (entry, quality) = s
+            .import_audio("recording.wav".to_string(), wav, Some("wav"))
+            .expect("audio import should succeed");
+
+        // Title falls back to the filename stem (transcribed MIDI is unnamed).
+        assert_eq!(entry.title, "recording");
+        assert!(entry.duration_measures >= 1);
+        assert!(quality.note_count > 0, "a clear scale yields notes");
+        // A clean monophonic recording should not look polyphonic.
+        assert!(
+            quality.polyphony <= POLYPHONIC_THRESHOLD,
+            "monophonic input flagged polyphonic: {}",
+            quality.polyphony
+        );
+
+        // Stored payload is real, re-parseable MusicXML.
+        let reparsed = brain::score::musicxml::parse_musicxml_str_part(&entry.music_xml, 0)
+            .expect("stored MusicXML must re-parse");
+        assert!(!reparsed.measures.is_empty());
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn import_audio_rejects_garbage_without_persisting() {
+        // Decode failure needs no ONNX Runtime — always runs.
+        let s = state();
+        let err = s
+            .import_audio("noise.wav".to_string(), vec![0u8; 64], Some("wav"))
+            .expect_err("garbage audio must error");
+        assert!(!err.is_empty());
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert!(listed.is_empty(), "failed import must not persist a row");
     }

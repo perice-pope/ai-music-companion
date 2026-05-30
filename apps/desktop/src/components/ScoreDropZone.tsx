@@ -1,28 +1,53 @@
 import { useRef, useState } from "react";
-import { usePracticeStore } from "../stores/practiceStore";
+import { listen } from "@tauri-apps/api/event";
+import { usePracticeStore, type ImportedAudio } from "../stores/practiceStore";
 
 const MIDI_EXTS = ["mid", "midi"];
 const MUSICXML_EXTS = ["musicxml", "mxl", "xml"];
-const VALID_EXTS = [...MUSICXML_EXTS, ...MIDI_EXTS];
+// Open Question 5 (founder, 2026-05-30): ship .wav + .mp3 in v1. The Rust
+// decoder (Symphonia) supports more (.m4a/.flac); widening is a one-line change
+// here when we want it.
+const AUDIO_EXTS = ["wav", "mp3"];
+const VALID_EXTS = [...MUSICXML_EXTS, ...MIDI_EXTS, ...AUDIO_EXTS];
+
+/** `import-progress` event payload from the backend (audio import only). */
+interface ImportProgress {
+  stage: string;
+  pct: number;
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  decoding: "Reading audio…",
+  transcribing: "Listening for notes…",
+  converting: "Building the score…",
+  done: "Finishing up…",
+};
 
 export default function ScoreDropZone() {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
+  const [quality, setQuality] = useState<ImportedAudio | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
+  const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
 
-  // Route a chosen file by extension. MIDI is fully wired: read the bytes
-  // and hand them to the backend, which parses → MusicXML → library. The
-  // MusicXML path still needs frontend metadata parsing (a later slice), so
-  // it surfaces an honest "not yet" rather than silently failing.
+  // Route a chosen file by extension. MIDI → backend parse → MusicXML → library.
+  // Audio → backend transcribe (basic-pitch) → MIDI → MusicXML → library, with
+  // live progress and a calm quality note. MusicXML still needs frontend
+  // metadata parsing (a later slice), so it surfaces an honest "not yet".
   const handleFile = async (file: File) => {
     setError(null);
     setStatus(null);
+    setQuality(null);
+    setProgress(null);
 
     const ext = file.name.split(".").pop()?.toLowerCase();
     if (!ext || !VALID_EXTS.includes(ext)) {
-      setError("Unsupported format. Use .musicxml, .mxl, .xml, .mid, or .midi files.");
+      setError(
+        "Unsupported format. Use .musicxml, .mxl, .xml, .mid, .midi, .wav, or .mp3 files.",
+      );
       return;
     }
 
@@ -40,9 +65,34 @@ export default function ScoreDropZone() {
       return;
     }
 
+    if (AUDIO_EXTS.includes(ext)) {
+      let unlisten: (() => void) | undefined;
+      try {
+        setStatus(`Transcribing ${file.name}…`);
+        unlisten = await listen<ImportProgress>("import-progress", (event) => {
+          setProgress(event.payload);
+        });
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        const result = await importAudioFromFile(file.name, bytes);
+        setStatus(`Imported "${result.entry.title}".`);
+        // Only surface the banner when something looks off — never nag.
+        if (result.polyphonic || result.low_confidence) {
+          setQuality(result);
+        }
+      } catch (err) {
+        setStatus(null);
+        setError(`${err instanceof Error ? err.message : err}`);
+      } finally {
+        unlisten?.();
+        setProgress(null);
+      }
+      return;
+    }
+
     // MusicXML/.xml/.mxl: backend command exists, but the frontend metadata
     // extraction it expects isn't built yet.
-    setError("MusicXML import isn't wired up yet — MIDI files work today.");
+    setError("MusicXML import isn't wired up yet — MIDI and audio files work today.");
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -63,6 +113,10 @@ export default function ScoreDropZone() {
     await handleFile(files[0]);
   };
 
+  const qualityMessage = quality?.polyphonic
+    ? "This recording sounds polyphonic — basic-pitch works best on a single instrument line, so the transcription may be rough. You can re-record or drop a different file anytime."
+    : "This transcription may be approximate — try a closer, single-instrument recording for a cleaner result.";
+
   return (
     <div className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8">
       <div
@@ -80,10 +134,10 @@ export default function ScoreDropZone() {
       >
         <div className="text-4xl mb-4">🎵</div>
         <h3 className="text-lg font-semibold">
-          {isDragging ? "Drop your score here" : "Drag a score here"}
+          {isDragging ? "Drop your score here" : "Drag a score or recording here"}
         </h3>
         <p className="mt-2 text-sm text-gray-400">
-          Supports .musicxml, .mxl, .xml, .mid, and .midi files
+          Scores: .musicxml, .mxl, .xml, .mid, .midi — Recordings: .wav, .mp3
         </p>
 
         <div className="mt-6 flex justify-center gap-4">
@@ -96,16 +150,44 @@ export default function ScoreDropZone() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".musicxml,.mxl,.xml,.mid,.midi"
+            accept=".musicxml,.mxl,.xml,.mid,.midi,.wav,.mp3"
             onChange={handleFileInput}
             className="hidden"
           />
         </div>
       </div>
 
+      {progress && (
+        <div className="mt-4" role="progressbar" aria-valuenow={progress.pct}>
+          <div className="flex justify-between text-xs text-blue-200 mb-1">
+            <span>{STAGE_LABELS[progress.stage] ?? "Working…"}</span>
+            <span>{progress.pct}%</span>
+          </div>
+          <div className="h-2 rounded bg-gray-700 overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all"
+              style={{ width: `${progress.pct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {status && (
         <div className="mt-4 rounded bg-blue-900/20 border border-blue-500 p-3 text-blue-200 text-sm">
           {status}
+        </div>
+      )}
+
+      {quality && (
+        <div className="mt-4 rounded bg-amber-900/20 border border-amber-500 p-3 text-amber-200 text-sm flex items-start justify-between gap-3">
+          <span>{qualityMessage}</span>
+          <button
+            onClick={() => setQuality(null)}
+            aria-label="Dismiss"
+            className="text-amber-300 hover:text-amber-100 font-bold"
+          >
+            ✕
+          </button>
         </div>
       )}
 

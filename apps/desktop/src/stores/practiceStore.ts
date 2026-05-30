@@ -41,6 +41,22 @@ export interface QueuedTip {
   phraseIndex: number;
 }
 
+/**
+ * Result of an audio import: the new library entry plus a calm quality
+ * signal (field names mirror the Rust `ImportedAudioDto`). We surface
+ * approximate-ness; we never show a fake accuracy score.
+ */
+export interface ImportedAudio {
+  entry: ScoreLibraryEntry;
+  note_count: number;
+  mean_confidence: number;
+  polyphony: number;
+  /** Input looks polyphonic — basic-pitch is monophonic-first. */
+  polyphonic: boolean;
+  /** Transcription confidence looks weak. */
+  low_confidence: boolean;
+}
+
 /** All the state the free-play flow needs. */
 export interface PracticeState {
   // Routing ---------------------------------------------------------------
@@ -96,6 +112,10 @@ export interface PracticeState {
     sourceFilename: string,
     bytes: number[],
   ) => Promise<ScoreLibraryEntry>;
+  importAudioFromFile: (
+    sourceFilename: string,
+    bytes: number[],
+  ) => Promise<ImportedAudio>;
   loadScoreFromId: (id: string) => Promise<void>;
   refreshScoreLibrary: () => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
@@ -232,6 +252,29 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return entry;
     } catch (err) {
       throw new Error(`Failed to import MIDI: ${err}`);
+    }
+  },
+
+  importAudioFromFile: async (sourceFilename: string, bytes: number[]) => {
+    try {
+      const result = await invoke<ImportedAudio>("import_audio_file", {
+        sourceFilename,
+        bytes,
+      });
+      // Load the freshly-transcribed MusicXML so ScoreView can render it
+      // without a second user action (mirrors importMidiFromFile).
+      const loaded = await invoke<LoadedScore>("get_score", {
+        id: result.entry.id,
+      });
+      set((state) => ({
+        activeScore: result.entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+        scoreLibrary: [result.entry, ...state.scoreLibrary],
+      }));
+      return result;
+    } catch (err) {
+      throw new Error(`Failed to import audio: ${err}`);
     }
   },
 
