@@ -5,6 +5,8 @@ use ai_music_companion::commands::AppState;
 use std::fs::OpenOptions;
 use std::io;
 use std::sync::Mutex;
+// `Manager` brings `App::manage` / `App::handle` into scope for the setup hook.
+use tauri::Manager;
 use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -74,7 +76,12 @@ fn main() {
     init_tracing();
 
     tauri::Builder::default()
-        .manage(AppState::new())
+        .setup(|app| {
+            // Initialise AppState inside setup so the AppHandle is available
+            // for resolving bundled `profiles/` in packaged installs (#112).
+            app.manage(AppState::new_with_app_handle(app.handle()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ping,
             ai_music_companion::commands::start_practice_session,
