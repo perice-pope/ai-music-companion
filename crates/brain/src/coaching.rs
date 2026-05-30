@@ -93,6 +93,10 @@ pub struct SessionContext {
     pub phrases_played: usize,
     /// Previous coaching tips already shown (to avoid repetition).
     pub previous_tips: Vec<String>,
+    /// Title of the score being practised, when in Score Mode. Lets the
+    /// live coach name the piece ("on this passage of the Haydn…") rather
+    /// than speaking generically. `None` in free play.
+    pub score_title: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +528,12 @@ Choose the category that best matches the most notable aspect of the phrase data
             for tip in &context.previous_tips {
                 prompt.push_str(&format!("- {tip}\n"));
             }
+        }
+
+        // In Score Mode, tell the coach what piece this is so the tip can
+        // speak to the music, not just the instrument.
+        if let Some(title) = &context.score_title {
+            prompt.push_str(&format!("\nThe student is playing \"{title}\".\n"));
         }
 
         prompt.push_str("\nPlease provide a coaching tip based on this data.");
@@ -1109,6 +1119,7 @@ mod tests {
             session_duration_secs: 120.0,
             phrases_played: 5,
             previous_tips: vec!["Try relaxing your embouchure on the high notes.".to_owned()],
+            score_title: None,
         }
     }
 
@@ -1250,6 +1261,7 @@ mod tests {
                 "Work on bow control near the frog.".to_owned(),
                 "Your vibrato is coming along nicely.".to_owned(),
             ],
+            score_title: None,
         };
 
         let prompt = CoachingEngine::build_user_prompt(&phrase, &context);
@@ -1269,6 +1281,30 @@ mod tests {
         assert!(
             prompt.contains("vibrato"),
             "User prompt must include all previous tips"
+        );
+    }
+
+    #[test]
+    fn user_prompt_names_the_score_in_score_mode() {
+        let mut context = sample_context();
+        context.score_title = Some("Bach Cello Suite No. 1".to_owned());
+
+        let prompt = CoachingEngine::build_user_prompt(&sample_phrase(), &context);
+
+        assert!(
+            prompt.contains("Bach Cello Suite No. 1"),
+            "score-mode live tip prompt should name the piece, got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn user_prompt_omits_score_line_in_free_play() {
+        // sample_context() has score_title: None.
+        let prompt = CoachingEngine::build_user_prompt(&sample_phrase(), &sample_context());
+
+        assert!(
+            !prompt.contains("The student is playing"),
+            "free-play live tip prompt must not mention a piece, got:\n{prompt}"
         );
     }
 

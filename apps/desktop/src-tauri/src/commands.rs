@@ -721,6 +721,16 @@ impl AppState {
             .and_then(|s| s.recorder.current_instrument().map(|i| i.to_owned()))
     }
 
+    /// Title of the active session's score, if score-backed. Used to give
+    /// the live coach piece context. `None` in free play or when idle.
+    pub async fn active_session_score_title(&self) -> Option<String> {
+        self.active_session
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|s| s.recorder.score_title().map(|t| t.to_owned()))
+    }
+
     /// Request a coaching tip from the coaching service for the given phrase.
     pub async fn get_coaching_tip(
         &self,
@@ -1236,6 +1246,7 @@ pub async fn get_coaching_tip(
         session_duration_secs,
         phrases_played,
         previous_tips: Vec::new(),
+        score_title: state.active_session_score_title().await,
     };
     state
         .get_coaching_tip(&phrase, &session_ctx)
@@ -1702,6 +1713,7 @@ mod tests {
             session_duration_secs: 0.0,
             phrases_played: 0,
             previous_tips: Vec::new(),
+            score_title: None,
         };
         let phrase_0 = PhraseSummary {
             phrase_index: 0,
