@@ -173,6 +173,17 @@ impl PhraseAggregator {
         self.current_phrase_start_position = None;
     }
 
+    /// The follower's current position in the score, if a score is loaded.
+    ///
+    /// Reflects the most recent alignment from [`push`](Self::push) — i.e.
+    /// where the player is *right now*, not the position a phrase began on
+    /// (that's carried by [`PhraseSummary::score_position`]). Returns `None`
+    /// when no score follower is attached (free play). Used to drive a live
+    /// cursor between phrase boundaries.
+    pub fn current_score_position(&self) -> Option<ScorePosition> {
+        self.score_follower.as_ref().map(|f| f.current_position())
+    }
+
     /// Push an audio event into the aggregator.
     ///
     /// The aggregator checks for phrase boundaries (silence gaps and score measure
@@ -776,5 +787,55 @@ mod tests {
         assert_eq!(parsed.phrase_index, phrase.phrase_index);
         assert!((parsed.start_time - phrase.start_time).abs() < f64::EPSILON);
         assert_eq!(parsed.note_count, phrase.note_count);
+    }
+
+    // --- current_score_position tests ---
+
+    #[test]
+    fn current_score_position_is_none_without_follower() {
+        let agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        assert!(
+            agg.current_score_position().is_none(),
+            "free play (no follower) must report no position"
+        );
+    }
+
+    #[test]
+    fn current_score_position_tracks_latest_alignment() {
+        // Attach a follower built from the real C-major-scale fixture, then
+        // push a voiced C4. The live position must reflect that alignment —
+        // this is what drives the cursor between phrase boundaries.
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let follower = ScoreFollower::from_musicxml_str(xml, 0).expect("fixture parses");
+
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        agg.set_score_follower(follower);
+
+        // Before any event, position exists but sits at the start.
+        assert!(agg.current_score_position().is_some());
+
+        agg.push(&voiced_event(261.63, 0.5, 0.0)); // C4
+        let pos = agg
+            .current_score_position()
+            .expect("a follower is attached");
+        assert_eq!(
+            pos.measure_number, 1,
+            "first aligned note should put the live cursor in measure 1"
+        );
+    }
+
+    #[test]
+    fn current_score_position_cleared_with_follower() {
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let follower = ScoreFollower::from_musicxml_str(xml, 0).unwrap();
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        agg.set_score_follower(follower);
+        assert!(agg.current_score_position().is_some());
+
+        agg.clear_score_follower();
+        assert!(
+            agg.current_score_position().is_none(),
+            "clearing the follower must drop the live position"
+        );
     }
 }

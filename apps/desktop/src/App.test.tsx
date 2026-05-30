@@ -37,13 +37,47 @@ describe("App", () => {
   it("sets up the audio-event and phrase-detected listeners on mount", async () => {
     render(<App />);
     await vi.waitFor(() => {
-      expect(mockListen).toHaveBeenCalledTimes(2);
+      expect(mockListen).toHaveBeenCalledTimes(3);
     });
     expect(mockListen).toHaveBeenCalledWith("audio-event", expect.any(Function));
     expect(mockListen).toHaveBeenCalledWith(
       "phrase-detected",
       expect.any(Function),
     );
+    expect(mockListen).toHaveBeenCalledWith(
+      "score-position-updated",
+      expect.any(Function),
+    );
+  });
+
+  it("advances the cursor on a score-position-updated tick", async () => {
+    // The ~10 Hz live-cursor event must move the store cursor directly,
+    // with no phrase wrapper and no free-play guard (it only fires in
+    // score mode).
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(
+      async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      },
+    );
+
+    const { usePracticeStore } = await import("./stores/practiceStore");
+    usePracticeStore.getState().setCursorPosition(null);
+
+    render(<App />);
+    await vi.waitFor(() =>
+      expect(handlers["score-position-updated"]).toBeDefined(),
+    );
+
+    handlers["score-position-updated"]({
+      payload: { measure_number: 7, beat: 2.5 },
+    });
+
+    expect(usePracticeStore.getState().cursorPosition).toEqual({
+      measure_number: 7,
+      beat: 2.5,
+    });
   });
 
   it("advances the cursor when a score-following phrase arrives", async () => {
