@@ -1210,6 +1210,88 @@ mod tests {
     }
 
     #[test]
+    fn recap_includes_measure_references_when_score_loaded() {
+        use crate::phrase::{DynamicsStats, PitchStats};
+        use crate::session::RecapInput;
+
+        // Create phrases with score positions
+        let phrase1 = PhraseSummary {
+            phrase_index: 0,
+            start_time: 0.0,
+            end_time: 2.0,
+            duration_secs: 2.0,
+            note_count: 8,
+            pitch_stats: PitchStats {
+                mean_hz: 440.0,
+                min_hz: 430.0,
+                max_hz: 450.0,
+                range_cents: 50.0,
+                pitches: vec![440.0; 8],
+            },
+            dynamics: DynamicsStats {
+                mean_amplitude: 0.6,
+                min_amplitude: 0.4,
+                max_amplitude: 0.8,
+                dynamic_range: 0.4,
+            },
+            stability: 0.8,
+            score_position: Some(crate::follower::ScorePosition {
+                measure_number: 5,
+                beat: 1.0,
+                section_name: None,
+                expected_note: None,
+            }),
+        };
+
+        let phrase2 = PhraseSummary {
+            phrase_index: 1,
+            start_time: 2.0,
+            end_time: 4.5,
+            duration_secs: 2.5,
+            note_count: 10,
+            pitch_stats: PitchStats {
+                mean_hz: 450.0,
+                min_hz: 440.0,
+                max_hz: 460.0,
+                range_cents: 45.0,
+                pitches: vec![450.0; 10],
+            },
+            dynamics: DynamicsStats {
+                mean_amplitude: 0.65,
+                min_amplitude: 0.45,
+                max_amplitude: 0.85,
+                dynamic_range: 0.4,
+            },
+            stability: 0.82,
+            score_position: Some(crate::follower::ScorePosition {
+                measure_number: 7,
+                beat: 1.0,
+                section_name: None,
+                expected_note: None,
+            }),
+        };
+
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            phrases: vec![phrase1, phrase2],
+            duration_secs: 180.0,
+            practice_mode: crate::session::PracticeMode::Practice,
+            tips: Vec::new(),
+        };
+
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+
+        assert!(
+            prompt.contains("Measure 5") || prompt.contains("measure 5"),
+            "Recap prompt must include measure numbers when score positions are available"
+        );
+        assert!(
+            prompt.contains("Measure 7") || prompt.contains("measure 7"),
+            "Recap prompt must include all measure references from phrases"
+        );
+    }
+
+    #[test]
     fn all_severity_levels_are_serializable() {
         let severities = [
             CoachingSeverity::Encouragement,
