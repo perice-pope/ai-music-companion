@@ -1,3 +1,9 @@
+## [1.23.0](https://github.com/perice-pope/ai-music-companion/compare/v1.22.0...v1.23.0) (2026-05-30)
+
+### Features
+
+* **score-mode:** live cursor smoothing + measure-aware recaps (PR 3) ([#118](https://github.com/perice-pope/ai-music-companion/issues/118)) ([8432736](https://github.com/perice-pope/ai-music-companion/commit/843273693d38dc0fd068791cfdbaca85e0f8b56a))
+
 ## [1.22.0](https://github.com/perice-pope/ai-music-companion/compare/v1.21.1...v1.22.0) (2026-05-30)
 
 ### Features
