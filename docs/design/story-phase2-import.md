@@ -196,7 +196,7 @@ The serialiser every path feeds. Already covered by round-trip tests.
 ### PR 1 — MIDI file import (~300 lines)
 - `import_midi_file` Tauri command (parse → emitter → store).
 - `ScoreDropZone` accepts `.mid`/`.midi` and routes to it.
-- Tests: command happy/῎corrupt/title-fallback; drop-zone routing.
+- Tests: command happy/corrupt/title-fallback; drop-zone routing.
 - **Merge criterion:** drop a `.mid`, it appears in the library and renders in Score Mode. Pure Rust, no new deps — lowest risk, ships the import UX skeleton.
 
 ### PR 2 — Audio transcription core (~500 lines)
@@ -215,11 +215,16 @@ The serialiser every path feeds. Already covered by round-trip tests.
 
 ## 8. Open questions for the founder
 
-1. **YouTube import — confirm cut?** My recommendation is to drop it from Phase 2 (legal/ToS risk as distributor, poor quality on polyphonic audio, strictly downstream of audio import). Revisit later only with legal sign-off and as an opt-in. *Do you agree, or do you want it scoped in?*
-2. **Transcription crate placement** — `crates/ears/src/transcribe.rs` (audio-domain, near pitch detection) vs a dedicated `crates/transcribe`. I lean a dedicated crate so the heavy `ort` dependency doesn't bloat `ears`' real-time build. *Preference?*
-3. **basic-pitch integration — ONNX-in-process (Option A) vs Python sidecar (Option B).** I recommend A (single binary + 17 MB model, matches the tone-model path) and accept porting the note-creation post-processing as the cost. *OK to take on the `ort` dependency?*
-4. **Model distribution** — bundle `nmp.onnx` (~17 MB) in the installer (simple, offline, bigger download) vs fetch-on-first-use (smaller installer, needs network once). I lean **bundle** to keep the core loop fully offline per the architecture's offline-first principle.
-5. **Audio formats** — `.wav` + `.mp3` cover ~all cases via `symphonia`. Worth adding `.m4a`/`.flac` (symphonia supports them) or keep the surface small for v1?
+**Decisions made (founder, 2026-05-30):**
+
+1. ~~**YouTube import — confirm cut?**~~ ✅ **CUT from Phase 2.** Not built in this story; revisit later only with legal sign-off and as an explicit opt-in.
+3. ~~**basic-pitch integration — ONNX vs Python sidecar?**~~ ✅ **ONNX-in-process** (Option A). Single self-contained binary + bundled model; we take on the `ort` dependency and port basic-pitch's note-creation post-processing to Rust.
+4. ~~**Model distribution — bundle vs fetch?**~~ ✅ **Bundle** `nmp.onnx` (~17 MB) as a Tauri resource (the #120 pattern), keeping the core loop fully offline.
+
+**Still open (do not block PR 1):**
+
+2. **Transcription crate placement** — `crates/ears/src/transcribe.rs` (audio-domain, near pitch detection) vs a dedicated `crates/transcribe`. I lean a dedicated crate so the heavy `ort` dependency doesn't bloat `ears`' real-time build. *Needed before PR 2.*
+5. **Audio formats** — `.wav` + `.mp3` cover ~all cases via `symphonia`. Worth adding `.m4a`/`.flac` (symphonia supports them) or keep the surface small for v1? *Needed before PR 3.*
 
 ---
 
