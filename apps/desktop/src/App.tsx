@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
-import type { PhraseSummary } from "./types/brain";
+import type { PhraseSummary, ScorePosition } from "./types/brain";
 
 /**
  * App entry. Subscribes to the backend's live event streams for the whole
@@ -53,6 +53,18 @@ function App() {
         );
       } catch (err: unknown) {
         console.error("Failed to subscribe to phrase-detected:", err);
+      }
+
+      try {
+        unsubs.push(
+          // Fine-grained (~10 Hz) cursor updates between phrase boundaries.
+          // Only emitted in score mode, so no free-play guard is needed.
+          await listen<ScorePosition>("score-position-updated", ({ payload }) => {
+            setCursorPosition(payload);
+          }),
+        );
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to score-position-updated:", err);
       }
     })();
 

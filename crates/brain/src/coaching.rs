@@ -746,6 +746,14 @@ All text should be written as a teacher would speak — warm, specific, and acti
         let phrase_count = input.phrases.len();
         let duration_mins = (input.duration_secs / 60.0).round();
 
+        // Name the piece when the session was score-backed, so the recap
+        // can talk about *the music*, not just "your instrument".
+        let practicing_what = match &input.score_title {
+            Some(title) => format!("{} (playing \"{title}\")", input.instrument),
+            None => input.instrument.clone(),
+        };
+        let score_block = Self::build_score_block(input);
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -754,17 +762,54 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average rhythmic stability: {:.2}\n\
             - Average dynamic control: {:.2}\n\n\
-            {}\n\n\
+            {}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
-            that celebrate what went well and identify clear next steps.",
-            input.instrument,
+            that celebrate what went well and identify clear next steps.{}",
+            practicing_what,
             phrase_count,
             duration_mins as i32,
             phrase_count,
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
-            tip_summary
+            tip_summary,
+            score_block,
+            if input.score_title.is_some() {
+                " Where it helps, refer to specific measures by number so the \
+                student knows exactly which passage you mean."
+            } else {
+                ""
+            },
+        )
+    }
+
+    /// Build the optional "measure map" block for score-backed sessions:
+    /// one line per phrase with the measure it began on, so the LLM can
+    /// anchor feedback to real bar numbers ("measure 5 lost direction").
+    /// Returns an empty string in free play (no score positions to show).
+    fn build_score_block(input: &RecapInput) -> String {
+        if input.score_title.is_none() {
+            return String::new();
+        }
+        let lines: Vec<String> = input
+            .phrases
+            .iter()
+            .filter_map(|p| {
+                p.score_position.as_ref().map(|pos| {
+                    format!(
+                        "- Phrase {}: began at measure {}",
+                        p.phrase_index + 1,
+                        pos.measure_number
+                    )
+                })
+            })
+            .collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n\nWhere each phrase sat in the score:\n{}",
+            lines.join("\n")
         )
     }
 
@@ -984,6 +1029,78 @@ mod tests {
             stability: 0.92,
             score_position: None,
         }
+    }
+
+    /// A phrase tagged with a score position (began at the given measure).
+    fn sample_phrase_at_measure(phrase_index: usize, measure: usize) -> PhraseSummary {
+        let mut p = sample_phrase();
+        p.phrase_index = phrase_index;
+        p.score_position = Some(crate::follower::ScorePosition {
+            measure_number: measure,
+            beat: 0.0,
+            section_name: None,
+            expected_note: None,
+        });
+        p
+    }
+
+    #[test]
+    fn recap_prompt_names_the_score_and_cites_measures() {
+        // A score-backed session: the prompt must name the piece and list
+        // the measure each phrase began on, so the LLM can anchor feedback
+        // to real bars.
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 600.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![
+                sample_phrase_at_measure(0, 1),
+                sample_phrase_at_measure(1, 5),
+            ],
+            tips: vec![],
+            score_title: Some("Haydn Trumpet Concerto".to_owned()),
+        };
+
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+
+        assert!(
+            prompt.contains("Haydn Trumpet Concerto"),
+            "prompt should name the piece, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("measure 5"),
+            "prompt should cite the measure a phrase began on, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("refer to specific measures"),
+            "score-backed prompt should instruct the LLM to cite measures, got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn recap_prompt_omits_score_block_in_free_play() {
+        // No score → no piece name, no measure map, no measure instruction.
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 600.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: vec![],
+            score_title: None,
+        };
+
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+
+        assert!(
+            !prompt.contains("Where each phrase sat"),
+            "free play must not include the measure map"
+        );
+        assert!(
+            !prompt.contains("refer to specific measures"),
+            "free play must not ask the LLM to cite measures"
+        );
+        // Still names the instrument plainly.
+        assert!(prompt.contains("trumpet"));
     }
 
     fn sample_context() -> SessionContext {
@@ -1657,6 +1774,7 @@ mod tests {
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
             tips: vec![],
+            score_title: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -1706,6 +1824,7 @@ mod tests {
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 3],
             tips: vec![],
+            score_title: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -1736,6 +1855,7 @@ mod tests {
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 5],
             tips: vec![],
+            score_title: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -1774,6 +1894,7 @@ mod tests {
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 2],
             tips: vec![],
+            score_title: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();

@@ -268,6 +268,10 @@ pub struct RecapInput {
     /// all segments in segment order. Note: `phrase_index` is relative
     /// to the segment it was recorded in, not the flattened list.
     pub tips: Vec<RecordedTip>,
+    /// Title of the score the student practised with, if any. Lets the
+    /// recap name the piece ("your work on the Haydn") and lean on the
+    /// per-phrase `score_position` measure numbers. `None` in free play.
+    pub score_title: Option<String>,
 }
 
 /// The post-session recap shown to the student.
@@ -328,6 +332,9 @@ pub struct CompletedSession {
     /// The full participants tree. Always len >= 1; MVP only ever
     /// populates one.
     pub participants: Vec<Participant>,
+    /// Title of the score practised with, if any. Carried through to the
+    /// recap so the LLM can reference the piece by name. `None` in free play.
+    pub score_title: Option<String>,
 }
 
 impl CompletedSession {
@@ -375,6 +382,7 @@ impl CompletedSession {
             practice_mode: primary_segment.practice_mode,
             phrases: self.all_phrases(),
             tips: self.all_tips(),
+            score_title: self.score_title.clone(),
         }
     }
 
@@ -414,6 +422,9 @@ pub struct SessionRecorder {
     session_id: SessionId,
     started_at: DateTime<Utc>,
     participants: Vec<Participant>,
+    /// Title of the score being practised, if the session is score-backed.
+    /// Set once at session start via [`set_score_title`](Self::set_score_title).
+    score_title: Option<String>,
 }
 
 impl SessionRecorder {
@@ -441,7 +452,16 @@ impl SessionRecorder {
             session_id: SessionId::new(),
             started_at,
             participants: vec![participant],
+            score_title: None,
         }
+    }
+
+    /// Record the title of the score this session is practising with, so
+    /// the end-of-session recap can name the piece. Call once at session
+    /// start; a no-op-equivalent `None` leaves the session in free-play
+    /// framing.
+    pub fn set_score_title(&mut self, title: Option<String>) {
+        self.score_title = title;
     }
 
     /// Mutable access to the sole participant (MVP invariant: exactly one).
@@ -565,6 +585,7 @@ impl SessionRecorder {
             ended_at,
             duration_secs,
             participants: self.participants,
+            score_title: self.score_title,
         })
     }
 

@@ -19,6 +19,7 @@ use brain::coaching::{
     CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, ReqwestClient,
     SessionContext,
 };
+use brain::follower::ScorePosition;
 use brain::phrase::PhraseSummary;
 use brain::session::{
     CompletedSession, PracticeMode, RecapGenerator, RecapInput, ScoreId, SessionError,
@@ -674,6 +675,15 @@ impl AppState {
         }
     }
 
+    /// Look up a score's title by id for recap context. Returns `None` on
+    /// a bad id, a lock failure, or an unknown score — all non-fatal: the
+    /// session simply falls back to free-play recap framing.
+    fn score_title_for(&self, score_id: &str) -> Option<String> {
+        let id: ScoreId = score_id.parse().ok()?;
+        let store = self.score_store.lock().ok()?;
+        store.get(id).ok().map(|entry| entry.title)
+    }
+
     /// Clone the full instrument catalog for an IPC response.
     pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
         (*self.instruments).clone()
@@ -857,6 +867,13 @@ fn emit_phrase_detected<R: Runtime>(app: &tauri::AppHandle<R>, phrase: PhraseSum
     let _ = app.emit("phrase-detected", phrase);
 }
 
+/// Emit the follower's live score position (~10 Hz) so the cursor glides
+/// between phrase boundaries. Only fires in score mode. Non-fatal on
+/// error: a dropped tick just means one skipped frame of cursor motion.
+fn emit_score_position_updated<R: Runtime>(app: &tauri::AppHandle<R>, position: ScorePosition) {
+    let _ = app.emit("score-position-updated", position);
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers — pure (testable) implementations
 // ---------------------------------------------------------------------------
@@ -869,6 +886,7 @@ pub async fn start_practice_session_impl(
     instrument: String,
     practice_mode: PracticeMode,
     _coaching_enabled: bool,
+    score_title: Option<String>,
 ) -> Result<String, CommandError> {
     if instrument.trim().is_empty() {
         return Err(CommandError::EmptyInstrument);
@@ -884,6 +902,9 @@ pub async fn start_practice_session_impl(
 
     let coaching = (state.coaching_factory)();
     let mut session = ActiveSession::new(instrument, practice_mode, coaching);
+    // Tag the recorder with the score title (if score-backed) so the
+    // end-of-session recap can name the piece and cite measures.
+    session.recorder.set_score_title(score_title);
     let session_id = session.recorder.session_id().as_str();
     // Starting → Listening is synchronous in PR 1. PR 2 inserts a real
     // pause once audio capture startup is async.
@@ -1067,11 +1088,16 @@ pub async fn start_practice_session<R: Runtime>(
     // than failing the start. `None` when no score, or when the lookup or
     // MusicXML parse failed — `build_follower` logs the reason.
     let follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    // Look up the score's title (cheap metadata read) so the recap can name
+    // the piece. Independent of follower success: a score that parsed for
+    // metadata but failed to build a follower still names itself in the recap.
+    let score_title = score_id.as_deref().and_then(|id| state.score_title_for(id));
     match start_practice_session_impl(
         state.inner(),
         instrument.clone(),
         practice_mode,
         coaching_enabled,
+        score_title,
     )
     .await
     {
@@ -1082,6 +1108,7 @@ pub async fn start_practice_session<R: Runtime>(
             if let Some(profile) = detector_profile {
                 let app_for_emit = app.clone();
                 let app_for_phrase = app.clone();
+                let app_for_position = app.clone();
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
@@ -1090,6 +1117,9 @@ pub async fn start_practice_session<R: Runtime>(
                     },
                     move |phrase| {
                         emit_phrase_detected(&app_for_phrase, phrase);
+                    },
+                    move |position| {
+                        emit_score_position_updated(&app_for_position, position);
                     },
                 ) {
                     Ok(pipeline) => {
@@ -1420,10 +1450,15 @@ mod tests {
     async fn start_session_then_end_session_produces_recap() {
         // Happy path with phrases exercises the rich-recap branch.
         let s = state();
-        let session_id =
-            start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
-                .await
-                .expect("start should succeed");
+        let session_id = start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
         assert!(!session_id.is_empty(), "session id must be non-empty");
         assert_eq!(s.current_phase().await, SessionPhase::Listening);
 
@@ -1450,13 +1485,24 @@ mod tests {
     #[tokio::test]
     async fn double_start_is_rejected_with_clear_error() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap();
-        let err =
-            start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false)
-                .await
-                .unwrap_err();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let err = start_practice_session_impl(
+            &s,
+            "Piano".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, CommandError::AlreadyActive), "{err:?}");
         // Error message must be human-readable — frontend surfaces it
         // directly.
@@ -1483,9 +1529,15 @@ mod tests {
     #[tokio::test]
     async fn switch_instrument_closes_old_segment_opens_new() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
         let (new_segment_id, _) =
             switch_instrument_impl(&s, "Piano".to_owned(), PracticeMode::Practice)
                 .await
@@ -1503,7 +1555,7 @@ mod tests {
         // Per design doc §8 q3: zero phrases = calm empty-state recap,
         // NOT an error.
         let s = state();
-        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false)
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false, None)
             .await
             .unwrap();
         let recap = end_practice_session_impl(&s).await.unwrap();
@@ -1523,7 +1575,7 @@ mod tests {
         let s = state();
         assert_eq!(s.current_phase().await, SessionPhase::Idle);
 
-        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true)
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
             .await
             .unwrap();
         // PR 1 collapses Starting → Listening synchronously (no
@@ -1542,15 +1594,21 @@ mod tests {
     #[tokio::test]
     async fn start_rejects_empty_or_unknown_instrument() {
         let s = state();
-        let empty = start_practice_session_impl(&s, "  ".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap_err();
-        assert!(matches!(empty, CommandError::EmptyInstrument));
-
-        let unknown =
-            start_practice_session_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice, false)
+        let empty =
+            start_practice_session_impl(&s, "  ".to_owned(), PracticeMode::Practice, false, None)
                 .await
                 .unwrap_err();
+        assert!(matches!(empty, CommandError::EmptyInstrument));
+
+        let unknown = start_practice_session_impl(
+            &s,
+            "Kazoo".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
         match unknown {
             CommandError::UnknownInstrument(name) => assert_eq!(name, "Kazoo"),
             other => panic!("expected UnknownInstrument, got {other:?}"),
@@ -1560,9 +1618,15 @@ mod tests {
     #[tokio::test]
     async fn switch_rejects_unknown_instrument() {
         let s = state();
-        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, false)
-            .await
-            .unwrap();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
         let err = switch_instrument_impl(&s, "Kazoo".to_owned(), PracticeMode::Practice)
             .await
             .unwrap_err();

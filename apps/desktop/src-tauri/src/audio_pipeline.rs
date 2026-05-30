@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use brain::follower::ScoreFollower;
+use brain::follower::{ScoreFollower, ScorePosition};
 use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
 use ears::capture::{AudioCapture, CaptureConfig, CaptureError};
 use ears::pitch::{PitchConfig, PitchDetector, PitchError};
@@ -95,21 +95,29 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, emit, |_| {})
+        Self::start_with_follower(profile, None, emit, |_| {}, |_| {})
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
-    /// the worker thread and (optionally) a score follower. Completed
-    /// phrases are handed to `emit_phrase`.
-    pub fn start_with_follower<F, P>(
+    /// the worker thread and (optionally) a score follower.
+    ///
+    /// - `emit_phrase` fires once per completed phrase (boundary cadence,
+    ///   seconds apart), carrying a [`PhraseSummary`].
+    /// - `emit_position` fires at ~10 Hz with the follower's live
+    ///   [`ScorePosition`] — fine-grained enough for a smoothly gliding
+    ///   cursor *within* a measure, while staying well off the per-frame
+    ///   path. It never fires in free play (no follower attached).
+    pub fn start_with_follower<F, P, S>(
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
         emit: F,
         emit_phrase: P,
+        emit_position: S,
     ) -> Result<Self, PipelineError>
     where
         F: FnMut(AudioEvent) + Send + 'static,
         P: FnMut(PhraseSummary) + Send + 'static,
+        S: FnMut(ScorePosition) + Send + 'static,
     {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (profile_tx, profile_rx) = std::sync::mpsc::channel::<DetectorProfile>();
@@ -127,6 +135,7 @@ impl AudioPipeline {
                     startup_tx,
                     emit,
                     emit_phrase,
+                    emit_position,
                 );
             })?;
 
@@ -179,7 +188,7 @@ impl Drop for AudioPipeline {
 /// Opening the capture *here* (not in `start`) is deliberate: on macOS
 /// `cpal::Stream` is `!Send`, so it must never cross a thread boundary.
 #[allow(clippy::too_many_arguments)]
-fn run_worker<F, P>(
+fn run_worker<F, P, S>(
     initial_profile: DetectorProfile,
     follower: Option<ScoreFollower>,
     profile_rx: Receiver<DetectorProfile>,
@@ -187,19 +196,31 @@ fn run_worker<F, P>(
     startup_tx: Sender<Result<(), PipelineError>>,
     mut emit: F,
     mut emit_phrase: P,
+    mut emit_position: S,
 ) where
     F: FnMut(AudioEvent),
     P: FnMut(PhraseSummary),
+    S: FnMut(ScorePosition),
 {
+    /// Minimum spacing between live score-position emits. ~10 Hz is smooth
+    /// enough for the cursor to glide within a measure without flooding IPC
+    /// (the detect loop runs ~40–50 Hz). Driven off event timestamps, not
+    /// wall-clock, so it tracks audio time exactly.
+    const POSITION_EMIT_INTERVAL_SECS: f64 = 0.1;
+
     // Phrase aggregator groups events into musical phrases. With a score
     // follower attached it also tags each phrase with the score position
     // it began on — the anchor the cursor follows. Constructed with the
     // default config (validated, so `expect` is unreachable in practice).
     let mut aggregator =
         PhraseAggregator::new(PhraseConfig::default()).expect("default PhraseConfig is valid");
+    let has_follower = follower.is_some();
     if let Some(f) = follower {
         aggregator.set_score_follower(f);
     }
+    // Timestamp of the last position emit, for 10 Hz downsampling. `None`
+    // until the first emit so the cursor moves immediately on first audio.
+    let mut last_position_emit_secs: Option<f64> = None;
     // --- Open capture. Bail early if the mic is unavailable. ---
     let mut capture = match AudioCapture::new(CaptureConfig::default()) {
         Ok(c) => c,
@@ -290,12 +311,30 @@ fn run_worker<F, P>(
         // Live pitch goes out first so the meter stays responsive, then
         // the aggregator folds the event into the current phrase.
         emit(event.clone());
+        let event_time = event.timestamp_secs;
         aggregator.push(&event);
         // `take_new_phrases` only allocates when a phrase actually closed
         // (a boundary every few seconds), never per frame — so this stays
         // off the per-frame allocation budget.
         for phrase in aggregator.take_new_phrases() {
             emit_phrase(phrase);
+        }
+
+        // Live cursor: emit the follower's current position at ~10 Hz so it
+        // glides between phrase boundaries. Skipped entirely in free play
+        // (no follower → nothing to report, and `current_score_position`
+        // returns `None`).
+        if has_follower {
+            let due = match last_position_emit_secs {
+                None => true,
+                Some(last) => event_time - last >= POSITION_EMIT_INTERVAL_SECS,
+            };
+            if due {
+                if let Some(pos) = aggregator.current_score_position() {
+                    emit_position(pos);
+                    last_position_emit_secs = Some(event_time);
+                }
+            }
         }
     }
 
