@@ -1,3 +1,9 @@
+## [1.24.1](https://github.com/perice-pope/ai-music-companion/compare/v1.24.0...v1.24.1) (2026-05-30)
+
+### Bug Fixes
+
+* **desktop:** resolve bundled profiles in packaged builds ([#112](https://github.com/perice-pope/ai-music-companion/issues/112)) ([#120](https://github.com/perice-pope/ai-music-companion/issues/120)) ([6dbb926](https://github.com/perice-pope/ai-music-companion/commit/6dbb9268d813fd6bd3dcab2a923b43d9b791da44))
+
 ## [1.24.0](https://github.com/perice-pope/ai-music-companion/compare/v1.23.0...v1.24.0) (2026-05-30)
 
 ### Features
