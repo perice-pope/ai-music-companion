@@ -1,3 +1,9 @@
+## [1.27.0](https://github.com/perice-pope/ai-music-companion/compare/v1.26.0...v1.27.0) (2026-05-30)
+
+### Features
+
+* **score:** import MIDI files into the score library ([#123](https://github.com/perice-pope/ai-music-companion/issues/123)) ([3d0ea4b](https://github.com/perice-pope/ai-music-companion/commit/3d0ea4b886135a085502373ea9af5c49a54f9c7f))
+
 ## [1.26.0](https://github.com/perice-pope/ai-music-companion/compare/v1.25.0...v1.26.0) (2026-05-30)
 
 ### Features
