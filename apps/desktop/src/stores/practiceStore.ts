@@ -7,6 +7,7 @@ import type {
   SessionRecap,
   ScoreLibraryEntry,
   ScorePosition,
+  LoadedScore,
 } from "../types/brain";
 import { useAudioStore } from "./audioStore";
 
@@ -65,6 +66,13 @@ export interface PracticeState {
 
   // Score mode (story-score-mode PR 1) ------------------------------------
   activeScore: ScoreLibraryEntry | null;
+  /**
+   * Raw MusicXML for `activeScore`, fetched lazily when a score is
+   * selected. `null` until loaded — `ScoreView` renders nothing without
+   * it. Kept here (not just in the component) so it survives navigation
+   * between score-picker and session.
+   */
+  activeScoreXml: string | null;
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
 
@@ -174,6 +182,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   recap: null,
   recapError: null,
   activeScore: null,
+  activeScoreXml: null,
   scoreLibrary: [],
   cursorPosition: null,
   coachingEnabled: loadCoachingPref(),
@@ -182,8 +191,15 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   loadScoreFromFile: async (path: string) => {
     try {
       const entry = await invoke<ScoreLibraryEntry>("import_score", { path });
-      set({ activeScore: entry });
-      set((state) => ({ scoreLibrary: [entry, ...state.scoreLibrary] }));
+      // Fetch the just-imported MusicXML so ScoreView can render it
+      // without a second user action.
+      const loaded = await invoke<LoadedScore>("get_score", { id: entry.id });
+      set((state) => ({
+        activeScore: entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+        scoreLibrary: [entry, ...state.scoreLibrary],
+      }));
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
     }
@@ -191,11 +207,15 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   loadScoreFromId: async (id: string) => {
     try {
-      const entry = get().scoreLibrary.find((s) => s.id === id);
-      if (!entry) {
-        throw new Error(`Score ${id} not found in library`);
-      }
-      set({ activeScore: entry });
+      // `get_score` returns the entry *and* its MusicXML — the library
+      // list only carries metadata, so this is where the actual notes
+      // come across the IPC boundary.
+      const loaded = await invoke<LoadedScore>("get_score", { id });
+      set({
+        activeScore: loaded.entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+      });
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
     }
@@ -222,7 +242,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
-  clearActiveScore: () => set({ activeScore: null, cursorPosition: null }),
+  clearActiveScore: () =>
+    set({ activeScore: null, activeScoreXml: null, cursorPosition: null }),
 
   startSession: async (instrument: string, vibratoToleranceCents = 15.0, scoreId?: string) => {
     const { status } = get();
@@ -362,6 +383,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       phrases: [],
       tipQueue: [],
       activeScore: null,
+      activeScoreXml: null,
       cursorPosition: null,
     }),
 

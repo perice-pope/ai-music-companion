@@ -341,3 +341,60 @@ describe("practiceStore — practiceMode", () => {
     });
   });
 });
+
+describe("practiceStore — score loading", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  const ENTRY = {
+    id: "score-1",
+    title: "C Major Scale",
+    composer: "Test",
+    source_filename: "scale.musicxml",
+    added_at: "2026-01-01T00:00:00Z",
+    last_practiced_at: null,
+    part_index: 0,
+    duration_measures: 4,
+  };
+  const XML = "<score-partwise><part id='P1'/></score-partwise>";
+
+  it("loadScoreFromId fetches MusicXML via get_score and stores it", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce({ entry: ENTRY, music_xml: XML });
+
+    await useStore.getState().loadScoreFromId("score-1");
+
+    // It must call the IPC that actually carries the notes — not just
+    // read library metadata that lacks MusicXML.
+    expect(mockInvoke).toHaveBeenCalledWith("get_score", { id: "score-1" });
+    const s = useStore.getState();
+    expect(s.activeScore?.id).toBe("score-1");
+    expect(s.activeScoreXml).toBe(XML);
+    expect(s.cursorPosition).toBeNull();
+  });
+
+  it("loadScoreFromId surfaces a useful error when get_score fails", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockRejectedValueOnce("score 404");
+
+    await expect(
+      useStore.getState().loadScoreFromId("missing"),
+    ).rejects.toThrow(/Failed to load score/);
+    // No partial state left behind.
+    expect(useStore.getState().activeScoreXml).toBeNull();
+  });
+
+  it("clearActiveScore drops the loaded MusicXML and cursor", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce({ entry: ENTRY, music_xml: XML });
+    await useStore.getState().loadScoreFromId("score-1");
+
+    useStore.getState().clearActiveScore();
+
+    const s = useStore.getState();
+    expect(s.activeScore).toBeNull();
+    expect(s.activeScoreXml).toBeNull();
+  });
+});

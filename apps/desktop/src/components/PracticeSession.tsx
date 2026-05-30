@@ -7,16 +7,22 @@ import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
 import CoachingTipPanel from "./CoachingTipPanel";
+import ScoreView from "./ScoreView";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
  * small header dropdown for mid-session instrument switching.
+ *
+ * When a score is loaded, the live sheet music (with a following cursor)
+ * takes the main stage and the pitch meter moves to a sidebar.
  */
 export default function PracticeSession() {
   const instrumentName = usePracticeStore((s) => s.instrumentName);
   const switchInstrument = usePracticeStore((s) => s.switchInstrument);
   const practiceMode = usePracticeStore((s) => s.practiceMode);
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
+  const activeScoreXml = usePracticeStore((s) => s.activeScoreXml);
+  const cursorPosition = usePracticeStore((s) => s.cursorPosition);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -181,12 +187,28 @@ export default function PracticeSession() {
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
-        <PitchDisplay />
-        <div className="hidden lg:block">
-          <CoachingTipPanel />
+      {activeScoreXml ? (
+        // Score mode: sheet music leads, pitch + tips sit alongside.
+        <div className="flex flex-1 flex-col gap-4 p-4 lg:flex-row">
+          <div className="min-h-0 flex-1" data-testid="session-score-pane">
+            <ScoreView musicXml={activeScoreXml} cursorPosition={cursorPosition} />
+          </div>
+          <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
+            <PitchDisplay />
+            <div className="hidden lg:block">
+              <CoachingTipPanel />
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        // Free play: the pitch meter is the centerpiece.
+        <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
+          <PitchDisplay />
+          <div className="hidden lg:block">
+            <CoachingTipPanel />
+          </div>
+        </div>
+      )}
     </main>
   );
 }

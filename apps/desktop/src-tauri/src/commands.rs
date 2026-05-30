@@ -633,6 +633,47 @@ impl AppState {
         }
     }
 
+    /// Build a [`ScoreFollower`] for the given score id by loading its
+    /// stored MusicXML and parsing the part it was imported under.
+    ///
+    /// Returns `None` (and logs) on any failure — an unknown id, a bad
+    /// uuid, or unparseable MusicXML. Score following is an enhancement,
+    /// not a precondition: if it can't be built the session still runs,
+    /// just without a moving cursor. This keeps "couldn't follow the
+    /// score" from ever looking like "couldn't start practising".
+    fn build_follower(&self, score_id: &str) -> Option<brain::follower::ScoreFollower> {
+        let id: ScoreId = match score_id.parse() {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(error = %e, score_id, "invalid score id; starting without follower");
+                return None;
+            }
+        };
+        let (music_xml, part_index) = {
+            let store = match self.score_store.lock() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "score store lock poisoned; no follower");
+                    return None;
+                }
+            };
+            match store.get(id) {
+                Ok(entry) => (entry.music_xml, entry.part_index),
+                Err(e) => {
+                    tracing::warn!(error = %e, score_id, "score not found; no follower");
+                    return None;
+                }
+            }
+        };
+        match brain::follower::ScoreFollower::from_musicxml_str(&music_xml, part_index) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                tracing::warn!(error = %e, score_id, "score MusicXML did not parse; no follower");
+                None
+            }
+        }
+    }
+
     /// Clone the full instrument catalog for an IPC response.
     pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
         (*self.instruments).clone()
@@ -806,6 +847,14 @@ fn emit_session_status<R: Runtime>(app: &tauri::AppHandle<R>, phase: SessionPhas
 
 fn emit_segment_changed<R: Runtime>(app: &tauri::AppHandle<R>, payload: SegmentChangedPayload) {
     let _ = app.emit("segment-changed", payload);
+}
+
+/// Emit a completed phrase to the frontend. Carries `score_position`
+/// (measure/beat) when a score follower is attached — that's what the
+/// score-mode cursor advances to. Non-fatal on error: a dropped event
+/// just means the cursor misses one hop.
+fn emit_phrase_detected<R: Runtime>(app: &tauri::AppHandle<R>, phrase: PhraseSummary) {
+    let _ = app.emit("phrase-detected", phrase);
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,9 +1058,15 @@ pub async fn start_practice_session<R: Runtime>(
     instrument: String,
     practice_mode: PracticeMode,
     coaching_enabled: bool,
+    score_id: Option<String>,
 ) -> Result<String, String> {
     emit_session_status(&app, SessionPhase::Starting);
     let detector_profile = state.detector_profile_for(&instrument);
+    // Build the score follower (if a score was chosen) before committing
+    // the session, so a missing/bad score degrades to "no cursor" rather
+    // than failing the start. `None` when no score, or when the lookup or
+    // MusicXML parse failed — `build_follower` logs the reason.
+    let follower = score_id.as_deref().and_then(|id| state.build_follower(id));
     match start_practice_session_impl(
         state.inner(),
         instrument.clone(),
@@ -1026,9 +1081,17 @@ pub async fn start_practice_session<R: Runtime>(
             // in a consistent state.
             if let Some(profile) = detector_profile {
                 let app_for_emit = app.clone();
-                match AudioPipeline::start(profile, move |event| {
-                    let _ = app_for_emit.emit("audio-event", event);
-                }) {
+                let app_for_phrase = app.clone();
+                match AudioPipeline::start_with_follower(
+                    profile,
+                    follower,
+                    move |event| {
+                        let _ = app_for_emit.emit("audio-event", event);
+                    },
+                    move |phrase| {
+                        emit_phrase_detected(&app_for_phrase, phrase);
+                    },
+                ) {
                     Ok(pipeline) => {
                         // Install only if the session is still live —
                         // a concurrent `end_practice_session` could
@@ -1254,9 +1317,19 @@ pub fn import_score(
     part_index: usize,
     duration_measures: usize,
 ) -> Result<ScoreLibraryEntryDto, String> {
-    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    let score_store = state
+        .score_store
+        .lock()
+        .map_err(|e| format!("lock error: {e}"))?;
     let entry = score_store
-        .import(title, composer, source_filename, music_xml, part_index, duration_measures)
+        .import(
+            title,
+            composer,
+            source_filename,
+            music_xml,
+            part_index,
+            duration_measures,
+        )
         .map_err(|e| e.to_string())?;
     Ok(entry.into())
 }
@@ -1264,7 +1337,10 @@ pub fn import_score(
 /// List all scores in the library.
 #[tauri::command]
 pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDto>, String> {
-    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    let score_store = state
+        .score_store
+        .lock()
+        .map_err(|e| format!("lock error: {e}"))?;
     let entries = score_store.list().map_err(|e| e.to_string())?;
     Ok(entries.into_iter().map(|e| e.into()).collect())
 }
@@ -1272,8 +1348,14 @@ pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDt
 /// Load a score by id (returns entry + MusicXML).
 #[tauri::command]
 pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDto, String> {
-    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    // Turbofish (not a `uuid::Error` annotation) pins the parse target:
+    // `uuid` isn't a direct dependency of this crate, so naming its error
+    // type won't resolve, but the inferred error still impls `Display`.
+    let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
+    let score_store = state
+        .score_store
+        .lock()
+        .map_err(|e| format!("lock error: {e}"))?;
     let entry = score_store.get(score_id).map_err(|e| e.to_string())?;
     Ok(LoadedScoreDto {
         music_xml: entry.music_xml.clone(),
@@ -1284,8 +1366,13 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
 /// Delete a score from the library.
 #[tauri::command]
 pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let score_store = state.score_store.lock().map_err(|e| format!("lock error: {e}"))?;
+    // See `get_score`: turbofish pins the parse target without naming the
+    // non-direct-dependency `uuid::Error` type.
+    let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
+    let score_store = state
+        .score_store
+        .lock()
+        .map_err(|e| format!("lock error: {e}"))?;
     score_store.delete(score_id).map_err(|e| e.to_string())?;
     Ok(())
 }

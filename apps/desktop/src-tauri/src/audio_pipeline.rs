@@ -27,6 +27,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use brain::follower::ScoreFollower;
+use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
 use ears::capture::{AudioCapture, CaptureConfig, CaptureError};
 use ears::pitch::{PitchConfig, PitchDetector, PitchError};
 use ears::AudioEvent;
@@ -82,9 +84,32 @@ impl AudioPipeline {
     /// the supplied callback. Blocks until the worker thread has
     /// confirmed startup (so `Err` here means "mic failed to open", not
     /// "mic failed at some point later").
+    ///
+    /// `emit_phrase` is called once per *completed* phrase (every few
+    /// seconds, at a phrase boundary — never per audio frame), carrying
+    /// the [`PhraseSummary`]. When a `ScoreFollower` is supplied via
+    /// [`AudioPipeline::start_with_follower`], each summary's
+    /// `score_position` is the measure/beat the phrase began on, which
+    /// drives the score-mode cursor.
     pub fn start<F>(profile: DetectorProfile, emit: F) -> Result<Self, PipelineError>
     where
         F: FnMut(AudioEvent) + Send + 'static,
+    {
+        Self::start_with_follower(profile, None, emit, |_| {})
+    }
+
+    /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
+    /// the worker thread and (optionally) a score follower. Completed
+    /// phrases are handed to `emit_phrase`.
+    pub fn start_with_follower<F, P>(
+        profile: DetectorProfile,
+        follower: Option<ScoreFollower>,
+        emit: F,
+        emit_phrase: P,
+    ) -> Result<Self, PipelineError>
+    where
+        F: FnMut(AudioEvent) + Send + 'static,
+        P: FnMut(PhraseSummary) + Send + 'static,
     {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (profile_tx, profile_rx) = std::sync::mpsc::channel::<DetectorProfile>();
@@ -94,7 +119,15 @@ impl AudioPipeline {
         let thread = thread::Builder::new()
             .name("audio-pipeline".into())
             .spawn(move || {
-                run_worker(profile, profile_rx, shutdown_worker, startup_tx, emit);
+                run_worker(
+                    profile,
+                    follower,
+                    profile_rx,
+                    shutdown_worker,
+                    startup_tx,
+                    emit,
+                    emit_phrase,
+                );
             })?;
 
         match startup_rx.recv() {
@@ -145,15 +178,28 @@ impl Drop for AudioPipeline {
 ///
 /// Opening the capture *here* (not in `start`) is deliberate: on macOS
 /// `cpal::Stream` is `!Send`, so it must never cross a thread boundary.
-fn run_worker<F>(
+#[allow(clippy::too_many_arguments)]
+fn run_worker<F, P>(
     initial_profile: DetectorProfile,
+    follower: Option<ScoreFollower>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
     mut emit: F,
+    mut emit_phrase: P,
 ) where
     F: FnMut(AudioEvent),
+    P: FnMut(PhraseSummary),
 {
+    // Phrase aggregator groups events into musical phrases. With a score
+    // follower attached it also tags each phrase with the score position
+    // it began on — the anchor the cursor follows. Constructed with the
+    // default config (validated, so `expect` is unreachable in practice).
+    let mut aggregator =
+        PhraseAggregator::new(PhraseConfig::default()).expect("default PhraseConfig is valid");
+    if let Some(f) = follower {
+        aggregator.set_score_follower(f);
+    }
     // --- Open capture. Bail early if the mic is unavailable. ---
     let mut capture = match AudioCapture::new(CaptureConfig::default()) {
         Ok(c) => c,
@@ -241,7 +287,23 @@ fn run_worker<F>(
         };
 
         let event = detector.detect(mono_slice);
-        emit(event);
+        // Live pitch goes out first so the meter stays responsive, then
+        // the aggregator folds the event into the current phrase.
+        emit(event.clone());
+        aggregator.push(&event);
+        // `take_new_phrases` only allocates when a phrase actually closed
+        // (a boundary every few seconds), never per frame — so this stays
+        // off the per-frame allocation budget.
+        for phrase in aggregator.take_new_phrases() {
+            emit_phrase(phrase);
+        }
+    }
+
+    // Close out the final in-progress phrase so the last bar of playing
+    // isn't dropped when the user hits End.
+    aggregator.flush();
+    for phrase in aggregator.take_new_phrases() {
+        emit_phrase(phrase);
     }
 
     tracing::info!("audio_pipeline: worker shutting down");
