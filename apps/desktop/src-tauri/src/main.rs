@@ -92,6 +92,7 @@ fn main() {
             ai_music_companion::commands::get_session_detail,
             ai_music_companion::commands::get_practice_stats,
             ai_music_companion::commands::import_score,
+            ai_music_companion::commands::import_midi_file,
             ai_music_companion::commands::list_scores,
             ai_music_companion::commands::get_score,
             ai_music_companion::commands::delete_score,

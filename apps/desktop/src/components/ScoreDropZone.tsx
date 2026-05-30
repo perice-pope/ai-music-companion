@@ -1,63 +1,66 @@
 import { useRef, useState } from "react";
+import { usePracticeStore } from "../stores/practiceStore";
+
+const MIDI_EXTS = ["mid", "midi"];
+const MUSICXML_EXTS = ["musicxml", "mxl", "xml"];
+const VALID_EXTS = [...MUSICXML_EXTS, ...MIDI_EXTS];
 
 export default function ScoreDropZone() {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
+
+  // Route a chosen file by extension. MIDI is fully wired: read the bytes
+  // and hand them to the backend, which parses → MusicXML → library. The
+  // MusicXML path still needs frontend metadata parsing (a later slice), so
+  // it surfaces an honest "not yet" rather than silently failing.
+  const handleFile = async (file: File) => {
+    setError(null);
+    setStatus(null);
+
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!ext || !VALID_EXTS.includes(ext)) {
+      setError("Unsupported format. Use .musicxml, .mxl, .xml, .mid, or .midi files.");
+      return;
+    }
+
+    if (MIDI_EXTS.includes(ext)) {
+      try {
+        setStatus(`Importing ${file.name}…`);
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        const entry = await importMidiFromFile(file.name, bytes);
+        setStatus(`Imported "${entry.title}".`);
+      } catch (err) {
+        setStatus(null);
+        setError(`${err instanceof Error ? err.message : err}`);
+      }
+      return;
+    }
+
+    // MusicXML/.xml/.mxl: backend command exists, but the frontend metadata
+    // extraction it expects isn't built yet.
+    setError("MusicXML import isn't wired up yet — MIDI files work today.");
+  };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
-    setError(null);
-
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
-
-    const ext = files[0].name.split(".").pop()?.toLowerCase();
-    const validExts = ["musicxml", "mxl", "xml", "mid"];
-
-    if (!ext || !validExts.includes(ext)) {
-      setError(
-        `Unsupported format. Use .musicxml, .mxl, .xml, or .mid files.`
-      );
-      return;
-    }
-
-    try {
-      // On Tauri, we need the file path. For now, we'll prompt the user
-      // to use the "Choose file..." button. In a real implementation,
-      // we'd use the filesystem API to get the path.
-      // For now, just reject drop and show a friendly message.
-      setError(
-        `File drop not yet supported. Use "Choose file..." below.`
-      );
-    } catch (err) {
-      setError(`Failed to load file: ${err}`);
-    }
+    await handleFile(files[0]);
   };
 
-  const handleBrowse = async () => {
-    // In a Tauri app, we'd use open_dialog from tauri::api.
-    // For now, trigger the file input.
+  const handleBrowse = () => {
     fileInputRef.current?.click();
   };
 
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.currentTarget.files;
     if (!files || files.length === 0) return;
-
-    setError(null);
-
-    try {
-      // Tauri can't directly access file paths from <input type="file">
-      // for security reasons. This is where we'd use Tauri's file API.
-      // For now, show an error.
-      setError(
-        `File input not yet integrated with Tauri. Use \`import_score\` command directly for testing.`
-      );
-    } catch (err) {
-      setError(`Failed to load file: ${err}`);
-    }
+    await handleFile(files[0]);
   };
 
   return (
@@ -80,7 +83,7 @@ export default function ScoreDropZone() {
           {isDragging ? "Drop your score here" : "Drag a score here"}
         </h3>
         <p className="mt-2 text-sm text-gray-400">
-          Supports .musicxml, .mxl, .xml, and .mid files
+          Supports .musicxml, .mxl, .xml, .mid, and .midi files
         </p>
 
         <div className="mt-6 flex justify-center gap-4">
@@ -93,12 +96,18 @@ export default function ScoreDropZone() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".musicxml,.mxl,.xml,.mid"
+            accept=".musicxml,.mxl,.xml,.mid,.midi"
             onChange={handleFileInput}
             className="hidden"
           />
         </div>
       </div>
+
+      {status && (
+        <div className="mt-4 rounded bg-blue-900/20 border border-blue-500 p-3 text-blue-200 text-sm">
+          {status}
+        </div>
+      )}
 
       {error && (
         <div className="mt-4 rounded bg-red-900/20 border border-red-500 p-3 text-red-200 text-sm">

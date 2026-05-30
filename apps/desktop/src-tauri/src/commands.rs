@@ -705,6 +705,51 @@ impl AppState {
         store.get(id).ok().map(|entry| entry.title)
     }
 
+    /// Import a MIDI file into the score library.
+    ///
+    /// Parses the raw MIDI bytes into a [`ScoreModel`], serialises it to
+    /// canonical MusicXML (the single format the library and score follower
+    /// speak — see `architecture-v2.md` §9), and persists it.
+    ///
+    /// Unlike [`import_score`], the metadata (title, composer, measure count)
+    /// is derived *in the backend* from the parsed MIDI rather than passed in
+    /// from the frontend: the backend has to parse the file to convert it
+    /// anyway, so there is nothing for the frontend to compute. When the MIDI
+    /// carries no `TrackName` (the parser yields `"Untitled"`), the title
+    /// falls back to the file's name stem so the library entry is
+    /// recognisable rather than a wall of "Untitled".
+    fn import_midi(
+        &self,
+        source_filename: String,
+        bytes: Vec<u8>,
+    ) -> Result<ScoreLibraryEntry, String> {
+        let model = brain::score::midi::parse_midi_bytes(&bytes).map_err(|e| e.to_string())?;
+
+        let title = if model.title == "Untitled" {
+            filename_stem(&source_filename).unwrap_or_else(|| "Untitled".to_string())
+        } else {
+            model.title.clone()
+        };
+        let composer = model.composer.clone();
+        let duration_measures = model.measures.len();
+        let music_xml = brain::score::emit::score_model_to_musicxml(&model);
+
+        let store = self
+            .score_store
+            .lock()
+            .map_err(|e| format!("lock error: {e}"))?;
+        store
+            .import(
+                title,
+                composer,
+                source_filename,
+                music_xml,
+                0,
+                duration_measures,
+            )
+            .map_err(|e| e.to_string())
+    }
+
     /// Clone the full instrument catalog for an IPC response.
     pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
         (*self.instruments).clone()
@@ -1408,6 +1453,32 @@ pub fn import_score(
     Ok(entry.into())
 }
 
+/// Extract a file's name stem (no directory, no extension) for use as a
+/// fallback score title. Returns `None` for an empty stem so callers can
+/// pick their own default rather than store a blank title.
+fn filename_stem(name: &str) -> Option<String> {
+    std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Import a MIDI file into the score library.
+///
+/// Parses the MIDI, converts it to canonical MusicXML, and stores it — the
+/// score then behaves like any other library entry (render, cursor-follow).
+/// `bytes` is the raw file content read on the frontend; `source_filename`
+/// is used for display and as a title fallback when the MIDI is unnamed.
+#[tauri::command]
+pub fn import_midi_file(
+    state: State<'_, AppState>,
+    source_filename: String,
+    bytes: Vec<u8>,
+) -> Result<ScoreLibraryEntryDto, String> {
+    state.import_midi(source_filename, bytes).map(Into::into)
+}
+
 /// List all scores in the library.
 #[tauri::command]
 pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDto>, String> {
@@ -1869,5 +1940,112 @@ mod tests {
         let s = state();
         s.stop_audio_pipeline().await;
         s.stop_audio_pipeline().await; // Double-stop, still fine.
+    }
+
+    // ── MIDI import (Story: Phase 2 Smart Import — PR 1) ───────────────
+
+    fn write_variable_length(buf: &mut Vec<u8>, mut value: u32) {
+        let mut bytes = vec![(value & 0x7F) as u8];
+        value >>= 7;
+        while value > 0 {
+            bytes.push((value & 0x7F) as u8 | 0x80);
+            value >>= 7;
+        }
+        bytes.reverse();
+        buf.extend_from_slice(&bytes);
+    }
+
+    fn write_meta_event(buf: &mut Vec<u8>, delta: u16, meta_type: u8, data: &[u8]) {
+        write_variable_length(buf, delta as u32);
+        buf.push(0xFF);
+        buf.push(meta_type);
+        write_variable_length(buf, data.len() as u32);
+        buf.extend_from_slice(data);
+    }
+
+    fn write_midi_event(buf: &mut Vec<u8>, delta: u16, status: u8, data1: u8, data2: u8) {
+        write_variable_length(buf, delta as u32);
+        buf.push(status);
+        buf.push(data1);
+        buf.push(data2);
+    }
+
+    /// Build a minimal valid Format-0 MIDI: a tempo, an optional TrackName,
+    /// and one 4/4 measure of quarter notes (C-D-E-F). Mirrors the
+    /// byte-level construction used by `brain`'s own MIDI parser tests so we
+    /// need no MIDI-writing dependency in the desktop crate.
+    fn build_test_midi(name: Option<&str>) -> Vec<u8> {
+        let mut track = Vec::new();
+        write_meta_event(&mut track, 0, 0x51, &[0x07, 0xA1, 0x20]); // 120 BPM
+        if let Some(name) = name {
+            write_meta_event(&mut track, 0, 0x03, name.as_bytes());
+        }
+        for pitch in [60_u8, 62, 64, 65] {
+            write_midi_event(&mut track, 0, 0x90, pitch, 80); // note on
+            write_midi_event(&mut track, 480, 0x80, pitch, 0); // note off, +1 beat
+        }
+        write_meta_event(&mut track, 0, 0x2F, &[]); // end of track
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_u32.to_be_bytes());
+        bytes.extend_from_slice(&0_u16.to_be_bytes()); // format 0
+        bytes.extend_from_slice(&1_u16.to_be_bytes()); // 1 track
+        bytes.extend_from_slice(&480_u16.to_be_bytes()); // ticks per quarter
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&track);
+        bytes
+    }
+
+    #[test]
+    fn import_midi_stores_derived_metadata_and_roundtrips_to_musicxml() {
+        let s = state();
+        let entry = s
+            .import_midi(
+                "scales.mid".to_string(),
+                build_test_midi(Some("C Major Scale")),
+            )
+            .expect("import valid MIDI");
+
+        // Metadata is derived in the backend from the parsed MIDI.
+        assert_eq!(entry.title, "C Major Scale");
+        assert_eq!(entry.source_filename, "scales.mid");
+        assert!(entry.duration_measures >= 1, "one measure of notes");
+
+        // The stored payload must be real MusicXML the rest of the app can
+        // parse — this is the canonical-format guarantee the emitter exists
+        // to uphold.
+        let reparsed = brain::score::musicxml::parse_musicxml_str_part(&entry.music_xml, 0)
+            .expect("stored MusicXML must re-parse");
+        assert!(!reparsed.measures.is_empty());
+
+        // And it landed in the library.
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "C Major Scale");
+    }
+
+    #[test]
+    fn import_midi_falls_back_to_filename_when_untitled() {
+        let s = state();
+        // No TrackName → parser yields "Untitled" → we use the name stem,
+        // stripped of directory and extension.
+        let entry = s
+            .import_midi("etudes/op10_no3.mid".to_string(), build_test_midi(None))
+            .expect("import unnamed MIDI");
+        assert_eq!(entry.title, "op10_no3");
+    }
+
+    #[test]
+    fn import_midi_rejects_corrupt_bytes_without_persisting() {
+        let s = state();
+        let err = s
+            .import_midi("garbage.mid".to_string(), vec![0xDE, 0xAD, 0xBE, 0xEF])
+            .expect_err("corrupt MIDI must error");
+        assert!(!err.is_empty());
+        // Nothing should have been written to the library.
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert!(listed.is_empty(), "failed import must not persist a row");
     }
 }
