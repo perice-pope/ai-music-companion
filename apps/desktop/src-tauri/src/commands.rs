@@ -1348,7 +1348,10 @@ pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDt
 /// Load a score by id (returns entry + MusicXML).
 #[tauri::command]
 pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDto, String> {
-    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    // Turbofish (not a `uuid::Error` annotation) pins the parse target:
+    // `uuid` isn't a direct dependency of this crate, so naming its error
+    // type won't resolve, but the inferred error still impls `Display`.
+    let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
     let score_store = state
         .score_store
         .lock()
@@ -1363,7 +1366,9 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
 /// Delete a score from the library.
 #[tauri::command]
 pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let score_id: ScoreId = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    // See `get_score`: turbofish pins the parse target without naming the
+    // non-direct-dependency `uuid::Error` type.
+    let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
     let score_store = state
         .score_store
         .lock()
