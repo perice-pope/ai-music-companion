@@ -1,3 +1,9 @@
+## [1.25.0](https://github.com/perice-pope/ai-music-companion/compare/v1.24.1...v1.25.0) (2026-05-30)
+
+### Features
+
+* **score:** MusicXML emitter — Phase 2 foundation ([#121](https://github.com/perice-pope/ai-music-companion/issues/121)) ([dd908aa](https://github.com/perice-pope/ai-music-companion/commit/dd908aad7cd3bf856f9ef95b8080645070b109c3))
+
 ## [1.24.1](https://github.com/perice-pope/ai-music-companion/compare/v1.24.0...v1.24.1) (2026-05-30)
 
 ### Bug Fixes
