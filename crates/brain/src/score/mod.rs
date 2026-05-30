@@ -1,8 +1,11 @@
 //! Score parsing — reads MusicXML and MIDI files into a unified [`ScoreModel`].
 //!
 //! This module provides [`ScoreParser`] which auto-detects the format from
-//! the file extension and delegates to the appropriate parser.
+//! the file extension and delegates to the appropriate parser. The inverse
+//! direction (serialising a `ScoreModel` back to MusicXML) lives in
+//! [`emit`] and is exposed via [`score_model_to_musicxml`].
 
+pub mod emit;
 pub mod midi;
 pub mod musicxml;
 
