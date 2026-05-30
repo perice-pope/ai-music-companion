@@ -97,6 +97,19 @@ export interface DynamicsStats {
  * Only consumed by the frontend for the recap flow; in PR 2 the live
  * session will stream these over the `phrase-detected` event.
  */
+/** Score position tracking (measure + beat). Mirrors `brain::follower::ScorePosition`. */
+export interface ScorePosition {
+  measure_number: number;
+  beat: number;
+}
+
+/**
+ * Summary of a completed musical phrase. Matches
+ * `brain::phrase::PhraseSummary`.
+ *
+ * Only consumed by the frontend for the recap flow; in PR 2 the live
+ * session will stream these over the `phrase-detected` event.
+ */
 export interface PhraseSummary {
   phrase_index: number;
   start_time: number;
@@ -106,6 +119,7 @@ export interface PhraseSummary {
   pitch_stats: PitchStats;
   dynamics: DynamicsStats;
   stability: number;
+  score_position?: ScorePosition;
 }
 
 /**
@@ -181,4 +195,22 @@ export interface PracticeStatsDto {
   sessions_this_week: number;
   avg_session_length_secs: number;
   trend: "up" | "down" | "stable";
+}
+
+/** Score library entry metadata. Matches `commands::ScoreLibraryEntryDto`. */
+export interface ScoreLibraryEntry {
+  id: string; // UUID
+  title: string;
+  composer: string | null;
+  source_filename: string;
+  added_at: string; // RFC 3339
+  last_practiced_at: string | null; // RFC 3339
+  part_index: number;
+  duration_measures: number;
+}
+
+/** A loaded score ready for practice. Matches `commands::LoadedScoreDto`. */
+export interface LoadedScore {
+  entry: ScoreLibraryEntry;
+  music_xml: string;
 }

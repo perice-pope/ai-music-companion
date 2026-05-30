@@ -253,6 +253,7 @@ describe("InstrumentSelector", () => {
         instrument: "Violin",
         practiceMode: "practice",
         coachingEnabled: true,
+        scoreId: null,
       });
     });
     await vi.waitFor(() => {
@@ -306,6 +307,7 @@ describe("InstrumentSelector", () => {
         instrument: "Trumpet",
         practiceMode: "run_through",
         coachingEnabled: true,
+        scoreId: null,
       });
     });
   });

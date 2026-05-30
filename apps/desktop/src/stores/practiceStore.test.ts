@@ -66,6 +66,7 @@ describe("practiceStore — state machine", () => {
       instrument: "Trumpet",
       practiceMode: "practice",
       coachingEnabled: true,
+      scoreId: null,
     });
   });
 
@@ -321,6 +322,7 @@ describe("practiceStore — practiceMode", () => {
       instrument: "Trumpet",
       practiceMode: "run_through",
       coachingEnabled: true,
+      scoreId: null,
     });
   });
 

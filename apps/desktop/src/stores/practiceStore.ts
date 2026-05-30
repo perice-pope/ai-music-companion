@@ -5,6 +5,8 @@ import type {
   PhraseSummary,
   PracticeMode,
   SessionRecap,
+  ScoreLibraryEntry,
+  ScorePosition,
 } from "../types/brain";
 import { useAudioStore } from "./audioStore";
 
@@ -13,7 +15,7 @@ import { useAudioStore } from "./audioStore";
  * store instead of pulling in react-router for four screens (see
  * design doc §2).
  */
-export type AppScreen = "selector" | "session" | "recap" | "history";
+export type AppScreen = "selector" | "score-picker" | "session" | "recap" | "history";
 
 /**
  * Finite lifecycle states for a session. `recap_ready` exists so we
@@ -61,6 +63,11 @@ export interface PracticeState {
   recap: SessionRecap | null;
   recapError: string | null;
 
+  // Score mode (story-score-mode PR 1) ------------------------------------
+  activeScore: ScoreLibraryEntry | null;
+  scoreLibrary: ScoreLibraryEntry[];
+  cursorPosition: ScorePosition | null;
+
   // UI prefs (persisted) --------------------------------------------------
   coachingEnabled: boolean;
   /**
@@ -71,12 +78,18 @@ export interface PracticeState {
   practiceMode: PracticeMode;
 
   // Actions ---------------------------------------------------------------
-  startSession: (instrument: string, vibratoToleranceCents?: number) => Promise<void>;
+  loadScoreFromFile: (path: string) => Promise<void>;
+  loadScoreFromId: (id: string) => Promise<void>;
+  refreshScoreLibrary: () => Promise<void>;
+  deleteScore: (id: string) => Promise<void>;
+  clearActiveScore: () => void;
+  startSession: (instrument: string, vibratoToleranceCents?: number, scoreId?: string) => Promise<void>;
   endSession: () => Promise<void>;
   switchInstrument: (name: string, vibratoToleranceCents?: number) => Promise<void>;
   pushPhrase: (phrase: PhraseSummary) => void;
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
   dismissTip: (id: string) => void;
+  setCursorPosition: (pos: ScorePosition | null) => void;
   tick: () => void;
   returnToSelector: () => void;
   setCoachingEnabled: (on: boolean) => void;
@@ -160,10 +173,58 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   tipQueue: [],
   recap: null,
   recapError: null,
+  activeScore: null,
+  scoreLibrary: [],
+  cursorPosition: null,
   coachingEnabled: loadCoachingPref(),
   practiceMode: loadPracticeModePref(),
 
-  startSession: async (instrument: string, vibratoToleranceCents = 15.0) => {
+  loadScoreFromFile: async (path: string) => {
+    try {
+      const entry = await invoke<ScoreLibraryEntry>("import_score", { path });
+      set({ activeScore: entry });
+      set((state) => ({ scoreLibrary: [entry, ...state.scoreLibrary] }));
+    } catch (err) {
+      throw new Error(`Failed to load score: ${err}`);
+    }
+  },
+
+  loadScoreFromId: async (id: string) => {
+    try {
+      const entry = get().scoreLibrary.find((s) => s.id === id);
+      if (!entry) {
+        throw new Error(`Score ${id} not found in library`);
+      }
+      set({ activeScore: entry });
+    } catch (err) {
+      throw new Error(`Failed to load score: ${err}`);
+    }
+  },
+
+  refreshScoreLibrary: async () => {
+    try {
+      const library = await invoke<ScoreLibraryEntry[]>("list_scores");
+      set({ scoreLibrary: library });
+    } catch (err) {
+      throw new Error(`Failed to refresh score library: ${err}`);
+    }
+  },
+
+  deleteScore: async (id: string) => {
+    try {
+      await invoke("delete_score", { id });
+      set((state) => ({
+        scoreLibrary: state.scoreLibrary.filter((s) => s.id !== id),
+        activeScore: state.activeScore?.id === id ? null : state.activeScore,
+      }));
+    } catch (err) {
+      throw new Error(`Failed to delete score: ${err}`);
+    }
+  },
+
+  clearActiveScore: () => set({ activeScore: null, cursorPosition: null }),
+
+  startSession: async (instrument: string, vibratoToleranceCents = 15.0, scoreId?: string) => {
     const { status } = get();
     if (status !== "idle") {
       throw new Error(
@@ -176,6 +237,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         instrument,
         practiceMode: get().practiceMode,
         coachingEnabled: get().coachingEnabled,
+        scoreId: scoreId || null,
       });
       set({
         status: "listening",
@@ -187,6 +249,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         elapsedSecs: 0,
         phrases: [],
         tipQueue: [],
+        cursorPosition: null,
       });
       useAudioStore.getState().setInstrument(instrument, vibratoToleranceCents);
       // NOTE: `isListening` is *not* flipped here. It's driven by the
@@ -273,6 +336,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       tipQueue: state.tipQueue.filter((q) => q.id !== id),
     })),
 
+  setCursorPosition: (pos) => set({ cursorPosition: pos }),
+
   tick: () => {
     const { status, startedAtMs } = get();
     if (status !== "listening" || startedAtMs === null) {
@@ -296,6 +361,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       elapsedSecs: 0,
       phrases: [],
       tipQueue: [],
+      activeScore: null,
+      cursorPosition: null,
     }),
 
   setCoachingEnabled: (on) => {
