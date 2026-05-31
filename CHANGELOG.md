@@ -1,3 +1,9 @@
+## [1.30.0](https://github.com/perice-pope/ai-music-companion/compare/v1.29.0...v1.30.0) (2026-05-31)
+
+### Features
+
+* **tone:** timbre feature extraction crate (Phase 3, tone PR 1) ([#131](https://github.com/perice-pope/ai-music-companion/issues/131)) ([f7555d0](https://github.com/perice-pope/ai-music-companion/commit/f7555d04836f1650c012927f5f9fdaa7f75b472c))
+
 ## [1.29.0](https://github.com/perice-pope/ai-music-companion/compare/v1.28.0...v1.29.0) (2026-05-31)
 
 ### Features
