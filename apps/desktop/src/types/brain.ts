@@ -157,6 +157,8 @@ export interface SessionRecap {
   duration_secs: number;
   phrase_count: number;
   instrument: string;
+  /** Session-level tone aggregate, when tone analysis ran. */
+  session_tone?: ToneDescriptor | null;
 }
 
 /**

@@ -358,6 +358,7 @@ impl RecapGenerator for LlmRecapGenerator {
                 duration_secs: 0.0,
                 phrase_count: 0,
                 instrument: String::new(),
+                session_tone: None,
             });
         };
 
@@ -404,6 +405,7 @@ impl MockRecapGenerator {
             duration_secs: 0.0,
             phrase_count: 0,
             instrument: String::new(),
+            session_tone: None,
         })
     }
 }
@@ -1112,6 +1114,7 @@ fn empty_state_recap() -> SessionRecap {
         duration_secs: 0.0,
         phrase_count: 0,
         instrument: String::new(),
+        session_tone: None,
     }
 }
 

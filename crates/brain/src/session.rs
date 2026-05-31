@@ -296,6 +296,12 @@ pub struct SessionRecap {
     /// Instrument played (first-segment instrument for multi-segment
     /// sessions — copied from `RecapInput.instrument`).
     pub instrument: String,
+    /// Session-level tone aggregate (mean of the phrases that carried tone),
+    /// when tone analysis ran. Persisted in the recap JSON for trend tracking
+    /// ("warmer than last time") and the teacher feed. Additive +
+    /// `serde(default)` so recaps saved before tone existed still load.
+    #[serde(default)]
+    pub session_tone: Option<tone::ToneDescriptor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +714,7 @@ mod tests {
             duration_secs: 0.0,
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
+            session_tone: None,
         }
     }
 
