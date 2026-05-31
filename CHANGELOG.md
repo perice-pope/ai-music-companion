@@ -1,3 +1,9 @@
+## [1.29.0](https://github.com/perice-pope/ai-music-companion/compare/v1.28.0...v1.29.0) (2026-05-31)
+
+### Features
+
+* **desktop:** resolve bundled ONNX Runtime at startup for audio import ([#127](https://github.com/perice-pope/ai-music-companion/issues/127)) ([4a8fe68](https://github.com/perice-pope/ai-music-companion/commit/4a8fe68f2ae9f3bf7eec63a37f4adfe83e3dcd69)), closes [112/#120](https://github.com/112/ai-music-companion/issues/120)
+
 ## [1.28.0](https://github.com/perice-pope/ai-music-companion/compare/v1.27.0...v1.28.0) (2026-05-30)
 
 ### Features
