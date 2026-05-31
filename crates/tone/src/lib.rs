@@ -10,11 +10,19 @@
 //! dedicated crate keeps the eventual ONNX dependency out of `crates/ears`'
 //! real-time build — mirroring the `crates/transcribe` boundary.
 
+mod baseline;
+mod descriptor;
 mod frames;
 mod mel;
+mod room;
 mod spectral;
+mod vibrato;
 
+pub use baseline::{ToneBaseline, ToneDelta};
+pub use descriptor::{assess, ToneDescriptor};
 pub use mel::{N_MELS, N_MFCC};
+pub use room::RoomProfile;
+pub use vibrato::vibrato_regularity;
 
 use frames::magnitude_frames;
 use mel::mel_features;

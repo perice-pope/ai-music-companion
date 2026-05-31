@@ -11,6 +11,11 @@ description = "On-device tone-quality (timbre) feature extraction for AI Music C
 # spectrum. `ears` is time-domain only (YIN), so there is no FFT to reuse;
 # rustfft is the pure-Rust, well-maintained choice rather than hand-rolling one.
 rustfft = "6"
+# ToneDescriptor / RoomProfile cross the IPC + persistence boundary.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
