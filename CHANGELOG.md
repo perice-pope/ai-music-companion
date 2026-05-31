@@ -1,3 +1,9 @@
+## [1.35.0](https://github.com/perice-pope/ai-music-companion/compare/v1.34.0...v1.35.0) (2026-05-31)
+
+### Features
+
+* **tone:** gentle tone read-out in the session recap (Phase 3, tone PR 6) ([#143](https://github.com/perice-pope/ai-music-companion/issues/143)) ([da6d42d](https://github.com/perice-pope/ai-music-companion/commit/da6d42d5804054ec226bcbab741629343f315078))
+
 ## [1.34.0](https://github.com/perice-pope/ai-music-companion/compare/v1.33.0...v1.34.0) (2026-05-31)
 
 ### Features
