@@ -439,23 +439,17 @@ pub struct ActiveSession {
     phase: SessionPhase,
     recorder: SessionRecorder,
     practice_mode: PracticeMode,
-    /// Held so PR 2 can spawn tokio tasks off a phrase completion.
-    /// Unused directly in PR 1 — hence the `allow(dead_code)`.
-    #[allow(dead_code)]
-    coaching: Arc<dyn CoachingService>,
 }
 
 impl ActiveSession {
     fn new(
         instrument: String,
         practice_mode: PracticeMode,
-        coaching: Arc<dyn CoachingService>,
     ) -> Self {
         Self {
             phase: SessionPhase::Starting,
             recorder: SessionRecorder::new(instrument, practice_mode),
             practice_mode,
-            coaching,
         }
     }
 }
@@ -466,7 +460,7 @@ impl ActiveSession {
 /// at a time — the double-start test verifies this.
 pub struct AppState {
     active_session: Mutex<Option<ActiveSession>>,
-    coaching_factory: Arc<dyn Fn() -> Arc<dyn CoachingService> + Send + Sync>,
+    coaching_service: Arc<dyn CoachingService>,
     recap_generator: Arc<dyn RecapGenerator>,
     /// `std::sync::Mutex` because rusqlite's `Connection` wraps a
     /// `RefCell` internally, making `SessionStore: !Sync`. Tauri's
@@ -534,7 +528,7 @@ impl AppState {
 
         Self {
             active_session: Mutex::new(None),
-            coaching_factory: Arc::new(move || Arc::new(LlmCoachingService::new())),
+            coaching_service: Arc::new(coaching_svc),
             recap_generator: Arc::new(recap_gen),
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
@@ -548,7 +542,7 @@ impl AppState {
     pub fn with_mocks() -> Self {
         Self {
             active_session: Mutex::new(None),
-            coaching_factory: Arc::new(|| Arc::new(MockCoachingService::new())),
+            coaching_service: Arc::new(MockCoachingService::new()),
             recap_generator: Arc::new(MockRecapGenerator),
             session_store: std::sync::Mutex::new(
                 SessionStore::in_memory().expect("in-memory store must succeed"),
@@ -818,14 +812,33 @@ impl AppState {
             .and_then(|s| s.recorder.score_title().map(|t| t.to_owned()))
     }
 
+    /// Get recent coaching tips from the active session. Returns up to `n` most recent
+    /// tip texts in chronological order. Used to seed the "avoid repetition" prompt rule.
+    pub async fn recent_tip_texts(&self, n: usize) -> Vec<String> {
+        self.active_session
+            .lock()
+            .await
+            .as_ref()
+            .map(|s| {
+                s.recorder
+                    .all_tips()
+                    .iter()
+                    .rev()
+                    .take(n)
+                    .rev()
+                    .map(|t| t.text.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Request a coaching tip from the coaching service for the given phrase.
     pub async fn get_coaching_tip(
         &self,
         phrase: &PhraseSummary,
         context: &SessionContext,
     ) -> Result<Option<CoachingTip>, CommandError> {
-        let coaching = (self.coaching_factory)();
-        Ok(coaching.get_tip(phrase, context).await)
+        Ok(self.coaching_service.get_tip(phrase, context).await)
     }
 }
 
@@ -1014,8 +1027,7 @@ pub async fn start_practice_session_impl(
         return Err(CommandError::AlreadyActive);
     }
 
-    let coaching = (state.coaching_factory)();
-    let mut session = ActiveSession::new(instrument, practice_mode, coaching);
+    let mut session = ActiveSession::new(instrument, practice_mode);
     // Tag the recorder with the score title (if score-backed) so the
     // end-of-session recap can name the piece and cite measures.
     session.recorder.set_score_title(score_title);
@@ -1345,17 +1357,39 @@ pub async fn get_coaching_tip(
     session_duration_secs: f64,
     phrases_played: usize,
 ) -> Result<Option<CoachingTip>, String> {
+    let previous_tips = state.recent_tip_texts(5).await;
     let session_ctx = SessionContext {
         instrument: state.active_session_instrument().await.unwrap_or_default(),
         session_duration_secs,
         phrases_played,
-        previous_tips: Vec::new(),
+        previous_tips,
         score_title: state.active_session_score_title().await,
     };
     state
         .get_coaching_tip(&phrase, &session_ctx)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Record a coaching tip that was shown to the user. Called from the frontend
+/// after a tip is displayed. Stores the tip in the session recorder so it
+/// appears in the recap and can be used in the "avoid repetition" prompt.
+#[tauri::command]
+pub async fn record_coaching_tip(
+    state: State<'_, AppState>,
+    tip: CoachingTip,
+) -> Result<(), String> {
+    let mut guard = state.active_session.lock().await;
+    if let Some(session) = guard.as_mut() {
+        session.recorder.record_tip(
+            tip.text.clone(),
+            tip.severity.clone(),
+            tip.category.clone(),
+        )?;
+        Ok(())
+    } else {
+        Err("No active session".to_owned())
+    }
 }
 
 /// Return the instrument catalog for the selector grid.

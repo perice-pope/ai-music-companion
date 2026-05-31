@@ -109,9 +109,9 @@ pub struct CoachingConfig {
     /// API key for the LLM provider. If empty, the engine will attempt to
     /// read `MUSIC_COMPANION_LLM_API_KEY` from the environment.
     pub api_key: String,
-    /// Model identifier (e.g. "claude-3-5-sonnet", "gpt-4").
+    /// Model identifier (e.g. "claude-opus-4-7", "gpt-4").
     /// Falls back to `MUSIC_COMPANION_LLM_MODEL` env var, then to
-    /// `"claude-3-5-sonnet"`.
+    /// `"claude-opus-4-7"`.
     pub model: String,
     /// Minimum seconds between consecutive API calls. Default: 3.0.
     pub rate_limit_secs: f64,
@@ -225,7 +225,7 @@ fn resolve_model(config_model: &str, env_value: Option<&str>) -> String {
     }
     match env_value {
         Some(v) if !v.is_empty() => v.to_owned(),
-        _ => "claude-3-5-sonnet".to_owned(),
+        _ => "claude-opus-4-7".to_owned(),
     }
 }
 
@@ -1136,7 +1136,7 @@ mod tests {
     fn make_engine(mock: MockHttpClient) -> CoachingEngine {
         let config = CoachingConfig {
             api_key: "test-key-12345".to_owned(),
-            model: "claude-3-5-sonnet".to_owned(),
+            model: "claude-opus-4-7".to_owned(),
             rate_limit_secs: 3.0,
         };
         CoachingEngine::new(config, Box::new(mock)).unwrap()
@@ -1431,7 +1431,7 @@ mod tests {
         // other tests reading MUSIC_COMPANION_LLM_API_KEY.
         let config = CoachingConfig {
             api_key: String::new(),
-            model: "claude-3-5-sonnet".to_owned(),
+            model: "claude-opus-4-7".to_owned(),
             rate_limit_secs: 3.0,
         };
         let mock = MockHttpClient::succeeding("{}");
@@ -1476,8 +1476,8 @@ mod tests {
         // Env wins when config empty
         assert_eq!(resolve_model("", Some("claude-3-opus")), "claude-3-opus");
         // Default when both empty
-        assert_eq!(resolve_model("", None), "claude-3-5-sonnet");
-        assert_eq!(resolve_model("", Some("")), "claude-3-5-sonnet");
+        assert_eq!(resolve_model("", None), "claude-opus-4-7");
+        assert_eq!(resolve_model("", Some("")), "claude-opus-4-7");
     }
 
     #[test]
@@ -1681,7 +1681,7 @@ mod tests {
         let mut engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 10.0,
             },
             Box::new(mock),
@@ -1718,7 +1718,7 @@ mod tests {
         let mut engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -1749,7 +1749,7 @@ mod tests {
         let mut engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -1797,7 +1797,7 @@ mod tests {
         let engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -1878,7 +1878,7 @@ mod tests {
         let engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -1917,7 +1917,7 @@ mod tests {
         let engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-7".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
