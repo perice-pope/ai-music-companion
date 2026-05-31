@@ -1,3 +1,9 @@
+## [1.34.0](https://github.com/perice-pope/ai-music-companion/compare/v1.33.0...v1.34.0) (2026-05-31)
+
+### Features
+
+* **tone:** persist session tone aggregate for trends (Phase 3, tone PR 5) ([#141](https://github.com/perice-pope/ai-music-companion/issues/141)) ([62d5264](https://github.com/perice-pope/ai-music-companion/commit/62d52646911daf4b36125a765b2163e26f04b77f))
+
 ## [1.33.0](https://github.com/perice-pope/ai-music-companion/compare/v1.32.0...v1.33.0) (2026-05-31)
 
 ### Features
