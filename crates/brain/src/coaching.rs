@@ -523,6 +523,12 @@ Choose the category that best matches the most notable aspect of the phrase data
             dyn_range = phrase.dynamics.dynamic_range,
         );
 
+        // Tone quality, when analysis ran over the phrase audio. Lets a live
+        // tip speak to *how* it sounded, not just pitch/rhythm/dynamics.
+        if let Some(t) = &phrase.tone {
+            prompt.push_str(&format!("- Tone: {}\n", describe_tone(t)));
+        }
+
         if !context.previous_tips.is_empty() {
             prompt.push_str("\nPrevious tips already given (avoid repeating these):\n");
             for tip in &context.previous_tips {
@@ -764,6 +770,12 @@ All text should be written as a teacher would speak — warm, specific, and acti
         };
         let score_block = Self::build_score_block(input);
 
+        // Aggregate tone across the session's phrases, when available.
+        let tone_line = match aggregate_tone(&input.phrases) {
+            Some(t) => format!("- Tone quality: {}\n", describe_tone(&t)),
+            None => String::new(),
+        };
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -771,7 +783,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Phrase count: {}\n\
             - Average intonation tendency: {:.2}\n\
             - Average rhythmic stability: {:.2}\n\
-            - Average dynamic control: {:.2}\n\n\
+            - Average dynamic control: {:.2}\n\
+            {}\n\
             {}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}",
@@ -782,6 +795,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
+            tone_line,
             tip_summary,
             score_block,
             if input.score_title.is_some() {
@@ -956,6 +970,35 @@ All text should be written as a teacher would speak — warm, specific, and acti
     }
 }
 
+/// Render a tone descriptor as a compact, label-led line for the LLM prompt.
+/// We hand the model the labelled 0–1 values and let it phrase them warmly —
+/// consistent with "coaching text, not a traffic-light display".
+fn describe_tone(t: &tone::ToneDescriptor) -> String {
+    format!(
+        "brightness {:.2}, warmth {:.2}, air/noise {:.2}, core clarity {:.2}, vibrato {:.2} (each 0–1)",
+        t.brightness, t.warmth, t.air_noise, t.core_clarity, t.vibrato_quality
+    )
+}
+
+/// Mean tone descriptor across the phrases that carry one. `None` when no
+/// phrase had tone analysis (e.g. tone disabled or all phrases too short).
+fn aggregate_tone(phrases: &[PhraseSummary]) -> Option<tone::ToneDescriptor> {
+    let toned: Vec<&tone::ToneDescriptor> =
+        phrases.iter().filter_map(|p| p.tone.as_ref()).collect();
+    if toned.is_empty() {
+        return None;
+    }
+    let n = toned.len() as f32;
+    let mean = |f: fn(&tone::ToneDescriptor) -> f32| toned.iter().map(|t| f(t)).sum::<f32>() / n;
+    Some(tone::ToneDescriptor {
+        brightness: mean(|t| t.brightness),
+        warmth: mean(|t| t.warmth),
+        air_noise: mean(|t| t.air_noise),
+        core_clarity: mean(|t| t.core_clarity),
+        vibrato_quality: mean(|t| t.vibrato_quality),
+    })
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1122,6 +1165,78 @@ mod tests {
             previous_tips: vec!["Try relaxing your embouchure on the high notes.".to_owned()],
             score_title: None,
         }
+    }
+
+    fn sample_tone() -> tone::ToneDescriptor {
+        tone::ToneDescriptor {
+            brightness: 0.62,
+            warmth: 0.48,
+            air_noise: 0.18,
+            core_clarity: 0.80,
+            vibrato_quality: 0.55,
+        }
+    }
+
+    #[test]
+    fn live_tip_prompt_includes_tone_only_when_present() {
+        let ctx = sample_context();
+
+        let without = CoachingEngine::build_user_prompt(&sample_phrase(), &ctx);
+        assert!(!without.contains("Tone:"), "no tone line when tone is None");
+
+        let toned = PhraseSummary {
+            tone: Some(sample_tone()),
+            ..sample_phrase()
+        };
+        let with = CoachingEngine::build_user_prompt(&toned, &ctx);
+        assert!(
+            with.contains("- Tone:"),
+            "tone line present when tone is Some"
+        );
+        assert!(with.contains("brightness 0.62"), "tone values rendered");
+    }
+
+    #[test]
+    fn recap_prompt_includes_tone_summary_when_present() {
+        let toned = PhraseSummary {
+            tone: Some(sample_tone()),
+            ..sample_phrase()
+        };
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 120.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![toned],
+            tips: Vec::new(),
+            score_title: None,
+        };
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
+    }
+
+    #[test]
+    fn aggregate_tone_means_present_descriptors_or_none() {
+        assert!(
+            aggregate_tone(&[sample_phrase()]).is_none(),
+            "no tone → None"
+        );
+
+        let a = PhraseSummary {
+            tone: Some(tone::ToneDescriptor {
+                brightness: 0.2,
+                ..sample_tone()
+            }),
+            ..sample_phrase()
+        };
+        let b = PhraseSummary {
+            tone: Some(tone::ToneDescriptor {
+                brightness: 0.8,
+                ..sample_tone()
+            }),
+            ..sample_phrase()
+        };
+        let agg = aggregate_tone(&[a, b]).expect("two toned phrases");
+        assert!((agg.brightness - 0.5).abs() < 1e-6, "brightness averaged");
     }
 
     fn mock_anthropic_response() -> String {
