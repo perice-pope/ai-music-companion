@@ -105,6 +105,12 @@ pub struct PhraseSummary {
     /// any event in this phrase. Downstream consumers (LLM coaching, OSMD
     /// cursor) use this to anchor feedback to a specific measure / beat.
     pub score_position: Option<ScorePosition>,
+    /// Tone-quality descriptor for the phrase, when tone analysis ran over the
+    /// phrase audio. `None` when no audio was available (e.g. event-only paths)
+    /// or tone analysis is disabled. Additive + `serde(default)` so older
+    /// persisted phrases deserialize cleanly.
+    #[serde(default)]
+    pub tone: Option<tone::ToneDescriptor>,
 }
 
 /// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
@@ -291,6 +297,8 @@ impl PhraseAggregator {
             dynamics,
             stability,
             score_position: self.current_phrase_start_position.take(),
+            // Tone is attached downstream (the aggregator has no raw audio).
+            tone: None,
         };
 
         self.phrases.push(summary);
@@ -837,5 +845,35 @@ mod tests {
             agg.current_score_position().is_none(),
             "clearing the follower must drop the live position"
         );
+    }
+
+    #[test]
+    fn phrase_summary_tone_is_additive_and_backward_compatible() {
+        // A phrase JSON serialised before `tone` existed (field absent) must
+        // still deserialize, with `tone` defaulting to None.
+        let legacy = r#"{
+            "phrase_index": 0, "start_time": 0.0, "end_time": 1.0,
+            "duration_secs": 1.0, "note_count": 3,
+            "pitch_stats": {"mean_hz":440.0,"min_hz":435.0,"max_hz":445.0,"range_cents":40.0,"pitches":[440.0]},
+            "dynamics": {"mean_amplitude":0.5,"min_amplitude":0.4,"max_amplitude":0.6,"dynamic_range":0.2},
+            "stability": 0.8, "score_position": null
+        }"#;
+        let p: PhraseSummary = serde_json::from_str(legacy).expect("legacy phrase deserializes");
+        assert!(p.tone.is_none(), "absent tone defaults to None");
+
+        // And a phrase carrying tone round-trips.
+        let with_tone = PhraseSummary {
+            tone: Some(tone::ToneDescriptor {
+                brightness: 0.6,
+                warmth: 0.5,
+                air_noise: 0.2,
+                core_clarity: 0.8,
+                vibrato_quality: 0.5,
+            }),
+            ..p
+        };
+        let json = serde_json::to_string(&with_tone).unwrap();
+        let back: PhraseSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(with_tone, back);
     }
 }

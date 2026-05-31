@@ -1654,6 +1654,7 @@ mod tests {
             },
             stability: 0.8,
             score_position: None,
+            tone: None,
         }
     }
 
@@ -1937,6 +1938,7 @@ mod tests {
             },
             stability: 0.85,
             score_position: None,
+            tone: None,
         };
         let phrase_1 = PhraseSummary {
             phrase_index: 1,

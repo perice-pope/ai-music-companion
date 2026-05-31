@@ -124,6 +124,21 @@ export interface PhraseSummary {
   dynamics: DynamicsStats;
   stability: number;
   score_position?: ScorePosition;
+  /** Tone-quality descriptor, when tone analysis ran over the phrase audio. */
+  tone?: ToneDescriptor | null;
+}
+
+/**
+ * Multi-dimensional tone descriptor (each axis 0..1). Mirrors
+ * `tone::ToneDescriptor`. Deliberately not a single score — these are the
+ * qualities a teacher names.
+ */
+export interface ToneDescriptor {
+  brightness: number;
+  warmth: number;
+  air_noise: number;
+  core_clarity: number;
+  vibrato_quality: number;
 }
 
 /**

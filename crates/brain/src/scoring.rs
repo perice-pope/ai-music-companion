@@ -203,6 +203,7 @@ mod tests {
             },
             stability,
             score_position: None,
+            tone: None,
         }
     }
 

@@ -50,6 +50,7 @@ mod tests {
             },
             stability: 0.85,
             score_position: None,
+            tone: None,
         };
 
         let score = score_phrase(&phrase);

@@ -733,6 +733,7 @@ mod tests {
             },
             stability: 0.9,
             score_position: None,
+            tone: None,
         }
     }
 
