@@ -1,0 +1,16 @@
+[package]
+name = "tone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-device tone-quality (timbre) feature extraction for AI Music Companion"
+
+[dependencies]
+# Spectral features (centroid, rolloff, flux, mel, MFCC) need a magnitude
+# spectrum. `ears` is time-domain only (YIN), so there is no FFT to reuse;
+# rustfft is the pure-Rust, well-maintained choice rather than hand-rolling one.
+rustfft = "6"
+
+[lints.rust]
+unsafe_code = "forbid"
