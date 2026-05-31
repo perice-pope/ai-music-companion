@@ -4,6 +4,7 @@ members = [
     "crates/ears",
     "crates/brain",
     "crates/transcribe",
+    "crates/tone",
 ]
 
 [workspace.package]
