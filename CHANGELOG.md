@@ -1,3 +1,9 @@
+## [1.32.0](https://github.com/perice-pope/ai-music-companion/compare/v1.31.0...v1.32.0) (2026-05-31)
+
+### Features
+
+* **tone:** compute and attach tone to live phrases (Phase 3, tone PR 3) ([#133](https://github.com/perice-pope/ai-music-companion/issues/133)) ([3b2be51](https://github.com/perice-pope/ai-music-companion/commit/3b2be51cc73f3930c3ae0b552551d28f4e3a5212))
+
 ## [1.31.0](https://github.com/perice-pope/ai-music-companion/compare/v1.30.0...v1.31.0) (2026-05-31)
 
 ### Features
