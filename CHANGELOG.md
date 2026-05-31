@@ -1,3 +1,9 @@
+## [1.33.0](https://github.com/perice-pope/ai-music-companion/compare/v1.32.0...v1.33.0) (2026-05-31)
+
+### Features
+
+* **tone:** surface tone in the coach's recap + live tips (Phase 3, tone PR 4) ([#140](https://github.com/perice-pope/ai-music-companion/issues/140)) ([b474930](https://github.com/perice-pope/ai-music-companion/commit/b4749301dc20e4b3a266318e5d3f927fcb841c47))
+
 ## [1.32.0](https://github.com/perice-pope/ai-music-companion/compare/v1.31.0...v1.32.0) (2026-05-31)
 
 ### Features
