@@ -69,6 +69,28 @@ describe("SessionRecap", () => {
     screen.getByText("Long tones with a drone.");
   });
 
+  it("shows the tone read-out only when the recap carries a tone aggregate", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No session_tone → no tone panel.
+    expect(screen.queryByTestId("recap-tone")).toBeNull();
+
+    seedRecap(
+      fullRecap({
+        session_tone: {
+          brightness: 0.6,
+          warmth: 0.5,
+          air_noise: 0.2,
+          core_clarity: 0.8,
+          vibrato_quality: 0.55,
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-tone")).toBeTruthy();
+    screen.getByText("Brightness");
+  });
+
   it("empty-state recap (zero phrases) hides bullet sections but keeps buttons", () => {
     seedRecap(
       fullRecap({
