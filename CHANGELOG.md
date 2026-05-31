@@ -1,3 +1,9 @@
+## [1.31.0](https://github.com/perice-pope/ai-music-companion/compare/v1.30.0...v1.31.0) (2026-05-31)
+
+### Features
+
+* **tone:** heuristic descriptor, room calibration, baseline (Phase 3, tone PR 2) ([#132](https://github.com/perice-pope/ai-music-companion/issues/132)) ([df60a0e](https://github.com/perice-pope/ai-music-companion/commit/df60a0eed64e759aaab8bb9446899c59ac6ef9a1))
+
 ## [1.30.0](https://github.com/perice-pope/ai-music-companion/compare/v1.29.0...v1.30.0) (2026-05-31)
 
 ### Features
