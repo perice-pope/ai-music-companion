@@ -1,0 +1,6 @@
+# The native ONNX Runtime is fetched at build time by
+# scripts/fetch-onnxruntime.sh — never commit the (large, platform-specific)
+# library binaries. Keep this directory and its docs tracked as the bundling seam.
+*
+!.gitignore
+!README.md
