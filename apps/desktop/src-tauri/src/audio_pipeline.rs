@@ -257,6 +257,14 @@ fn run_worker<F, P, S>(
     let mut interleaved: Vec<f32> = vec![0.0; 4096];
     let mut mono: Vec<f32> = vec![0.0; 4096];
 
+    // Tone accumulation. We gather the current phrase's mono audio and its
+    // per-window pitch contour on the processing thread (Vec growth is expected
+    // here, never on the cpal callback), and compute a tone descriptor when the
+    // phrase closes. Capped so a never-ending sound can't grow unbounded.
+    const MAX_TONE_SAMPLES: usize = 22_050 * 30; // ~30 s
+    let mut phrase_audio: Vec<f32> = Vec::new();
+    let mut phrase_pitch: Vec<f32> = Vec::new();
+
     while !shutdown.load(Ordering::Relaxed) {
         // Drain config updates; we only care about the latest.
         if let Some(new_profile) = drain_latest(&profile_rx) {
@@ -313,10 +321,25 @@ fn run_worker<F, P, S>(
         emit(event.clone());
         let event_time = event.timestamp_secs;
         aggregator.push(&event);
+
+        // Accumulate this window's audio + pitch for the in-progress phrase.
+        phrase_audio.extend_from_slice(mono_slice);
+        phrase_pitch.push(event.pitch_hz.unwrap_or(0.0) as f32);
+        if phrase_audio.len() > MAX_TONE_SAMPLES {
+            let overflow = phrase_audio.len() - MAX_TONE_SAMPLES;
+            phrase_audio.drain(..overflow);
+        }
+
         // `take_new_phrases` only allocates when a phrase actually closed
         // (a boundary every few seconds), never per frame — so this stays
         // off the per-frame allocation budget.
-        for phrase in aggregator.take_new_phrases() {
+        for mut phrase in aggregator.take_new_phrases() {
+            // Attach a tone descriptor computed from the phrase's audio. The
+            // accumulated buffer ≈ this phrase (plus any trailing silence,
+            // which only dilutes the average slightly).
+            phrase.tone = phrase_tone(&phrase_audio, sample_rate, &phrase_pitch);
+            phrase_audio.clear();
+            phrase_pitch.clear();
             emit_phrase(phrase);
         }
 
@@ -379,9 +402,54 @@ fn downmix_to_mono(interleaved: &[f32], channels: usize, mono: &mut [f32]) {
     }
 }
 
+/// Minimum phrase audio (samples) for a meaningful tone descriptor — below
+/// ~2 analysis windows the spectral features are too noisy to trust.
+const MIN_TONE_SAMPLES: usize = 4096;
+
+/// Compute a tone descriptor for a completed phrase from its accumulated mono
+/// audio and per-window pitch contour. Returns `None` for phrases too short to
+/// analyse. Uses a neutral room profile — room calibration is a later slice.
+fn phrase_tone(audio: &[f32], sample_rate: u32, pitch_hz: &[f32]) -> Option<tone::ToneDescriptor> {
+    if audio.len() < MIN_TONE_SAMPLES {
+        return None;
+    }
+    let features = tone::features(audio, sample_rate);
+    let contour: Vec<f32> = pitch_hz.iter().copied().filter(|&f| f > 0.0).collect();
+    let f0 = if contour.is_empty() {
+        None
+    } else {
+        Some(contour.as_slice())
+    };
+    Some(tone::assess(&features, f0, &tone::RoomProfile::neutral()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sine(freq: f32, sr: u32) -> Vec<f32> {
+        (0..sr)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr as f32).sin() * 0.7)
+            .collect()
+    }
+
+    #[test]
+    fn phrase_tone_reads_bright_audio_as_brighter() {
+        let sr = 44_100;
+        let bright = phrase_tone(&sine(3000.0, sr), sr, &[]).expect("enough audio");
+        let dark = phrase_tone(&sine(250.0, sr), sr, &[]).expect("enough audio");
+        assert!(
+            bright.brightness > dark.brightness,
+            "bright {} should exceed dark {}",
+            bright.brightness,
+            dark.brightness
+        );
+    }
+
+    #[test]
+    fn phrase_tone_is_none_for_short_audio() {
+        assert!(phrase_tone(&[0.1_f32; 100], 44_100, &[]).is_none());
+    }
 
     #[test]
     fn downmix_stereo_averages_channels() {

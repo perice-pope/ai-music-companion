@@ -66,6 +66,7 @@ fn make_phrase(
         },
         stability,
         score_position: None,
+        tone: None,
     }
 }
 

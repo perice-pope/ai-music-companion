@@ -1038,6 +1038,7 @@ mod tests {
             },
             stability: 0.92,
             score_position: None,
+            tone: None,
         }
     }
 

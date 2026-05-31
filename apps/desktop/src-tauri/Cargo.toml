@@ -34,3 +34,4 @@ dirs = "5"
 ears = { path = "../../../crates/ears" }
 brain = { path = "../../../crates/brain" }
 transcribe = { path = "../../../crates/transcribe" }
+tone = { path = "../../../crates/tone" }
