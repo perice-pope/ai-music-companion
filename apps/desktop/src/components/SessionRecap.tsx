@@ -1,4 +1,5 @@
 import { usePracticeStore } from "../stores/practiceStore";
+import ToneSummary from "./ToneSummary";
 
 /**
  * Post-session recap screen.
@@ -78,6 +79,12 @@ export default function SessionRecap() {
       <p className="text-lg leading-relaxed text-gray-200" data-testid="recap-assessment">
         {recap.overall_assessment}
       </p>
+
+      {/* Tone read-out (secondary to the coaching text above). Only shown
+          when tone analysis produced a session aggregate. */}
+      {!isEmptyState && recap.session_tone && (
+        <ToneSummary tone={recap.session_tone} />
+      )}
 
       {/* Strengths first — product invariant enforced by DOM order. */}
       {recap.strengths.length > 0 && (
