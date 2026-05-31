@@ -50,6 +50,7 @@ impl RecapGenerator for MockRecapGenerator {
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
+            session_tone: None,
         })
     }
 }
@@ -239,6 +240,7 @@ fn completed_session_persists_without_recap_when_generator_fails() {
         duration_secs: completed.duration_secs,
         phrase_count: completed.phrase_count(),
         instrument: completed.primary_instrument().to_owned(),
+        session_tone: None,
     };
 
     let store = SessionStore::in_memory().unwrap();

@@ -936,6 +936,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
+            session_tone: aggregate_tone(&input.phrases),
         };
 
         Ok(recap)
@@ -966,6 +967,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
+            session_tone: aggregate_tone(&input.phrases),
         }
     }
 }
@@ -1212,6 +1214,14 @@ mod tests {
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
+
+        // The generated recap also carries the session tone aggregate for
+        // persistence + trends.
+        let recap = CoachingEngine::fallback_recap(&input);
+        assert!(
+            recap.session_tone.is_some(),
+            "recap should carry the session tone aggregate"
+        );
     }
 
     #[test]
