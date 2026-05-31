@@ -77,6 +77,10 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            // Point transcription at the bundled ONNX Runtime (if present)
+            // before any audio import can run. No-op when ORT_DYLIB_PATH is
+            // already set (dev/CI) or the runtime isn't bundled yet.
+            ai_music_companion::runtime::configure_onnxruntime(app.handle());
             // Initialise AppState inside setup so the AppHandle is available
             // for resolving bundled `profiles/` in packaged installs (#112).
             app.manage(AppState::new_with_app_handle(app.handle()));

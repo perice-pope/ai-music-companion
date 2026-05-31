@@ -9,6 +9,7 @@
 
 pub mod audio_pipeline;
 pub mod commands;
+pub mod runtime;
 
 pub use commands::{
     end_practice_session, list_instruments, start_practice_session, switch_instrument, AppState,

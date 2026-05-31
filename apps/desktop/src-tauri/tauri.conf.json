@@ -24,9 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "../../../profiles"
-    ],
+    "resources": {
+      "../../../profiles": "profiles",
+      "resources/onnxruntime": "onnxruntime"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
