@@ -584,6 +584,12 @@ impl SessionRecorder {
             return Err(SessionError::Empty);
         }
 
+        // Ensure the structure matches what primary_instrument() expects:
+        // at least one participant with at least one segment.
+        if self.participants.is_empty() || self.participants.iter().all(|p| p.segments.is_empty()) {
+            return Err(SessionError::Empty);
+        }
+
         let duration_secs = (ended_at - self.started_at).num_milliseconds() as f64 / 1000.0;
         Ok(CompletedSession {
             id: self.session_id,

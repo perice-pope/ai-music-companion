@@ -225,7 +225,7 @@ fn resolve_model(config_model: &str, env_value: Option<&str>) -> String {
     }
     match env_value {
         Some(v) if !v.is_empty() => v.to_owned(),
-        _ => "claude-3-5-sonnet".to_owned(),
+        _ => "claude-opus-4-7".to_owned(),
     }
 }
 
@@ -782,7 +782,6 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Phrase data summary:\n\
             - Phrase count: {}\n\
             - Average intonation tendency: {:.2}\n\
-            - Average rhythmic stability: {:.2}\n\
             - Average dynamic control: {:.2}\n\
             {}\n\
             {}{}\n\n\
@@ -792,7 +791,6 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count,
             duration_mins as i32,
             phrase_count,
-            Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
             tone_line,
@@ -1602,8 +1600,8 @@ mod tests {
         // Env wins when config empty
         assert_eq!(resolve_model("", Some("claude-3-opus")), "claude-3-opus");
         // Default when both empty
-        assert_eq!(resolve_model("", None), "claude-3-5-sonnet");
-        assert_eq!(resolve_model("", Some("")), "claude-3-5-sonnet");
+        assert_eq!(resolve_model("", None), "claude-opus-4-7");
+        assert_eq!(resolve_model("", Some("")), "claude-opus-4-7");
     }
 
     #[test]
