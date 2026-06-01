@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useHistoryStore } from "../stores/historyStore";
 import SessionCard from "../components/SessionCard";
 import PracticeStats from "../components/PracticeStats";
+import AccountPanel from "../components/AccountPanel";
 
 export default function History() {
   const {
@@ -43,6 +44,11 @@ export default function History() {
     <main className="min-h-screen bg-gray-900 p-8">
       <div className="mx-auto max-w-4xl">
         <h1 className="mb-8 text-4xl font-bold text-white">Practice History</h1>
+
+        {/* Cloud sync (optional sign-in) */}
+        <section className="mb-12">
+          <AccountPanel />
+        </section>
 
         {/* Dashboard */}
         {stats && (

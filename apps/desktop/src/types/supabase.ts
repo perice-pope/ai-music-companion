@@ -8,121 +8,121 @@ export type Json =
   | boolean
   | null
   | { [key: string]: Json | undefined }
-  | Json[]
+  | Json[];
 
 export type Database = {
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
-  }
+    PostgrestVersion: "14.5";
+  };
   public: {
     Tables: {
       profiles: {
         Row: {
-          created_at: string
-          display_name: string | null
-          id: string
-          role: string
-        }
+          created_at: string;
+          display_name: string | null;
+          id: string;
+          role: string;
+        };
         Insert: {
-          created_at?: string
-          display_name?: string | null
-          id: string
-          role?: string
-        }
+          created_at?: string;
+          display_name?: string | null;
+          id: string;
+          role?: string;
+        };
         Update: {
-          created_at?: string
-          display_name?: string | null
-          id?: string
-          role?: string
-        }
-        Relationships: []
-      }
+          created_at?: string;
+          display_name?: string | null;
+          id?: string;
+          role?: string;
+        };
+        Relationships: [];
+      };
       session_phrases: {
         Row: {
-          id: string
-          mean_amplitude: number | null
-          phrase_index: number
-          session_id: string
-          stability: number | null
-          tone: Json | null
-        }
+          id: string;
+          mean_amplitude: number | null;
+          phrase_index: number;
+          session_id: string;
+          stability: number | null;
+          tone: Json | null;
+        };
         Insert: {
-          id?: string
-          mean_amplitude?: number | null
-          phrase_index: number
-          session_id: string
-          stability?: number | null
-          tone?: Json | null
-        }
+          id?: string;
+          mean_amplitude?: number | null;
+          phrase_index: number;
+          session_id: string;
+          stability?: number | null;
+          tone?: Json | null;
+        };
         Update: {
-          id?: string
-          mean_amplitude?: number | null
-          phrase_index?: number
-          session_id?: string
-          stability?: number | null
-          tone?: Json | null
-        }
+          id?: string;
+          mean_amplitude?: number | null;
+          phrase_index?: number;
+          session_id?: string;
+          stability?: number | null;
+          tone?: Json | null;
+        };
         Relationships: [
           {
-            foreignKeyName: "session_phrases_session_id_fkey"
-            columns: ["session_id"]
-            isOneToOne: false
-            referencedRelation: "sessions"
-            referencedColumns: ["id"]
+            foreignKeyName: "session_phrases_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "sessions";
+            referencedColumns: ["id"];
           },
-        ]
-      }
+        ];
+      };
       sessions: {
         Row: {
-          created_at: string
-          duration_secs: number
-          ended_at: string
-          id: string
-          instrument: string
-          overall_assessment: string | null
-          phrase_count: number
-          session_tone: Json | null
-          started_at: string
-          student_id: string
-        }
+          created_at: string;
+          duration_secs: number;
+          ended_at: string;
+          id: string;
+          instrument: string;
+          overall_assessment: string | null;
+          phrase_count: number;
+          session_tone: Json | null;
+          started_at: string;
+          student_id: string;
+        };
         Insert: {
-          created_at?: string
-          duration_secs: number
-          ended_at: string
-          id?: string
-          instrument: string
-          overall_assessment?: string | null
-          phrase_count?: number
-          session_tone?: Json | null
-          started_at: string
-          student_id: string
-        }
+          created_at?: string;
+          duration_secs: number;
+          ended_at: string;
+          id?: string;
+          instrument: string;
+          overall_assessment?: string | null;
+          phrase_count?: number;
+          session_tone?: Json | null;
+          started_at: string;
+          student_id: string;
+        };
         Update: {
-          created_at?: string
-          duration_secs?: number
-          ended_at?: string
-          id?: string
-          instrument?: string
-          overall_assessment?: string | null
-          phrase_count?: number
-          session_tone?: Json | null
-          started_at?: string
-          student_id?: string
-        }
+          created_at?: string;
+          duration_secs?: number;
+          ended_at?: string;
+          id?: string;
+          instrument?: string;
+          overall_assessment?: string | null;
+          phrase_count?: number;
+          session_tone?: Json | null;
+          started_at?: string;
+          student_id?: string;
+        };
         Relationships: [
           {
-            foreignKeyName: "sessions_student_id_fkey"
-            columns: ["student_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
+            foreignKeyName: "sessions_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
           },
-        ]
-      }
-    }
-    Views: { [_ in never]: never }
-    Functions: { [_ in never]: never }
-    Enums: { [_ in never]: never }
-    CompositeTypes: { [_ in never]: never }
-  }
-}
+        ];
+      };
+    };
+    Views: { [_ in never]: never };
+    Functions: { [_ in never]: never };
+    Enums: { [_ in never]: never };
+    CompositeTypes: { [_ in never]: never };
+  };
+};
