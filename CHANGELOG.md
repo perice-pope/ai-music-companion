@@ -1,3 +1,9 @@
+## [1.35.1](https://github.com/perice-pope/ai-music-companion/compare/v1.35.0...v1.35.1) (2026-06-01)
+
+### Bug Fixes
+
+* resolve hotspot bugs [#100](https://github.com/perice-pope/ai-music-companion/issues/100), [#102](https://github.com/perice-pope/ai-music-companion/issues/102), [#101](https://github.com/perice-pope/ai-music-companion/issues/101) ([#146](https://github.com/perice-pope/ai-music-companion/issues/146)) ([9ba0fdd](https://github.com/perice-pope/ai-music-companion/commit/9ba0fddcaf94dfed32946b1dce7a47f2609db89f))
+
 ## [1.35.0](https://github.com/perice-pope/ai-music-companion/compare/v1.34.0...v1.35.0) (2026-05-31)
 
 ### Features
