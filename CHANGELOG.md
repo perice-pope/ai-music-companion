@@ -1,3 +1,9 @@
+## [1.36.0](https://github.com/perice-pope/ai-music-companion/compare/v1.35.1...v1.36.0) (2026-06-01)
+
+### Features
+
+* **desktop:** optional cloud sync for practice sessions ([#145](https://github.com/perice-pope/ai-music-companion/issues/145)) ([b56717e](https://github.com/perice-pope/ai-music-companion/commit/b56717eb2b933c2a7eecff872490912ab2836ef1)), closes [#144](https://github.com/perice-pope/ai-music-companion/issues/144)
+
 ## [1.35.1](https://github.com/perice-pope/ai-music-companion/compare/v1.35.0...v1.35.1) (2026-06-01)
 
 ### Bug Fixes
