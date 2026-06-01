@@ -65,7 +65,7 @@ pub enum CoachingCategory {
 // ---------------------------------------------------------------------------
 
 /// A coaching tip returned by the engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoachingTip {
     /// Human-readable coaching text.
     pub text: String,
@@ -303,12 +303,13 @@ impl CoachingEngine {
         &mut self,
         phrase: &PhraseSummary,
         context: &SessionContext,
-    ) -> Result<CoachingTip, CoachingError> {
-        // Rate limiting
+    ) -> Result<Option<CoachingTip>, CoachingError> {
+        // Rate limiting: return None instead of canned text.
+        // The frontend renders the empty-state naturally without interrupting.
         if let Some(last) = self.last_call_time {
             let elapsed = last.elapsed().as_secs_f64();
             if elapsed < self.config.rate_limit_secs {
-                return Ok(Self::rate_limited_tip());
+                return Ok(None);
             }
         }
 
@@ -332,8 +333,8 @@ impl CoachingEngine {
             .await;
 
         match response {
-            Ok(body) => Self::parse_tip_from_response(&body).or_else(|_| Ok(Self::fallback_tip())),
-            Err(_) => Ok(Self::fallback_tip()),
+            Ok(body) => Ok(Self::parse_tip_from_response(&body).ok()),
+            Err(_) => Ok(None),
         }
     }
 
@@ -650,29 +651,6 @@ Choose the category that best matches the most notable aspect of the phrase data
     // -----------------------------------------------------------------------
     // Fallback tips
     // -----------------------------------------------------------------------
-
-    /// Generic encouraging tip returned when the API fails.
-    fn fallback_tip() -> CoachingTip {
-        CoachingTip {
-            text: "Great work keeping at it! Consistent practice is the key to improvement. \
-                   Try focusing on the passages that feel most comfortable and gradually \
-                   push your boundaries."
-                .to_owned(),
-            severity: CoachingSeverity::Encouragement,
-            category: CoachingCategory::Expression,
-        }
-    }
-
-    /// Generic tip returned when rate-limited.
-    fn rate_limited_tip() -> CoachingTip {
-        CoachingTip {
-            text: "Keep up the momentum! Take a moment to listen back to what you just \
-                   played and notice what felt natural."
-                .to_owned(),
-            severity: CoachingSeverity::Encouragement,
-            category: CoachingCategory::Expression,
-        }
-    }
 }
 
 // ===========================================================================
@@ -1292,7 +1270,8 @@ mod tests {
         let tip = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("successful LLM call should return Some(tip)");
 
         assert_eq!(tip.severity, CoachingSeverity::Suggestion);
         assert_eq!(tip.category, CoachingCategory::Expression);
@@ -1308,17 +1287,11 @@ mod tests {
         let mock = MockHttpClient::failing("connection refused");
         let mut engine = make_engine(mock);
 
-        // Should NOT return Err — should return a fallback tip
+        // API failure should return None, not error — graceful degradation
         let result = engine.get_tip(&sample_phrase(), &sample_context()).await;
 
-        assert!(result.is_ok(), "API failure should degrade gracefully");
-        let tip = result.unwrap();
-        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
-        assert!(
-            tip.text.contains("Consistent practice"),
-            "Fallback tip should encourage practice, got: {}",
-            tip.text
-        );
+        assert!(result.is_ok(), "API failure should not propagate error");
+        assert_eq!(result.unwrap(), None, "API failure should return None tip");
     }
 
     #[tokio::test]
@@ -1333,7 +1306,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Second call immediately — should be rate-limited
+        // Second call immediately — should be rate-limited and return None
         let tip2 = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
@@ -1344,12 +1317,8 @@ mod tests {
             1,
             "Rate limiter should have prevented the second API call"
         );
-        // The rate-limited tip has specific text
-        assert!(
-            tip2.text.contains("Keep up the momentum"),
-            "Rate-limited tip should be the generic one, got: {}",
-            tip2.text
-        );
+        // Rate-limited response is None (no canned text)
+        assert_eq!(tip2, None, "Rate-limited should return None tip");
     }
 
     #[test]
@@ -1517,14 +1486,15 @@ mod tests {
         let tip = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("successful LLM call should return Some(tip)");
 
         assert_eq!(tip.category, CoachingCategory::Dynamics);
         assert_eq!(tip.severity, CoachingSeverity::Encouragement);
     }
 
     #[tokio::test]
-    async fn malformed_llm_response_triggers_fallback() {
+    async fn malformed_llm_response_returns_none() {
         // The LLM returns text that isn't valid JSON
         let bad_response = serde_json::json!({
             "content": [{
@@ -1537,14 +1507,13 @@ mod tests {
         let mock = MockHttpClient::succeeding(&bad_response);
         let mut engine = make_engine(mock);
 
-        let tip = engine
+        let result = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
             .unwrap();
 
-        // Should get the fallback, not an error
-        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
-        assert!(tip.text.contains("Consistent practice"));
+        // Malformed response returns None, not error or fallback
+        assert_eq!(result, None, "Malformed LLM response should return None");
     }
 
     #[test]
@@ -1826,18 +1795,13 @@ mod tests {
             "Rate limiting should prevent second API call within window"
         );
         assert_eq!(
-            tip2.severity,
-            CoachingSeverity::Encouragement,
-            "Rate-limited response should be encouragement"
-        );
-        assert!(
-            tip2.text.contains("momentum"),
-            "Rate-limited tip should have characteristic wording"
+            tip2, None,
+            "Rate-limited response should be None (no canned text)"
         );
     }
 
     #[tokio::test]
-    async fn api_failure_returns_fallback_tip() {
+    async fn api_failure_returns_none() {
         let mock = MockHttpClient::failing("Service unavailable");
         let mut engine = CoachingEngine::new(
             CoachingConfig {
@@ -1854,21 +1818,11 @@ mod tests {
 
         let result = engine.get_tip(&phrase, &context).await;
         assert!(result.is_ok(), "API failure should not propagate error");
-
-        let tip = result.unwrap();
-        assert!(
-            !tip.text.is_empty(),
-            "Fallback tip should have non-empty text"
-        );
-        assert_eq!(
-            tip.severity,
-            CoachingSeverity::Encouragement,
-            "Fallback tip should be encouraging"
-        );
+        assert_eq!(result.unwrap(), None, "API failure should return None tip");
     }
 
     #[tokio::test]
-    async fn malformed_response_returns_fallback() {
+    async fn malformed_response_returns_none() {
         let mock = MockHttpClient::succeeding("{\"invalid\": \"json\"}");
         let mut engine = CoachingEngine::new(
             CoachingConfig {
@@ -1888,10 +1842,10 @@ mod tests {
             result.is_ok(),
             "Malformed response should not propagate error"
         );
-        let tip = result.unwrap();
-        assert!(
-            !tip.text.is_empty(),
-            "Fallback should be provided for malformed response"
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "Malformed response should return None tip"
         );
     }
 

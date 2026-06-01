@@ -117,7 +117,11 @@ async fn end_to_end_coaching_with_mock_api() {
     let phrase = make_phrase(440.0, 0.95, 0.7, 0.3, 15);
     let context = make_context("trumpet");
 
-    let tip = engine.get_tip(&phrase, &context).await.unwrap();
+    let tip = engine
+        .get_tip(&phrase, &context)
+        .await
+        .unwrap()
+        .expect("successful LLM call should return Some(tip)");
 
     // Verify the returned tip has correct structure
     assert_eq!(tip.severity, CoachingSeverity::Suggestion);
@@ -166,8 +170,16 @@ async fn multiple_phrases_get_different_prompts() {
         score_title: None,
     };
 
-    let _tip1 = engine.get_tip(&phrase1, &context1).await.unwrap();
-    let _tip2 = engine.get_tip(&phrase2, &context2).await.unwrap();
+    let _tip1 = engine
+        .get_tip(&phrase1, &context1)
+        .await
+        .unwrap()
+        .expect("successful LLM call should return Some(tip)");
+    let _tip2 = engine
+        .get_tip(&phrase2, &context2)
+        .await
+        .unwrap()
+        .expect("successful LLM call should return Some(tip)");
 
     // Access the mock through the engine to check recorded bodies.
     // We verify that the user prompts are different by checking the

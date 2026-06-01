@@ -241,7 +241,7 @@ impl CoachingService for LlmCoachingService {
         match &self.engine {
             Some(engine_arc) => {
                 let mut engine = engine_arc.lock().await;
-                engine.get_tip(phrase, context).await.ok()
+                engine.get_tip(phrase, context).await.ok().flatten()
             }
             None => None,
         }
