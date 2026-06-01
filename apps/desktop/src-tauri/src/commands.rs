@@ -468,7 +468,7 @@ impl ActiveSession {
 /// at a time — the double-start test verifies this.
 pub struct AppState {
     active_session: Mutex<Option<ActiveSession>>,
-    coaching_factory: Arc<dyn Fn() -> Arc<dyn CoachingService> + Send + Sync>,
+    coaching_service: Arc<dyn CoachingService>,
     recap_generator: Arc<dyn RecapGenerator>,
     /// `std::sync::Mutex` because rusqlite's `Connection` wraps a
     /// `RefCell` internally, making `SessionStore: !Sync`. Tauri's
@@ -536,7 +536,7 @@ impl AppState {
 
         Self {
             active_session: Mutex::new(None),
-            coaching_factory: Arc::new(move || Arc::new(LlmCoachingService::new())),
+            coaching_service: Arc::new(coaching_svc),
             recap_generator: Arc::new(recap_gen),
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
@@ -550,7 +550,7 @@ impl AppState {
     pub fn with_mocks() -> Self {
         Self {
             active_session: Mutex::new(None),
-            coaching_factory: Arc::new(|| Arc::new(MockCoachingService::new())),
+            coaching_service: Arc::new(MockCoachingService::new()),
             recap_generator: Arc::new(MockRecapGenerator),
             session_store: std::sync::Mutex::new(
                 SessionStore::in_memory().expect("in-memory store must succeed"),
@@ -826,8 +826,7 @@ impl AppState {
         phrase: &PhraseSummary,
         context: &SessionContext,
     ) -> Result<Option<CoachingTip>, CommandError> {
-        let coaching = (self.coaching_factory)();
-        Ok(coaching.get_tip(phrase, context).await)
+        Ok(self.coaching_service.get_tip(phrase, context).await)
     }
 }
 
@@ -1016,7 +1015,7 @@ pub async fn start_practice_session_impl(
         return Err(CommandError::AlreadyActive);
     }
 
-    let coaching = (state.coaching_factory)();
+    let coaching = Arc::clone(&state.coaching_service);
     let mut session = ActiveSession::new(instrument, practice_mode, coaching);
     // Tag the recorder with the score title (if score-backed) so the
     // end-of-session recap can name the piece and cite measures.
