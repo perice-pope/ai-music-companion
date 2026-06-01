@@ -1,3 +1,9 @@
+## [1.36.1](https://github.com/perice-pope/ai-music-companion/compare/v1.36.0...v1.36.1) (2026-06-01)
+
+### Bug Fixes
+
+* hold single coaching service to restore rate limiting ([#107](https://github.com/perice-pope/ai-music-companion/issues/107)) ([3d6255f](https://github.com/perice-pope/ai-music-companion/commit/3d6255fd1f442fd1f0828704d858844e4b6401bc))
+
 ## [1.36.0](https://github.com/perice-pope/ai-music-companion/compare/v1.35.1...v1.36.0) (2026-06-01)
 
 ### Features
