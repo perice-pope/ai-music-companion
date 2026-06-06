@@ -1,3 +1,9 @@
+## [1.39.0](https://github.com/perice-pope/ai-music-companion/compare/v1.38.0...v1.39.0) (2026-06-06)
+
+### Features
+
+* **brain:** wire key/mode detection into phrases + recap (Phase 4 PR 2) ([#152](https://github.com/perice-pope/ai-music-companion/issues/152)) ([097c6ef](https://github.com/perice-pope/ai-music-companion/commit/097c6efece88509949e2361db0dfefbf8add97eb)), closes [#151](https://github.com/perice-pope/ai-music-companion/issues/151)
+
 ## [1.38.0](https://github.com/perice-pope/ai-music-companion/compare/v1.37.0...v1.38.0) (2026-06-06)
 
 ### Features
