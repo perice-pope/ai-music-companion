@@ -90,6 +90,58 @@ The engine (extends `crates/brain/src/coaching.rs`, same `HttpClient` seam) call
 
 ---
 
+---
+
+## 3B. Sub-track — Musical Language / Idiom Recognition (the "bebop test")
+
+This is the concrete mechanism behind Track B's promise. "Relate it to my world" only lands if the system can actually *recognise the vocabulary* — "that line is a Parker-ism," "that's a ii–V bebop enclosure," "you quoted *Cry Me a River*" — not just report key/tempo. It's the hardest and highest-value part, and the one a trained ear will judge most harshly, so the grounding principle (§1) applies double.
+
+### 3B.1 Two complementary engines
+
+1. **Symbolic lick-matching (lead).** Transcribe the played line to notes (our monophonic pitch path already handles a single-line sax/trumpet solo; richer lines via the offline `crates/transcribe`), then match the note sequence against a **catalogue of known patterns** with melodic-similarity search (transposition-invariant, rhythm-aware). When a strong match hits, we can say something *specific and true*: "measure 3 — textbook bebop enclosure into the ii–V; here it is in *Now's the Time*." This is grounded (we point at the actual notes), explainable, and citable. It's the spiritual successor to the **Dig That Lick** / **Jazzomat** pattern-search work over the **Weimar Jazz Database** and the **Parker Omnibook**.[^djl][^jazzomat][^omnibook]
+2. **Audio-embedding retrieval (augment).** Embed the audio with a music foundation model (e.g. **MERT**) and do nearest-neighbour retrieval against reference recordings/phrases.[^mert] This captures what transcription throws away — swing feel, articulation, timbre — and powers *flavour* statements: "your phrasing here sits near Stitt and early Parker." It is **never** used to assert a hard fact; only "reminds me of / shares a neighbourhood with."
+
+### 3B.2 What we explicitly do *not* trust for hard claims
+
+Audio-LLMs that "listen and describe" (Qwen2-Audio, MU-LLaMA, SALMONN, Audio Flamingo) are the most seductive option, but 2025 evaluations (MuChoMusic, MMAU, and pointedly *Investigating Modality Contribution in Audio LLMs for Music*) show they are **unreliable on fine musical perception and often answer from text priors rather than actually listening** — they will confidently mislabel an idiom.[^mucho][^modality] A perfect-pitch user catches that instantly → trust gone. So an audio-LLM may *phrase* a connection warmly, but the **claim itself must come from the symbolic matcher (specific licks) or be hedged retrieval (embeddings)** — never from the audio-LLM's say-so.
+
+### 3B.3 Output shape (grounded + confidence-gated)
+
+```
+IdiomMatch {
+  label: String,            // "Bebop enclosure", "Parker quote: Now's the Time"
+  family: String,           // bebop / blues / modal / bossa / …
+  note_span: (usize,usize), // which played notes — so we can point at them
+  confidence: f32,          // strong match required to *name* a lick
+  exemplars: Vec<Ref>,      // real recordings (named + linked, see licensing)
+  source: Symbolic | Retrieval,  // hard claim vs "reminds me of"
+}
+```
+A `Symbolic` match below the naming threshold degrades to a `Retrieval`-style "this has a bebop flavour"; below that, silence.
+
+### 3B.4 Data & moat
+
+- **Bootstrap on open assets:** Weimar Jazz Database (456 transcribed solos), the Dig That Lick DTL1000 pattern set (~1,700 solos), the Parker Omnibook. Enough to ship a credible jazz/bebop catalogue.[^djl][^jazzomat][^omnibook]
+- **The moat is our own growing, labelled catalogue** of licks/idioms across genres (not just jazz), accumulated from real student sessions and teacher tagging over time. We do **not** train our own foundation model in Phase 4 (data/rights/cost) — we stand on open datasets + an off-the-shelf embedding model.
+- **Reference-audio licensing:** v1 **names and links out** to recordings (Spotify/YouTube search), it does **not** host or stream clips. Embedding *reference* audio for retrieval is an internal index question to clear with counsel before launch.
+
+### 3B.5 The validation spike comes first
+
+Before committing an approach, **Idiom PR 0** is a research spike (this is the "spike vs doc" question resolved as *both*): assemble ~10 real solos (a few clear bebop lines, a blues, a modal tune, a couple of non-jazz controls) and evaluate, on the *same* clips:
+- **Symbolic** (transcribe → Dig-That-Lick-style pattern match),
+- **MERT embedding** retrieval, and
+- **an audio-LLM** ("name the idiom"),
+scoring each on **precision of idiom labels** (how often it's *right and specific*) and, critically, **false-confident rate** (how often it asserts a wrong idiom — the trust-killer). Deliverable: a short decision memo + a tiny labelled eval set we keep as a regression fixture. Only then do we build the chosen engine.
+
+[^mert]: MERT: Acoustic Music Understanding Model — https://arxiv.org/html/2306.00107v4
+[^djl]: Dig That Lick: Exploring Patterns in Jazz with Computational Methods — https://hal.science/hal-03084838/document
+[^jazzomat]: The Jazzomat Research Project (Weimar Jazz Database) — https://jazzomat.hfm-weimar.de/
+[^omnibook]: Reconstructing the Charlie Parker Omnibook via auto-transcription — https://arxiv.org/html/2405.16687
+[^mucho]: MuChoMusic: Evaluating Music Understanding in Audio-Language Models — https://arxiv.org/pdf/2408.01337
+[^modality]: Investigating Modality Contribution in Audio LLMs for Music — https://arxiv.org/pdf/2509.20641
+
+---
+
 ## 4. Where it surfaces (UX)
 - **Live (sparing):** an occasional connection card between phrases — not every phrase; rationed like the current tip queue.
 - **Recap:** a "Your musical world today" section — the connections + one taste-matched thing to explore next.
@@ -116,8 +168,17 @@ The engine (extends `crates/brain/src/coaching.rs`, same `HttpClient` seam) call
 - **PR 6 — Internet/retrieval grounding** + citation resolution + the "What was that?" moment.
 - **PR 7 — Harmonic hints** (A4, best-effort) — stretch.
 
+### Idiom Recognition sub-track (§3B) — runs after PR 4 (fingerprint), parallel to PR 5–6
+- **Idiom PR 0 — validation spike**: symbolic vs MERT-embedding vs audio-LLM on ~10 real solos; score idiom-label precision + false-confident rate; decision memo + regression eval set. **Gates the rest of the sub-track.**
+- **Idiom PR 1 — symbolic lick catalogue + matcher**: a pattern catalogue (bootstrap from Weimar Jazz DB / DTL1000 / Parker Omnibook) + transposition-invariant melodic-similarity match over the transcribed line; emits confidence-gated `IdiomMatch`. New crate (e.g. `crates/idiom`) or a `theory` module.
+- **Idiom PR 2 — embedding retrieval**: MERT (or chosen model) nearest-neighbour "reminds me of" against a reference index; strictly hedged, never a hard claim.
+- **Idiom PR 3 — surface it**: feed `IdiomMatch`es into the relevance engine + the "What was that?" moment, with named/linked exemplars (no hosted audio).
+
 ## 8. Cut lines (not in Phase 4)
 - A trained **audio genre classifier** — we deliberately lean on theory features + LLM reasoning, not a learned genre model (honest about the difference; revisit if features prove insufficient).
+- **Training our own music foundation model** — stand on open datasets + an off-the-shelf embedding model (MERT-class); our moat is the labelled idiom catalogue, not the encoder.
+- **Audio-LLM as a source of hard idiom claims** — it may phrase, never assert (§3B.2); claims come from the symbolic matcher or hedged retrieval.
+- **Hosting/streaming reference clips** — v1 names + links out only (§3B.4).
 - **Real-time polyphonic** pitch (its own large effort; A4 rides on offline polyphony only).
 - Auto-generated backing tracks / "play in the style of X" generation — adjacent product, later.
 - Anything that puts the LLM or the internet on the real-time audio path.
@@ -128,6 +189,8 @@ The engine (extends `crates/brain/src/coaching.rs`, same `HttpClient` seam) call
 3. **Taste onboarding depth** — quick "pick 5 artists" vs a richer survey? How much do we infer vs ask?
 4. **How aggressive on rhythm feedback** — micro-timing "you're 25 ms behind" is powerful but can feel clinical; how much do we surface as numbers vs feel-language?
 5. **Licensing/clips** — do we ever embed/stream reference snippets (rights!), or only *name* recordings and let the student go find them? (Proposal: name + link out for v1; no audio hosting.)
+6. **Idiom genre coverage at launch** — start jazz/bebop only (where the open datasets are richest) and expand, or seed a few idioms across several genres from day one? (Proposal: jazz-deep first — it's the clearest "wow" and the data exists.)
+7. **Building our own idiom catalogue** — when do we add teacher/student labelling so the catalogue (the moat) grows beyond the open datasets? Shapes whether idiom tagging is a Phase 4 or Phase 5 surface.
 
 ---
 
