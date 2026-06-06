@@ -1,0 +1,17 @@
+[package]
+name = "theory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-device music-theory analysis (key & mode detection) for AI Music Companion"
+
+[dependencies]
+# KeyEstimate / Mode cross the IPC + persistence boundary in later PRs.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
