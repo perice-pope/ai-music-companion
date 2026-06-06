@@ -1,3 +1,9 @@
+## [1.38.0](https://github.com/perice-pope/ai-music-companion/compare/v1.37.0...v1.38.0) (2026-06-06)
+
+### Features
+
+* **theory:** key & mode detection crate (Phase 4, Track A PR 1) ([#151](https://github.com/perice-pope/ai-music-companion/issues/151)) ([1066baa](https://github.com/perice-pope/ai-music-companion/commit/1066baabcefdd89c4532ee37ef07348d870359d3))
+
 ## [1.37.0](https://github.com/perice-pope/ai-music-companion/compare/v1.36.1...v1.37.0) (2026-06-06)
 
 ### Features
