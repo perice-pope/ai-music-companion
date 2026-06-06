@@ -141,10 +141,15 @@ The dashboard forces accounts. We need **one identity** spanning desktop app, da
 
 ## 6. Open questions for the founder
 
-1. **Privacy/legal sign-off.** FERPA/COPPA + minors' data to a third party (teacher) needs counsel before launch (architecture-v2 risk table). What's the bar for v1 — consult counsel pre-build, or build behind a flag and gate launch on review? **This is the gating question.**
-2. **Auth slicing — fold into this story (A) or a separate "Phase 2.5 Sync" first (B)?** (B recommended to de-risk auth/sync independently of the teacher UI.)
-3. **Who consents for minors?** Student-only opt-in, or parent/guardian consent flow required (likely yes for under-13 per COPPA)? Shapes the onboarding.
-4. **Hosting the teacher web app** — separate deploy (Vercel/Netlify) vs same infra? New surface area to operate.
+> **Questions 1, 3 (and 4) now have a concrete proposal:** see the companion
+> decision doc [`story-phase3-teacher-dashboard-privacy.md`](./story-phase3-teacher-dashboard-privacy.md),
+> which is the **gating sign-off** for the teacher-linking work. Questions 2 and 5
+> are resolved below.
+
+1. **Privacy/legal sign-off.** FERPA/COPPA + minors' data to a third party (teacher) needs counsel before launch (architecture-v2 risk table). What's the bar for v1 — consult counsel pre-build, or build behind a flag and gate launch on review? **This is the gating question.** → *Proposal: build behind a flag now, gate launch on counsel review of the RLS tests + notice. See privacy doc §1.*
+2. **Auth slicing — fold into this story (A) or a separate "Phase 2.5 Sync" first (B)?** (B recommended to de-risk auth/sync independently of the teacher UI.) → **Resolved: (B).** Shipped as #144 (schema) + #145 (optional desktop sign-in + sync).
+3. **Who consents for minors?** Student-only opt-in, or parent/guardian consent flow required (likely yes for under-13 per COPPA)? Shapes the onboarding. → *Proposal: parental consent for under-13 (no self-link); student for 13+. See privacy doc §3.*
+4. **Hosting the teacher web app** — separate deploy (Vercel/Netlify) vs same infra? New surface area to operate. → *Proposal: separate static deploy. See privacy doc §6.*
 5. **Live monitoring priority** — is real-time "watch now" a v1 must, or an accepted fast-follow? (This doc assumes fast-follow.)
 6. **Supabase free tier limits** — fine for a pilot; flag the scaling/cost point before a wide launch.
 
