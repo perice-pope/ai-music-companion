@@ -1,3 +1,9 @@
+## [1.37.0](https://github.com/perice-pope/ai-music-companion/compare/v1.36.1...v1.37.0) (2026-06-06)
+
+### Features
+
+* **supabase:** teacher↔student linking + RLS swap (privacy core) ([#149](https://github.com/perice-pope/ai-music-companion/issues/149)) ([d9c1dd0](https://github.com/perice-pope/ai-music-companion/commit/d9c1dd03a99383b933e47765944bb335dee9815a))
+
 ## [1.36.1](https://github.com/perice-pope/ai-music-companion/compare/v1.36.0...v1.36.1) (2026-06-01)
 
 ### Bug Fixes
