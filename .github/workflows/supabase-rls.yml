@@ -1,0 +1,56 @@
+name: Supabase RLS
+
+# The privacy core for the Teacher Dashboard track. A leak in these policies is
+# the worst class of bug this product can have (a minor's data reaching the
+# wrong person), so the RLS suite runs against a REAL Postgres — the local
+# Supabase stack, which provides the auth schema and auth.uid() our policies
+# depend on — and blocks the merge on any failure.
+
+on:
+  pull_request:
+    paths:
+      - "supabase/**"
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+
+jobs:
+  rls:
+    name: RLS policy tests
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Scaffold local project config
+        # Creates supabase/config.toml if absent (not committed). Non-interactive.
+        run: |
+          if [ ! -f supabase/config.toml ]; then
+            supabase init --force --with-vscode-settings=false || supabase init
+          fi
+
+      - name: Start local Supabase stack
+        run: supabase start
+
+      - name: Rebuild database from migrations
+        # `db reset` drops the local DB and re-applies supabase/migrations in
+        # filename order on top of the stack's auth schema — a clean, known
+        # state. (We don't apply via psql: `supabase start` already runs the
+        # migrations once, so a manual re-apply would collide with "relation
+        # already exists".)
+        run: supabase db reset
+
+      - name: Run RLS verification suite
+        # Any policy leak raises an exception -> psql exits non-zero -> red.
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/rls_teacher_linking.sql
+
+      - name: Stop stack
+        if: always()
+        run: supabase stop || true

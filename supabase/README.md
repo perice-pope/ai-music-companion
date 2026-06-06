@@ -38,14 +38,48 @@ inherit access from the owning session. Security advisors: **clean**.
 Generated TypeScript types live at `apps/desktop/src/types/supabase.ts`
 (regenerate after any migration).
 
-## NOT yet created — gated on privacy sign-off
+## Teacher linking (PR 1 — the privacy core)
 
-The **teacher ↔ student linking** tables (`teacher_student_links`, `assignments`)
-and the teacher-facing read policies are deliberately **not** in this schema.
-That's the surface where a minor's data becomes visible to a third party
-(the teacher), and it needs the FERPA/COPPA posture + consent-flow decisions
-from the design doc's Open Questions **before** it's built. See
-`docs/design/story-phase3-teacher-dashboard.md` §6.
+Migration `0003` adds the teacher-facing layer, ratified against the
+[privacy decision doc](../docs/design/story-phase3-teacher-dashboard-privacy.md):
+
+- `profiles.age_tier` — coarse `under_13` / `teen_13_17` / `adult` (**never a birthdate**).
+- `teacher_student_links` — `pending` → `accepted` → `revoked`, with a consent
+  audit trail (`consented_by`, `consent_at`, `consenting_adult_id`).
+- `assignments` — a teacher writes for an accepted-linked student; the student reads.
+- **The RLS swap:** `sessions` / `session_phrases` SELECT changes from self-only to
+  **owner OR an accepted-linked teacher**. INSERT/UPDATE/DELETE stay owner-only.
+
+**Safety property:** nothing a teacher can read opens up until a link reaches
+`status='accepted'`. With zero accepted links the behaviour is identical to the
+self-only model — it ships *dark* until the consent flow (a later PR) exists.
+
+The *who-may-accept* rule for under-13 (parent only) is enforced at the app layer
+and recorded in the consent columns; full parent↔child account modelling is a
+follow-up. RLS guarantees only the two linked parties can touch a link row.
+
+### RLS tests (merge-blocking)
+
+`tests/rls_teacher_linking.sql` proves the visibility matrix against a **real
+Postgres**: a teacher reads a student's recaps *only* via an accepted link, never
+via a pending/absent link, and a revoke closes access immediately. It seeds
+throwaway data, asserts as each persona (`set role authenticated` + JWT claim),
+and rolls back to leave zero residue. Wired into CI as the **Supabase RLS** job
+(`.github/workflows/supabase-rls.yml`); run locally with:
+
+```
+supabase start
+for f in supabase/migrations/*.sql; do psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"; done
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/rls_teacher_linking.sql
+```
+
+## Still gated — pending later PRs
+
+The consent/invite UI flow, the teacher web app (roster → feed → assignments →
+analytics), and the under-13 parent-account model are the remaining work, sliced
+in `docs/design/story-phase3-teacher-dashboard.md` §4. **Public launch** of
+teacher-linking is gated on counsel review of these RLS tests + the privacy
+notice (privacy doc §1).
 
 ## Applying migrations
 

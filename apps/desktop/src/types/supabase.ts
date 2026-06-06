@@ -16,20 +16,74 @@ export type Database = {
   };
   public: {
     Tables: {
+      assignments: {
+        Row: {
+          created_at: string;
+          goal: string | null;
+          id: string;
+          note: string | null;
+          score_ref: string | null;
+          status: string;
+          student_id: string;
+          teacher_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          created_at?: string;
+          goal?: string | null;
+          id?: string;
+          note?: string | null;
+          score_ref?: string | null;
+          status?: string;
+          student_id: string;
+          teacher_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          created_at?: string;
+          goal?: string | null;
+          id?: string;
+          note?: string | null;
+          score_ref?: string | null;
+          status?: string;
+          student_id?: string;
+          teacher_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "assignments_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "assignments_teacher_id_fkey";
+            columns: ["teacher_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       profiles: {
         Row: {
+          age_tier: string | null;
           created_at: string;
           display_name: string | null;
           id: string;
           role: string;
         };
         Insert: {
+          age_tier?: string | null;
           created_at?: string;
           display_name?: string | null;
           id: string;
           role?: string;
         };
         Update: {
+          age_tier?: string | null;
           created_at?: string;
           display_name?: string | null;
           id?: string;
@@ -119,10 +173,73 @@ export type Database = {
           },
         ];
       };
+      teacher_student_links: {
+        Row: {
+          consent_at: string | null;
+          consented_by: string | null;
+          consenting_adult_id: string | null;
+          id: string;
+          invited_at: string;
+          status: string;
+          student_id: string;
+          teacher_id: string;
+        };
+        Insert: {
+          consent_at?: string | null;
+          consented_by?: string | null;
+          consenting_adult_id?: string | null;
+          id?: string;
+          invited_at?: string;
+          status?: string;
+          student_id: string;
+          teacher_id: string;
+        };
+        Update: {
+          consent_at?: string | null;
+          consented_by?: string | null;
+          consenting_adult_id?: string | null;
+          id?: string;
+          invited_at?: string;
+          status?: string;
+          student_id?: string;
+          teacher_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "teacher_student_links_consenting_adult_id_fkey";
+            columns: ["consenting_adult_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "teacher_student_links_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "teacher_student_links_teacher_id_fkey";
+            columns: ["teacher_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
-    Views: { [_ in never]: never };
-    Functions: { [_ in never]: never };
-    Enums: { [_ in never]: never };
-    CompositeTypes: { [_ in never]: never };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      [_ in never]: never;
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
+    };
   };
 };
