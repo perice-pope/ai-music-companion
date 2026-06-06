@@ -786,6 +786,7 @@ mod tests {
             phrase_count,
             instrument: instrument.to_owned(),
             session_tone: None,
+            session_key: None,
         }
     }
 
@@ -968,6 +969,7 @@ mod tests {
             phrase_count: 17,
             instrument: "clarinet".to_owned(),
             session_tone: None,
+            session_key: None,
         };
         let now = Utc::now();
         store

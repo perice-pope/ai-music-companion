@@ -776,6 +776,17 @@ All text should be written as a teacher would speak — warm, specific, and acti
             None => String::new(),
         };
 
+        // Detected key/mode over the session, when confident — a grounded fact
+        // the recap (and later the cultural-relevance layer) can lean on.
+        let key_line = match aggregate_key(&input.phrases) {
+            Some(k) => format!(
+                "- Key / mode: {} (confidence {:.2})\n",
+                k.name(),
+                k.confidence
+            ),
+            None => String::new(),
+        };
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -783,7 +794,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Phrase count: {}\n\
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
-            {}\n\
+            {}{}\n\
             {}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}",
@@ -794,6 +805,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Self::average_metric(&input.phrases, |p| p.stability),
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
             tone_line,
+            key_line,
             tip_summary,
             score_block,
             if input.score_title.is_some() {
@@ -935,6 +947,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             session_tone: aggregate_tone(&input.phrases),
+            session_key: aggregate_key(&input.phrases),
         };
 
         Ok(recap)
@@ -966,6 +979,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             session_tone: aggregate_tone(&input.phrases),
+            session_key: aggregate_key(&input.phrases),
         }
     }
 }
@@ -978,6 +992,26 @@ fn describe_tone(t: &tone::ToneDescriptor) -> String {
         "brightness {:.2}, warmth {:.2}, air/noise {:.2}, core clarity {:.2}, vibrato {:.2} (each 0–1)",
         t.brightness, t.warmth, t.air_noise, t.core_clarity, t.vibrato_quality
     )
+}
+
+/// Session-level key/mode over every phrase's detected pitches. Returns `None`
+/// unless the fit is confident enough to state plainly — we'd rather show no key
+/// than a shaky one (a trained ear would catch a wrong call instantly, and the
+/// cultural-relevance layer must never build on an invented key).
+fn aggregate_key(phrases: &[PhraseSummary]) -> Option<theory::KeyEstimate> {
+    /// Don't surface a key below this correlation — hedge instead.
+    const MIN_CONFIDENCE: f32 = 0.5;
+    /// Or below this many distinct pitch classes — you can't name a key from a
+    /// note or two, however well a lone spike happens to correlate.
+    const MIN_DISTINCT: usize = 4;
+    let mut profile = theory::PitchClassProfile::new();
+    for p in phrases {
+        for &hz in &p.pitch_stats.pitches {
+            profile.add_hz(hz as f32, 1.0);
+        }
+    }
+    let est = theory::estimate_key(&profile)?;
+    (profile.distinct() >= MIN_DISTINCT && est.confidence >= MIN_CONFIDENCE).then_some(est)
 }
 
 /// Mean tone descriptor across the phrases that carry one. `None` when no
@@ -1082,6 +1116,7 @@ mod tests {
             stability: 0.92,
             score_position: None,
             tone: None,
+            key: None,
         }
     }
 
@@ -1219,6 +1254,32 @@ mod tests {
         assert!(
             recap.session_tone.is_some(),
             "recap should carry the session tone aggregate"
+        );
+    }
+
+    #[test]
+    fn aggregate_key_names_a_clear_key_and_hedges_otherwise() {
+        // No phrases → no key.
+        assert!(aggregate_key(&[]).is_none());
+
+        // A phrase whose pitches spell a C-major scale with the tonic (C) and
+        // fifth (G) emphasised — as real playing does — → confident C major.
+        let mut p = sample_phrase();
+        p.pitch_stats.pitches = vec![
+            261.63, 261.63, 261.63, // C ×3 (tonic)
+            293.66, 329.63, 349.23, // D E F
+            392.0, 392.0, // G ×2 (fifth)
+            440.0, 493.88, // A B
+        ];
+        let key = aggregate_key(std::slice::from_ref(&p)).expect("a clear key");
+        assert_eq!(key.name(), "C major", "got {}", key.name());
+
+        // A single repeated note is too thin → hedge to None.
+        let mut thin = sample_phrase();
+        thin.pitch_stats.pitches = vec![440.0; 6];
+        assert!(
+            aggregate_key(std::slice::from_ref(&thin)).is_none(),
+            "a single pitch class must not yield a confident key"
         );
     }
 

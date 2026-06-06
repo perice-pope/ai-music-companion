@@ -12,8 +12,14 @@ function fullRecap(overrides: Partial<RecapT> = {}): RecapT {
   return {
     overall_assessment: "You had a solid 15 minutes on trumpet.",
     strengths: ["Consistent tone.", "Steady tempo."],
-    areas_to_improve: ["Intonation drifted sharp on high C.", "Rests sometimes feel cut short."],
-    next_session_suggestions: ["Long tones with a drone.", "Slow tonguing exercises."],
+    areas_to_improve: [
+      "Intonation drifted sharp on high C.",
+      "Rests sometimes feel cut short.",
+    ],
+    next_session_suggestions: [
+      "Long tones with a drone.",
+      "Slow tonguing exercises.",
+    ],
     duration_secs: 900,
     phrase_count: 24,
     instrument: "Trumpet",
@@ -91,6 +97,28 @@ describe("SessionRecap", () => {
     screen.getByText("Brightness");
   });
 
+  it("shows the detected key only when the recap carries one", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No session_key → no key line.
+    expect(screen.queryByTestId("recap-key")).toBeNull();
+
+    seedRecap(
+      fullRecap({
+        session_key: {
+          tonic: 7,
+          mode: "mixolydian",
+          confidence: 0.82,
+          margin: 0.1,
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain(
+      "G Mixolydian",
+    );
+  });
+
   it("empty-state recap (zero phrases) hides bullet sections but keeps buttons", () => {
     seedRecap(
       fullRecap({
@@ -112,17 +140,17 @@ describe("SessionRecap", () => {
     screen.getByTestId("recap-practice-again");
     screen.getByTestId("recap-done");
     // data-variant reflects the mode so styling can differ later.
-    expect(screen.getByTestId("session-recap").getAttribute("data-variant")).toBe(
-      "empty",
-    );
+    expect(
+      screen.getByTestId("session-recap").getAttribute("data-variant"),
+    ).toBe("empty");
   });
 
   it("renders the fallback copy when recapError is set", () => {
     seedRecap(null, "llm timeout");
     render(<SessionRecap />);
-    expect(screen.getByTestId("session-recap").getAttribute("data-variant")).toBe(
-      "error",
-    );
+    expect(
+      screen.getByTestId("session-recap").getAttribute("data-variant"),
+    ).toBe("error");
     // No strengths/areas sections in the error variant.
     expect(screen.queryByTestId("recap-strengths")).toBeNull();
     expect(screen.queryByTestId("recap-areas")).toBeNull();

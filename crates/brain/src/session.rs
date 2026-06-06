@@ -302,6 +302,12 @@ pub struct SessionRecap {
     /// `serde(default)` so recaps saved before tone existed still load.
     #[serde(default)]
     pub session_tone: Option<tone::ToneDescriptor>,
+    /// Session-level key/mode estimate over all phrases' pitches (Phase 4),
+    /// when one could be detected with enough confidence. Drives the recap's
+    /// key read-out and grounds the cultural-relevance layer. Additive +
+    /// `serde(default)` so recaps saved before key detection existed still load.
+    #[serde(default)]
+    pub session_key: Option<theory::KeyEstimate>,
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +727,7 @@ mod tests {
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
             session_tone: None,
+            session_key: None,
         }
     }
 
@@ -747,6 +754,7 @@ mod tests {
             stability: 0.9,
             score_position: None,
             tone: None,
+            key: None,
         }
     }
 

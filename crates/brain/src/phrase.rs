@@ -111,6 +111,12 @@ pub struct PhraseSummary {
     /// persisted phrases deserialize cleanly.
     #[serde(default)]
     pub tone: Option<tone::ToneDescriptor>,
+    /// Rolling key/mode estimate as of this phrase (Phase 4). Carried from a
+    /// session-long [`theory::KeyTracker`] so it tracks modulation rather than
+    /// guessing from this phrase's few notes in isolation. `None` until enough
+    /// pitch evidence accumulates. Additive + `serde(default)`.
+    #[serde(default)]
+    pub key: Option<theory::KeyEstimate>,
 }
 
 /// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
@@ -139,6 +145,10 @@ pub struct PhraseAggregator {
     /// phrase. Carried into the emitted [`PhraseSummary::score_position`] so
     /// the LLM and OSMD cursor can anchor feedback to where the phrase began.
     current_phrase_start_position: Option<ScorePosition>,
+    /// Session-long rolling key/mode tracker. Fed every voiced pitch as phrases
+    /// close, so each phrase's `key` reflects accumulated context and follows
+    /// modulation without flickering (Phase 4, `crates/theory`).
+    key_tracker: theory::KeyTracker,
 }
 
 impl PhraseAggregator {
@@ -158,6 +168,7 @@ impl PhraseAggregator {
             score_follower: None,
             last_score_measure: None,
             current_phrase_start_position: None,
+            key_tracker: theory::KeyTracker::new(),
         })
     }
 
@@ -287,6 +298,14 @@ impl PhraseAggregator {
         let dynamics = compute_dynamics_stats(events);
         let stability = compute_stability(events);
 
+        // Feed this phrase's pitches into the session-long key tracker, then
+        // read the rolling estimate — it follows modulation and won't pin a key
+        // from a handful of notes (see crates/theory).
+        for &hz in &pitch_stats.pitches {
+            self.key_tracker.observe_hz(hz as f32, 1.0);
+        }
+        let key = self.key_tracker.current();
+
         let summary = PhraseSummary {
             phrase_index: self.next_phrase_index,
             start_time,
@@ -299,6 +318,7 @@ impl PhraseAggregator {
             score_position: self.current_phrase_start_position.take(),
             // Tone is attached downstream (the aggregator has no raw audio).
             tone: None,
+            key,
         };
 
         self.phrases.push(summary);
@@ -875,5 +895,59 @@ mod tests {
         let json = serde_json::to_string(&with_tone).unwrap();
         let back: PhraseSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(with_tone, back);
+    }
+
+    #[test]
+    fn aggregator_detects_key_from_a_scale() {
+        // A C-major scale played a few times within one phrase should surface
+        // C major on that phrase via the rolling key tracker.
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+        })
+        .unwrap();
+        // C D E F G A B, with the tonic (C) and fifth (G) emphasised the way
+        // real tonal playing does — that's what disambiguates C major from its
+        // relative modes (A minor / D dorian share the same seven notes).
+        let c_major = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
+        let emphasis = [3, 1, 1, 1, 2, 1, 1];
+        let mut t = 0.0;
+        for _ in 0..6 {
+            for (hz, reps) in c_major.iter().zip(emphasis.iter()) {
+                for _ in 0..*reps {
+                    agg.push(&voiced_event(*hz, 0.8, t));
+                    t += 0.02;
+                }
+            }
+        }
+        agg.flush();
+
+        let key = agg
+            .phrases()
+            .last()
+            .unwrap()
+            .key
+            .expect("a key was detected");
+        assert_eq!(key.name(), "C major", "got {}", key.name());
+    }
+
+    #[test]
+    fn short_phrase_does_not_pin_a_key() {
+        // Three repetitions of a single pitch class isn't enough harmonic
+        // evidence to name a key — the tracker should stay quiet.
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+        })
+        .unwrap();
+        for i in 0..3 {
+            agg.push(&voiced_event(261.63, 0.8, i as f64 * 0.05));
+        }
+        agg.flush();
+
+        assert!(
+            agg.phrases()[0].key.is_none(),
+            "one pitch class must not pin a key"
+        );
     }
 }
