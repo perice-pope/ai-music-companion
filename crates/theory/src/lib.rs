@@ -23,9 +23,14 @@
 
 use serde::{Deserialize, Serialize};
 
+mod intonation;
 mod key;
 mod tracker;
 
+pub use intonation::{
+    cents_off_equal_temperament, summarize_intonation, DegreeTendency, IntonationSummary,
+    DEFAULT_IN_TUNE_TOLERANCE_CENTS,
+};
 pub use key::{correlation_for, estimate_key, KeyEstimate, PitchClassProfile};
 pub use tracker::{KeyTracker, KeyTrackerConfig};
 
