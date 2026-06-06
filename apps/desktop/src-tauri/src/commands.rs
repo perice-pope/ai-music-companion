@@ -359,6 +359,7 @@ impl RecapGenerator for LlmRecapGenerator {
                 phrase_count: 0,
                 instrument: String::new(),
                 session_tone: None,
+                session_key: None,
             });
         };
 
@@ -406,6 +407,7 @@ impl MockRecapGenerator {
             phrase_count: 0,
             instrument: String::new(),
             session_tone: None,
+            session_key: None,
         })
     }
 }
@@ -1114,6 +1116,7 @@ fn empty_state_recap() -> SessionRecap {
         phrase_count: 0,
         instrument: String::new(),
         session_tone: None,
+        session_key: None,
     }
 }
 
@@ -1657,6 +1660,7 @@ mod tests {
             stability: 0.8,
             score_position: None,
             tone: None,
+            key: None,
         }
     }
 
@@ -1941,6 +1945,7 @@ mod tests {
             stability: 0.85,
             score_position: None,
             tone: None,
+            key: None,
         };
         let phrase_1 = PhraseSummary {
             phrase_index: 1,
