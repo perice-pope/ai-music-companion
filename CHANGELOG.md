@@ -1,3 +1,9 @@
+## [1.39.1](https://github.com/perice-pope/ai-music-companion/compare/v1.39.0...v1.39.1) (2026-06-06)
+
+### Bug Fixes
+
+* **desktop:** restore Tauri build — add key/session_key to src-tauri recap literals ([#153](https://github.com/perice-pope/ai-music-companion/issues/153)) ([2187fd1](https://github.com/perice-pope/ai-music-companion/commit/2187fd1cca368e68ec055a659f849fcb21367538))
+
 ## [1.39.0](https://github.com/perice-pope/ai-music-companion/compare/v1.38.0...v1.39.0) (2026-06-06)
 
 ### Features
