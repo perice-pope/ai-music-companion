@@ -1,4 +1,5 @@
 import { usePracticeStore } from "../stores/practiceStore";
+import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
 
 /**
@@ -33,8 +34,8 @@ export default function SessionRecap() {
       >
         <h2 className="text-2xl font-semibold">Recap unavailable</h2>
         <p className="text-center text-gray-300">
-          I had trouble generating your recap, but your session is safe.
-          Come back whenever you're ready to play again.
+          I had trouble generating your recap, but your session is safe. Come
+          back whenever you're ready to play again.
         </p>
         <RecapActions onDone={returnToSelector} />
       </section>
@@ -74,9 +75,20 @@ export default function SessionRecap() {
               }`
             : `${durationMinutes} minute${durationMinutes === 1 ? "" : "s"}`}
         </p>
+        {/* Detected key/mode, when confident. Quiet, factual — it grounds the
+            coaching above (and, later, the cultural-relevance connections). */}
+        {!isEmptyState && recap.session_key && (
+          <p className="text-sm text-gray-400" data-testid="recap-key">
+            Key:{" "}
+            <span className="text-gray-200">{keyName(recap.session_key)}</span>
+          </p>
+        )}
       </header>
 
-      <p className="text-lg leading-relaxed text-gray-200" data-testid="recap-assessment">
+      <p
+        className="text-lg leading-relaxed text-gray-200"
+        data-testid="recap-assessment"
+      >
         {recap.overall_assessment}
       </p>
 

@@ -126,6 +126,8 @@ export interface PhraseSummary {
   score_position?: ScorePosition;
   /** Tone-quality descriptor, when tone analysis ran over the phrase audio. */
   tone?: ToneDescriptor | null;
+  /** Rolling key/mode estimate as of this phrase. Mirrors `theory::KeyEstimate`. */
+  key?: KeyEstimate | null;
 }
 
 /**
@@ -139,6 +141,60 @@ export interface ToneDescriptor {
   air_noise: number;
   core_clarity: number;
   vibrato_quality: number;
+}
+
+/**
+ * Diatonic mode. Mirrors `theory::Mode` (serialises in `snake_case`).
+ */
+export type Mode =
+  | "ionian"
+  | "dorian"
+  | "phrygian"
+  | "lydian"
+  | "mixolydian"
+  | "aeolian"
+  | "locrian";
+
+/**
+ * Detected key/mode. Mirrors `theory::KeyEstimate`. `tonic` is a pitch class
+ * 0–11 (C = 0); `confidence`/`margin` let the UI hedge on shaky calls.
+ */
+export interface KeyEstimate {
+  tonic: number;
+  mode: Mode;
+  confidence: number;
+  margin: number;
+}
+
+const PITCH_CLASS_NAMES = [
+  "C",
+  "C#",
+  "D",
+  "D#",
+  "E",
+  "F",
+  "F#",
+  "G",
+  "G#",
+  "A",
+  "A#",
+  "B",
+];
+
+const MODE_LABELS: Record<Mode, string> = {
+  ionian: "major",
+  aeolian: "minor",
+  dorian: "Dorian",
+  phrygian: "Phrygian",
+  lydian: "Lydian",
+  mixolydian: "Mixolydian",
+  locrian: "Locrian",
+};
+
+/** Human label for a key, e.g. `"C major"`, `"G Mixolydian"`. */
+export function keyName(key: KeyEstimate): string {
+  const pc = PITCH_CLASS_NAMES[((key.tonic % 12) + 12) % 12];
+  return `${pc} ${MODE_LABELS[key.mode]}`;
 }
 
 /**
@@ -159,6 +215,8 @@ export interface SessionRecap {
   instrument: string;
   /** Session-level tone aggregate, when tone analysis ran. */
   session_tone?: ToneDescriptor | null;
+  /** Session-level key/mode, when detected confidently. `theory::KeyEstimate`. */
+  session_key?: KeyEstimate | null;
 }
 
 /**
