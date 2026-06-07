@@ -9,6 +9,7 @@ license.workspace = true
 ears = { path = "../ears" }
 tone = { path = "../tone" }
 theory = { path = "../theory" }
+groove = { path = "../groove" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

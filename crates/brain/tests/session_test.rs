@@ -52,6 +52,8 @@ impl RecapGenerator for MockRecapGenerator {
             instrument: input.instrument.clone(),
             session_tone: None,
             session_key: None,
+            session_intonation: None,
+            session_groove: None,
         })
     }
 }
@@ -84,6 +86,7 @@ fn phrase_at(idx: usize) -> PhraseSummary {
         score_position: None,
         tone: None,
         key: None,
+        onsets_secs: Vec::new(),
     }
 }
 
@@ -244,6 +247,8 @@ fn completed_session_persists_without_recap_when_generator_fails() {
         instrument: completed.primary_instrument().to_owned(),
         session_tone: None,
         session_key: None,
+        session_intonation: None,
+        session_groove: None,
     };
 
     let store = SessionStore::in_memory().unwrap();

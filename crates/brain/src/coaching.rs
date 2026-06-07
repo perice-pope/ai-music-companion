@@ -787,6 +787,20 @@ All text should be written as a teacher would speak — warm, specific, and acti
             None => String::new(),
         };
 
+        // Intonation over the session, when enough notes were observed. These
+        // are *computed* cents figures — the model must not invent numbers, only
+        // phrase the facts we hand it.
+        let intonation_line = match aggregate_intonation(&input.phrases) {
+            Some(s) => format!("- Intonation: {}\n", describe_intonation(&s)),
+            None => String::new(),
+        };
+
+        // Rhythmic feel over the session, when enough onsets were observed.
+        let groove_line = match aggregate_groove(&input.phrases) {
+            Some(g) => format!("- Feel: {}\n", describe_groove(&g)),
+            None => String::new(),
+        };
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -794,7 +808,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Phrase count: {}\n\
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
-            {}{}\n\
+            {}{}{}{}\n\
             {}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}",
@@ -806,6 +820,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
             Self::average_metric(&input.phrases, |p| p.dynamics.mean_amplitude),
             tone_line,
             key_line,
+            intonation_line,
+            groove_line,
             tip_summary,
             score_block,
             if input.score_title.is_some() {
@@ -948,6 +964,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
             instrument: input.instrument.clone(),
             session_tone: aggregate_tone(&input.phrases),
             session_key: aggregate_key(&input.phrases),
+            session_intonation: aggregate_intonation(&input.phrases),
+            session_groove: aggregate_groove(&input.phrases),
         };
 
         Ok(recap)
@@ -980,6 +998,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
             instrument: input.instrument.clone(),
             session_tone: aggregate_tone(&input.phrases),
             session_key: aggregate_key(&input.phrases),
+            session_intonation: aggregate_intonation(&input.phrases),
+            session_groove: aggregate_groove(&input.phrases),
         }
     }
 }
@@ -992,6 +1012,95 @@ fn describe_tone(t: &tone::ToneDescriptor) -> String {
         "brightness {:.2}, warmth {:.2}, air/noise {:.2}, core clarity {:.2}, vibrato {:.2} (each 0–1)",
         t.brightness, t.warmth, t.air_noise, t.core_clarity, t.vibrato_quality
     )
+}
+
+/// Render an intonation summary as a compact, grounded line for the LLM prompt.
+/// We feed the model the *computed* numbers (mean cents, in-tune ratio, and the
+/// single most out-of-tune scale degree) so it can phrase them warmly without
+/// inventing any figures.
+fn describe_intonation(s: &theory::IntonationSummary) -> String {
+    let direction = if s.mean_cents > 1.0 {
+        "tends sharp"
+    } else if s.mean_cents < -1.0 {
+        "tends flat"
+    } else {
+        "centered"
+    };
+    let mut line = format!(
+        "mean {:+.0} cents ({direction}), {:.0}% within tolerance over {} notes",
+        s.mean_cents,
+        s.in_tune_ratio * 100.0,
+        s.note_count
+    );
+    // Surface the single worst degree, when we have per-degree tendencies — a
+    // concrete, teacher-style observation ("the 3rd ran sharp").
+    if let Some(worst) = s
+        .tendencies
+        .iter()
+        .filter(|t| t.count >= 2)
+        .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
+    {
+        if worst.mean_cents.abs() >= 5.0 {
+            let degree = degree_name(worst.semitones_from_tonic);
+            let dir = if worst.mean_cents >= 0.0 {
+                "sharp"
+            } else {
+                "flat"
+            };
+            line.push_str(&format!(
+                "; the {degree} ran {:+.0} cents ({dir})",
+                worst.mean_cents
+            ));
+        }
+    }
+    line
+}
+
+/// Human name for a scale degree given its distance in semitones from the
+/// tonic. Used only for grounded recap phrasing.
+fn degree_name(semitones_from_tonic: u8) -> &'static str {
+    match semitones_from_tonic {
+        0 => "tonic",
+        1 => "flat 2nd",
+        2 => "2nd",
+        3 => "minor 3rd",
+        4 => "major 3rd",
+        5 => "4th",
+        6 => "tritone",
+        7 => "5th",
+        8 => "minor 6th",
+        9 => "major 6th",
+        10 => "minor 7th",
+        11 => "leading tone",
+        _ => "degree",
+    }
+}
+
+/// Render a groove descriptor as a compact, grounded line for the LLM prompt.
+/// Only the computed facts are surfaced — tempo, swing ratio, and a plain-word
+/// steadiness read derived from `timing_consistency`.
+fn describe_groove(g: &groove::GrooveDescriptor) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(bpm) = g.tempo_bpm {
+        parts.push(format!("~{:.0} BPM", bpm));
+    }
+    if let Some(swing) = g.swing_ratio {
+        if swing >= 1.25 {
+            parts.push(format!("swung ~{swing:.1}:1"));
+        } else {
+            parts.push("straight feel".to_owned());
+        }
+    }
+    let steadiness = if g.timing_consistency >= 0.9 {
+        "steady"
+    } else if g.timing_consistency >= 0.7 {
+        "mostly steady"
+    } else {
+        "uneven"
+    };
+    parts.push(steadiness.to_owned());
+    parts.push(format!("{} onsets", g.onset_count));
+    parts.join(", ")
 }
 
 /// Session-level key/mode over every phrase's detected pitches. Returns `None`
@@ -1012,6 +1121,51 @@ fn aggregate_key(phrases: &[PhraseSummary]) -> Option<theory::KeyEstimate> {
     }
     let est = theory::estimate_key(&profile)?;
     (profile.distinct() >= MIN_DISTINCT && est.confidence >= MIN_CONFIDENCE).then_some(est)
+}
+
+/// Session-level intonation over every phrase's detected pitches. Returns
+/// `None` until enough notes accumulate to report honestly — a handful of
+/// pitches makes for a noisy, untrustworthy cents figure, and the recap should
+/// stay silent rather than assert a shaky tendency.
+///
+/// When a confident session key is available, its tonic is passed through so
+/// the summary can attribute tendencies to specific scale degrees ("the 3rd
+/// ran sharp"). Without a key, only the overall cents statistics are reported.
+fn aggregate_intonation(phrases: &[PhraseSummary]) -> Option<theory::IntonationSummary> {
+    /// Below this many usable pitch observations, don't report intonation —
+    /// the mean would swing wildly on a couple of notes.
+    const MIN_NOTES: u32 = 12;
+
+    // Reuse the gated session key (if any) to anchor per-degree tendencies.
+    let tonic = aggregate_key(phrases).map(|k| k.tonic);
+
+    let pitches: Vec<f32> = phrases
+        .iter()
+        .flat_map(|p| p.pitch_stats.pitches.iter().map(|&hz| hz as f32))
+        .collect();
+
+    let summary =
+        theory::summarize_intonation(&pitches, tonic, theory::DEFAULT_IN_TUNE_TOLERANCE_CENTS)?;
+    (summary.note_count >= MIN_NOTES).then_some(summary)
+}
+
+/// Session-level groove (tempo / swing / timing) over every phrase's retained
+/// onset timestamps. Returns `None` until enough onsets accumulate — tempo and
+/// swing are meaningless from one or two onsets, so the recap stays silent
+/// rather than print a fabricated BPM.
+fn aggregate_groove(phrases: &[PhraseSummary]) -> Option<groove::GrooveDescriptor> {
+    /// Below this many onsets, don't report groove. Swing estimation already
+    /// needs ≥ 4 onsets; we ask for a few more so the tempo/timing figures are
+    /// stable rather than a fluke of two intervals.
+    const MIN_ONSETS: u32 = 6;
+
+    let onsets: Vec<f64> = phrases
+        .iter()
+        .flat_map(|p| p.onsets_secs.iter().copied())
+        .collect();
+
+    let descriptor = groove::analyze_groove(&onsets)?;
+    (descriptor.onset_count >= MIN_ONSETS).then_some(descriptor)
 }
 
 /// Mean tone descriptor across the phrases that carry one. `None` when no
@@ -1117,6 +1271,7 @@ mod tests {
             score_position: None,
             tone: None,
             key: None,
+            onsets_secs: Vec::new(),
         }
     }
 
@@ -1306,6 +1461,136 @@ mod tests {
         };
         let agg = aggregate_tone(&[a, b]).expect("two toned phrases");
         assert!((agg.brightness - 0.5).abs() < 1e-6, "brightness averaged");
+    }
+
+    #[test]
+    fn aggregate_intonation_reports_only_with_enough_notes() {
+        // No phrases → no intonation.
+        assert!(aggregate_intonation(&[]).is_none());
+
+        // Too few notes to trust → hedge to None (gate boundary: < 12 notes).
+        let mut thin = sample_phrase();
+        thin.pitch_stats.pitches = vec![440.0; 11];
+        assert!(
+            aggregate_intonation(std::slice::from_ref(&thin)).is_none(),
+            "11 notes is below the gate → None"
+        );
+
+        // At the gate (12 notes), a perfectly-tuned A4 train reports a summary
+        // centered near zero cents.
+        let mut ok = sample_phrase();
+        ok.pitch_stats.pitches = vec![440.0; 12];
+        let summary =
+            aggregate_intonation(std::slice::from_ref(&ok)).expect("12 in-tune notes report");
+        assert_eq!(summary.note_count, 12);
+        assert!(
+            summary.mean_abs_cents < 1.0,
+            "in-tune A4 should be near 0 cents, got {}",
+            summary.mean_abs_cents
+        );
+    }
+
+    #[test]
+    fn aggregate_intonation_attributes_degree_tendencies_with_a_key() {
+        // A C-major scale with the 3rd (E) consistently sharp. With a confident
+        // key, the summary should carry per-degree tendencies including the
+        // sharp major 3rd.
+        let mut p = sample_phrase();
+        // E4 is 329.63 Hz; push it ~20 cents sharp.
+        let e_sharp = 329.63_f64 * 2f64.powf(20.0 / 1200.0);
+        p.pitch_stats.pitches = vec![
+            261.63, 261.63, 261.63, // C ×3 (tonic)
+            293.66, // D
+            e_sharp, e_sharp, e_sharp, // E ×3, sharp
+            349.23,  // F
+            392.0, 392.0, // G ×2
+            440.0, 493.88, // A B
+        ];
+        let summary =
+            aggregate_intonation(std::slice::from_ref(&p)).expect("enough notes to report");
+        let third = summary
+            .tendencies
+            .iter()
+            .find(|t| t.semitones_from_tonic == 4)
+            .expect("a major-3rd tendency once a key anchors the degrees");
+        assert!(
+            third.mean_cents > 10.0,
+            "the sharp 3rd should read clearly sharp, got {}",
+            third.mean_cents
+        );
+    }
+
+    #[test]
+    fn aggregate_groove_reports_only_with_enough_onsets() {
+        // No phrases / no onsets → None.
+        assert!(aggregate_groove(&[]).is_none());
+        assert!(
+            aggregate_groove(&[sample_phrase()]).is_none(),
+            "a phrase with no retained onsets → None"
+        );
+
+        // Gate boundary: 5 onsets is below MIN_ONSETS (6) → None.
+        let mut thin = sample_phrase();
+        thin.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0];
+        assert!(
+            aggregate_groove(std::slice::from_ref(&thin)).is_none(),
+            "5 onsets is below the gate → None"
+        );
+
+        // 6 steady onsets at 120 BPM → a groove descriptor with ~120 BPM and
+        // high timing consistency.
+        let mut ok = sample_phrase();
+        ok.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5];
+        let g = aggregate_groove(std::slice::from_ref(&ok)).expect("6 onsets report");
+        assert_eq!(g.onset_count, 6);
+        let bpm = g.tempo_bpm.expect("tempo from steady onsets");
+        assert!((bpm - 120.0).abs() < 1.0, "expected ~120 BPM, got {bpm}");
+        assert!(g.timing_consistency > 0.99, "steady train is consistent");
+    }
+
+    #[test]
+    fn aggregate_groove_spans_phrases() {
+        // Onsets are retained per phrase; the session groove must pool them.
+        let mut a = sample_phrase();
+        a.onsets_secs = vec![0.0, 0.5, 1.0];
+        let mut b = sample_phrase();
+        b.onsets_secs = vec![1.5, 2.0, 2.5];
+        let g = aggregate_groove(&[a, b]).expect("pooled onsets clear the gate");
+        assert_eq!(g.onset_count, 6, "onsets from both phrases are pooled");
+    }
+
+    #[test]
+    fn recap_prompt_includes_intonation_and_groove_when_present() {
+        // A free-play session with enough notes and onsets to clear both gates
+        // should surface grounded intonation and feel lines in the prompt, and
+        // carry the aggregates on the recap for persistence.
+        let mut p = sample_phrase();
+        p.pitch_stats.pitches = vec![440.0; 16];
+        p.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 120.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![p],
+            tips: Vec::new(),
+            score_title: None,
+        };
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            prompt.contains("Intonation:"),
+            "recap prompt names intonation"
+        );
+        assert!(prompt.contains("Feel:"), "recap prompt names rhythmic feel");
+
+        let recap = CoachingEngine::fallback_recap(&input);
+        assert!(
+            recap.session_intonation.is_some(),
+            "recap carries the intonation aggregate"
+        );
+        assert!(
+            recap.session_groove.is_some(),
+            "recap carries the groove aggregate"
+        );
     }
 
     fn mock_anthropic_response() -> String {

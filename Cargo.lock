@@ -147,6 +147,7 @@ dependencies = [
  "criterion",
  "dirs",
  "ears",
+ "groove",
  "midly",
  "reqwest",
  "roxmltree",
