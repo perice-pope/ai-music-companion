@@ -1,3 +1,10 @@
+## [1.40.0](https://github.com/perice-pope/ai-music-companion/compare/v1.39.1...v1.40.0) (2026-06-07)
+
+### Features
+
+* **groove:** Phase 4 A2 — rhythm & groove analysis crate (tempo, swing, timing) ([#155](https://github.com/perice-pope/ai-music-companion/issues/155)) ([9e75888](https://github.com/perice-pope/ai-music-companion/commit/9e7588879122ce12a6f730f8af552b281bd6a1a0))
+* **theory:** real intonation analysis — cents vs ET + tuning-tendency map (Phase 4 A1) ([#156](https://github.com/perice-pope/ai-music-companion/issues/156)) ([ff14d8d](https://github.com/perice-pope/ai-music-companion/commit/ff14d8d1bedcef2ceb7d778c656a1af8c508a669))
+
 ## [1.39.1](https://github.com/perice-pope/ai-music-companion/compare/v1.39.0...v1.39.1) (2026-06-06)
 
 ### Bug Fixes
