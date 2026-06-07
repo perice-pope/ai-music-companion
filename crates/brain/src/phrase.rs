@@ -117,6 +117,14 @@ pub struct PhraseSummary {
     /// pitch evidence accumulates. Additive + `serde(default)`.
     #[serde(default)]
     pub key: Option<theory::KeyEstimate>,
+    /// Onset timestamps (seconds from session start) of the events in this
+    /// phrase, extracted via [`groove::onsets_from_events`]. Retained so the
+    /// session recap can compute a [`groove::GrooveDescriptor`] (tempo, swing,
+    /// timing) over the whole session's onsets. Empty when no event in the
+    /// phrase carried an onset flag. Additive + `serde(default)` so older
+    /// persisted phrases deserialize cleanly.
+    #[serde(default)]
+    pub onsets_secs: Vec<f64>,
 }
 
 /// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
@@ -298,6 +306,12 @@ impl PhraseAggregator {
         let dynamics = compute_dynamics_stats(events);
         let stability = compute_stability(events);
 
+        // Retain onset timestamps so the session recap can analyse groove
+        // (tempo / swing / timing) across the whole session. Only events
+        // flagged `is_onset` contribute — `groove::onsets_from_events` does
+        // the filtering, keeping the onset definition in one place.
+        let onsets_secs = groove::onsets_from_events(events);
+
         // Feed this phrase's pitches into the session-long key tracker, then
         // read the rolling estimate — it follows modulation and won't pin a key
         // from a handful of notes (see crates/theory).
@@ -319,6 +333,7 @@ impl PhraseAggregator {
             // Tone is attached downstream (the aggregator has no raw audio).
             tone: None,
             key,
+            onsets_secs,
         };
 
         self.phrases.push(summary);
@@ -929,6 +944,53 @@ mod tests {
             .key
             .expect("a key was detected");
         assert_eq!(key.name(), "C major", "got {}", key.name());
+    }
+
+    #[test]
+    fn phrase_retains_onset_timestamps_for_groove() {
+        // Onset-flagged events should have their timestamps retained in
+        // `onsets_secs` so the session recap can analyse groove. Non-onset
+        // (continuation) events must be excluded.
+        let config = PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 2,
+        };
+        let mut agg = PhraseAggregator::new(config).unwrap();
+
+        let onset = |hz: f64, t: f64| AudioEvent {
+            pitch_hz: Some(hz),
+            confidence: 0.95,
+            amplitude: 0.8,
+            timestamp_secs: t,
+            is_onset: true,
+        };
+
+        agg.push(&onset(440.0, 0.0));
+        agg.push(&voiced_event(440.0, 0.8, 0.05)); // continuation, not an onset
+        agg.push(&onset(440.0, 0.10));
+        agg.flush();
+
+        let phrase = &agg.phrases()[0];
+        assert_eq!(
+            phrase.onsets_secs,
+            vec![0.0, 0.10],
+            "only is_onset=true timestamps should be retained"
+        );
+    }
+
+    #[test]
+    fn phrase_summary_onsets_default_when_absent() {
+        // A phrase JSON serialised before `onsets_secs` existed must still
+        // deserialize, defaulting the field to an empty Vec.
+        let legacy = r#"{
+            "phrase_index": 0, "start_time": 0.0, "end_time": 1.0,
+            "duration_secs": 1.0, "note_count": 3,
+            "pitch_stats": {"mean_hz":440.0,"min_hz":435.0,"max_hz":445.0,"range_cents":40.0,"pitches":[440.0]},
+            "dynamics": {"mean_amplitude":0.5,"min_amplitude":0.4,"max_amplitude":0.6,"dynamic_range":0.2},
+            "stability": 0.8, "score_position": null
+        }"#;
+        let p: PhraseSummary = serde_json::from_str(legacy).expect("legacy phrase deserializes");
+        assert!(p.onsets_secs.is_empty(), "absent onsets default to empty");
     }
 
     #[test]

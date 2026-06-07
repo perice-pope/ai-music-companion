@@ -128,6 +128,8 @@ export interface PhraseSummary {
   tone?: ToneDescriptor | null;
   /** Rolling key/mode estimate as of this phrase. Mirrors `theory::KeyEstimate`. */
   key?: KeyEstimate | null;
+  /** Onset timestamps (seconds) retained for session-level groove analysis. */
+  onsets_secs?: number[];
 }
 
 /**
@@ -164,6 +166,41 @@ export interface KeyEstimate {
   mode: Mode;
   confidence: number;
   margin: number;
+}
+
+/**
+ * Tuning tendency of a single scale degree relative to the tonic. Mirrors
+ * `theory::DegreeTendency`. `mean_cents > 0` = sharp, `< 0` = flat.
+ */
+export interface DegreeTendency {
+  semitones_from_tonic: number;
+  mean_cents: number;
+  count: number;
+}
+
+/**
+ * Session-level intonation summary. Mirrors `theory::IntonationSummary`.
+ * Only present on a recap when enough notes were observed to report honestly.
+ */
+export interface IntonationSummary {
+  note_count: number;
+  mean_cents: number;
+  mean_abs_cents: number;
+  in_tune_ratio: number;
+  tendencies: DegreeTendency[];
+}
+
+/**
+ * Session-level groove descriptor (tempo, swing, timing). Mirrors
+ * `groove::GrooveDescriptor`. `tempo_bpm` / `swing_ratio` are `null` when there
+ * weren't enough onsets to estimate them.
+ */
+export interface GrooveDescriptor {
+  tempo_bpm?: number | null;
+  swing_ratio?: number | null;
+  mean_ioi_secs: number;
+  timing_consistency: number;
+  onset_count: number;
 }
 
 const PITCH_CLASS_NAMES = [
@@ -217,6 +254,10 @@ export interface SessionRecap {
   session_tone?: ToneDescriptor | null;
   /** Session-level key/mode, when detected confidently. `theory::KeyEstimate`. */
   session_key?: KeyEstimate | null;
+  /** Session-level intonation summary, when enough notes were observed. */
+  session_intonation?: IntonationSummary | null;
+  /** Session-level groove (tempo/swing/timing), when enough onsets were observed. */
+  session_groove?: GrooveDescriptor | null;
 }
 
 /**

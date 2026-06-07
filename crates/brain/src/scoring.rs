@@ -205,6 +205,7 @@ mod tests {
             score_position: None,
             tone: None,
             key: None,
+            onsets_secs: Vec::new(),
         }
     }
 

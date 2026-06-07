@@ -119,6 +119,53 @@ describe("SessionRecap", () => {
     );
   });
 
+  it("shows the intonation read-out only when the recap carries one", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No session_intonation → no intonation line.
+    expect(screen.queryByTestId("recap-intonation")).toBeNull();
+
+    seedRecap(
+      fullRecap({
+        session_intonation: {
+          note_count: 24,
+          mean_cents: 8,
+          mean_abs_cents: 12,
+          in_tune_ratio: 0.75,
+          tendencies: [{ semitones_from_tonic: 4, mean_cents: 14, count: 6 }],
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    const line = screen.getByTestId("recap-intonation").textContent ?? "";
+    expect(line).toContain("tends sharp");
+    expect(line).toContain("major 3rd");
+  });
+
+  it("shows the groove read-out only when the recap carries one", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No session_groove → no feel line.
+    expect(screen.queryByTestId("recap-groove")).toBeNull();
+
+    seedRecap(
+      fullRecap({
+        session_groove: {
+          tempo_bpm: 92,
+          swing_ratio: 1.6,
+          mean_ioi_secs: 0.4,
+          timing_consistency: 0.95,
+          onset_count: 40,
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    const line = screen.getByTestId("recap-groove").textContent ?? "";
+    expect(line).toContain("92 BPM");
+    expect(line).toContain("swung");
+    expect(line).toContain("steady");
+  });
+
   it("empty-state recap (zero phrases) hides bullet sections but keeps buttons", () => {
     seedRecap(
       fullRecap({

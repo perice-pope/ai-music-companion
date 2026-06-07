@@ -308,6 +308,19 @@ pub struct SessionRecap {
     /// `serde(default)` so recaps saved before key detection existed still load.
     #[serde(default)]
     pub session_key: Option<theory::KeyEstimate>,
+    /// Session-level intonation summary (cents vs equal temperament + per-degree
+    /// tuning tendencies) over all phrases' pitches (Phase 4), when enough notes
+    /// were observed to report honestly. Drives the recap's intonation read-out.
+    /// Additive + `serde(default)` so recaps saved before intonation existed
+    /// still load.
+    #[serde(default)]
+    pub session_intonation: Option<theory::IntonationSummary>,
+    /// Session-level groove descriptor (tempo, swing, timing consistency) over
+    /// the session's onset timestamps (Phase 4), when enough onsets were
+    /// observed. Drives the recap's rhythmic-feel read-out. Additive +
+    /// `serde(default)` so recaps saved before groove existed still load.
+    #[serde(default)]
+    pub session_groove: Option<groove::GrooveDescriptor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +741,8 @@ mod tests {
             instrument: "trumpet".to_owned(),
             session_tone: None,
             session_key: None,
+            session_intonation: None,
+            session_groove: None,
         }
     }
 
@@ -755,6 +770,7 @@ mod tests {
             score_position: None,
             tone: None,
             key: None,
+            onsets_secs: Vec::new(),
         }
     }
 

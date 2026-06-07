@@ -787,6 +787,8 @@ mod tests {
             instrument: instrument.to_owned(),
             session_tone: None,
             session_key: None,
+            session_intonation: None,
+            session_groove: None,
         }
     }
 
@@ -970,6 +972,8 @@ mod tests {
             instrument: "clarinet".to_owned(),
             session_tone: None,
             session_key: None,
+            session_intonation: None,
+            session_groove: None,
         };
         let now = Utc::now();
         store

@@ -1,6 +1,70 @@
 import { usePracticeStore } from "../stores/practiceStore";
+import type { GrooveDescriptor, IntonationSummary } from "../types/brain";
 import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
+
+const DEGREE_NAMES = [
+  "tonic",
+  "flat 2nd",
+  "2nd",
+  "minor 3rd",
+  "major 3rd",
+  "4th",
+  "tritone",
+  "5th",
+  "minor 6th",
+  "major 6th",
+  "minor 7th",
+  "leading tone",
+];
+
+/**
+ * One quiet line summarising intonation: overall direction + in-tune ratio,
+ * plus the single most out-of-tune degree when a key anchored the analysis.
+ * Mirrors the computed facts the recap was grounded on — no invented numbers.
+ */
+function intonationLine(s: IntonationSummary): string {
+  const direction =
+    s.mean_cents > 1
+      ? "tends sharp"
+      : s.mean_cents < -1
+        ? "tends flat"
+        : "centered";
+  const sign = s.mean_cents >= 0 ? "+" : "";
+  const pct = Math.round(s.in_tune_ratio * 100);
+  let line = `mean ${sign}${Math.round(s.mean_cents)} cents (${direction}), ${pct}% in tune`;
+  const worst = s.tendencies
+    .filter((t) => t.count >= 2 && Math.abs(t.mean_cents) >= 5)
+    .sort((a, b) => Math.abs(b.mean_cents) - Math.abs(a.mean_cents))[0];
+  if (worst) {
+    const degree = DEGREE_NAMES[worst.semitones_from_tonic] ?? "degree";
+    const dir = worst.mean_cents >= 0 ? "sharp" : "flat";
+    const wSign = worst.mean_cents >= 0 ? "+" : "";
+    line += `; the ${degree} ran ${wSign}${Math.round(worst.mean_cents)} cents (${dir})`;
+  }
+  return line;
+}
+
+/** One quiet line summarising rhythmic feel: tempo, swing, steadiness. */
+function grooveLine(g: GrooveDescriptor): string {
+  const parts: string[] = [];
+  if (g.tempo_bpm != null) parts.push(`~${Math.round(g.tempo_bpm)} BPM`);
+  if (g.swing_ratio != null) {
+    parts.push(
+      g.swing_ratio >= 1.25
+        ? `swung ~${g.swing_ratio.toFixed(1)}:1`
+        : "straight feel",
+    );
+  }
+  const steadiness =
+    g.timing_consistency >= 0.9
+      ? "steady"
+      : g.timing_consistency >= 0.7
+        ? "mostly steady"
+        : "uneven";
+  parts.push(steadiness);
+  return parts.join(", ");
+}
 
 /**
  * Post-session recap screen.
@@ -96,6 +160,28 @@ export default function SessionRecap() {
           when tone analysis produced a session aggregate. */}
       {!isEmptyState && recap.session_tone && (
         <ToneSummary tone={recap.session_tone} />
+      )}
+
+      {/* Intonation read-out — quiet, factual. Only shown when enough notes
+          were observed to report honestly (backend gate). */}
+      {!isEmptyState && recap.session_intonation && (
+        <p className="text-sm text-gray-400" data-testid="recap-intonation">
+          Intonation:{" "}
+          <span className="text-gray-200">
+            {intonationLine(recap.session_intonation)}
+          </span>
+        </p>
+      )}
+
+      {/* Rhythmic-feel read-out — quiet, factual. Only shown when enough
+          onsets were observed to estimate groove (backend gate). */}
+      {!isEmptyState && recap.session_groove && (
+        <p className="text-sm text-gray-400" data-testid="recap-groove">
+          Feel:{" "}
+          <span className="text-gray-200">
+            {grooveLine(recap.session_groove)}
+          </span>
+        </p>
       )}
 
       {/* Strengths first — product invariant enforced by DOM order. */}
