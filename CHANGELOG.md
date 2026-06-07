@@ -1,3 +1,9 @@
+## [1.41.1](https://github.com/perice-pope/ai-music-companion/compare/v1.41.0...v1.41.1) (2026-06-07)
+
+### Bug Fixes
+
+* **desktop:** add ESLint flat config so `pnpm lint` runs ([#158](https://github.com/perice-pope/ai-music-companion/issues/158)) ([d9a0b94](https://github.com/perice-pope/ai-music-companion/commit/d9a0b94ed6a35c736d5248954e9a79fb82bc55d9))
+
 ## [1.41.0](https://github.com/perice-pope/ai-music-companion/compare/v1.40.0...v1.41.0) (2026-06-07)
 
 ### Features
