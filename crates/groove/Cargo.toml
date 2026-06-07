@@ -1,0 +1,19 @@
+[package]
+name = "groove"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rhythm & groove analysis (tempo, swing, timing consistency) for AI Music Companion — Phase 4, Track A2"
+
+[dependencies]
+# GrooveDescriptor crosses the IPC + persistence boundary; serde is required.
+serde = { workspace = true }
+# ears::AudioEvent is the input type for the onsets_from_events helper.
+ears = { path = "../ears" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
