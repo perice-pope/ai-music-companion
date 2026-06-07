@@ -169,8 +169,20 @@ describe("ScoreView — against the real OSMD parser", () => {
       let inner: OsmdLike;
       return {
         async load(xml: string) {
-          const mod: any = await import("opensheetmusicdisplay");
-          const OSMD = mod.OpenSheetMusicDisplay ?? mod.default?.OpenSheetMusicDisplay;
+          // OSMD's published types don't structurally match our minimal
+          // `OsmdLike`, so resolve the constructor via `unknown` and assert
+          // the narrow shape this test actually uses (avoids `any`).
+          type OsmdCtor = new (
+            container: HTMLElement,
+            options: { autoResize: boolean; backend: string },
+          ) => OsmdLike;
+          const mod = (await import("opensheetmusicdisplay")) as unknown as {
+            OpenSheetMusicDisplay?: OsmdCtor;
+            default?: { OpenSheetMusicDisplay?: OsmdCtor };
+          };
+          const OSMD =
+            mod.OpenSheetMusicDisplay ?? mod.default?.OpenSheetMusicDisplay;
+          if (!OSMD) throw new Error("OpenSheetMusicDisplay export not found");
           inner = new OSMD(container, { autoResize: false, backend: "svg" });
           return inner.load(xml);
         },

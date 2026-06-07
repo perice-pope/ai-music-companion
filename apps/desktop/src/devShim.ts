@@ -73,7 +73,6 @@ declare global {
 }
 
 async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
-  // eslint-disable-next-line no-console
   console.debug("[devShim] invoke", cmd, args);
   switch (cmd) {
     case "list_instruments":
@@ -111,7 +110,6 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
     case "plugin:event|unlisten":
       return undefined;
     default:
-      // eslint-disable-next-line no-console
       console.warn(`[devShim] unmocked command "${cmd}"`, args);
       throw new Error(`devShim: command "${cmd}" is not mocked`);
   }
@@ -127,7 +125,6 @@ export function installDevShimIfNeeded(): void {
   // Real Tauri already injected its internals — leave well alone.
   if (window.__TAURI_INTERNALS__) return;
 
-  // eslint-disable-next-line no-console
   console.warn(
     "[devShim] No Tauri shell detected — installing mock IPC for browser preview.",
   );
