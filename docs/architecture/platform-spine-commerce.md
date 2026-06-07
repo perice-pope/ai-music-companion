@@ -1,26 +1,26 @@
-# Platform Spine — Commerce & Entitlements
+# Platform Spine — Commerce / Entitlements
 
 **Companion doc to:** [`architecture-v2.md`](./architecture-v2.md) and [`platform-modules-addendum.md`](./platform-modules-addendum.md)
 **Status:** Draft
-**Date:** June 7, 2026
+**Date:** 2026-06-07
 
 ---
 
 ## Purpose
 
-This is one of **three shared spines** the platform is built on. It is the **commerce / entitlements spine**: the single mechanism by which the platform sells and grants access to *anything* — audition packs (Module 1), teacher curricula with 70/30 marketplace splits (Module 4), and B2B seat licensing (Module 5). The other two spines are written elsewhere: **Unified Content Format** (what gets sold) and **Personalization / Cross-Genre** (how it's tailored). This doc defines **one entitlements model** that all paid surfaces gate against — no per-module billing silos.
+This is one of the platform's **three shared spines**. It is the **Commerce / Entitlements spine**: the single mechanism by which the platform sells and grants access to *anything* — audition packs (Module 1), teacher curricula with 70/30 marketplace splits (Module 4), and B2B seat licensing (Module 5). The other two spines are specified separately and referenced here by name: the **Unified Content Format spine** ([`platform-spine-content-format.md`](./platform-spine-content-format.md), what gets sold) and the **Personalization / Cross-Genre spine** ([`platform-spine-personalization.md`](./platform-spine-personalization.md), how it's tailored). This doc defines **one entitlements model** that all paid surfaces gate against — no per-module billing silos.
 
 ---
 
 ## Layman's overview
 
-> Picture a single turnstile in front of everything the platform offers. It doesn't matter whether you bought a one-off audition pack, subscribed monthly, bought a teacher's "16 Weeks to All-State" course, or your school bought 30 seats — you walk up, the turnstile checks one list of "what this person is allowed to use," and lets you through or not. There is exactly one turnstile and one list. Stripe handles taking the money; our job is only to keep that one list correct and to check it in the Rust core where it can't be faked. Teachers selling on the marketplace get paid through Stripe's own payout rails (Connect) — we don't run a bank.
+> One turnstile in front of everything we sell — a one-off audition pack, a monthly subscription, a teacher's "16 Weeks to All-State" course, or a school's 30 seats. It checks one list of "what this person may use" and lets you through or not. Stripe takes the money and pays teachers out (via Connect); our only job is keeping that one list correct and checking it in the Rust core where it can't be faked.
 
 ---
 
 ## The entitlements model
 
-The whole spine is **two ideas**: *products* (what's for sale) and *entitlements* (who may use what). Everything else — purchases, subscriptions, splits, seats — is a way an entitlement row gets created or expired. We resist the temptation to model four commerce systems; there is one.
+The whole spine is **two ideas**: *products* (what's for sale) and *entitlements* (who may use what). Everything else — purchases, subscriptions, splits, seats — is just a way an entitlement row gets created or expired.
 
 ### Data model (Supabase / Postgres, extends the existing schema)
 
@@ -31,9 +31,12 @@ products            (id, kind, sku, title, price_cents, currency,
                      stripe_price_id,
                      seller_id,          -- profiles.id of teacher/partner; NULL = first-party
                      payout_bps,         -- seller share in basis points (7000 = 70%); NULL = first-party
-                     content_ref,        -- pointer into the Unified Content Format (pack/curriculum/SDK build)
+                     content_ref,        -- pointer into the Unified Content Format (pack_id/curriculum/SDK build)
                      active boolean)
         kind ∈ ('pack','subscription','curriculum','b2b_seatpack')
+        -- 'pack'/'curriculum' both point at a Unified Content Format Pack
+        -- (its manifest kind is "audition_pack" | "curriculum"); this is the
+        -- SELLABLE wrapper, not a second content model.
 
 purchases           (id, buyer_id,       -- profiles.id (B2B: the org admin's account)
                      product_id,
@@ -124,7 +127,7 @@ create policy payouts_select_seller on public.teacher_payouts
 ## Security / trust
 
 - **Server-authoritative, always.** The Rust core gate is the truth; the frontend's Locked/Unlocked UI is a hint, never the enforcement. A tampered client can hide the lock icon and still not load content the core won't serve.
-- **Entitlements are write-once from the webhook.** No client-facing insert/update policy exists on `entitlements` or `teacher_payouts`. The only writer is the signature-verified Edge Function using the service-role key, which (per the existing posture in the privacy doc §6 and migration 0002) never ships to the client.
+- **Entitlements are write-once from the webhook.** No client-facing insert/update policy exists on `entitlements` or `teacher_payouts`; the only writer is the signature-verified Edge Function (service-role key, server-side only — see the RLS posture above).
 - **Money truth is Stripe's.** We never compute balances or hold funds. Splits are an application fee on a Connect charge; payouts are Connect transfers. `teacher_payouts` is a *mirror* for display/audit, reconciled from Stripe, not an authority.
 - **Refund / revoke is one primitive.** A `charge.refunded` / `customer.subscription.deleted` / seat-reclaim webhook sets `revoked_at` or `expires_at`; the next gate check fails closed. Same instantaneous, RLS-backed revocation the Teacher Dashboard uses for unlinking.
 - **Fail closed.** Unknown product, expired/revoked entitlement, or no row → `Locked`. The free core practice loop is never gated, so a commerce outage never blocks practice.
