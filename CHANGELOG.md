@@ -1,3 +1,9 @@
+## [1.41.0](https://github.com/perice-pope/ai-music-companion/compare/v1.40.0...v1.41.0) (2026-06-07)
+
+### Features
+
+* **brain:** wire intonation & groove into the session recap (Phase 4) ([#157](https://github.com/perice-pope/ai-music-companion/issues/157)) ([7b78501](https://github.com/perice-pope/ai-music-companion/commit/7b78501d214ab3907d0d5645ce857e9f3dc1d05d))
+
 ## [1.40.0](https://github.com/perice-pope/ai-music-companion/compare/v1.39.1...v1.40.0) (2026-06-07)
 
 ### Features
