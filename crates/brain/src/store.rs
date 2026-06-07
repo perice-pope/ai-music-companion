@@ -785,10 +785,7 @@ mod tests {
             duration_secs: duration,
             phrase_count,
             instrument: instrument.to_owned(),
-            session_tone: None,
-            session_key: None,
-            session_intonation: None,
-            session_groove: None,
+            fingerprint: None,
         }
     }
 
@@ -839,28 +836,35 @@ mod tests {
     }
 
     #[test]
-    fn session_tone_persists_and_legacy_recaps_load_as_none() {
+    fn fingerprint_persists_and_legacy_recaps_load_as_none() {
+        use crate::fingerprint::MusicalFingerprint;
+
         let store = SessionStore::in_memory().unwrap();
 
-        // A recap carrying a session tone aggregate round-trips through the
+        // A recap carrying a musical fingerprint round-trips through the
         // recap_json column.
         let id = SessionId::new();
         let now = Utc::now();
         let recap = SessionRecap {
-            session_tone: Some(tone::ToneDescriptor {
-                brightness: 0.6,
-                warmth: 0.5,
-                air_noise: 0.2,
-                core_clarity: 0.8,
-                vibrato_quality: 0.55,
+            fingerprint: Some(MusicalFingerprint {
+                tone: Some(tone::ToneDescriptor {
+                    brightness: 0.6,
+                    warmth: 0.5,
+                    air_noise: 0.2,
+                    core_clarity: 0.8,
+                    vibrato_quality: 0.55,
+                }),
+                key: None,
+                intonation: None,
+                groove: None,
             }),
             ..recap_with("voice", 60.0, 9)
         };
         store.save(id, now, now, &recap).unwrap();
         let loaded = store.load(id).unwrap();
-        assert_eq!(loaded.recap.session_tone, recap.session_tone);
+        assert_eq!(loaded.recap.fingerprint, recap.fingerprint);
 
-        // A recap_json saved before `session_tone` existed (field absent) must
+        // A recap_json saved before `fingerprint` existed (field absent) must
         // still deserialize, defaulting to None.
         let legacy: SessionRecap = serde_json::from_str(
             r#"{"overall_assessment":"ok","strengths":[],"areas_to_improve":[],
@@ -868,7 +872,7 @@ mod tests {
                 "instrument":"flute"}"#,
         )
         .expect("legacy recap deserializes");
-        assert!(legacy.session_tone.is_none());
+        assert!(legacy.fingerprint.is_none());
     }
 
     #[test]
@@ -970,10 +974,7 @@ mod tests {
             duration_secs: 123.456,
             phrase_count: 17,
             instrument: "clarinet".to_owned(),
-            session_tone: None,
-            session_key: None,
-            session_intonation: None,
-            session_groove: None,
+            fingerprint: None,
         };
         let now = Utc::now();
         store

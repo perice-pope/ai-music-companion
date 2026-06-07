@@ -62,12 +62,14 @@ function detail(id: string): StoredSessionDto {
       duration_secs: 600,
       phrase_count: 12,
       instrument: "Trumpet",
-      session_tone: {
-        brightness: 0.6,
-        warmth: 0.5,
-        air_noise: 0.2,
-        core_clarity: 0.7,
-        vibrato_quality: 0.4,
+      fingerprint: {
+        tone: {
+          brightness: 0.6,
+          warmth: 0.5,
+          air_noise: 0.2,
+          core_clarity: 0.7,
+          vibrato_quality: 0.4,
+        },
       },
     },
   };

@@ -358,10 +358,7 @@ impl RecapGenerator for LlmRecapGenerator {
                 duration_secs: 0.0,
                 phrase_count: 0,
                 instrument: String::new(),
-                session_tone: None,
-                session_key: None,
-                session_intonation: None,
-                session_groove: None,
+                fingerprint: None,
             });
         };
 
@@ -408,10 +405,7 @@ impl MockRecapGenerator {
             duration_secs: 0.0,
             phrase_count: 0,
             instrument: String::new(),
-            session_tone: None,
-            session_key: None,
-            session_intonation: None,
-            session_groove: None,
+            fingerprint: None,
         })
     }
 }
@@ -1119,10 +1113,7 @@ fn empty_state_recap() -> SessionRecap {
         duration_secs: 0.0,
         phrase_count: 0,
         instrument: String::new(),
-        session_tone: None,
-        session_key: None,
-        session_intonation: None,
-        session_groove: None,
+        fingerprint: None,
     }
 }
 

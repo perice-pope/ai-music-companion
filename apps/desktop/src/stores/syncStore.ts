@@ -102,8 +102,9 @@ export const useSyncStore = create<SyncState>((set) => ({
             duration_secs: recap.duration_secs,
             phrase_count: recap.phrase_count,
             overall_assessment: recap.overall_assessment,
-            // ToneDescriptor is a flat numeric record — safe as jsonb.
-            session_tone: (recap.session_tone ?? null) as Json,
+            // ToneDescriptor is a flat numeric record — safe as jsonb. Sourced
+            // from the unified fingerprint; the DB column keeps its name.
+            session_tone: (recap.fingerprint?.tone ?? null) as Json,
           };
         }),
       );
