@@ -1,3 +1,9 @@
+## [1.42.0](https://github.com/perice-pope/ai-music-companion/compare/v1.41.1...v1.42.0) (2026-06-10)
+
+### Features
+
+* **idiom:** offline audio-embedding idiom-recognition engine ([#164](https://github.com/perice-pope/ai-music-companion/issues/164)) ([8596d07](https://github.com/perice-pope/ai-music-companion/commit/8596d077219b5dee4ee77df50d275852d8468985))
+
 ## [1.41.1](https://github.com/perice-pope/ai-music-companion/compare/v1.41.0...v1.41.1) (2026-06-07)
 
 ### Bug Fixes
