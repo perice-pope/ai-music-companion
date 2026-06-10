@@ -35,6 +35,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::fingerprint::MusicalFingerprint;
+use crate::idiom_recap::IdiomMatch;
 use crate::phrase::PhraseSummary;
 
 // ---------------------------------------------------------------------------
@@ -273,6 +274,13 @@ pub struct RecapInput {
     /// recap name the piece ("your work on the Haydn") and lean on the
     /// per-phrase `score_position` measure numbers. `None` in free play.
     pub score_title: Option<String>,
+    /// Confidence-gated idiom matches for the session, computed **offline**
+    /// on-device from the captured audio (see [`crate::idiom_recap`]). Each is
+    /// a grounded audio-similarity proximity ("reminds me of"), never an
+    /// asserted fact. Empty when nothing cleared the engine's gate — the recap
+    /// then stays silent on idiom. `serde(default)` so older inputs still load.
+    #[serde(default)]
+    pub idiom_notes: Vec<IdiomMatch>,
 }
 
 /// The post-session recap shown to the student.
@@ -311,6 +319,15 @@ pub struct SessionRecap {
     /// load (defaulting to `None`).
     #[serde(default)]
     pub fingerprint: Option<MusicalFingerprint>,
+    /// Confidence-gated idiom flavours for the session — grounded, hedged
+    /// "reminds me of" notes computed **fully offline** on-device from the
+    /// captured audio (see [`crate::idiom_recap`]). Each [`IdiomMatch`] is a
+    /// real audio-similarity proximity, never an asserted fact; the UI surfaces
+    /// them quietly and only when present. Empty when nothing cleared the
+    /// engine's confidence gate ("silence > lies"). Additive + `serde(default)`
+    /// so recaps saved before idiom landed still load (defaulting to empty).
+    #[serde(default)]
+    pub idiom_notes: Vec<IdiomMatch>,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +407,15 @@ impl CompletedSession {
     /// participants tree here. `instrument` is the primary instrument
     /// (first segment) and `practice_mode` is from the first segment as well.
     pub fn to_recap_input(&self) -> RecapInput {
+        self.to_recap_input_with_idioms(Vec::new())
+    }
+
+    /// Like [`Self::to_recap_input`], but attaches `idiom_notes` — the
+    /// confidence-gated, **offline** idiom matches computed at the session
+    /// boundary from the captured audio. Audio itself isn't part of a
+    /// persisted `CompletedSession`, so idiom analysis runs in the live
+    /// recap-building path (see the Tauri shell) and is threaded in here.
+    pub fn to_recap_input_with_idioms(&self, idiom_notes: Vec<IdiomMatch>) -> RecapInput {
         let primary_segment = &self.participants[0].segments[0];
         RecapInput {
             instrument: primary_segment.instrument.clone(),
@@ -398,6 +424,7 @@ impl CompletedSession {
             phrases: self.all_phrases(),
             tips: self.all_tips(),
             score_title: self.score_title.clone(),
+            idiom_notes,
         }
     }
 
@@ -412,7 +439,18 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        let input = self.to_recap_input();
+        self.generate_recap_with_idioms(generator, Vec::new()).await
+    }
+
+    /// Like [`Self::generate_recap`], but feeds the generator the
+    /// confidence-gated, **offline** `idiom_notes` for this session so the
+    /// recap can surface grounded idiom flavours.
+    pub async fn generate_recap_with_idioms(
+        &self,
+        generator: &dyn RecapGenerator,
+        idiom_notes: Vec<IdiomMatch>,
+    ) -> Result<SessionRecap, SessionError> {
+        let input = self.to_recap_input_with_idioms(idiom_notes);
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
@@ -730,6 +768,7 @@ mod tests {
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
+            idiom_notes: Vec::new(),
         }
     }
 

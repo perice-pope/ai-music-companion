@@ -10,6 +10,7 @@ ears = { path = "../ears" }
 tone = { path = "../tone" }
 theory = { path = "../theory" }
 groove = { path = "../groove" }
+idiom = { path = "../idiom" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

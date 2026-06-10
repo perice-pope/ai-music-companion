@@ -257,6 +257,29 @@ export interface MusicalFingerprint {
 }
 
 /**
+ * A confidence-gated idiom match for the session. Mirrors
+ * `brain::idiom_recap::IdiomMatch` (re-exported from `idiom::IdiomMatch`).
+ *
+ * Computed **fully offline** on-device: the session audio is embedded and
+ * matched against a bundled corpus, with matches below the engine's similarity
+ * threshold dropped. `similarity` is a real cosine proximity in `[-1, 1]` — a
+ * grounded "reminds me of" signal, never an asserted fact. The UI surfaces
+ * these quietly, hedged, and only when present.
+ */
+export interface IdiomMatch {
+  /** Human-facing idiom name, e.g. "Bebop line". */
+  label: string;
+  /** Broad family / genre, e.g. "jazz". */
+  genre: string;
+  /** A representative artist (named, not hosted). */
+  exemplar_artist: string;
+  /** Rough era, e.g. "1940s-50s". */
+  era: string;
+  /** Cosine similarity to the session audio, in [-1, 1]. */
+  similarity: number;
+}
+
+/**
  * Post-session recap shown on the `recap` screen. Matches
  * `brain::session::SessionRecap`.
  *
@@ -277,6 +300,13 @@ export interface SessionRecap {
    * anything was measured. `null`/absent when every dimension's gate failed.
    */
   fingerprint?: MusicalFingerprint | null;
+  /**
+   * Confidence-gated, offline idiom flavours for the session — grounded,
+   * hedged "reminds me of" notes. Empty/absent when nothing cleared the
+   * engine's gate ("silence > lies"). `serde(default)` on the Rust side, so
+   * older recaps load with this absent.
+   */
+  idiom_notes?: IdiomMatch[];
 }
 
 /**

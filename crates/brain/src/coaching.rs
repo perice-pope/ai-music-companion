@@ -807,6 +807,11 @@ All text should be written as a teacher would speak — warm, specific, and acti
             None => String::new(),
         };
 
+        // Offline idiom-proximity block, when anything cleared the confidence
+        // gate. Handed to the model as GROUNDED INPUT it may hedge around but
+        // must never assert as fact or invent. Empty string when silent.
+        let idiom_block = crate::idiom_recap::idiom_prompt_block(&input.idiom_notes);
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -815,7 +820,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
             {}{}{}{}\n\
-            {}{}\n\n\
+            {}{}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}",
             practicing_what,
@@ -830,6 +835,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             groove_line,
             tip_summary,
             score_block,
+            idiom_block,
             if input.score_title.is_some() {
                 " Where it helps, refer to specific measures by number so the \
                 student knows exactly which passage you mean."
@@ -969,6 +975,10 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: fingerprint_for_recap(&input.phrases),
+            // Carry the gated, offline idiom matches straight through. They are
+            // grounded facts the recorder computed, not LLM output — so we
+            // persist them verbatim regardless of what the model returned.
+            idiom_notes: input.idiom_notes.clone(),
         };
 
         Ok(recap)
@@ -1000,6 +1010,10 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: fingerprint_for_recap(&input.phrases),
+            // Even when the LLM call fails, the offline idiom matches stand on
+            // their own — surface them so the fallback recap still gets the
+            // grounded "reminds me of" note. The frontend hedges the phrasing.
+            idiom_notes: input.idiom_notes.clone(),
         }
     }
 }
@@ -1327,6 +1341,7 @@ mod tests {
             ],
             tips: vec![],
             score_title: Some("Haydn Trumpet Concerto".to_owned()),
+            idiom_notes: Vec::new(),
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -1355,6 +1370,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            idiom_notes: Vec::new(),
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -1423,6 +1439,7 @@ mod tests {
             phrases: vec![toned],
             tips: Vec::new(),
             score_title: None,
+            idiom_notes: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
@@ -1602,6 +1619,7 @@ mod tests {
             phrases: vec![p],
             tips: Vec::new(),
             score_title: None,
+            idiom_notes: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -1622,6 +1640,84 @@ mod tests {
         assert!(
             fingerprint.groove.is_some(),
             "recap fingerprint carries the groove aggregate"
+        );
+    }
+
+    fn sample_idiom_match() -> crate::idiom_recap::IdiomMatch {
+        crate::idiom_recap::IdiomMatch {
+            label: "Bebop line".to_owned(),
+            genre: "jazz".to_owned(),
+            exemplar_artist: "Charlie Parker".to_owned(),
+            era: "1940s-50s".to_owned(),
+            similarity: 0.78,
+        }
+    }
+
+    #[test]
+    fn recap_prompt_includes_idiom_block_as_grounded_input_when_present() {
+        // A session with a gated idiom match should surface it in the prompt as
+        // GROUNDED INPUT the model may hedge around — never as a hard fact.
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 120.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: Vec::new(),
+            score_title: None,
+            idiom_notes: vec![sample_idiom_match()],
+        };
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            prompt.contains("GROUNDED INPUT"),
+            "idiom block must be marked as grounded input, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("Bebop line") && prompt.contains("Charlie Parker"),
+            "idiom block must name the matched idiom + exemplar, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("NEVER invent"),
+            "idiom block must forbid the model inventing idioms, got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn recap_prompt_omits_idiom_block_when_silent() {
+        // No gated matches → the recap stays silent on idiom (no block).
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 120.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: Vec::new(),
+            score_title: None,
+            idiom_notes: Vec::new(),
+        };
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            !prompt.contains("Idiom proximity"),
+            "no idiom block when nothing cleared the gate, got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn fallback_recap_carries_idiom_notes() {
+        // The offline matches stand alone — they survive an LLM failure into the
+        // fallback recap so the grounded "reminds me of" note still shows.
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 120.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: Vec::new(),
+            score_title: None,
+            idiom_notes: vec![sample_idiom_match()],
+        };
+        let recap = CoachingEngine::fallback_recap(&input);
+        assert_eq!(
+            recap.idiom_notes,
+            vec![sample_idiom_match()],
+            "fallback recap must carry the gated idiom matches verbatim"
         );
     }
 
@@ -2313,6 +2409,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            idiom_notes: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2363,6 +2460,7 @@ mod tests {
             phrases: vec![sample_phrase(); 3],
             tips: vec![],
             score_title: None,
+            idiom_notes: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2394,6 +2492,7 @@ mod tests {
             phrases: vec![sample_phrase(); 5],
             tips: vec![],
             score_title: None,
+            idiom_notes: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2433,6 +2532,7 @@ mod tests {
             phrases: vec![sample_phrase(); 2],
             tips: vec![],
             score_title: None,
+            idiom_notes: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();

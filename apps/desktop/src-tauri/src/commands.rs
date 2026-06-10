@@ -33,7 +33,7 @@ use brain::store::{
 use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
 
-use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError};
+use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError, SharedIdiomBuffer};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, Runtime, State};
 use thiserror::Error;
@@ -362,6 +362,9 @@ impl RecapGenerator for LlmRecapGenerator {
                 phrase_count: 0,
                 instrument: String::new(),
                 fingerprint: None,
+                // Offline idiom matches are computed independently of the LLM,
+                // so carry them through even on the no-API-key fallback.
+                idiom_notes: input.idiom_notes.clone(),
             });
         };
 
@@ -409,6 +412,7 @@ impl MockRecapGenerator {
             phrase_count: 0,
             instrument: String::new(),
             fingerprint: None,
+            idiom_notes: input.idiom_notes.clone(),
         })
     }
 }
@@ -493,6 +497,12 @@ pub struct AppState {
     /// profile in from the command wrapper without briefly holding two
     /// locks at once.
     audio_pipeline: Mutex<Option<AudioPipeline>>,
+    /// Session-scoped, downsampled mono audio retained for **offline**
+    /// end-of-session idiom analysis. Written by the audio-pipeline worker
+    /// thread (never the realtime callback), read once when building the recap,
+    /// and cleared at the start of each session. Shared (`Arc` inside) so the
+    /// pipeline gets its own handle without holding the `AppState`.
+    idiom_buffer: SharedIdiomBuffer,
 }
 
 impl AppState {
@@ -546,6 +556,7 @@ impl AppState {
             coaching_available,
             instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
+            idiom_buffer: SharedIdiomBuffer::new(),
         }
     }
 
@@ -564,6 +575,7 @@ impl AppState {
             coaching_available: false,
             instruments: Arc::new(test_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
+            idiom_buffer: SharedIdiomBuffer::new(),
         }
     }
 
@@ -1076,8 +1088,17 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     let session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
 
+    // Run the offline idiom analysis once, at the session boundary, off the
+    // realtime audio path. `analyze_idioms` is fully on-device (no network) and
+    // confidence-gated — it returns an empty list when nothing clears the gate,
+    // so quiet or non-idiomatic sessions surface nothing ("silence > lies").
+    let (idiom_samples, idiom_rate) = state.idiom_buffer.snapshot();
+    let idiom_notes = brain::idiom_recap::analyze_idioms(&idiom_samples, idiom_rate);
+    // Don't retain a session's audio past its recap.
+    state.idiom_buffer.clear();
+
     match session.recorder.complete() {
-        Ok(completed) => build_recap(&completed, &*generator).await,
+        Ok(completed) => build_recap(&completed, &*generator, idiom_notes).await,
         Err(SessionError::Empty) => Ok(empty_state_recap()),
         Err(other) => Err(CommandError::Recorder(other)),
     }
@@ -1093,9 +1114,10 @@ pub fn list_instruments_impl(state: &AppState) -> Vec<InstrumentInfo> {
 async fn build_recap(
     completed: &CompletedSession,
     generator: &dyn RecapGenerator,
+    idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap(generator)
+        .generate_recap_with_idioms(generator, idiom_notes)
         .await
         .map_err(CommandError::from)
 }
@@ -1117,6 +1139,7 @@ fn empty_state_recap() -> SessionRecap {
         phrase_count: 0,
         instrument: String::new(),
         fingerprint: None,
+        idiom_notes: Vec::new(),
     }
 }
 
@@ -1252,9 +1275,15 @@ pub async fn start_practice_session<R: Runtime>(
                 let app_for_emit = app.clone();
                 let app_for_phrase = app.clone();
                 let app_for_position = app.clone();
+                // Fresh idiom buffer for this session — discard any leftovers
+                // from a prior session, then hand the pipeline its own handle
+                // so it can fill it (offline, off the realtime callback).
+                state.idiom_buffer.clear();
+                let idiom_buffer = state.idiom_buffer.clone();
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
+                    Some(idiom_buffer),
                     move |event| {
                         let _ = app_for_emit.emit("audio-event", event);
                     },
@@ -1790,6 +1819,99 @@ mod tests {
         assert!(!recap.strengths.is_empty());
         assert!(!recap.areas_to_improve.is_empty());
         assert_eq!(s.current_phase().await, SessionPhase::Idle);
+    }
+
+    /// A pure sine tone — deterministic, embeddable audio for the offline
+    /// idiom path. No mic, no network.
+    fn sine(freq: f32, secs: f32, sr: u32) -> Vec<f32> {
+        let n = (secs * sr as f32) as usize;
+        (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn end_session_surfaces_offline_idiom_match_when_audio_is_relevant() {
+        // End-to-end of the offline idiom wiring: seed the session-scoped idiom
+        // buffer (as the worker thread would), end the session, and confirm a
+        // confidence-gated match is surfaced on the recap — all on-device, with
+        // no HttpClient (with_mocks wires no real LLM and no network).
+        let s = state();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+
+        // Seed the buffer with several exemplar-like tones; the bundled corpus
+        // is built from baseline-embedded tones, so at least one clears the gate.
+        for &f in &[196.0, 261.63, 329.63, 392.0, 440.0, 523.25] {
+            s.idiom_buffer.clear();
+            s.idiom_buffer
+                .append_downsampled(&sine(f, 1.0, 44_100), 44_100);
+            // Peek: does this tone produce a match offline?
+            let (samples, rate) = s.idiom_buffer.snapshot();
+            if !brain::idiom_recap::analyze_idioms(&samples, rate).is_empty() {
+                break;
+            }
+        }
+
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert!(
+            !recap.idiom_notes.is_empty(),
+            "an idiom-relevant session should surface a gated match"
+        );
+        for m in &recap.idiom_notes {
+            assert!(
+                m.similarity >= brain::idiom_recap::IDIOM_SIMILARITY_THRESHOLD,
+                "surfaced matches must clear the confidence gate: {m:?}"
+            );
+        }
+        // Buffer is cleared after the recap so audio isn't retained.
+        assert!(s.idiom_buffer.snapshot().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn end_session_with_quiet_audio_surfaces_no_idiom() {
+        // Silence / no captured audio → no idiom notes ("silence > lies").
+        let s = state();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+        // Buffer left empty (no audio captured).
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert!(
+            recap.idiom_notes.is_empty(),
+            "no captured audio must yield no idiom notes"
+        );
     }
 
     #[tokio::test]
