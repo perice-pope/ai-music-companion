@@ -3,6 +3,7 @@ import InstrumentSelector from "./InstrumentSelector";
 import ScorePicker from "./ScorePicker";
 import PracticeSession from "./PracticeSession";
 import SessionRecap from "./SessionRecap";
+import ConnectionsPrivacy from "./ConnectionsPrivacy";
 import History from "../pages/History";
 
 /**
@@ -14,6 +15,7 @@ import History from "../pages/History";
  */
 export default function PracticeShell() {
   const screen = usePracticeStore((s) => s.screen);
+  const goToConnections = usePracticeStore((s) => s.goToConnections);
 
   switch (screen) {
     case "session":
@@ -24,6 +26,8 @@ export default function PracticeShell() {
       return <History />;
     case "score-picker":
       return <ScorePicker />;
+    case "connections":
+      return <ConnectionsPrivacy />;
     case "selector":
     default:
       return (
@@ -36,6 +40,12 @@ export default function PracticeShell() {
             <p className="mt-2 text-sm text-gray-400">Free Play</p>
           </div>
           <InstrumentSelector />
+          <button
+            onClick={() => goToConnections()}
+            className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+          >
+            Connections &amp; Privacy
+          </button>
         </main>
       );
   }

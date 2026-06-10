@@ -67,6 +67,12 @@ and **fails the build** if the mean exceeds 25 ms. The gate is enforced by
 `.github/workflows/latency-bench.yml`, which runs `cargo bench --bench latency`
 (see `crates/ears/benches/latency.rs`) on every PR touching `crates/ears/**`.
 
+## Offline-first & network transparency
+
+- **Offline by default — the internet is NEVER required for core value.** The full loop (capture → local analysis → recap) must work with zero network; LLM narration degrades to the on-device fallback (`coaching.rs`), never blocks, never fabricates.
+- Every networked feature is **opt-in, off by default, and discloses what leaves the device** (to whom). Enumerate each in `docs/architecture/offline-first-and-network-transparency.md` and surface it in `ConnectionsPrivacy.tsx`. A new outbound call represented in neither is a bug.
+- No telemetry-by-default, no silent network calls, no required account.
+
 ## What NOT to do
 
 - Do not add dependencies without justification in the PR description

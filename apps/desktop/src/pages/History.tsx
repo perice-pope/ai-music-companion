@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useHistoryStore } from "../stores/historyStore";
+import { usePracticeStore } from "../stores/practiceStore";
 import SessionCard from "../components/SessionCard";
 import PracticeStats from "../components/PracticeStats";
 import AccountPanel from "../components/AccountPanel";
@@ -14,6 +15,7 @@ export default function History() {
     loadStats,
     loadSessionDetail,
   } = useHistoryStore();
+  const goToConnections = usePracticeStore((s) => s.goToConnections);
 
   useEffect(() => {
     loadHistory();
@@ -48,6 +50,12 @@ export default function History() {
         {/* Cloud sync (optional sign-in) */}
         <section className="mb-12">
           <AccountPanel />
+          <button
+            onClick={() => goToConnections()}
+            className="mt-3 text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+          >
+            Connections &amp; Privacy — what uses the internet
+          </button>
         </section>
 
         {/* Dashboard */}
