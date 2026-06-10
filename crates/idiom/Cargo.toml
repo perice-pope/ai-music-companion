@@ -1,0 +1,29 @@
+[package]
+name = "idiom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Offline audio-embedding idiom / musical-language recognition for AI Music Companion"
+
+[dependencies]
+# Audio embedding needs a magnitude spectrum for the chroma + MFCC-style
+# baseline features. The realtime `ears` crate is time-domain only (YIN) and
+# `tone` keeps its FFT front end private, so there is nothing to reuse here.
+# rustfft is the pure-Rust, well-maintained FFT the rest of the workspace
+# already depends on (see crates/tone), so it adds no new transitive risk.
+rustfft = "6"
+# The reference corpus (Corpus / CorpusEntry) and the public IdiomMatch result
+# cross the data-file and (future) IPC/persistence boundary, so they derive
+# Serialize/Deserialize, matching the rest of the workspace.
+serde = { workspace = true }
+# corpus.json is parsed at load time. serde_json is the workspace JSON codec.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests embed a synthetic fixture and assert retrieval behaviour.
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
