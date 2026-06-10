@@ -1,3 +1,9 @@
+## [1.43.0](https://github.com/perice-pope/ai-music-companion/compare/v1.42.0...v1.43.0) (2026-06-10)
+
+### Features
+
+* personalization data foundation — fingerprint persistence + taste profile ([#165](https://github.com/perice-pope/ai-music-companion/issues/165)) ([bb2dcc3](https://github.com/perice-pope/ai-music-companion/commit/bb2dcc388f27379708f498a66685f01deba046b6))
+
 ## [1.42.0](https://github.com/perice-pope/ai-music-companion/compare/v1.41.1...v1.42.0) (2026-06-10)
 
 ### Features
