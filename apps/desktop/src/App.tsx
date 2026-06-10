@@ -20,6 +20,12 @@ import type { PhraseSummary, ScorePosition } from "./types/brain";
  * session-lifecycle actions, not by whether a listener is registered —
  * otherwise it would always read `true` from the moment the app mounts
  * and `PitchDisplay` would never show its idle state.
+ *
+ * Routing (including the Connections & Privacy panel that discloses every
+ * networked feature — see
+ * `docs/architecture/offline-first-and-network-transparency.md`) lives in
+ * `PracticeShell`'s `screen` state machine. The subscriptions here are
+ * local-only; nothing in this always-on shell touches the network.
  */
 function App() {
   const setEvent = useAudioStore((s) => s.setEvent);
@@ -59,9 +65,12 @@ function App() {
         unsubs.push(
           // Fine-grained (~10 Hz) cursor updates between phrase boundaries.
           // Only emitted in score mode, so no free-play guard is needed.
-          await listen<ScorePosition>("score-position-updated", ({ payload }) => {
-            setCursorPosition(payload);
-          }),
+          await listen<ScorePosition>(
+            "score-position-updated",
+            ({ payload }) => {
+              setCursorPosition(payload);
+            },
+          ),
         );
       } catch (err: unknown) {
         console.error("Failed to subscribe to score-position-updated:", err);

@@ -16,7 +16,13 @@ import { useAudioStore } from "./audioStore";
  * store instead of pulling in react-router for four screens (see
  * design doc §2).
  */
-export type AppScreen = "selector" | "score-picker" | "session" | "recap" | "history";
+export type AppScreen =
+  | "selector"
+  | "score-picker"
+  | "session"
+  | "recap"
+  | "history"
+  | "connections";
 
 /**
  * Finite lifecycle states for a session. `recap_ready` exists so we
@@ -120,9 +126,16 @@ export interface PracticeState {
   refreshScoreLibrary: () => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
   clearActiveScore: () => void;
-  startSession: (instrument: string, vibratoToleranceCents?: number, scoreId?: string) => Promise<void>;
+  startSession: (
+    instrument: string,
+    vibratoToleranceCents?: number,
+    scoreId?: string,
+  ) => Promise<void>;
   endSession: () => Promise<void>;
-  switchInstrument: (name: string, vibratoToleranceCents?: number) => Promise<void>;
+  switchInstrument: (
+    name: string,
+    vibratoToleranceCents?: number,
+  ) => Promise<void>;
   pushPhrase: (phrase: PhraseSummary) => void;
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
   dismissTip: (id: string) => void;
@@ -139,6 +152,8 @@ export interface PracticeState {
    */
   setPracticeMode: (mode: PracticeMode) => void;
   goToHistory: () => void;
+  /** Open the Connections & Privacy panel (networked-feature disclosure). */
+  goToConnections: () => void;
 }
 
 /** localStorage key for the coaching-on/off preference. */
@@ -318,7 +333,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   clearActiveScore: () =>
     set({ activeScore: null, activeScoreXml: null, cursorPosition: null }),
 
-  startSession: async (instrument: string, vibratoToleranceCents = 15.0, scoreId?: string) => {
+  startSession: async (
+    instrument: string,
+    vibratoToleranceCents = 15.0,
+    scoreId?: string,
+  ) => {
     const { status } = get();
     if (status !== "idle") {
       throw new Error(
@@ -473,5 +492,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   goToHistory: () =>
     set({
       screen: "history",
+    }),
+
+  goToConnections: () =>
+    set({
+      screen: "connections",
     }),
 }));

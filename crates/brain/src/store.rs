@@ -901,6 +901,7 @@ mod tests {
             instrument: instrument.to_owned(),
             fingerprint: None,
             idiom_notes: Vec::new(),
+            connections: Vec::new(),
         }
     }
 
@@ -988,6 +989,26 @@ mod tests {
         )
         .expect("legacy recap deserializes");
         assert!(legacy.fingerprint.is_none());
+        // The same legacy blob predates `connections` too — defaults to empty.
+        assert!(legacy.connections.is_empty());
+    }
+
+    #[test]
+    fn connections_persist_through_recap_json() {
+        // Grounded cross-genre connections must round-trip through the
+        // recap_json column like any other recap text.
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        let recap = SessionRecap {
+            connections: vec![
+                "your laid-back time has the same pocket as a lot of the soul you love".to_owned(),
+            ],
+            ..recap_with("trumpet", 60.0, 4)
+        };
+        store.save(id, now, now, &recap).unwrap();
+        let loaded = store.load(id).unwrap();
+        assert_eq!(loaded.recap.connections, recap.connections);
     }
 
     #[test]
@@ -1091,6 +1112,7 @@ mod tests {
             instrument: "clarinet".to_owned(),
             fingerprint: None,
             idiom_notes: Vec::new(),
+            connections: Vec::new(),
         };
         let now = Utc::now();
         store

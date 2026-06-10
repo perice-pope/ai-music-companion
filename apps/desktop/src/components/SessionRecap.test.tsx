@@ -206,6 +206,31 @@ describe("SessionRecap", () => {
     expect(line).toContain("Charlie Parker");
   });
 
+  it("shows cross-genre connections only when the recap carries grounded ones", () => {
+    // No connections → no panel (cold start / thin signal / silence).
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    expect(screen.queryByTestId("recap-connections")).toBeNull();
+
+    // Explicit empty array → still nothing (honest about "no grounded link").
+    seedRecap(fullRecap({ connections: [] }));
+    rerender(<SessionRecap />);
+    expect(screen.queryByTestId("recap-connections")).toBeNull();
+
+    // Grounded, hedged connection present → the quiet "In your world" panel.
+    seedRecap(
+      fullRecap({
+        connections: [
+          "the way you're laying back on the beat has the same pocket as a lot of the soul you love",
+        ],
+      }),
+    );
+    rerender(<SessionRecap />);
+    const panel = screen.getByTestId("recap-connections");
+    expect(panel).toBeTruthy();
+    expect(panel.textContent).toContain("the same pocket");
+  });
+
   it("empty-state recap (zero phrases) hides bullet sections but keeps buttons", () => {
     seedRecap(
       fullRecap({

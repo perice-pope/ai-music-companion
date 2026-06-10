@@ -23,6 +23,11 @@ import type {
  * opt-ins on purpose (personalization spine §Privacy — "the same
  * independent-switches model as session data"). Turning one on never implies
  * the other, and neither is entangled with teacher linking.
+ *
+ * Every switch here is a *networked feature*: it is opt-in, off by default,
+ * and enumerated in `docs/architecture/offline-first-and-network-transparency.md`
+ * and surfaced (with plain-language disclosure of what leaves the device) in
+ * `ConnectionsPrivacy.tsx`. The core practice loop never calls into this store.
  */
 export type SyncStatus = "idle" | "syncing" | "synced" | "error";
 

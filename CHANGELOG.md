@@ -1,3 +1,15 @@
+## [1.45.0](https://github.com/perice-pope/ai-music-companion/compare/v1.44.0...v1.45.0) (2026-06-10)
+
+### Features
+
+* offline-first & network-transparency principle + Connections & Privacy surface ([#167](https://github.com/perice-pope/ai-music-companion/issues/167)) ([8d7b407](https://github.com/perice-pope/ai-music-companion/commit/8d7b407f461db3a7744a526aa8ae4302566ad50a))
+
+## [1.44.0](https://github.com/perice-pope/ai-music-companion/compare/v1.43.0...v1.44.0) (2026-06-10)
+
+### Features
+
+* **brain:** cross-genre contextual coaching (Phase 4 LLM-grounded relevance) ([#166](https://github.com/perice-pope/ai-music-companion/issues/166)) ([d842ab0](https://github.com/perice-pope/ai-music-companion/commit/d842ab0113c5b227706872bc298392f19d1ee980))
+
 ## [1.43.0](https://github.com/perice-pope/ai-music-companion/compare/v1.42.0...v1.43.0) (2026-06-10)
 
 ### Features
