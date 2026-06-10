@@ -1,3 +1,9 @@
+## [1.45.0](https://github.com/perice-pope/ai-music-companion/compare/v1.44.0...v1.45.0) (2026-06-10)
+
+### Features
+
+* offline-first & network-transparency principle + Connections & Privacy surface ([#167](https://github.com/perice-pope/ai-music-companion/issues/167)) ([8d7b407](https://github.com/perice-pope/ai-music-companion/commit/8d7b407f461db3a7744a526aa8ae4302566ad50a))
+
 ## [1.44.0](https://github.com/perice-pope/ai-music-companion/compare/v1.43.0...v1.44.0) (2026-06-10)
 
 ### Features
