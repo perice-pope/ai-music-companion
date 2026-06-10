@@ -36,6 +36,7 @@ use uuid::Uuid;
 
 use crate::fingerprint::MusicalFingerprint;
 use crate::phrase::PhraseSummary;
+use crate::store::TasteProfile;
 
 // ---------------------------------------------------------------------------
 // Practice mode
@@ -273,6 +274,15 @@ pub struct RecapInput {
     /// recap name the piece ("your work on the Haydn") and lean on the
     /// per-phrase `score_position` measure numbers. `None` in free play.
     pub score_title: Option<String>,
+    /// The student's stated [`TasteProfile`] — genres, artists, goals,
+    /// experience. This is the *only* place the measured fingerprint (facts)
+    /// and the stated preferences join: at coaching time, so the coach can
+    /// relate what was played to the music in the student's world (see
+    /// `docs/architecture/platform-spine-personalization.md`). `None` at cold
+    /// start (no profile captured yet), in which case the coach falls back to
+    /// its existing genre-neutral behavior — silence over a hollow connection.
+    #[serde(default)]
+    pub taste_profile: Option<TasteProfile>,
 }
 
 /// The post-session recap shown to the student.
@@ -311,6 +321,22 @@ pub struct SessionRecap {
     /// load (defaulting to `None`).
     #[serde(default)]
     pub fingerprint: Option<MusicalFingerprint>,
+    /// Grounded, hedged cross-genre **connections** relating what the student
+    /// actually played (the measured `fingerprint`) to the genres/artists in
+    /// their stated `TasteProfile` — the Phase 4 "coach, don't judge" cultural
+    /// bridge. Each entry is style/feel/technique-level only ("the way you're
+    /// shaping that line reminds me of how horn players phrase in soul"), never
+    /// a hard claim about a specific recording.
+    ///
+    /// Populated **only** when a taste profile existed *and* the session
+    /// produced enough measured signal to ground a connection honestly *and*
+    /// the model actually returned one. Empty otherwise — at cold start, on a
+    /// thin signal, or when the coach chose silence over a hollow link. The
+    /// data model stays honest about when it's empty: `Vec::is_empty()` means
+    /// "no grounded connection", not "feature off". Additive + `serde(default)`
+    /// so recaps saved before connections existed still load.
+    #[serde(default)]
+    pub connections: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +424,39 @@ impl CompletedSession {
             phrases: self.all_phrases(),
             tips: self.all_tips(),
             score_title: self.score_title.clone(),
+            // The taste profile is owned by the persistence layer, not the
+            // recorder — it's read from the store and joined to the recap input
+            // at coaching time (see `generate_recap_with_profile`). A bare
+            // `CompletedSession` carries no profile, so default to `None` here.
+            taste_profile: None,
         }
+    }
+
+    /// Like [`Self::generate_recap`], but joins the student's stated
+    /// [`TasteProfile`] to the recap input first, so the coach can relate the
+    /// measured musicianship to the genres/artists in the student's world.
+    ///
+    /// This is the *only* place the measured fingerprint (facts) and the stated
+    /// preferences (context) meet, per the personalization spine: the recorder
+    /// stays profile-agnostic, and the command layer reads the profile from the
+    /// store and threads it in here. `profile == None` (cold start) is
+    /// equivalent to [`Self::generate_recap`] — no forced cross-genre framing.
+    ///
+    /// The same authoritative-fields guarantee as [`Self::generate_recap`]
+    /// applies: `duration_secs`, `phrase_count`, and `instrument` are
+    /// overwritten from this session regardless of what the generator emits.
+    pub async fn generate_recap_with_profile(
+        &self,
+        generator: &dyn RecapGenerator,
+        profile: Option<TasteProfile>,
+    ) -> Result<SessionRecap, SessionError> {
+        let mut input = self.to_recap_input();
+        input.taste_profile = profile;
+        let mut recap = generator.generate_recap(&input).await?;
+        recap.duration_secs = self.duration_secs;
+        recap.phrase_count = self.phrase_count();
+        recap.instrument = self.primary_instrument().to_owned();
+        Ok(recap)
     }
 
     /// Generate a recap via the given [`RecapGenerator`].
@@ -730,6 +788,7 @@ mod tests {
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
+            connections: Vec::new(),
         }
     }
 
@@ -1070,6 +1129,58 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
         assert_ne!(ids[0], ids[2]);
         assert_ne!(ids[1], ids[2]);
+    }
+
+    #[tokio::test]
+    async fn generate_recap_with_profile_threads_profile_into_input() {
+        use crate::store::{ExperienceLevel, TasteProfile};
+
+        let mock = RecordingMockGenerator::new(canned_recap());
+        let input_handle = mock.last_input_handle();
+
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
+        recorder.record_phrase(phrase(0)).unwrap();
+        let completed = recorder.complete().unwrap();
+
+        let profile = TasteProfile {
+            genres: vec!["hip-hop".to_owned()],
+            artists: vec!["Kendrick Lamar".to_owned()],
+            goals: vec!["play in church band".to_owned()],
+            experience: ExperienceLevel::Intermediate,
+            is_under_13: false,
+        };
+        completed
+            .generate_recap_with_profile(&mock, Some(profile.clone()))
+            .await
+            .unwrap();
+
+        // The recorder stays profile-agnostic; the join happens here, so the
+        // generator must see the profile on the RecapInput.
+        let captured = input_handle.lock().unwrap().clone().unwrap();
+        assert_eq!(captured.taste_profile, Some(profile));
+    }
+
+    #[tokio::test]
+    async fn generate_recap_with_no_profile_matches_plain_generate_recap() {
+        // Cold start: passing None must behave exactly like generate_recap —
+        // no profile on the input, equivalent to the existing behavior.
+        let mock = RecordingMockGenerator::new(canned_recap());
+        let input_handle = mock.last_input_handle();
+
+        let mut recorder = SessionRecorder::new("voice".to_owned(), PracticeMode::default());
+        recorder.record_phrase(phrase(0)).unwrap();
+        let completed = recorder.complete().unwrap();
+
+        completed
+            .generate_recap_with_profile(&mock, None)
+            .await
+            .unwrap();
+
+        let captured = input_handle.lock().unwrap().clone().unwrap();
+        assert!(
+            captured.taste_profile.is_none(),
+            "cold start must leave the recap input profile-free"
+        );
     }
 
     #[tokio::test]

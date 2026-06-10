@@ -277,6 +277,18 @@ export interface SessionRecap {
    * anything was measured. `null`/absent when every dimension's gate failed.
    */
   fingerprint?: MusicalFingerprint | null;
+  /**
+   * Grounded, hedged cross-genre connections relating what the student played
+   * (the measured {@link fingerprint}) to the genres/artists in their stated
+   * taste profile — the Phase 4 cultural bridge. Each string is style/feel/
+   * technique-level only, never a hard claim about a specific recording.
+   *
+   * Populated by the Rust core only when a taste profile existed AND the
+   * session produced enough measured signal to ground a connection AND the
+   * coach actually returned one. Empty/absent otherwise (cold start, thin
+   * signal, or the coach chose silence). The UI shows it only when present.
+   */
+  connections?: string[];
 }
 
 /**
