@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::fingerprint::MusicalFingerprint;
 use crate::phrase::PhraseSummary;
 
 // ---------------------------------------------------------------------------
@@ -296,31 +297,20 @@ pub struct SessionRecap {
     /// Instrument played (first-segment instrument for multi-segment
     /// sessions — copied from `RecapInput.instrument`).
     pub instrument: String,
-    /// Session-level tone aggregate (mean of the phrases that carried tone),
-    /// when tone analysis ran. Persisted in the recap JSON for trend tracking
-    /// ("warmer than last time") and the teacher feed. Additive +
-    /// `serde(default)` so recaps saved before tone existed still load.
+    /// The session's [`MusicalFingerprint`] — the unified read of what we
+    /// measured about this session's musicianship (tone, key, intonation,
+    /// groove). This replaces the four scattered `session_*` fields: one
+    /// representation, not four parallel ones. Persisted in the recap JSON for
+    /// trend tracking ("warmer than last time") and the teacher feed, and
+    /// consumed by the upcoming personalization / cultural-relevance engine.
+    ///
+    /// `None` when nothing was measured (every dimension's evidence gate
+    /// failed). When `Some`, individual dimensions inside it are still
+    /// `Option`: each is present only when its gate passed. Additive +
+    /// `serde(default)` so recaps saved before the fingerprint existed still
+    /// load (defaulting to `None`).
     #[serde(default)]
-    pub session_tone: Option<tone::ToneDescriptor>,
-    /// Session-level key/mode estimate over all phrases' pitches (Phase 4),
-    /// when one could be detected with enough confidence. Drives the recap's
-    /// key read-out and grounds the cultural-relevance layer. Additive +
-    /// `serde(default)` so recaps saved before key detection existed still load.
-    #[serde(default)]
-    pub session_key: Option<theory::KeyEstimate>,
-    /// Session-level intonation summary (cents vs equal temperament + per-degree
-    /// tuning tendencies) over all phrases' pitches (Phase 4), when enough notes
-    /// were observed to report honestly. Drives the recap's intonation read-out.
-    /// Additive + `serde(default)` so recaps saved before intonation existed
-    /// still load.
-    #[serde(default)]
-    pub session_intonation: Option<theory::IntonationSummary>,
-    /// Session-level groove descriptor (tempo, swing, timing consistency) over
-    /// the session's onset timestamps (Phase 4), when enough onsets were
-    /// observed. Drives the recap's rhythmic-feel read-out. Additive +
-    /// `serde(default)` so recaps saved before groove existed still load.
-    #[serde(default)]
-    pub session_groove: Option<groove::GrooveDescriptor>,
+    pub fingerprint: Option<MusicalFingerprint>,
 }
 
 // ---------------------------------------------------------------------------
@@ -739,10 +729,7 @@ mod tests {
             duration_secs: 0.0,
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
-            session_tone: None,
-            session_key: None,
-            session_intonation: None,
-            session_groove: None,
+            fingerprint: None,
         }
     }
 

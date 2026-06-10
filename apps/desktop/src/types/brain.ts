@@ -235,6 +235,28 @@ export function keyName(key: KeyEstimate): string {
 }
 
 /**
+ * The session's unified musical fingerprint — what we measured about this
+ * session's musicianship. Mirrors `brain::fingerprint::MusicalFingerprint`.
+ *
+ * Each dimension is present only when its evidence gate passed on the backend
+ * (enough distinct pitch classes + confident fit for `key`; enough notes for
+ * `intonation`; enough onsets for `groove`; at least one toned phrase for
+ * `tone`). An absent dimension means "we didn't measure this honestly", never
+ * "the value was zero". This is the single contract the personalization /
+ * cultural-relevance layer consumes.
+ */
+export interface MusicalFingerprint {
+  /** Session-level tone aggregate, when tone analysis ran. */
+  tone?: ToneDescriptor | null;
+  /** Session-level key/mode, when detected confidently. `theory::KeyEstimate`. */
+  key?: KeyEstimate | null;
+  /** Session-level intonation summary, when enough notes were observed. */
+  intonation?: IntonationSummary | null;
+  /** Session-level groove (tempo/swing/timing), when enough onsets were observed. */
+  groove?: GrooveDescriptor | null;
+}
+
+/**
  * Post-session recap shown on the `recap` screen. Matches
  * `brain::session::SessionRecap`.
  *
@@ -250,14 +272,11 @@ export interface SessionRecap {
   duration_secs: number;
   phrase_count: number;
   instrument: string;
-  /** Session-level tone aggregate, when tone analysis ran. */
-  session_tone?: ToneDescriptor | null;
-  /** Session-level key/mode, when detected confidently. `theory::KeyEstimate`. */
-  session_key?: KeyEstimate | null;
-  /** Session-level intonation summary, when enough notes were observed. */
-  session_intonation?: IntonationSummary | null;
-  /** Session-level groove (tempo/swing/timing), when enough onsets were observed. */
-  session_groove?: GrooveDescriptor | null;
+  /**
+   * The session's musical fingerprint (tone, key, intonation, groove), when
+   * anything was measured. `null`/absent when every dimension's gate failed.
+   */
+  fingerprint?: MusicalFingerprint | null;
 }
 
 /**

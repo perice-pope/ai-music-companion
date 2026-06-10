@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::fingerprint::MusicalFingerprint;
 use crate::phrase::PhraseSummary;
 use crate::session::{RecapGenerator, RecapInput, SessionError, SessionRecap};
 
@@ -770,15 +771,20 @@ All text should be written as a teacher would speak — warm, specific, and acti
         };
         let score_block = Self::build_score_block(input);
 
+        // The session's musical fingerprint — one unified read of tone, key,
+        // intonation, and groove. Every grounded line below is pulled from it,
+        // so the prompt and the persisted recap are sourced from the same place.
+        let fingerprint = build_fingerprint(&input.phrases);
+
         // Aggregate tone across the session's phrases, when available.
-        let tone_line = match aggregate_tone(&input.phrases) {
-            Some(t) => format!("- Tone quality: {}\n", describe_tone(&t)),
+        let tone_line = match &fingerprint.tone {
+            Some(t) => format!("- Tone quality: {}\n", describe_tone(t)),
             None => String::new(),
         };
 
         // Detected key/mode over the session, when confident — a grounded fact
         // the recap (and later the cultural-relevance layer) can lean on.
-        let key_line = match aggregate_key(&input.phrases) {
+        let key_line = match &fingerprint.key {
             Some(k) => format!(
                 "- Key / mode: {} (confidence {:.2})\n",
                 k.name(),
@@ -790,14 +796,14 @@ All text should be written as a teacher would speak — warm, specific, and acti
         // Intonation over the session, when enough notes were observed. These
         // are *computed* cents figures — the model must not invent numbers, only
         // phrase the facts we hand it.
-        let intonation_line = match aggregate_intonation(&input.phrases) {
-            Some(s) => format!("- Intonation: {}\n", describe_intonation(&s)),
+        let intonation_line = match &fingerprint.intonation {
+            Some(s) => format!("- Intonation: {}\n", describe_intonation(s)),
             None => String::new(),
         };
 
         // Rhythmic feel over the session, when enough onsets were observed.
-        let groove_line = match aggregate_groove(&input.phrases) {
-            Some(g) => format!("- Feel: {}\n", describe_groove(&g)),
+        let groove_line = match &fingerprint.groove {
+            Some(g) => format!("- Feel: {}\n", describe_groove(g)),
             None => String::new(),
         };
 
@@ -962,10 +968,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
-            session_tone: aggregate_tone(&input.phrases),
-            session_key: aggregate_key(&input.phrases),
-            session_intonation: aggregate_intonation(&input.phrases),
-            session_groove: aggregate_groove(&input.phrases),
+            fingerprint: fingerprint_for_recap(&input.phrases),
         };
 
         Ok(recap)
@@ -996,10 +999,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
-            session_tone: aggregate_tone(&input.phrases),
-            session_key: aggregate_key(&input.phrases),
-            session_intonation: aggregate_intonation(&input.phrases),
-            session_groove: aggregate_groove(&input.phrases),
+            fingerprint: fingerprint_for_recap(&input.phrases),
         }
     }
 }
@@ -1101,6 +1101,30 @@ fn describe_groove(g: &groove::GrooveDescriptor) -> String {
     parts.push(steadiness.to_owned());
     parts.push(format!("{} onsets", g.onset_count));
     parts.join(", ")
+}
+
+/// Build the session's [`MusicalFingerprint`] from the per-dimension
+/// aggregation. Each dimension reuses its existing evidence gate (see the
+/// `aggregate_*` functions), so a dimension is `Some` only when the session
+/// produced enough evidence to report it honestly. This is the single place
+/// the four measurements are assembled — the recap prompt and the persisted
+/// recap both source their grounded facts from the result.
+fn build_fingerprint(phrases: &[PhraseSummary]) -> MusicalFingerprint {
+    MusicalFingerprint {
+        tone: aggregate_tone(phrases),
+        key: aggregate_key(phrases),
+        intonation: aggregate_intonation(phrases),
+        groove: aggregate_groove(phrases),
+    }
+}
+
+/// The fingerprint to persist on a [`SessionRecap`]: `None` when nothing was
+/// measured (every gate failed), otherwise `Some` with whatever dimensions
+/// passed. Collapsing the all-`None` case to `None` keeps "nothing measured"
+/// distinct from "some dimensions measured" at the recap level.
+fn fingerprint_for_recap(phrases: &[PhraseSummary]) -> Option<MusicalFingerprint> {
+    let fingerprint = build_fingerprint(phrases);
+    (!fingerprint.is_empty()).then_some(fingerprint)
 }
 
 /// Session-level key/mode over every phrase's detected pitches. Returns `None`
@@ -1404,11 +1428,15 @@ mod tests {
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
 
         // The generated recap also carries the session tone aggregate for
-        // persistence + trends.
+        // persistence + trends, now via the unified fingerprint.
         let recap = CoachingEngine::fallback_recap(&input);
         assert!(
-            recap.session_tone.is_some(),
-            "recap should carry the session tone aggregate"
+            recap
+                .fingerprint
+                .as_ref()
+                .and_then(|f| f.tone.as_ref())
+                .is_some(),
+            "recap fingerprint should carry the session tone aggregate"
         );
     }
 
@@ -1583,13 +1611,17 @@ mod tests {
         assert!(prompt.contains("Feel:"), "recap prompt names rhythmic feel");
 
         let recap = CoachingEngine::fallback_recap(&input);
+        let fingerprint = recap
+            .fingerprint
+            .as_ref()
+            .expect("recap carries a fingerprint when dimensions were measured");
         assert!(
-            recap.session_intonation.is_some(),
-            "recap carries the intonation aggregate"
+            fingerprint.intonation.is_some(),
+            "recap fingerprint carries the intonation aggregate"
         );
         assert!(
-            recap.session_groove.is_some(),
-            "recap carries the groove aggregate"
+            fingerprint.groove.is_some(),
+            "recap fingerprint carries the groove aggregate"
         );
     }
 

@@ -78,17 +78,19 @@ describe("SessionRecap", () => {
   it("shows the tone read-out only when the recap carries a tone aggregate", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No session_tone → no tone panel.
+    // No fingerprint → no tone panel.
     expect(screen.queryByTestId("recap-tone")).toBeNull();
 
     seedRecap(
       fullRecap({
-        session_tone: {
-          brightness: 0.6,
-          warmth: 0.5,
-          air_noise: 0.2,
-          core_clarity: 0.8,
-          vibrato_quality: 0.55,
+        fingerprint: {
+          tone: {
+            brightness: 0.6,
+            warmth: 0.5,
+            air_noise: 0.2,
+            core_clarity: 0.8,
+            vibrato_quality: 0.55,
+          },
         },
       }),
     );
@@ -100,16 +102,18 @@ describe("SessionRecap", () => {
   it("shows the detected key only when the recap carries one", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No session_key → no key line.
+    // No fingerprint → no key line.
     expect(screen.queryByTestId("recap-key")).toBeNull();
 
     seedRecap(
       fullRecap({
-        session_key: {
-          tonic: 7,
-          mode: "mixolydian",
-          confidence: 0.82,
-          margin: 0.1,
+        fingerprint: {
+          key: {
+            tonic: 7,
+            mode: "mixolydian",
+            confidence: 0.82,
+            margin: 0.1,
+          },
         },
       }),
     );
@@ -122,17 +126,19 @@ describe("SessionRecap", () => {
   it("shows the intonation read-out only when the recap carries one", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No session_intonation → no intonation line.
+    // No fingerprint → no intonation line.
     expect(screen.queryByTestId("recap-intonation")).toBeNull();
 
     seedRecap(
       fullRecap({
-        session_intonation: {
-          note_count: 24,
-          mean_cents: 8,
-          mean_abs_cents: 12,
-          in_tune_ratio: 0.75,
-          tendencies: [{ semitones_from_tonic: 4, mean_cents: 14, count: 6 }],
+        fingerprint: {
+          intonation: {
+            note_count: 24,
+            mean_cents: 8,
+            mean_abs_cents: 12,
+            in_tune_ratio: 0.75,
+            tendencies: [{ semitones_from_tonic: 4, mean_cents: 14, count: 6 }],
+          },
         },
       }),
     );
@@ -145,17 +151,19 @@ describe("SessionRecap", () => {
   it("shows the groove read-out only when the recap carries one", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No session_groove → no feel line.
+    // No fingerprint → no feel line.
     expect(screen.queryByTestId("recap-groove")).toBeNull();
 
     seedRecap(
       fullRecap({
-        session_groove: {
-          tempo_bpm: 92,
-          swing_ratio: 1.6,
-          mean_ioi_secs: 0.4,
-          timing_consistency: 0.95,
-          onset_count: 40,
+        fingerprint: {
+          groove: {
+            tempo_bpm: 92,
+            swing_ratio: 1.6,
+            mean_ioi_secs: 0.4,
+            timing_consistency: 0.95,
+            onset_count: 40,
+          },
         },
       }),
     );

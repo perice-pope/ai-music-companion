@@ -123,6 +123,9 @@ export default function SessionRecap() {
 
   const durationMinutes = Math.max(1, Math.round(recap.duration_secs / 60));
   const isEmptyState = recap.phrase_count === 0;
+  // The session's unified musical fingerprint. Each dimension is read from here
+  // and rendered only when present (the backend gates decide presence).
+  const fingerprint = recap.fingerprint;
 
   return (
     <section
@@ -141,10 +144,10 @@ export default function SessionRecap() {
         </p>
         {/* Detected key/mode, when confident. Quiet, factual — it grounds the
             coaching above (and, later, the cultural-relevance connections). */}
-        {!isEmptyState && recap.session_key && (
+        {!isEmptyState && fingerprint?.key && (
           <p className="text-sm text-gray-400" data-testid="recap-key">
             Key:{" "}
-            <span className="text-gray-200">{keyName(recap.session_key)}</span>
+            <span className="text-gray-200">{keyName(fingerprint.key)}</span>
           </p>
         )}
       </header>
@@ -158,28 +161,28 @@ export default function SessionRecap() {
 
       {/* Tone read-out (secondary to the coaching text above). Only shown
           when tone analysis produced a session aggregate. */}
-      {!isEmptyState && recap.session_tone && (
-        <ToneSummary tone={recap.session_tone} />
+      {!isEmptyState && fingerprint?.tone && (
+        <ToneSummary tone={fingerprint.tone} />
       )}
 
       {/* Intonation read-out — quiet, factual. Only shown when enough notes
           were observed to report honestly (backend gate). */}
-      {!isEmptyState && recap.session_intonation && (
+      {!isEmptyState && fingerprint?.intonation && (
         <p className="text-sm text-gray-400" data-testid="recap-intonation">
           Intonation:{" "}
           <span className="text-gray-200">
-            {intonationLine(recap.session_intonation)}
+            {intonationLine(fingerprint.intonation)}
           </span>
         </p>
       )}
 
       {/* Rhythmic-feel read-out — quiet, factual. Only shown when enough
           onsets were observed to estimate groove (backend gate). */}
-      {!isEmptyState && recap.session_groove && (
+      {!isEmptyState && fingerprint?.groove && (
         <p className="text-sm text-gray-400" data-testid="recap-groove">
           Feel:{" "}
           <span className="text-gray-200">
-            {grooveLine(recap.session_groove)}
+            {grooveLine(fingerprint.groove)}
           </span>
         </p>
       )}
