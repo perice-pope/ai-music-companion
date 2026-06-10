@@ -187,6 +187,26 @@ export default function SessionRecap() {
         </p>
       )}
 
+      {/* Cross-genre connections — a quiet, warm bridge from what they played
+          to the music in their world. Shown ONLY when the Rust core grounded
+          one (profile present + enough measured signal + the coach returned a
+          hedged reference). Empty/absent → nothing rendered, mirroring the
+          tone/key/intonation/groove treatment: silence over a hollow link. */}
+      {!isEmptyState &&
+        recap.connections != null &&
+        recap.connections.length > 0 && (
+          <div data-testid="recap-connections">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
+              In your world
+            </h3>
+            <ul className="list-disc space-y-1 pl-6 text-gray-200">
+              {recap.connections.map((c) => (
+                <li key={c}>{c}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
       {/* Strengths first — product invariant enforced by DOM order. */}
       {recap.strengths.length > 0 && (
         <div data-testid="recap-strengths">

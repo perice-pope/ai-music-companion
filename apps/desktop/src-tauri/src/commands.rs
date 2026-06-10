@@ -362,6 +362,7 @@ impl RecapGenerator for LlmRecapGenerator {
                 phrase_count: 0,
                 instrument: String::new(),
                 fingerprint: None,
+                connections: Vec::new(),
             });
         };
 
@@ -409,6 +410,7 @@ impl MockRecapGenerator {
             phrase_count: 0,
             instrument: String::new(),
             fingerprint: None,
+            connections: Vec::new(),
         })
     }
 }
@@ -1076,8 +1078,22 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     let session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
 
+    // Read the student's stated taste profile from the local store so the coach
+    // can relate the measured musicianship to the music in their world. This is
+    // the join point named in the personalization spine: the fingerprint
+    // (facts) and the profile (preference) meet only here, at coaching time.
+    // A missing or unreadable profile is cold start → `None`, and the coach
+    // falls back to its existing genre-neutral behavior.
+    let taste_profile = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
+        .ok()
+        .flatten();
+
     match session.recorder.complete() {
-        Ok(completed) => build_recap(&completed, &*generator).await,
+        Ok(completed) => build_recap(&completed, &*generator, taste_profile).await,
         Err(SessionError::Empty) => Ok(empty_state_recap()),
         Err(other) => Err(CommandError::Recorder(other)),
     }
@@ -1093,9 +1109,10 @@ pub fn list_instruments_impl(state: &AppState) -> Vec<InstrumentInfo> {
 async fn build_recap(
     completed: &CompletedSession,
     generator: &dyn RecapGenerator,
+    taste_profile: Option<TasteProfile>,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap(generator)
+        .generate_recap_with_profile(generator, taste_profile)
         .await
         .map_err(CommandError::from)
 }
@@ -1117,6 +1134,7 @@ fn empty_state_recap() -> SessionRecap {
         phrase_count: 0,
         instrument: String::new(),
         fingerprint: None,
+        connections: Vec::new(),
     }
 }
 

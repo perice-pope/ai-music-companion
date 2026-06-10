@@ -17,6 +17,7 @@ use thiserror::Error;
 use crate::fingerprint::MusicalFingerprint;
 use crate::phrase::PhraseSummary;
 use crate::session::{RecapGenerator, RecapInput, SessionError, SessionRecap};
+use crate::store::TasteProfile;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -683,7 +684,12 @@ Choose the category that best matches the most notable aspect of the phrase data
 #[async_trait]
 impl RecapGenerator for CoachingEngine {
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
-        let system_prompt = Self::build_recap_system_prompt();
+        // Cross-genre connections are only in play when a taste profile exists
+        // AND the session produced enough measured signal to ground one — both
+        // the prompt's grounding instructions and the response parsing key off
+        // this single gate, so they can never drift apart.
+        let connections_enabled = connections_gate_open(input);
+        let system_prompt = Self::build_recap_system_prompt(connections_enabled);
         let user_prompt = Self::build_recap_user_prompt(input);
 
         let request_body = self.build_request_body(&system_prompt, &user_prompt);
@@ -714,8 +720,15 @@ impl RecapGenerator for CoachingEngine {
 
 impl CoachingEngine {
     /// Build a system prompt for session recap generation.
-    fn build_recap_system_prompt() -> String {
-        "\
+    ///
+    /// When `connections_enabled` is true (a taste profile is present *and* the
+    /// session produced enough measured signal — see [`connections_gate_open`]),
+    /// the prompt gains a `connections` output field plus the cross-genre
+    /// grounding contract. When false, the prompt is byte-for-byte the existing
+    /// recap prompt: no `connections` field, no cross-genre framing — the coach
+    /// behaves exactly as before (cold-start / thin-signal fallback).
+    fn build_recap_system_prompt(connections_enabled: bool) -> String {
+        let base = "\
 You are a warm, experienced music teacher writing end-of-session notes for a student.
 Your role is to provide honest, encouraging feedback that celebrates progress and
 identifies clear next steps for improvement.
@@ -728,18 +741,58 @@ IMPORTANT RULES:
 - Be specific and reference actual things you heard in their performance.
 - Celebrate genuine progress and specific strengths.
 - For areas to improve, be constructive and give concrete next steps.
-- Use warm, conversational language.
+- Use warm, conversational language.";
 
-Respond with valid JSON in this exact format:
-{
-  \"overall_assessment\": \"One paragraph capturing the overall arc of the session\",
-  \"strengths\": [\"specific strength 1\", \"specific strength 2\"],
-  \"areas_to_improve\": [\"area 1\", \"area 2\"],
-  \"next_session_suggestions\": [\"focus 1\", \"focus 2\"]
-}
-
+        if !connections_enabled {
+            return format!(
+                "{base}\n\n\
+Respond with valid JSON in this exact format:\n\
+{{\n\
+  \"overall_assessment\": \"One paragraph capturing the overall arc of the session\",\n\
+  \"strengths\": [\"specific strength 1\", \"specific strength 2\"],\n\
+  \"areas_to_improve\": [\"area 1\", \"area 2\"],\n\
+  \"next_session_suggestions\": [\"focus 1\", \"focus 2\"]\n\
+}}\n\n\
 All text should be written as a teacher would speak — warm, specific, and actionable."
-            .to_owned()
+            );
+        }
+
+        // Connections are in play: add the field + the grounding contract.
+        // The contract is the trust-critical part — a trained ear catches a
+        // fabricated reference instantly, so the model may only relate at the
+        // level of style/feel/technique and must hedge or stay silent.
+        format!(
+            "{base}\n\n\
+CROSS-GENRE CONNECTIONS:\n\
+This student told us about the music they love (their genres, artists, and goals are \
+below). Where — and ONLY where — the measured musical facts of THIS session genuinely \
+relate to that world, you may add one or two short \"connections\" that bridge what they \
+just played to the music they care about. This is encouragement and context, never a \
+score.\n\n\
+GROUNDING CONTRACT (read carefully — this protects the student's trust):\n\
+- HEDGE every connection. Say things like \"the way you're shaping that line reminds me \
+of how horn players phrase in [a genre they like]\" — NOT \"this is exactly the lick from \
+[song]\".\n\
+- Relate only at the level of STYLE, FEEL, or TECHNIQUE (phrasing, groove, intonation \
+colour, tone). Never assert that a specific recording, performance, or artist did a \
+specific thing.\n\
+- Do NOT invent track names, album names, timestamps, lyrics, quotes, or any specific \
+musical fact you were not given. If you are not sure, stay general (genre-level) or omit \
+the connection entirely.\n\
+- Base connections on the measured session facts above (key/mode, feel, intonation, \
+tone) joined to the student's stated taste — never on guesses about what they played.\n\
+- Prefer SILENCE over a hollow or forced connection. An empty \"connections\" list is \
+completely fine and often the right answer.\n\n\
+Respond with valid JSON in this exact format:\n\
+{{\n\
+  \"overall_assessment\": \"One paragraph capturing the overall arc of the session\",\n\
+  \"strengths\": [\"specific strength 1\", \"specific strength 2\"],\n\
+  \"areas_to_improve\": [\"area 1\", \"area 2\"],\n\
+  \"next_session_suggestions\": [\"focus 1\", \"focus 2\"],\n\
+  \"connections\": [\"a hedged, style-level bridge to their world (or omit / leave empty)\"]\n\
+}}\n\n\
+All text should be written as a teacher would speak — warm, specific, and actionable."
+        )
     }
 
     /// Build a user prompt for session recap generation from session input.
@@ -807,6 +860,28 @@ All text should be written as a teacher would speak — warm, specific, and acti
             None => String::new(),
         };
 
+        // The student's stated taste, as *context* for framing — never as a
+        // performance fact. Joined here at coaching time only (the measured
+        // fingerprint above stays the source of truth). Empty string at cold
+        // start or when the profile carries nothing to frame with.
+        let taste_block = input
+            .taste_profile
+            .as_ref()
+            .map(describe_taste_profile)
+            .unwrap_or_default();
+
+        // Whether to nudge for grounded connections — same gate the system
+        // prompt and parser use, so the instruction only appears when a
+        // grounded connection is actually possible.
+        let connection_instruction = if connections_gate_open(input) {
+            " Then, if — and only if — what they played genuinely relates to the music \
+                they love above, you may add one or two short, hedged connections to their \
+                world (style/feel/technique level only). Prefer leaving connections empty \
+                over forcing one."
+        } else {
+            ""
+        };
+
         format!(
             "Please write end-of-session notes for a student who just finished practicing {}. \
             They played {} phrases over approximately {} minutes.\n\n\
@@ -815,9 +890,9 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
             {}{}{}{}\n\
-            {}{}\n\n\
+            {}{}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
-            that celebrate what went well and identify clear next steps.{}",
+            that celebrate what went well and identify clear next steps.{}{}",
             practicing_what,
             phrase_count,
             duration_mins as i32,
@@ -830,12 +905,14 @@ All text should be written as a teacher would speak — warm, specific, and acti
             groove_line,
             tip_summary,
             score_block,
+            taste_block,
             if input.score_title.is_some() {
                 " Where it helps, refer to specific measures by number so the \
                 student knows exactly which passage you mean."
             } else {
                 ""
             },
+            connection_instruction,
         )
     }
 
@@ -969,6 +1046,26 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: fingerprint_for_recap(&input.phrases),
+            // Honor the model's connections ONLY when the gate was open (a
+            // profile existed AND the signal was groundable). If the gate is
+            // closed, the prompt never asked for connections, so anything that
+            // slipped through is dropped — the data model stays honest about
+            // when a connection was actually grounded.
+            connections: if connections_gate_open(input) {
+                parsed
+                    .get("connections")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str())
+                            .map(|s| s.trim().to_owned())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         };
 
         Ok(recap)
@@ -1000,6 +1097,9 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: fingerprint_for_recap(&input.phrases),
+            // The offline fallback never reached the model, so there is no
+            // grounded cross-genre reference to surface — empty, by design.
+            connections: Vec::new(),
         }
     }
 }
@@ -1101,6 +1201,71 @@ fn describe_groove(g: &groove::GrooveDescriptor) -> String {
     parts.push(steadiness.to_owned());
     parts.push(format!("{} onsets", g.onset_count));
     parts.join(", ")
+}
+
+/// Render the student's stated [`TasteProfile`] as a labelled context block for
+/// the recap prompt. This is **stated preference**, not measured fact — it is
+/// the one place preferences join the fingerprint (at coaching time), and the
+/// prompt is careful to frame it as context the coach may relate to, never as
+/// something the coach may assert was played.
+///
+/// Returns an empty string when the profile carries nothing to frame with (no
+/// genres, artists, or goals), so a default-empty profile reads the same as no
+/// profile at all — the data model stays honest about cold start.
+fn describe_taste_profile(profile: &TasteProfile) -> String {
+    if profile.genres.is_empty() && profile.artists.is_empty() && profile.goals.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "\n\nThe student also told us about the music they love (use this only to FRAME \
+         connections — it is their taste, NOT something they played):\n",
+    );
+    if !profile.genres.is_empty() {
+        block.push_str(&format!(
+            "- Genres they like: {}\n",
+            profile.genres.join(", ")
+        ));
+    }
+    if !profile.artists.is_empty() {
+        block.push_str(&format!(
+            "- Artists they love: {}\n",
+            profile.artists.join(", ")
+        ));
+    }
+    if !profile.goals.is_empty() {
+        block.push_str(&format!(
+            "- Why they're here: {}\n",
+            profile.goals.join(", ")
+        ));
+    }
+    block.push_str(&format!(
+        "- Experience level: {}",
+        profile.experience.as_str()
+    ));
+    block
+}
+
+/// Whether grounded cross-genre connections may be attempted for this session.
+///
+/// Connections are gated on BOTH halves of the join being present and honest:
+/// 1. a [`TasteProfile`] exists with something to frame with (a non-empty
+///    genre/artist/goal list — a default-empty profile is treated as cold
+///    start), AND
+/// 2. the session produced enough measured signal to ground a connection —
+///    i.e. at least one fingerprint dimension passed its evidence gate.
+///
+/// If either half is missing, the coach falls back to its existing behavior: no
+/// forced cross-genre reference. This single gate is consulted by the system
+/// prompt, the user prompt, and the response parser, so the prompt never asks
+/// for something the parser would discard, and the parser never surfaces a
+/// connection the prompt didn't ground.
+fn connections_gate_open(input: &RecapInput) -> bool {
+    let has_profile = input
+        .taste_profile
+        .as_ref()
+        .is_some_and(|p| !describe_taste_profile(p).is_empty());
+    let has_signal = fingerprint_for_recap(&input.phrases).is_some();
+    has_profile && has_signal
 }
 
 /// Build the session's [`MusicalFingerprint`] from the per-dimension
@@ -1327,6 +1492,7 @@ mod tests {
             ],
             tips: vec![],
             score_title: Some("Haydn Trumpet Concerto".to_owned()),
+            taste_profile: None,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -1355,6 +1521,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            taste_profile: None,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -1423,6 +1590,7 @@ mod tests {
             phrases: vec![toned],
             tips: Vec::new(),
             score_title: None,
+            taste_profile: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
@@ -1602,6 +1770,7 @@ mod tests {
             phrases: vec![p],
             tips: Vec::new(),
             score_title: None,
+            taste_profile: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -1622,6 +1791,227 @@ mod tests {
         assert!(
             fingerprint.groove.is_some(),
             "recap fingerprint carries the groove aggregate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-genre contextual coaching (Phase 4)
+    // -----------------------------------------------------------------------
+
+    /// A phrase with enough notes + onsets to clear the fingerprint gates, so
+    /// `connections_gate_open` sees real measured signal.
+    fn groundable_phrase() -> PhraseSummary {
+        let mut p = sample_phrase();
+        p.pitch_stats.pitches = vec![440.0; 16];
+        p.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+        p
+    }
+
+    fn sample_taste_profile() -> crate::store::TasteProfile {
+        crate::store::TasteProfile {
+            genres: vec!["hip-hop".to_owned(), "gospel".to_owned()],
+            artists: vec!["D'Angelo".to_owned()],
+            goals: vec!["play in church band".to_owned()],
+            experience: crate::store::ExperienceLevel::Intermediate,
+            is_under_13: false,
+        }
+    }
+
+    fn recap_input_with(
+        phrases: Vec<PhraseSummary>,
+        taste_profile: Option<crate::store::TasteProfile>,
+    ) -> RecapInput {
+        RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 600.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases,
+            tips: Vec::new(),
+            score_title: None,
+            taste_profile,
+        }
+    }
+
+    #[test]
+    fn recap_prompt_injects_taste_profile_as_context_when_present() {
+        // Profile present + groundable signal → the prompt carries the
+        // student's genres/artists/goals as framing context, and instructs the
+        // model to add hedged, style-level connections without fabricating.
+        let input = recap_input_with(vec![groundable_phrase()], Some(sample_taste_profile()));
+        let user = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(user.contains("hip-hop"), "genres appear as context");
+        assert!(user.contains("D'Angelo"), "artists appear as context");
+        assert!(
+            user.contains("play in church band"),
+            "goals appear as context"
+        );
+        assert!(
+            user.contains("hedged connections") || user.contains("connections to their world"),
+            "user prompt nudges for hedged connections, got:\n{user}"
+        );
+
+        // The system prompt, with connections enabled, must carry the
+        // anti-hallucination grounding contract.
+        let system = CoachingEngine::build_recap_system_prompt(true);
+        assert!(
+            system.contains("GROUNDING CONTRACT"),
+            "system prompt states the grounding contract"
+        );
+        assert!(
+            system.contains("Do NOT invent track names"),
+            "system prompt forbids inventing track names/quotes"
+        );
+        assert!(
+            system.contains("HEDGE"),
+            "system prompt instructs the model to hedge"
+        );
+        assert!(
+            system.contains("\"connections\""),
+            "system prompt's JSON schema includes the connections field"
+        );
+    }
+
+    #[test]
+    fn recap_prompt_omits_taste_and_connections_when_no_profile() {
+        // Cold start: groundable signal but NO profile → no taste context, no
+        // connection nudge, and the system prompt is the existing one (no
+        // connections field, no grounding contract).
+        let input = recap_input_with(vec![groundable_phrase()], None);
+        let user = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            !user.contains("the music they love"),
+            "no taste context block at cold start, got:\n{user}"
+        );
+        assert!(
+            !user.contains("connections to their world"),
+            "no connection nudge at cold start"
+        );
+
+        let system = CoachingEngine::build_recap_system_prompt(false);
+        assert!(
+            !system.contains("GROUNDING CONTRACT"),
+            "no grounding contract when connections are disabled"
+        );
+        assert!(
+            !system.contains("\"connections\""),
+            "no connections field in the JSON schema when disabled"
+        );
+        // Still the warm, no-grades recap prompt.
+        assert!(system.contains("NEVER give letter grades"));
+    }
+
+    #[test]
+    fn connections_gate_closed_on_thin_signal_even_with_profile() {
+        // Profile present but the session is too thin to measure anything
+        // (a couple of repeated notes, no onsets) → every fingerprint gate
+        // fails, the gate closes, and there is no forced cross-genre reference.
+        // Silence over a hollow connection.
+        let mut thin = sample_phrase();
+        thin.pitch_stats.pitches = vec![440.0; 2];
+        thin.onsets_secs = Vec::new();
+        thin.tone = None;
+        let input = recap_input_with(vec![thin], Some(sample_taste_profile()));
+        assert!(
+            !connections_gate_open(&input),
+            "thin signal must close the connections gate"
+        );
+        let user = CoachingEngine::build_recap_user_prompt(&input);
+        // Taste context may still appear (it's harmless framing), but the
+        // connection nudge must not — there's nothing to ground.
+        assert!(
+            !user.contains("connections to their world"),
+            "thin signal must not nudge for connections, got:\n{user}"
+        );
+    }
+
+    #[test]
+    fn connections_gate_closed_on_empty_profile() {
+        // A default (empty) profile is treated as cold start, even though it's
+        // technically `Some` — there's nothing to frame with.
+        let empty = crate::store::TasteProfile::default();
+        let input = recap_input_with(vec![groundable_phrase()], Some(empty));
+        assert!(
+            !connections_gate_open(&input),
+            "an empty profile must not open the connections gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_recap_surfaces_connections_only_when_gate_open() {
+        // The model returned a grounded connection. With a profile + signal,
+        // the parsed recap carries it; with no profile, it's dropped.
+        let recap_content = serde_json::json!({
+            "overall_assessment": "Lovely, grounded session.",
+            "strengths": ["Steady time"],
+            "areas_to_improve": ["Open the sound up top"],
+            "next_session_suggestions": ["Long tones"],
+            "connections": [
+                "the way you're laying back on the beat reminds me of the pocket in a lot of the hip-hop you love",
+                "   "
+            ]
+        });
+        let response = serde_json::json!({
+            "content": [{ "type": "text", "text": recap_content.to_string() }]
+        })
+        .to_string();
+
+        let engine_with = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(MockHttpClient::succeeding(&response)),
+        )
+        .unwrap();
+
+        // Gate open: profile + groundable signal.
+        let with = engine_with
+            .generate_recap(&recap_input_with(
+                vec![groundable_phrase()],
+                Some(sample_taste_profile()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            with.connections.len(),
+            1,
+            "exactly the one non-blank connection is surfaced (blank dropped), got {:?}",
+            with.connections
+        );
+        assert!(with.connections[0].contains("laying back on the beat"));
+
+        // Gate closed (no profile): the model's connections are discarded, the
+        // data model stays honest about when a connection was grounded.
+        let engine_without = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(MockHttpClient::succeeding(&response)),
+        )
+        .unwrap();
+        let without = engine_without
+            .generate_recap(&recap_input_with(vec![groundable_phrase()], None))
+            .await
+            .unwrap();
+        assert!(
+            without.connections.is_empty(),
+            "no profile → connections dropped, got {:?}",
+            without.connections
+        );
+    }
+
+    #[test]
+    fn fallback_recap_never_carries_connections() {
+        // The offline fallback never reached the model, so it must never
+        // fabricate a connection — even with a profile and signal.
+        let input = recap_input_with(vec![groundable_phrase()], Some(sample_taste_profile()));
+        let recap = CoachingEngine::fallback_recap(&input);
+        assert!(
+            recap.connections.is_empty(),
+            "offline fallback must carry no connections"
         );
     }
 
@@ -2313,6 +2703,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            taste_profile: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2363,6 +2754,7 @@ mod tests {
             phrases: vec![sample_phrase(); 3],
             tips: vec![],
             score_title: None,
+            taste_profile: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2394,6 +2786,7 @@ mod tests {
             phrases: vec![sample_phrase(); 5],
             tips: vec![],
             score_title: None,
+            taste_profile: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -2433,6 +2826,7 @@ mod tests {
             phrases: vec![sample_phrase(); 2],
             tips: vec![],
             score_title: None,
+            taste_profile: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();

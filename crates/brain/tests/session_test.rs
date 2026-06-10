@@ -51,6 +51,7 @@ impl RecapGenerator for MockRecapGenerator {
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: None,
+            connections: Vec::new(),
         })
     }
 }
@@ -243,6 +244,7 @@ fn completed_session_persists_without_recap_when_generator_fails() {
         phrase_count: completed.phrase_count(),
         instrument: completed.primary_instrument().to_owned(),
         fingerprint: None,
+        connections: Vec::new(),
     };
 
     let store = SessionStore::in_memory().unwrap();
