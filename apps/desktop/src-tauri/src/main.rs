@@ -95,6 +95,8 @@ fn main() {
             ai_music_companion::commands::get_session_history,
             ai_music_companion::commands::get_session_detail,
             ai_music_companion::commands::get_practice_stats,
+            ai_music_companion::commands::get_taste_profile,
+            ai_music_companion::commands::set_taste_profile,
             ai_music_companion::commands::import_score,
             ai_music_companion::commands::import_midi_file,
             ai_music_companion::commands::import_audio_file,

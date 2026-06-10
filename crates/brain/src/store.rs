@@ -185,6 +185,67 @@ pub struct SessionSummary {
     pub phrase_count: usize,
 }
 
+/// Coarse, self-reported experience level. Deliberately three buckets, not a
+/// fine scale — the personalization spine uses it to shape coaching vocabulary
+/// and depth, never to grade the student.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperienceLevel {
+    /// New to the instrument (or returning after a long break).
+    #[default]
+    Beginner,
+    /// Comfortable with fundamentals, building repertoire.
+    Intermediate,
+    /// Fluent; refining musicianship and advanced technique.
+    Advanced,
+}
+
+impl ExperienceLevel {
+    /// snake_case wire string, matching the serde representation and the
+    /// `experience` CHECK constraint on the Supabase `taste_profile` table.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Beginner => "beginner",
+            Self::Intermediate => "intermediate",
+            Self::Advanced => "advanced",
+        }
+    }
+}
+
+/// The student's stated taste profile — who they are, not what they played.
+///
+/// This is the personalization spine's one student record (see
+/// `docs/architecture/platform-spine-personalization.md`): genres, favourite
+/// artists, goals, and coarse experience level, captured at onboarding and
+/// editable any time. It is **distinct** from the measured
+/// [`crate::fingerprint::MusicalFingerprint`] — preferences the coach may use to
+/// *frame*, never performance facts it may *assert*.
+///
+/// Stored locally as one JSON-backed row per user. `#[serde(default)]` on every
+/// field keeps the JSON forward-compatible: a profile serialised before a field
+/// existed still loads (the missing field defaults), so adding preference
+/// dimensions later needs no DB migration — exactly the contract the spine
+/// relies on for "the record is not rebuilt across phases".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TasteProfile {
+    /// Stated genres, e.g. `["hip-hop", "film score", "gospel"]`.
+    #[serde(default)]
+    pub genres: Vec<String>,
+    /// Stated favourite artists, e.g. `["Kendrick Lamar", "Hans Zimmer"]`.
+    #[serde(default)]
+    pub artists: Vec<String>,
+    /// Why the student is here, e.g. `["audition prep", "play in church band"]`.
+    #[serde(default)]
+    pub goals: Vec<String>,
+    /// Coarse self-reported experience level.
+    #[serde(default)]
+    pub experience: ExperienceLevel,
+    /// Reuses the shipped under-13 precedent (teacher-audit.md) instead of a
+    /// birthdate: for minors we keep the profile minimal and parent-visible.
+    #[serde(default)]
+    pub is_under_13: bool,
+}
+
 /// A score in the library (MusicXML file).
 ///
 /// Stores the loaded score metadata and parsed MusicXML content.
@@ -238,7 +299,19 @@ CREATE TABLE IF NOT EXISTS scores (
     music_xml TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scores_last_practiced ON scores(last_practiced_at DESC, added_at DESC);
+CREATE TABLE IF NOT EXISTS taste_profile (
+    user_id TEXT PRIMARY KEY,
+    profile_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 ";
+
+/// The `user_id` used for the single local taste profile before any cloud
+/// account exists. Local-first: the profile is captured at onboarding with no
+/// sign-in required; if the user later opts into sync, the row is projected up
+/// keyed on their real `profiles.id`. Mirrors the local-then-synced model the
+/// session data already uses.
+pub const LOCAL_TASTE_PROFILE_USER_ID: &str = "local";
 
 // ---------------------------------------------------------------------------
 // SessionStore
@@ -497,6 +570,47 @@ impl SessionStore {
                     row.get(0)
                 })?;
         Ok(total.unwrap_or(0.0))
+    }
+
+    /// Fetch the locally-stored taste profile for `user_id`, if one exists.
+    ///
+    /// Returns `Ok(None)` when no profile has been captured yet (cold start) —
+    /// that is a normal, non-error state the onboarding flow keys off of. The
+    /// profile body is decoded from JSON; `#[serde(default)]` on
+    /// [`TasteProfile`] means a row written before a field existed still loads.
+    pub fn get_taste_profile(&self, user_id: &str) -> Result<Option<TasteProfile>, StoreError> {
+        let row: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT profile_json FROM taste_profile WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        match row {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or replace the taste profile for `user_id`.
+    ///
+    /// Upsert (not append): one row per user, so onboarding and every later
+    /// edit go through the same path. The full profile is stored as JSON so new
+    /// preference dimensions are absorbed without a DB migration — the same
+    /// forward-compat strategy the session recap uses.
+    pub fn upsert_taste_profile(
+        &self,
+        user_id: &str,
+        profile: &TasteProfile,
+    ) -> Result<(), StoreError> {
+        let profile_json = serde_json::to_string(profile)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO taste_profile (user_id, profile_json, updated_at) \
+             VALUES (?1, ?2, ?3)",
+            params![user_id, profile_json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
     }
 
     /// The default on-disk path for the sessions database.
@@ -1386,6 +1500,149 @@ mod tests {
             matches!(err, Err(StoreError::CorruptRow(ref msg)) if msg.contains("negative")),
             "expected CorruptRow(negative...), got {err:?}"
         );
+    }
+
+    // =========================================================================
+    // TasteProfile tests
+    // =========================================================================
+
+    fn sample_taste_profile() -> TasteProfile {
+        TasteProfile {
+            genres: vec!["hip-hop".to_owned(), "gospel".to_owned()],
+            artists: vec!["Kendrick Lamar".to_owned(), "Hans Zimmer".to_owned()],
+            goals: vec!["audition prep".to_owned()],
+            experience: ExperienceLevel::Intermediate,
+            is_under_13: false,
+        }
+    }
+
+    #[test]
+    fn taste_profile_absent_before_capture() {
+        let store = SessionStore::in_memory().unwrap();
+        let got = store
+            .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap();
+        assert!(
+            got.is_none(),
+            "cold start must report no taste profile, not an error or default row"
+        );
+    }
+
+    #[test]
+    fn taste_profile_upsert_then_get_roundtrips() {
+        let store = SessionStore::in_memory().unwrap();
+        let profile = sample_taste_profile();
+        store
+            .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &profile)
+            .unwrap();
+
+        let got = store
+            .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .expect("profile should exist after upsert");
+        // Per-field equality so any silent coercion is caught.
+        assert_eq!(got.genres, profile.genres);
+        assert_eq!(got.artists, profile.artists);
+        assert_eq!(got.goals, profile.goals);
+        assert_eq!(got.experience, ExperienceLevel::Intermediate);
+        assert!(!got.is_under_13);
+        assert_eq!(got, profile);
+    }
+
+    #[test]
+    fn taste_profile_upsert_overwrites_in_place() {
+        // One row per user: a second upsert edits, never appends a duplicate.
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &sample_taste_profile())
+            .unwrap();
+
+        let edited = TasteProfile {
+            genres: vec!["jazz".to_owned()],
+            experience: ExperienceLevel::Advanced,
+            is_under_13: true,
+            ..TasteProfile::default()
+        };
+        store
+            .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &edited)
+            .unwrap();
+
+        let got = store
+            .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, edited, "second upsert must replace the prior profile");
+        assert_eq!(got.experience, ExperienceLevel::Advanced);
+        assert!(got.is_under_13);
+
+        // Still exactly one row for this user.
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM taste_profile WHERE user_id = ?1",
+                params![LOCAL_TASTE_PROFILE_USER_ID],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "upsert must not create a duplicate row");
+    }
+
+    #[test]
+    fn taste_profiles_are_isolated_per_user() {
+        // The local row and a synced user's row are independent keys.
+        let store = SessionStore::in_memory().unwrap();
+        let local = sample_taste_profile();
+        let remote = TasteProfile {
+            genres: vec!["classical".to_owned()],
+            ..TasteProfile::default()
+        };
+        store
+            .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &local)
+            .unwrap();
+        store
+            .upsert_taste_profile("user-uuid-123", &remote)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
+                .unwrap()
+                .unwrap(),
+            local
+        );
+        assert_eq!(
+            store.get_taste_profile("user-uuid-123").unwrap().unwrap(),
+            remote
+        );
+    }
+
+    #[test]
+    fn taste_profile_legacy_json_defaults_missing_fields() {
+        // A profile_json saved before a field existed must still deserialise,
+        // defaulting the missing field — the forward-compat contract.
+        let legacy: TasteProfile = serde_json::from_str(r#"{"genres":["funk"]}"#)
+            .expect("legacy taste profile deserialises");
+        assert_eq!(legacy.genres, vec!["funk".to_owned()]);
+        assert!(legacy.artists.is_empty());
+        assert!(legacy.goals.is_empty());
+        assert_eq!(legacy.experience, ExperienceLevel::Beginner);
+        assert!(!legacy.is_under_13);
+
+        // Fully empty object loads to all-defaults.
+        let empty: TasteProfile = serde_json::from_str("{}").expect("empty object loads");
+        assert_eq!(empty, TasteProfile::default());
+    }
+
+    #[test]
+    fn experience_level_serializes_snake_case() {
+        // The wire form must match the Supabase CHECK constraint values.
+        assert_eq!(
+            serde_json::to_string(&ExperienceLevel::Beginner).unwrap(),
+            "\"beginner\""
+        );
+        assert_eq!(ExperienceLevel::Advanced.as_str(), "advanced");
+        let back: ExperienceLevel = serde_json::from_str("\"intermediate\"").unwrap();
+        assert_eq!(back, ExperienceLevel::Intermediate);
     }
 
     // =========================================================================

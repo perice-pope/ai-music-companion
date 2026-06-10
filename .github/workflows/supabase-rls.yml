@@ -49,7 +49,13 @@ jobs:
 
       - name: Run RLS verification suite
         # Any policy leak raises an exception -> psql exits non-zero -> red.
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/rls_teacher_linking.sql
+        # Every file under supabase/tests/ is a self-contained, rolled-back
+        # assertion block; loop so new RLS tests are picked up automatically.
+        run: |
+          for f in supabase/tests/*.sql; do
+            echo "── running $f ──"
+            psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: Stop stack
         if: always()

@@ -131,6 +131,7 @@ export type Database = {
           created_at: string;
           duration_secs: number;
           ended_at: string;
+          fingerprint: Json | null;
           id: string;
           instrument: string;
           overall_assessment: string | null;
@@ -143,6 +144,7 @@ export type Database = {
           created_at?: string;
           duration_secs: number;
           ended_at: string;
+          fingerprint?: Json | null;
           id?: string;
           instrument: string;
           overall_assessment?: string | null;
@@ -155,6 +157,7 @@ export type Database = {
           created_at?: string;
           duration_secs?: number;
           ended_at?: string;
+          fingerprint?: Json | null;
           id?: string;
           instrument?: string;
           overall_assessment?: string | null;
@@ -168,6 +171,44 @@ export type Database = {
             foreignKeyName: "sessions_student_id_fkey";
             columns: ["student_id"];
             isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      taste_profile: {
+        Row: {
+          artists: Json;
+          experience: string;
+          genres: Json;
+          goals: Json;
+          is_under_13: boolean;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          artists?: Json;
+          experience?: string;
+          genres?: Json;
+          goals?: Json;
+          is_under_13?: boolean;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          artists?: Json;
+          experience?: string;
+          genres?: Json;
+          goals?: Json;
+          is_under_13?: boolean;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "taste_profile_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
