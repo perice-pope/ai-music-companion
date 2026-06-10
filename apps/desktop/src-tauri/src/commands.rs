@@ -26,7 +26,10 @@ use brain::session::{
     SessionRecap, SessionRecorder,
 };
 use brain::stats::PracticeStats;
-use brain::store::{ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession};
+use brain::store::{
+    ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession, TasteProfile,
+    LOCAL_TASTE_PROFILE_USER_ID,
+};
 use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
 
@@ -1163,6 +1166,30 @@ pub fn get_session_detail_impl(
     Ok(StoredSessionDto::from(session))
 }
 
+/// Pure implementation of `get_taste_profile`.
+///
+/// Returns the locally-captured taste profile, or [`TasteProfile::default`]
+/// when none exists yet (cold start) — the onboarding UI treats a default-empty
+/// profile as "not yet captured" without needing to special-case `null`.
+pub fn get_taste_profile_impl(state: &AppState) -> Result<TasteProfile, CommandError> {
+    let stored = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)?;
+    Ok(stored.unwrap_or_default())
+}
+
+/// Pure implementation of `set_taste_profile`.
+pub fn set_taste_profile_impl(state: &AppState, profile: TasteProfile) -> Result<(), CommandError> {
+    state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &profile)?;
+    Ok(())
+}
+
 /// Pure implementation of `get_practice_stats`.
 pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, CommandError> {
     let all_sessions = state
@@ -1408,6 +1435,22 @@ pub fn get_session_detail(
 #[tauri::command]
 pub fn get_practice_stats(state: State<'_, AppState>) -> Result<PracticeStatsDto, String> {
     get_practice_stats_impl(state.inner()).map_err(|e| e.to_frontend())
+}
+
+/// Get the student's locally-stored taste profile (genres, artists, goals,
+/// experience). Returns an empty default when nothing has been captured yet, so
+/// the onboarding wizard can detect cold start. Local-first: no sign-in needed.
+#[tauri::command]
+pub fn get_taste_profile(state: State<'_, AppState>) -> Result<TasteProfile, String> {
+    get_taste_profile_impl(state.inner()).map_err(|e| e.to_frontend())
+}
+
+/// Upsert the student's taste profile locally. Called by the onboarding wizard
+/// and any later edit. Persistence only — relevance/coaching consumption of the
+/// profile is owned by a separate layer.
+#[tauri::command]
+pub fn set_taste_profile(state: State<'_, AppState>, profile: TasteProfile) -> Result<(), String> {
+    set_taste_profile_impl(state.inner(), profile).map_err(|e| e.to_frontend())
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,6 +1703,57 @@ mod tests {
             key: None,
             onsets_secs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn taste_profile_cold_start_returns_empty_default() {
+        let state = state();
+        let got = get_taste_profile_impl(&state).expect("cold start must succeed");
+        assert_eq!(
+            got,
+            TasteProfile::default(),
+            "no captured profile yet must read back as the empty default"
+        );
+    }
+
+    #[test]
+    fn taste_profile_set_then_get_roundtrips_through_commands() {
+        use brain::store::ExperienceLevel;
+        let state = state();
+        let profile = TasteProfile {
+            genres: vec!["hip-hop".to_owned(), "film score".to_owned()],
+            artists: vec!["Kendrick Lamar".to_owned()],
+            goals: vec!["audition prep".to_owned()],
+            experience: ExperienceLevel::Advanced,
+            is_under_13: false,
+        };
+        set_taste_profile_impl(&state, profile.clone()).expect("set must succeed");
+
+        let got = get_taste_profile_impl(&state).expect("get must succeed");
+        assert_eq!(got, profile, "command round-trip must preserve every field");
+    }
+
+    #[test]
+    fn taste_profile_set_overwrites_prior_via_command() {
+        use brain::store::ExperienceLevel;
+        let state = state();
+        set_taste_profile_impl(
+            &state,
+            TasteProfile {
+                genres: vec!["jazz".to_owned()],
+                ..TasteProfile::default()
+            },
+        )
+        .unwrap();
+        let edited = TasteProfile {
+            genres: vec!["classical".to_owned()],
+            experience: ExperienceLevel::Intermediate,
+            is_under_13: true,
+            ..TasteProfile::default()
+        };
+        set_taste_profile_impl(&state, edited.clone()).unwrap();
+
+        assert_eq!(get_taste_profile_impl(&state).unwrap(), edited);
     }
 
     #[tokio::test]
