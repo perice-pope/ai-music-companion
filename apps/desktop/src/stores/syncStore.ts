@@ -2,19 +2,27 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { supabase } from "../lib/supabase";
 import type { Json } from "../types/supabase";
-import type { SessionSummaryDto, StoredSessionDto } from "../types/brain";
+import type {
+  SessionSummaryDto,
+  StoredSessionDto,
+  TasteProfile,
+} from "../types/brain";
 
 /**
  * Cloud sync for completed practice sessions (Phase 3, Teacher Dashboard
- * track). The Rust store is the source of truth: we read persisted sessions
- * over IPC and push them up to Supabase. This is plumbing, not business logic
- * — every recap is already computed in the Rust core.
+ * track) and — behind its own independent opt-in — the personalization taste
+ * profile (Phase 4). The Rust store is the source of truth: we read persisted
+ * data over IPC and push it up to Supabase. This is plumbing, not business
+ * logic — every recap/profile is already computed/captured in the Rust core.
  *
- * Sync is one-directional (local → cloud) and idempotent: rows are upserted
- * keyed on the local session id, and we remember which ids we've already
- * pushed (per user) so a re-sync doesn't re-fetch every detail. Only the
- * session-level recap is synced today; per-phrase rows wait on phrase data
- * being exposed over IPC for stored sessions (see brain.ts).
+ * Sync is one-directional (local → cloud) and idempotent: session rows are
+ * upserted keyed on the local session id, and we remember which ids we've
+ * already pushed (per user) so a re-sync doesn't re-fetch every detail.
+ *
+ * Independent switches: session sync and taste-profile sync are separate
+ * opt-ins on purpose (personalization spine §Privacy — "the same
+ * independent-switches model as session data"). Turning one on never implies
+ * the other, and neither is entangled with teacher linking.
  */
 export type SyncStatus = "idle" | "syncing" | "synced" | "error";
 
@@ -25,12 +33,29 @@ export interface SyncState {
   syncedThisRun: number;
   error: string | null;
 
+  /** Independent status for the taste-profile sync switch. */
+  tasteProfileStatus: SyncStatus;
+  tasteProfileError: string | null;
+
   /**
    * Push any not-yet-synced local sessions for `userId`. No-op (returns to
    * idle) when called with a falsy userId, so callers can wire it to an auth
    * effect without guarding.
    */
   syncAll: (userId: string | null | undefined) => Promise<void>;
+
+  /**
+   * Push the local taste profile for `userId` to Supabase — but only when the
+   * user has opted into profile sync (`optedIn`). This is its OWN switch,
+   * deliberately decoupled from session sync and from linking: a user can sync
+   * sessions without syncing preferences, and vice versa. No-op when `userId`
+   * is falsy or `optedIn` is false.
+   */
+  syncTasteProfile: (
+    userId: string | null | undefined,
+    optedIn: boolean,
+  ) => Promise<void>;
+
   reset: () => void;
 }
 
@@ -66,6 +91,8 @@ export const useSyncStore = create<SyncState>((set) => ({
   lastSyncedAt: null,
   syncedThisRun: 0,
   error: null,
+  tasteProfileStatus: "idle",
+  tasteProfileError: null,
 
   syncAll: async (userId) => {
     if (!userId) {
@@ -102,8 +129,13 @@ export const useSyncStore = create<SyncState>((set) => ({
             duration_secs: recap.duration_secs,
             phrase_count: recap.phrase_count,
             overall_assessment: recap.overall_assessment,
-            // ToneDescriptor is a flat numeric record — safe as jsonb. Sourced
-            // from the unified fingerprint; the DB column keeps its name.
+            // The full unified MusicalFingerprint (tone, key, intonation,
+            // groove) as forward-compatible JSONB — the contract the
+            // personalization layer reads.
+            fingerprint: (recap.fingerprint ?? null) as Json,
+            // ToneDescriptor is a flat numeric record — safe as jsonb. Still
+            // projected for backward compatibility with the existing
+            // tone-only readers; the DB column keeps its name.
             session_tone: (recap.fingerprint?.tone ?? null) as Json,
           };
         }),
@@ -127,6 +159,42 @@ export const useSyncStore = create<SyncState>((set) => ({
     }
   },
 
+  syncTasteProfile: async (userId, optedIn) => {
+    // Independent switch: do nothing unless signed in AND opted into profile
+    // sync. Never implied by session sync.
+    if (!userId || !optedIn) {
+      set({ tasteProfileStatus: "idle", tasteProfileError: null });
+      return;
+    }
+    set({ tasteProfileStatus: "syncing", tasteProfileError: null });
+    try {
+      const profile = await invoke<TasteProfile>("get_taste_profile");
+      const { error } = await supabase.from("taste_profile").upsert(
+        {
+          user_id: userId,
+          genres: profile.genres as Json,
+          artists: profile.artists as Json,
+          goals: profile.goals as Json,
+          experience: profile.experience,
+          is_under_13: profile.is_under_13,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      );
+      if (error) throw new Error(error.message);
+      set({ tasteProfileStatus: "synced", tasteProfileError: null });
+    } catch (err: unknown) {
+      set({ tasteProfileStatus: "error", tasteProfileError: String(err) });
+    }
+  },
+
   reset: () =>
-    set({ status: "idle", lastSyncedAt: null, syncedThisRun: 0, error: null }),
+    set({
+      status: "idle",
+      lastSyncedAt: null,
+      syncedThisRun: 0,
+      error: null,
+      tasteProfileStatus: "idle",
+      tasteProfileError: null,
+    }),
 }));

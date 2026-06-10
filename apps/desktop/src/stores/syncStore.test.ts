@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { SessionSummaryDto, StoredSessionDto } from "../types/brain";
+import type {
+  SessionSummaryDto,
+  StoredSessionDto,
+  TasteProfile,
+} from "../types/brain";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -75,7 +79,17 @@ function detail(id: string): StoredSessionDto {
   };
 }
 
-/** Wire invoke to return summaries then per-id details. */
+function tasteProfile(): TasteProfile {
+  return {
+    genres: ["hip-hop", "gospel"],
+    artists: ["Kendrick Lamar"],
+    goals: ["audition prep"],
+    experience: "intermediate",
+    is_under_13: false,
+  };
+}
+
+/** Wire invoke to return summaries then per-id details (+ taste profile). */
 function wireInvoke(summaries: SessionSummaryDto[]) {
   mockInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
     if (cmd === "get_session_history") return summaries;
@@ -83,6 +97,7 @@ function wireInvoke(summaries: SessionSummaryDto[]) {
       const { session_id } = args as { session_id: string };
       return detail(session_id);
     }
+    if (cmd === "get_taste_profile") return tasteProfile();
     throw new Error(`unexpected command ${cmd}`);
   });
 }
@@ -122,6 +137,10 @@ describe("syncStore", () => {
       overall_assessment: "Solid work.",
     });
     expect(rows[0].session_tone).toMatchObject({ brightness: 0.6 });
+    // The full fingerprint is pushed alongside the legacy tone projection.
+    expect(rows[0].fingerprint).toMatchObject({
+      tone: { brightness: 0.6, warmth: 0.5 },
+    });
 
     const s = useStore.getState();
     expect(s.status).toBe("synced");
@@ -170,5 +189,80 @@ describe("syncStore", () => {
     await useStore.getState().syncAll("user-1");
     expect(useStore.getState().status).toBe("synced");
     expect(useStore.getState().syncedThisRun).toBe(1);
+  });
+});
+
+describe("syncStore.syncTasteProfile (independent opt-in)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+    mockUpsert.mockResolvedValue({ error: null });
+  });
+
+  it("is a no-op when not opted in (switch off)", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+
+    await useStore.getState().syncTasteProfile("user-1", false);
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(useStore.getState().tasteProfileStatus).toBe("idle");
+  });
+
+  it("is a no-op without a user id even when opted in", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+
+    await useStore.getState().syncTasteProfile(null, true);
+
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(useStore.getState().tasteProfileStatus).toBe("idle");
+  });
+
+  it("pushes the profile to its own table when opted in", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+
+    await useStore.getState().syncTasteProfile("user-1", true);
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_taste_profile");
+    expect(mockFrom).toHaveBeenCalledWith("taste_profile");
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    const [row, opts] = mockUpsert.mock.calls[0];
+    expect(opts).toEqual({ onConflict: "user_id" });
+    expect(row).toMatchObject({
+      user_id: "user-1",
+      genres: ["hip-hop", "gospel"],
+      artists: ["Kendrick Lamar"],
+      goals: ["audition prep"],
+      experience: "intermediate",
+      is_under_13: false,
+    });
+    expect(useStore.getState().tasteProfileStatus).toBe("synced");
+  });
+
+  it("does not touch the sessions table (decoupled from session sync)", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+
+    await useStore.getState().syncTasteProfile("user-1", true);
+
+    expect(mockFrom).not.toHaveBeenCalledWith("sessions");
+    // Session sync state is untouched by a profile sync.
+    expect(useStore.getState().status).toBe("idle");
+  });
+
+  it("surfaces an upsert failure on the profile-specific status", async () => {
+    wireInvoke([]);
+    mockUpsert.mockResolvedValue({ error: { message: "rls denied" } });
+    const useStore = await freshStore();
+
+    await useStore.getState().syncTasteProfile("user-1", true);
+
+    expect(useStore.getState().tasteProfileStatus).toBe("error");
+    expect(useStore.getState().tasteProfileError).toContain("rls denied");
+    // The session-sync status is independent and stays clean.
+    expect(useStore.getState().status).toBe("idle");
   });
 });

@@ -327,6 +327,63 @@ export interface StoredSessionDto {
   recap: SessionRecap;
 }
 
+/**
+ * Coarse, self-reported experience level. Mirrors
+ * `brain::store::ExperienceLevel`, which serialises in `snake_case`. Shapes
+ * coaching vocabulary/depth — never a grade.
+ */
+export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
+
+/** Display metadata for each `ExperienceLevel`. Calm, non-judgemental copy. */
+export const EXPERIENCE_LEVELS: Array<{
+  value: ExperienceLevel;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "beginner",
+    label: "Just starting",
+    description: "New to this — or coming back after a break.",
+  },
+  {
+    value: "intermediate",
+    label: "Getting comfortable",
+    description: "Fundamentals are solid; building repertoire.",
+  },
+  {
+    value: "advanced",
+    label: "Going deep",
+    description: "Fluent — refining musicianship and advanced technique.",
+  },
+];
+
+/**
+ * The student's stated taste profile. Mirrors `brain::store::TasteProfile`.
+ *
+ * Stated preferences (who the student is), distinct from the measured
+ * {@link MusicalFingerprint} (what they played). Captured at onboarding, stored
+ * locally, and synced only if the user opts in. This is the data/capture
+ * contract only — the relevance/coaching consumption lives elsewhere.
+ */
+export interface TasteProfile {
+  genres: string[];
+  artists: string[];
+  goals: string[];
+  experience: ExperienceLevel;
+  is_under_13: boolean;
+}
+
+/** A fresh, empty taste profile — the cold-start shape. */
+export function emptyTasteProfile(): TasteProfile {
+  return {
+    genres: [],
+    artists: [],
+    goals: [],
+    experience: "beginner",
+    is_under_13: false,
+  };
+}
+
 /** Practice statistics dashboard. Matches `commands::PracticeStatsDto`. */
 export interface PracticeStatsDto {
   total_sessions: number;
