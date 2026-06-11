@@ -32,3 +32,7 @@ criterion.workspace = true
 [[bench]]
 name = "score_follower_latency"
 harness = false
+
+[[bench]]
+name = "integrated_analysis"
+harness = false

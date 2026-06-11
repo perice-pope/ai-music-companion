@@ -1,9 +1,36 @@
 name: Latency bench
 
+# ─────────────────────────────────────────────────────────────────────────────
+# What this workflow measures — and what it deliberately does NOT.
+#
+# The <25 ms mic-to-screen budget (architecture-v2 §10) breaks down as:
+#   • Audio capture (cpal)      ~5 ms   — NOT measured here (no audio device
+#                                          in CI). Hardware-only; see runbook.
+#   • Pitch detection           ~6 ms   — measured: `ears` analysis bench.
+#   • Score alignment           ~3 ms   — measured: `brain` score-align bench.
+#   • IPC + render              ~5 ms   — NOT measured here (no Tauri runtime,
+#                                          no GPU/display). Hardware-only; runbook.
+#   • Headroom                  ~6 ms
+#
+# This workflow gates the THREE Rust-measurable budgets it CAN measure
+# deterministically and in isolation:
+#   1. ears `latency_per_event`                 — samples → AudioEvent
+#   2. brain `score_align_path`                 — AudioEvent → score position
+#   3. brain `integrated_analysis_path`         — samples → AudioEvent →
+#                                                 phrase → recap-input (the
+#                                                 composed local analysis chain)
+#
+# It CANNOT measure: real-mic capture, Tauri IPC serialization, or GPU/SVG
+# render. Those are validated by a human against real hardware following
+# `docs/qa-runbook.md`. Do not read a green check here as "end-to-end latency
+# is fine" — it means "the Rust analysis+alignment path is within budget."
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   pull_request:
     paths:
       - 'crates/ears/**'
+      - 'crates/brain/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/latency-bench.yml'
@@ -12,20 +39,28 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # 25 ms budget for the analysis path (samples -> AudioEvent).
-  # IPC + render is enforced elsewhere.
-  LATENCY_BUDGET_MS: 25
+  # ── Per-stage budgets (milliseconds) ──────────────────────────────────────
+  # Analysis path (samples → AudioEvent). The single largest contributor; we
+  # keep its historic 25 ms ceiling (the whole mic-to-screen budget) as a
+  # conservative gate — pitch alone should sit ~6 ms, so this catches gross
+  # regressions while tolerating CI-runner noise.
+  ANALYSIS_BUDGET_MS: 25
+  # Score alignment (AudioEvent → cursor/score-position). §10 stage budget.
+  SCORE_ALIGN_BUDGET_MS: 3
+  # Integrated local chain (samples → AudioEvent → phrase → recap-input).
+  # Spans the pitch (~6 ms) + alignment (~3 ms) stages plus phrase bookkeeping;
+  # gated at the sum of those two §10 sub-budgets. Excludes capture, IPC,
+  # render, and the LLM recap call (not in the latency-critical path).
+  INTEGRATED_BUDGET_MS: 9
 
-# The bench binary needs an optimized build, so we use the same cache
-# key scheme as the main CI.  Single write permission is enough to
-# post the PR comment.
+# Single write permission is enough to post the PR comment.
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
   bench:
-    name: Analysis-path latency
+    name: Analysis & alignment latency
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,81 +89,79 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libssl-dev
 
-      - name: Run latency benchmark
+      # ── Run the three measurable benches ────────────────────────────────
+      - name: Run ears analysis-path benchmark (samples → AudioEvent)
         run: cargo bench --bench latency -- --save-baseline pr
 
-      - name: Parse criterion output and enforce budget
+      - name: Run score-alignment benchmark (AudioEvent → score position)
+        run: cargo bench --bench score_follower_latency -- score_align_path --save-baseline pr
+
+      - name: Run integrated analysis benchmark (samples → recap-input)
+        run: cargo bench --bench integrated_analysis -- --save-baseline pr
+
+      # ── Parse criterion output and enforce per-stage budgets ────────────
+      - name: Parse criterion output and enforce budgets
         id: parse
         shell: bash
         run: |
           set -euo pipefail
-          BUDGET_MS="${LATENCY_BUDGET_MS}"
 
-          ESTIMATES=$(find target/criterion -path '*/latency_per_event/*/new/estimates.json' | head -n 1)
-          SAMPLES=$(find target/criterion   -path '*/latency_per_event/*/new/sample.json'    | head -n 1)
-
-          if [ -z "${ESTIMATES}" ] || [ -z "${SAMPLES}" ]; then
-            echo "::error::criterion output not found under target/criterion"
-            exit 1
-          fi
-
-          echo "estimates: ${ESTIMATES}"
-          echo "samples:   ${SAMPLES}"
-
-          # Compute mean and p95 in nanoseconds, convert to ms, compare
-          # against budget.  Exit code 1 from python fails the step.
-          python3 - "${ESTIMATES}" "${SAMPLES}" "${BUDGET_MS}" <<'PY'
-          import json, sys
-
-          estimates_path, samples_path, budget_ms_str = sys.argv[1:]
+          # ($1 group-glob, $2 budget-ms, $3 label) → records mean/p95 to
+          # GITHUB_OUTPUT and fails (returns 1) if the mean exceeds budget.
+          enforce() {
+            local group="$1" budget="$2" label="$3"
+            local estimates samples
+            estimates=$(find target/criterion -path "*/${group}/*/new/estimates.json" | head -n 1)
+            samples=$(find target/criterion   -path "*/${group}/*/new/sample.json"    | head -n 1)
+            if [ -z "${estimates}" ] || [ -z "${samples}" ]; then
+              echo "::error::criterion output for '${group}' not found under target/criterion"
+              return 1
+            fi
+            echo "[$label] estimates: ${estimates}"
+            echo "[$label] samples:   ${samples}"
+            python3 - "${estimates}" "${samples}" "${budget}" "${label}" <<'PY'
+          import json, os, sys
+          estimates_path, samples_path, budget_ms_str, label = sys.argv[1:]
           budget_ms = float(budget_ms_str)
-
           with open(estimates_path) as f:
               est = json.load(f)
           with open(samples_path) as f:
               samp = json.load(f)
-
-          # estimates.json: mean.point_estimate is in nanoseconds per iteration.
+          # estimates.json: mean.point_estimate is nanoseconds per iteration.
           mean_ns = float(est["mean"]["point_estimate"])
-
-          # sample.json: parallel arrays of (iters, times).  times[i] is the
-          # wall-clock nanoseconds for running iters[i] iterations in one sample.
-          # Per-iter time = times[i] / iters[i].  p95 across samples.
+          # sample.json: parallel (iters, times); per-iter = times[i]/iters[i].
           iters = samp["iters"]
           times = samp["times"]
           per_iter = sorted(t / i for t, i in zip(times, iters) if i > 0)
           if not per_iter:
-              print("::error::no samples in criterion output")
+              print(f"::error::no samples for {label}")
               sys.exit(1)
-          # Nearest-rank p95.
-          idx = max(0, int(round(0.95 * len(per_iter))) - 1)
+          idx = max(0, int(round(0.95 * len(per_iter))) - 1)  # nearest-rank p95
           p95_ns = per_iter[idx]
-
           mean_ms = mean_ns / 1e6
-          p95_ms  = p95_ns  / 1e6
-
-          within_budget = mean_ms <= budget_ms
-          status_icon = "pass" if within_budget else "fail"
-          status_text = "within budget" if within_budget else "EXCEEDS BUDGET"
-
-          # Emit outputs for the next step to build the PR comment.
-          with open(__import__("os").environ["GITHUB_OUTPUT"], "a") as gh:
-              gh.write(f"mean_ms={mean_ms:.2f}\n")
-              gh.write(f"p95_ms={p95_ms:.2f}\n")
-              gh.write(f"budget_ms={budget_ms:.0f}\n")
-              gh.write(f"within_budget={'true' if within_budget else 'false'}\n")
-              gh.write(f"status_icon={status_icon}\n")
-              gh.write(f"status_text={status_text}\n")
-
-          print(f"mean_ms = {mean_ms:.2f}")
-          print(f"p95_ms  = {p95_ms:.2f}")
-          print(f"budget  = {budget_ms:.0f} ms")
-          print(f"status  = {status_text}")
-
-          if not within_budget:
-              print(f"::error::analysis-path mean latency {mean_ms:.2f} ms exceeds {budget_ms:.0f} ms budget")
+          p95_ms = p95_ns / 1e6
+          within = mean_ms <= budget_ms
+          # Slugify the label for unique GITHUB_OUTPUT keys.
+          slug = "".join(c if c.isalnum() else "_" for c in label).lower()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as gh:
+              gh.write(f"{slug}_mean_ms={mean_ms:.4f}\n")
+              gh.write(f"{slug}_p95_ms={p95_ms:.4f}\n")
+              gh.write(f"{slug}_budget_ms={budget_ms:.0f}\n")
+              gh.write(f"{slug}_within={'true' if within else 'false'}\n")
+          print(f"[{label}] mean={mean_ms:.4f} ms  p95={p95_ms:.4f} ms  budget={budget_ms:.0f} ms  -> {'WITHIN' if within else 'EXCEEDS'}")
+          if not within:
+              print(f"::error::{label} mean latency {mean_ms:.4f} ms exceeds {budget_ms:.0f} ms budget")
               sys.exit(1)
           PY
+          }
+
+          # Enforce all three. We want every stage reported even if an earlier
+          # one breaches, so collect failures and exit non-zero at the end.
+          rc=0
+          enforce "latency_per_event"        "${ANALYSIS_BUDGET_MS}"    "analysis"   || rc=1
+          enforce "score_align_path"         "${SCORE_ALIGN_BUDGET_MS}" "align"      || rc=1
+          enforce "integrated_analysis_path" "${INTEGRATED_BUDGET_MS}"  "integrated" || rc=1
+          exit "${rc}"
 
       - name: Post PR comment
         if: github.event_name == 'pull_request' && (success() || failure())
@@ -136,8 +169,15 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
-            ### Latency bench
-            - Mean: ${{ steps.parse.outputs.mean_ms }}ms
-            - p95:  ${{ steps.parse.outputs.p95_ms }}ms
-            - Budget: ${{ steps.parse.outputs.budget_ms }}ms
-            - Status: ${{ steps.parse.outputs.status_icon == 'pass' && '✅' || '❌' }} ${{ steps.parse.outputs.status_text }}
+            ### Latency bench — Rust analysis + alignment path
+
+            | Stage | Path | Mean | p95 | Budget | Status |
+            |---|---|---|---|---|---|
+            | Pitch detection | samples → AudioEvent | ${{ steps.parse.outputs.analysis_mean_ms }}ms | ${{ steps.parse.outputs.analysis_p95_ms }}ms | ${{ steps.parse.outputs.analysis_budget_ms }}ms | ${{ steps.parse.outputs.analysis_within == 'true' && '✅' || '❌' }} |
+            | Score alignment | AudioEvent → score position | ${{ steps.parse.outputs.align_mean_ms }}ms | ${{ steps.parse.outputs.align_p95_ms }}ms | ${{ steps.parse.outputs.align_budget_ms }}ms | ${{ steps.parse.outputs.align_within == 'true' && '✅' || '❌' }} |
+            | Integrated | samples → … → recap-input | ${{ steps.parse.outputs.integrated_mean_ms }}ms | ${{ steps.parse.outputs.integrated_p95_ms }}ms | ${{ steps.parse.outputs.integrated_budget_ms }}ms | ${{ steps.parse.outputs.integrated_within == 'true' && '✅' || '❌' }} |
+
+            > Measures the **Rust analysis + alignment path only**. Real-mic
+            > capture (~5ms), Tauri IPC serialization, and GPU/SVG render (~5ms)
+            > are **not** measured here — they need real hardware and are
+            > validated by hand per [`docs/qa-runbook.md`](../blob/HEAD/docs/qa-runbook.md).
