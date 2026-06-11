@@ -29,7 +29,7 @@ describe("CoachingTipPanel", () => {
 
   it("renders empty state when no tips are queued", () => {
     render(<CoachingTipPanel />);
-    expect(screen.getByTestId("coaching-tip-panel-empty")).toBeDefined();
+    expect(screen.getByTestId("coaching-tip-panel-empty")).toBeInTheDocument();
   });
 
   it("renders the most recent tip when tips are queued", () => {
@@ -44,8 +44,11 @@ describe("CoachingTipPanel", () => {
     });
 
     render(<CoachingTipPanel />);
-    expect(screen.getByText("Try a warmer tone in the high register")).toBeDefined();
-    expect(screen.getByTestId("coaching-tip-tip-1")).toBeDefined();
+    const tipText = screen.getByText("Try a warmer tone in the high register");
+    expect(tipText).toBeInTheDocument();
+    expect(tipText.textContent).toBe("Try a warmer tone in the high register");
+    const tipCard = screen.getByTestId("coaching-tip-tip-1");
+    expect(tipCard).toBeInTheDocument();
   });
 
   it("displays severity and category badges", () => {
@@ -60,8 +63,12 @@ describe("CoachingTipPanel", () => {
     });
 
     render(<CoachingTipPanel />);
-    expect(screen.getByText("focus")).toBeDefined();
-    expect(screen.getByText("rhythm")).toBeDefined();
+    const severityBadge = screen.getByText("focus");
+    expect(severityBadge).toBeInTheDocument();
+    expect(severityBadge.className).toContain("bg-yellow-900");
+    const categoryBadge = screen.getByText("rhythm");
+    expect(categoryBadge).toBeInTheDocument();
+    expect(categoryBadge.className).toContain("indigo");
   });
 
   it("shows only the most recent tip when multiple are queued", () => {
@@ -79,13 +86,18 @@ describe("CoachingTipPanel", () => {
     usePracticeStore.setState({
       tipQueue: [
         { id: "tip-1", tip: tip1, receivedAt: Date.now(), phraseIndex: 0 },
-        { id: "tip-2", tip: tip2, receivedAt: Date.now() + 100, phraseIndex: 1 },
+        {
+          id: "tip-2",
+          tip: tip2,
+          receivedAt: Date.now() + 100,
+          phraseIndex: 1,
+        },
       ],
     });
 
     render(<CoachingTipPanel />);
-    expect(screen.getByText("Second tip")).toBeDefined();
-    expect(screen.queryByText("First tip")).toBeNull();
+    expect(screen.getByText("Second tip")).toBeInTheDocument();
+    expect(screen.queryByText("First tip")).not.toBeInTheDocument();
   });
 
   it("allows manual dismissal via close button", () => {
@@ -122,7 +134,9 @@ describe("CoachingTipPanel", () => {
     });
 
     render(<CoachingTipPanel />);
-    expect(screen.getByText("Great intonation on that phrase!")).toBeDefined();
+    expect(
+      screen.getByText("Great intonation on that phrase!")
+    ).toBeInTheDocument();
 
     // Fast-forward 10 seconds
     vi.advanceTimersByTime(10000);
@@ -146,8 +160,9 @@ describe("CoachingTipPanel", () => {
 
     render(<CoachingTipPanel />);
     const panel = screen.getByTestId("coaching-tip-panel");
-    expect(panel.getAttribute("role")).toBe("status");
-    expect(panel.getAttribute("aria-live")).toBe("polite");
+    expect(panel).toHaveAttribute("role", "status");
+    expect(panel).toHaveAttribute("aria-live", "polite");
+    expect(panel).toHaveAttribute("aria-label", "Coaching tip panel");
   });
 
   it("handles all severity types correctly", () => {
@@ -174,7 +189,9 @@ describe("CoachingTipPanel", () => {
       });
 
       const { unmount } = render(<CoachingTipPanel />);
-      expect(screen.getByText(severity)).toBeDefined();
+      const severityBadge = screen.getByText(severity);
+      expect(severityBadge).toBeInTheDocument();
+      expect(severityBadge.className).toContain("uppercase");
       unmount();
     });
   });
@@ -206,7 +223,9 @@ describe("CoachingTipPanel", () => {
       });
 
       const { unmount } = render(<CoachingTipPanel />);
-      expect(screen.getByText(category)).toBeDefined();
+      const categoryBadge = screen.getByText(category);
+      expect(categoryBadge).toBeInTheDocument();
+      expect(categoryBadge.className).toContain("uppercase");
       unmount();
     });
   });
