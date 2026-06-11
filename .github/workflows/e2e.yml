@@ -1,0 +1,96 @@
+name: GUI E2E
+
+# UI/IPC-level "works with no internet" regression guard. Companion to the
+# library-level Rust E2E harness (crates/brain/tests/e2e_offline.rs).
+#
+# Approach (Option B): Playwright drives the production Vite web build of the
+# React UI with the Tauri `invoke` IPC mocked at the boundary by a thin,
+# call-recording fake (e2e/support/tauri-mock.ts). This exercises the real
+# screens, the Zustand state machine, routing, and the recap rendering, and
+# asserts the practice flow makes zero outbound network calls. The native
+# Tauri shell (WebKit/WebView2) is out of scope here and covered separately.
+#
+# Why not tauri-driver + WebdriverIO: that needs a display + WebKitWebDriver,
+# which our CI containers don't provide. See the PR body for the full
+# rationale and the documented limitation.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  gui-e2e:
+    name: GUI E2E (web build + mocked IPC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      # Typecheck + the browserless mock-logic unit checks run regardless of
+      # whether a browser binary is available — they guard the load-bearing
+      # IPC mock + the seeded contracts even on a runner with no Chromium.
+      - name: Typecheck E2E suite
+        working-directory: apps/desktop
+        run: pnpm e2e:typecheck
+
+      - name: E2E mock unit checks (no browser)
+        working-directory: apps/desktop
+        run: pnpm e2e:unit
+
+      # Cache the Playwright browser so we don't re-download Chromium every run.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
+
+      - name: Install Playwright Chromium
+        working-directory: apps/desktop
+        run: pnpm e2e:install
+
+      # Drives the built bundle via vite preview (configured as Playwright's
+      # webServer). The suite fails the build if the practice→recap flow makes
+      # any outbound network call — the UI-level offline regression guard.
+      - name: Run GUI E2E
+        working-directory: apps/desktop
+        run: pnpm e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore

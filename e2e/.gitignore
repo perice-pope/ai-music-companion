@@ -3,3 +3,6 @@ test-results/
 playwright-report/
 .playwright/
 blob-report/
+
+# Vitest cache
+.vite/
