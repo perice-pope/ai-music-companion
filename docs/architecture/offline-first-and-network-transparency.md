@@ -86,8 +86,21 @@ This is the complete enumeration. If a feature is not in this table, it does not
 | **Cloud sync (taste profile)** | Stated personalization preferences (genres, artists, goals, experience). **No raw audio.** Its own switch, independent of session sync. | Supabase project | Yes | **OFF** (separate opt-in) | `apps/desktop/src/stores/syncStore.ts` (`syncTasteProfile`) |
 | **Account sign-in / auth** | Email + password (for account creation / login) | Supabase Auth | Yes | **OFF** (no account needed to practice) | `apps/desktop/src/stores/authStore.ts` |
 | **Teacher linking / dashboard** | Rides on cloud sync: the same synced recaps become visible to a linked teacher account. | Supabase (teacher-dashboard track) | Yes | **OFF** | builds on sync + auth |
+| **App auto-update** | A version-check request (current vs. latest), and — only after you confirm in the update dialog — the download of the new signed installer. **No audio, no practice history, no personal data; just the request for the latest version.** | The GitHub release host (`github.com/.../releases/.../latest.json` + the signed installer asset) | Yes — user-initiated, with a consent dialog before download | **No network at startup or in the background; a check happens only on explicit user action** | `tauri-plugin-updater` (config: `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater`; wiring: `apps/desktop/src-tauri/src/main.rs`). See note² |
 
 ¹ **AI coaching narration default — now OFF.** The on-device analysis (pitch, key, intonation, groove, tone) and the offline-fallback recap are always available with zero network. The LLM *narration* of that analysis is the networked part. The in-app coaching preference (`coachingEnabled`, `practiceStore`) now defaults **off**: on first run, narration is disabled and the coach is served entirely by the on-device fallback. Turning it on in **Connections & Privacy** mirrors the choice onto the Rust-core `NetworkPolicy` (the airplane switch) and persists it. This was deferred follow-up #1, now implemented.
+
+² **App auto-update — networked, but introduced via a Tauri plugin.** The updater
+contacts the GitHub release host to compare the installed version against the
+latest release and, *only after you confirm in its dialog*, to download the new
+signed installer. It is wired **user-initiated only** (`plugins.updater.dialog:
+true`), **never on startup**, and **never in the background** — so launching the
+app and practicing offline make no update request. The egress lives inside the
+`tauri-plugin-updater` dependency, not in first-party source, which is why the
+disclosure scanner cannot see it (see the registry note below); it is disclosed
+here and surfaced in Connections & Privacy as an informational row rather than a
+toggle, because the consent gate is the native update dialog rather than a
+Face-layer switch.
 
 ### What never leaves the device
 
@@ -138,6 +151,29 @@ How it works:
   or the scanner itself. It also runs a self-test that injects a throwaway
   undisclosed call site and asserts the checker rejects it, so the guard can't
   silently rot into a no-op.
+
+#### The scanner's blind spot: network introduced via plugins/dependencies
+
+The scanner reads **first-party source only** (`crates/**`,
+`apps/desktop/src-tauri/src/**`). Network egress that lives **inside a
+dependency or a Tauri plugin** — where the socket is opened by crate code we
+don't author — is invisible to it. Such a feature can be fully real and
+fully networked while leaving no trace the scanner can match, so it will
+**never** appear in `scripts/check_network_disclosure.sh`'s output and cannot be
+auto-added to the registry.
+
+Therefore, **network introduced via a plugin/dependency must be added to the
+enumeration table above by hand**, in the PR that introduces it. The registry +
+scanner remain the automated guard for first-party call sites; this table is the
+human-maintained guard for everything else. When in doubt, if a dependency can
+reach the network on the user's behalf, it belongs in the table.
+
+**First such entry: the App auto-update feature** (`tauri-plugin-updater`,
+landed in PR #174). Its check/download egress is entirely inside the plugin, so
+the scanner is blind to it; it is disclosed in the table above (and surfaced in
+Connections & Privacy) purely by this hand-maintained discipline. It is **not**
+added to `network-call-sites.allowlist`, because that registry is keyed to
+first-party files the scanner actually flags — and the updater has none.
 
 ### How to add a newly-disclosed call site
 

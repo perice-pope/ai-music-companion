@@ -27,6 +27,23 @@
 #
 # Format: one repo-relative path per line. Blank lines and `#` comments ignored.
 # Paths are matched exactly against the scanner's findings.
+#
+# ── Scope: FIRST-PARTY call sites only ───────────────────────────────────────
+# This registry pairs with `scripts/check_network_disclosure.sh`, which scans
+# first-party Rust source only. Network egress that lives INSIDE a dependency or
+# a Tauri plugin (where the socket is opened by crate code we don't author) is
+# invisible to the scanner and so has NO first-party file to list here. Do not
+# add such features to this file — they cannot be matched against scanner hits
+# and would trip the "stale entry" check.
+#
+# Instead, plugin/dependency-introduced network MUST be disclosed by hand in the
+# enumeration table in
+# `docs/architecture/offline-first-and-network-transparency.md`
+# (see "The scanner's blind spot" under "Disclosure registry"). Example: the App
+# auto-update feature (`tauri-plugin-updater`, PR #174) contacts the GitHub
+# release host on user-initiated, dialog-gated update checks; its egress is
+# entirely inside the plugin, so it is disclosed in the doc table only — NOT
+# listed below.
 
 # AI coaching narration — the LLM tip/recap path. Outbound calls go to the
 # configured LLM provider (Anthropic / OpenAI) and are gated by NetworkPolicy

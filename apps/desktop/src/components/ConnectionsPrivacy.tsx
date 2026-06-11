@@ -69,6 +69,45 @@ function ToggleRow({
   );
 }
 
+interface InfoRowProps {
+  testId: string;
+  title: string;
+  /** Plain-language description of what is sent, to whom, and when. */
+  description: string;
+  /** What the default behaviour is — i.e. no network unless you ask. */
+  whenIdle: string;
+}
+
+/**
+ * A disclosure row with NO toggle. Used for networked behaviour the Face layer
+ * does not itself gate — here, the Tauri app auto-updater, whose check/download
+ * is user-initiated through the native update dialog (never on startup) and
+ * lives below the JS boundary in the `tauri-plugin-updater` dependency. We
+ * disclose it honestly rather than render a switch that wouldn't actually
+ * control the egress (that would be a dark pattern). It carries a "status"
+ * pill instead of a control, so it is not counted among the off-by-default
+ * toggles.
+ */
+function InfoRow({ testId, title, description, whenIdle }: InfoRowProps) {
+  return (
+    <div className="rounded-lg bg-gray-800 p-4" data-testid={testId}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="font-medium text-white">{title}</h3>
+          <p className="mt-1 text-sm text-gray-300">{description}</p>
+          <p className="mt-2 text-sm text-gray-400">
+            <span className="font-medium text-gray-300">By default:</span>{" "}
+            {whenIdle}
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full border border-gray-600 px-3 py-1 text-xs text-gray-400">
+          Only when you ask
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function ConnectionsPrivacy() {
   const goToHistory = usePracticeStore((s) => s.goToHistory);
 
@@ -136,6 +175,15 @@ export default function ConnectionsPrivacy() {
             enabled={teacherSharingEnabled && cloudSyncEnabled}
             disabled={!cloudSyncEnabled}
             onChange={setTeacherSharingEnabled}
+          />
+
+          <InfoRow
+            testId="info-app-updates"
+            title="App updates"
+            description="Checking for updates contacts GitHub only when you ask. If an update is found, it asks you before downloading the new signed version. The app never checks on startup and works fully offline. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
+            whenIdle={
+              "Nothing is sent. The app makes no update request on launch or in the background; a check only happens when you choose “Check for updates.” You can keep using the app without ever checking."
+            }
           />
         </div>
 
