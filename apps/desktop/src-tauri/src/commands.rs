@@ -2673,7 +2673,11 @@ mod tests {
             .iter()
             .map(|n| n.midi_number)
             .collect();
-        assert_eq!(midi, vec![55, 53], "stored part_index should select Trombone");
+        assert_eq!(
+            midi,
+            vec![55, 53],
+            "stored part_index should select Trombone"
+        );
 
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert_eq!(listed.len(), 1);
@@ -2682,10 +2686,8 @@ mod tests {
     #[test]
     fn import_musicxml_falls_back_to_filename_when_untitled() {
         let s = state();
-        let xml = TWO_PART_MUSICXML.replace(
-            "<work><work-title>Little Duet</work-title></work>",
-            "",
-        );
+        let xml =
+            TWO_PART_MUSICXML.replace("<work><work-title>Little Duet</work-title></work>", "");
         let entry = s
             .import_musicxml("scores/my_etude.xml".to_string(), xml, 0)
             .expect("import untitled MusicXML");
@@ -2696,7 +2698,11 @@ mod tests {
     fn import_musicxml_out_of_range_part_errors_without_persisting() {
         let s = state();
         let err = s
-            .import_musicxml("duet.musicxml".to_string(), TWO_PART_MUSICXML.to_string(), 99)
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                99,
+            )
             .expect_err("out-of-range part must error");
         assert!(!err.is_empty());
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
