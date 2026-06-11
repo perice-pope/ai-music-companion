@@ -43,6 +43,7 @@ export default function PracticeShell() {
           <button
             onClick={() => goToConnections()}
             className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+            data-testid="open-connections-privacy"
           >
             Connections &amp; Privacy
           </button>
