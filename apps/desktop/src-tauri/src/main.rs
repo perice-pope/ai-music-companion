@@ -93,6 +93,11 @@ fn main() {
             // before any audio import can run. No-op when ORT_DYLIB_PATH is
             // already set (dev/CI) or the runtime isn't bundled yet.
             ai_music_companion::runtime::configure_onnxruntime(app.handle());
+            // Likewise point PDF→sheet-music import at the bundled OMR engine
+            // (if present) by setting OMR_ENGINE_PATH. No-op when unset/unbundled
+            // — PDF import then reports it's unavailable rather than failing
+            // obscurely.
+            ai_music_companion::runtime::configure_omr_engine(app.handle());
             // Initialise AppState inside setup so the AppHandle is available
             // for resolving bundled `profiles/` in packaged installs (#112).
             app.manage(AppState::new_with_app_handle(app.handle()));
@@ -116,6 +121,7 @@ fn main() {
             ai_music_companion::commands::list_score_parts,
             ai_music_companion::commands::import_musicxml_file,
             ai_music_companion::commands::import_audio_file,
+            ai_music_companion::commands::recognize_pdf_score,
             ai_music_companion::commands::list_scores,
             ai_music_companion::commands::get_score,
             ai_music_companion::commands::delete_score,

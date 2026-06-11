@@ -553,6 +553,12 @@ pub struct AppState {
     session_store: std::sync::Mutex<SessionStore>,
     score_store: std::sync::Mutex<ScoreStore>,
     coaching_available: bool,
+    /// PDF→sheet-music import (on-device OMR) is an experimental beta, **off by
+    /// default**. Enabled when `AMC_ENABLE_PDF_OMR` is set in the environment.
+    /// Gated here so a normal build never advertises an unverified read path;
+    /// the founder flips it on to exercise it. See
+    /// `docs/architecture/score-import-and-transcription.md`.
+    omr_enabled: bool,
     /// Instrument catalog loaded once at construction, shared by the
     /// `list_instruments` command and by session-validation paths.
     /// Held behind Arc so clones into IPC responses are cheap.
@@ -622,6 +628,7 @@ impl AppState {
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
             coaching_available,
+            omr_enabled: pdf_omr_enabled_from_env(),
             instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
@@ -641,10 +648,19 @@ impl AppState {
                 ScoreStore::in_memory().expect("in-memory store must succeed"),
             ),
             coaching_available: false,
+            omr_enabled: false,
             instruments: Arc::new(test_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
         }
+    }
+
+    /// Test-only: flip the PDF-OMR beta gate on without touching the
+    /// environment, so `recognize_pdf` can be exercised deterministically.
+    #[cfg(test)]
+    fn with_omr_enabled(mut self) -> Self {
+        self.omr_enabled = true;
+        self
     }
 
     /// Check whether a given instrument name is present in the catalog.
@@ -903,6 +919,41 @@ impl AppState {
         Ok((entry, quality))
     }
 
+    /// Recognize a sheet-music **PDF** into MusicXML using the given OMR
+    /// `engine`, then read its parts — so the frontend can run the *same*
+    /// "which part do you want to read?" picker as MusicXML import and feed the
+    /// recognized MusicXML back through [`import_musicxml`](Self::import_musicxml).
+    ///
+    /// Nothing is stored here: OMR is purely a front-end that produces the
+    /// canonical MusicXML, mirroring how audio transcription produces MIDI. The
+    /// part-parsing lives in the backend (CLAUDE.md: no business logic in the
+    /// frontend). Returns [`RecognizedScore`] with a calm "read from a scan"
+    /// signal; the caller always surfaces it (OMR is approximate).
+    ///
+    /// Gated by [`omr_enabled`](AppState): when the beta flag is off this
+    /// returns a plain, honest message rather than running an unverified path.
+    fn recognize_pdf(
+        &self,
+        engine: &dyn omr::OmrEngine,
+        bytes: &[u8],
+    ) -> Result<RecognizedScore, String> {
+        if !self.omr_enabled {
+            return Err("Reading sheet-music PDFs is an experimental feature that isn't \
+                        enabled in this build yet."
+                .to_string());
+        }
+        let recognized = omr::pdf_to_musicxml(engine, bytes).map_err(|e| e.to_string())?;
+        // Reuse the canonical MusicXML part reader — the exact seam MusicXML
+        // import uses — so the picker UX and the stored part_index are shared.
+        let parts = brain::score::musicxml::list_parts(&recognized.music_xml)
+            .map_err(|e| e.to_string())?;
+        Ok(RecognizedScore {
+            music_xml: recognized.music_xml,
+            parts,
+            low_content: recognized.quality.low_content,
+        })
+    }
+
     /// Clone the full instrument catalog for an IPC response.
     pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
         (*self.instruments).clone()
@@ -919,6 +970,11 @@ impl AppState {
     /// Returns false if no API key is configured.
     pub fn coaching_available(&self) -> bool {
         self.coaching_available
+    }
+
+    /// Whether the experimental PDF→sheet-music (OMR) beta is enabled.
+    pub fn omr_enabled(&self) -> bool {
+        self.omr_enabled
     }
 
     /// Peek at the current phase. Returns `Idle` when no session
@@ -1830,6 +1886,13 @@ pub fn import_musicxml_file(
         .map(Into::into)
 }
 
+/// Whether the PDF→sheet-music (OMR) beta is enabled, read from the
+/// environment. Off unless `AMC_ENABLE_PDF_OMR` is set — the feature is
+/// experimental and must never be advertised by a default build.
+fn pdf_omr_enabled_from_env() -> bool {
+    std::env::var_os("AMC_ENABLE_PDF_OMR").is_some()
+}
+
 /// Extract a lowercase file extension (no dot) for the audio decode hint.
 fn filename_ext(name: &str) -> Option<String> {
     std::path::Path::new(name)
@@ -1898,6 +1961,79 @@ pub fn import_audio_file<R: Runtime>(
     emit_import_progress(&app, "converting", 85);
     emit_import_progress(&app, "done", 100);
     Ok(ImportedAudioDto::new(entry.into(), quality))
+}
+
+/// Backend result of recognizing a PDF: the canonical MusicXML plus the parts
+/// found in it, so the frontend can run the shared "which part?" picker.
+#[derive(Debug)]
+struct RecognizedScore {
+    music_xml: String,
+    parts: Vec<String>,
+    low_content: bool,
+}
+
+/// IPC result of `recognize_pdf_score`. The frontend feeds `music_xml` back
+/// through `import_musicxml_file` with the chosen part — OMR reuses the exact
+/// MusicXML import + part-picker path. `from_scan` is always true (it drives the
+/// calm "read from a scan — check it" note); `low_content` warns when the scan
+/// yielded almost nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecognizedPdfDto {
+    pub music_xml: String,
+    pub parts: Vec<String>,
+    pub from_scan: bool,
+    pub low_content: bool,
+}
+
+impl From<RecognizedScore> for RecognizedPdfDto {
+    fn from(r: RecognizedScore) -> Self {
+        Self {
+            music_xml: r.music_xml,
+            parts: r.parts,
+            from_scan: true,
+            low_content: r.low_content,
+        }
+    }
+}
+
+/// Recognize a sheet-music **PDF** into MusicXML on-device (experimental beta).
+///
+/// Runs the bundled OMR engine (resolved via `OMR_ENGINE_PATH`, set at startup
+/// from the app's resource dir — see `runtime::configure_omr_engine`). Heavier
+/// than other imports, so it emits `import-progress` events the UI shows live.
+/// Stores nothing: it returns the recognized MusicXML and its parts so the
+/// frontend runs the same part picker as MusicXML import, then imports the
+/// chosen part via [`import_musicxml_file`]. Errors calmly and specifically when
+/// the beta is off, the engine isn't bundled, or the scan was unreadable —
+/// never a fabricated score.
+#[tauri::command]
+pub fn recognize_pdf_score<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    source_filename: String,
+    bytes: Vec<u8>,
+) -> Result<RecognizedPdfDto, String> {
+    // `source_filename` is currently only a UX hint for the caller; the title
+    // is derived when the chosen part is imported via `import_musicxml_file`.
+    let _ = source_filename;
+    // Check the beta gate first so the message is "not enabled" rather than a
+    // confusing "engine missing" when the feature is simply off.
+    if !state.omr_enabled() {
+        return Err("Reading sheet-music PDFs is an experimental feature that isn't \
+                    enabled in this build yet."
+            .to_string());
+    }
+    let engine_path = std::env::var_os("OMR_ENGINE_PATH").ok_or_else(|| {
+        "The sheet-music reader isn't included in this build yet, so PDF import \
+         isn't available."
+            .to_string()
+    })?;
+    let engine = omr::SidecarOmrEngine::new(std::path::PathBuf::from(engine_path));
+    emit_import_progress(&app, "rasterizing", 20);
+    emit_import_progress(&app, "reading-notes", 55);
+    let recognized = state.recognize_pdf(&engine, &bytes)?;
+    emit_import_progress(&app, "done", 100);
+    Ok(recognized.into())
 }
 
 /// List all scores in the library.
@@ -2707,6 +2843,71 @@ mod tests {
         assert!(!err.is_empty());
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert!(listed.is_empty(), "failed import must not persist a row");
+    }
+
+    /// A minimal valid PDF header — enough to pass the OMR pipeline's front
+    /// door. The `StaticOmrEngine` ignores the bytes and returns a fixed score.
+    const FAKE_PDF: &[u8] = b"%PDF-1.7\nscan\n";
+
+    #[test]
+    fn recognize_pdf_yields_musicxml_and_parts_for_the_picker() {
+        let s = state().with_omr_enabled();
+        let engine = omr::StaticOmrEngine::new(TWO_PART_MUSICXML);
+        let recognized = s
+            .recognize_pdf(&engine, FAKE_PDF)
+            .expect("recognition succeeds when the beta is on");
+
+        // The recognized MusicXML is the canonical format and re-parses with the
+        // same brain parser MusicXML import uses — proving it can flow straight
+        // into import_musicxml_file with the chosen part.
+        assert!(recognized.music_xml.contains("<score-partwise"));
+        assert_eq!(recognized.parts, vec!["Trumpet", "Trombone"]);
+        assert!(!recognized.low_content, "this score has measures");
+
+        let reparsed =
+            brain::score::musicxml::parse_musicxml_str_part(&recognized.music_xml, 1)
+                .expect("recognized MusicXML must re-parse for the picked part");
+        assert!(!reparsed.measures.is_empty());
+
+        // OMR stores nothing itself — import happens later via the shared path.
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert!(listed.is_empty(), "recognition must not persist a row");
+    }
+
+    #[test]
+    fn recognize_pdf_is_gated_off_by_default() {
+        let s = state(); // beta flag off
+        let engine = omr::StaticOmrEngine::new(TWO_PART_MUSICXML);
+        let err = s
+            .recognize_pdf(&engine, FAKE_PDF)
+            .expect_err("disabled beta must refuse");
+        assert!(err.contains("experimental"), "honest, calm message: {err}");
+    }
+
+    #[test]
+    fn recognize_pdf_rejects_a_non_pdf_drop() {
+        let s = state().with_omr_enabled();
+        let engine = omr::StaticOmrEngine::new(TWO_PART_MUSICXML);
+        let err = s
+            .recognize_pdf(&engine, b"not a pdf at all")
+            .expect_err("non-pdf must error before the engine runs");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn recognize_pdf_flags_a_scan_that_read_almost_nothing() {
+        let s = state().with_omr_enabled();
+        // A structurally-valid score with one part but no measures.
+        let empty = r#"<score-partwise version="4.0">
+            <part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+            <part id="P1"></part>
+        </score-partwise>"#;
+        let engine = omr::StaticOmrEngine::new(empty);
+        let recognized = s.recognize_pdf(&engine, FAKE_PDF).expect("recognizes structurally");
+        assert!(
+            recognized.low_content,
+            "no measures → warn the read likely failed"
+        );
     }
 
     #[test]

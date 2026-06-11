@@ -77,6 +77,62 @@ pub fn configure_onnxruntime(app_handle: &tauri::AppHandle) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OMR sidecar (PDF → MusicXML)
+// ---------------------------------------------------------------------------
+
+/// Platform-specific filename of the bundled OMR (oemer) sidecar executable.
+pub fn omr_engine_filename() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "amc-omr-engine.exe"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "amc-omr-engine"
+    }
+}
+
+/// Decide where the OMR sidecar binary lives, without touching the environment
+/// (pure, so it is unit-testable). Mirrors [`resolve_ort_dylib`]:
+///
+/// 1. If `OMR_ENGINE_PATH` is already set, respect it — return `None` (no
+///    change). This is the dev/CI path and an explicit override.
+/// 2. Otherwise, if the bundled engine exists at
+///    `<resource_dir>/omr/<platform-binary>`, return that path.
+/// 3. Otherwise return `None` — the engine isn't bundled; PDF import surfaces a
+///    calm "not available in this build" error instead of pretending.
+pub fn resolve_omr_engine(resource_dir: Option<&Path>, env_already_set: bool) -> Option<PathBuf> {
+    if env_already_set {
+        return None;
+    }
+    let candidate = resource_dir?.join("omr").join(omr_engine_filename());
+    candidate.is_file().then_some(candidate)
+}
+
+/// Point OMR at the bundled sidecar by setting `OMR_ENGINE_PATH`, unless it is
+/// already set. Call once at app startup. A no-op when the engine isn't bundled
+/// (dev builds): PDF import then reports it's unavailable rather than failing
+/// obscurely.
+pub fn configure_omr_engine(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let already_set = std::env::var_os("OMR_ENGINE_PATH").is_some();
+    let resource_dir = app_handle.path().resource_dir().ok();
+    match resolve_omr_engine(resource_dir.as_deref(), already_set) {
+        Some(path) => {
+            std::env::set_var("OMR_ENGINE_PATH", &path);
+            tracing::info!(path = %path.display(), "using bundled OMR engine");
+        }
+        None if already_set => {
+            tracing::debug!("OMR_ENGINE_PATH already set; leaving PDF import engine as-is");
+        }
+        None => {
+            tracing::debug!("no bundled OMR engine found; PDF score import will be unavailable");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +175,33 @@ mod tests {
         let base = unique_dir("missing"); // never created
         assert_eq!(resolve_ort_dylib(Some(&base), false), None);
         assert_eq!(resolve_ort_dylib(None, false), None);
+    }
+
+    #[test]
+    fn omr_respects_existing_env_even_when_bundled() {
+        let base = unique_dir("omr_env");
+        let dir = base.join("omr");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(omr_engine_filename()), b"stub").unwrap();
+        assert_eq!(resolve_omr_engine(Some(&base), true), None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn omr_finds_bundled_engine() {
+        let base = unique_dir("omr_bundled");
+        let dir = base.join("omr");
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join(omr_engine_filename());
+        fs::write(&bin, b"stub").unwrap();
+        assert_eq!(resolve_omr_engine(Some(&base), false), Some(bin));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn omr_none_when_not_bundled_or_no_resource_dir() {
+        let base = unique_dir("omr_missing"); // never created
+        assert_eq!(resolve_omr_engine(Some(&base), false), None);
+        assert_eq!(resolve_omr_engine(None, false), None);
     }
 }
