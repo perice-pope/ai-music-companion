@@ -1,3 +1,9 @@
+## [1.46.1](https://github.com/perice-pope/ai-music-companion/compare/v1.46.0...v1.46.1) (2026-06-11)
+
+### Bug Fixes
+
+* **ci:** enforce frontend lint, test, and build gates ([#175](https://github.com/perice-pope/ai-music-companion/issues/175)) ([f0789a2](https://github.com/perice-pope/ai-music-companion/commit/f0789a25810827fab4fefe6445a2683c42c263d3))
+
 ## [1.46.0](https://github.com/perice-pope/ai-music-companion/compare/v1.45.0...v1.46.0) (2026-06-11)
 
 ### Features
