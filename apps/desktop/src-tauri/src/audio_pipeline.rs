@@ -23,7 +23,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -46,6 +46,107 @@ pub enum PipelineError {
     Pitch(#[from] PitchError),
     #[error("pipeline is already stopped")]
     AlreadyStopped,
+}
+
+// ---------------------------------------------------------------------------
+// Session-scoped idiom capture buffer
+// ---------------------------------------------------------------------------
+
+/// Target sample rate (Hz) the idiom buffer downsamples to. The idiom
+/// embedder is a coarse chroma/MFCC feature extractor over ~46 ms windows;
+/// it captures harmonic/timbral colour, which survives decimation to ~22 kHz
+/// comfortably (Nyquist ~11 kHz still covers the spectral content the baseline
+/// embedder uses). Halving the rate halves the memory footprint of the
+/// session-scope buffer for free.
+pub const IDIOM_TARGET_SAMPLE_RATE: u32 = 22_050;
+
+/// Hard cap on retained idiom samples (~120 s at the target rate). Idiom
+/// matching needs a representative slice of the session, not every sample —
+/// once we've buffered this much we stop appending so a marathon session can't
+/// grow the buffer without bound. This is the documented tradeoff: we trade
+/// total-session fidelity for a fixed memory ceiling, off the hot path.
+pub const IDIOM_MAX_SAMPLES: usize = (IDIOM_TARGET_SAMPLE_RATE as usize) * 120;
+
+/// Mono PCM accumulated for end-of-session idiom analysis, plus the rate it
+/// was captured at. Bounded and downsampled (see the consts above).
+#[derive(Debug, Default)]
+pub struct IdiomCapture {
+    /// Downsampled mono samples, capped at [`IDIOM_MAX_SAMPLES`].
+    pub samples: Vec<f32>,
+    /// Effective sample rate of `samples` (the rate idiom analysis must use).
+    pub sample_rate: u32,
+}
+
+/// A session-scoped, **off-hot-path** handle to the idiom capture buffer.
+///
+/// Shared between the Tauri shell (which holds it on `AppState` and reads it
+/// when building the recap) and the audio-pipeline **worker thread** (which
+/// appends downsampled mono audio as phrases stream by). Crucially this is
+/// touched only on the processing/worker side and the command side — **never**
+/// inside the realtime cpal callback — so the `Mutex` lock and `Vec` growth
+/// here do not violate the no-allocation-in-audio-thread rule.
+///
+/// Fully offline: this just retains samples in memory for on-device analysis;
+/// nothing here touches the network.
+#[derive(Clone, Default)]
+pub struct SharedIdiomBuffer(Arc<Mutex<IdiomCapture>>);
+
+impl SharedIdiomBuffer {
+    /// A fresh, empty buffer.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append `src` (mono at `src_rate` Hz) into the buffer, decimating toward
+    /// [`IDIOM_TARGET_SAMPLE_RATE`] and stopping once [`IDIOM_MAX_SAMPLES`] is
+    /// reached. Called on the worker thread, never the cpal callback.
+    ///
+    /// `pub(crate)` so the command-layer tests can seed a buffer without a live
+    /// mic; production code only calls it from the worker thread.
+    pub(crate) fn append_downsampled(&self, src: &[f32], src_rate: u32) {
+        if src.is_empty() || src_rate == 0 {
+            return;
+        }
+        let mut guard = match self.0.lock() {
+            Ok(g) => g,
+            Err(_) => return, // poisoned: drop the chunk rather than panic.
+        };
+        if guard.samples.len() >= IDIOM_MAX_SAMPLES {
+            return;
+        }
+        // Integer decimation factor toward the target rate (>= 1). At 44.1 kHz
+        // source this is 2 → ~22.05 kHz; at 22.05 kHz it's 1 → passthrough.
+        let factor = (src_rate / IDIOM_TARGET_SAMPLE_RATE).max(1) as usize;
+        guard.sample_rate = src_rate / factor as u32;
+        for chunk in src.chunks(factor) {
+            if guard.samples.len() >= IDIOM_MAX_SAMPLES {
+                break;
+            }
+            // Take the first sample of each decimation window. A crude
+            // anti-alias (no low-pass) is acceptable here: the baseline
+            // embedder's features are robust to it, and the alternative
+            // (a proper filter) isn't worth the cost off the hot path for a
+            // "reminds me of" proximity signal.
+            guard.samples.push(chunk[0]);
+        }
+    }
+
+    /// Take a snapshot of the captured samples + their rate, leaving the buffer
+    /// in place. Called from the recap path at session end.
+    pub fn snapshot(&self) -> (Vec<f32>, u32) {
+        match self.0.lock() {
+            Ok(g) => (g.samples.clone(), g.sample_rate),
+            Err(_) => (Vec::new(), 0),
+        }
+    }
+
+    /// Clear the buffer (e.g. at the start of a new session).
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.0.lock() {
+            g.samples.clear();
+            g.sample_rate = 0;
+        }
+    }
 }
 
 /// Tunables for the pitch half of the pipeline. The sample rate is
@@ -95,7 +196,7 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, emit, |_| {}, |_| {})
+        Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {})
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
@@ -107,9 +208,15 @@ impl AudioPipeline {
     ///   [`ScorePosition`] — fine-grained enough for a smoothly gliding
     ///   cursor *within* a measure, while staying well off the per-frame
     ///   path. It never fires in free play (no follower attached).
+    ///
+    /// `idiom_buffer`, when supplied, receives the session's downsampled mono
+    /// audio for **offline, end-of-session** idiom analysis. It is filled on
+    /// the worker thread (allocation there is fine), never in the realtime
+    /// callback, and read by the recap path after the session ends.
     pub fn start_with_follower<F, P, S>(
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
+        idiom_buffer: Option<SharedIdiomBuffer>,
         emit: F,
         emit_phrase: P,
         emit_position: S,
@@ -130,6 +237,7 @@ impl AudioPipeline {
                 run_worker(
                     profile,
                     follower,
+                    idiom_buffer,
                     profile_rx,
                     shutdown_worker,
                     startup_tx,
@@ -191,6 +299,7 @@ impl Drop for AudioPipeline {
 fn run_worker<F, P, S>(
     initial_profile: DetectorProfile,
     follower: Option<ScoreFollower>,
+    idiom_buffer: Option<SharedIdiomBuffer>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
@@ -325,6 +434,15 @@ fn run_worker<F, P, S>(
         // Accumulate this window's audio + pitch for the in-progress phrase.
         phrase_audio.extend_from_slice(mono_slice);
         phrase_pitch.push(event.pitch_hz.unwrap_or(0.0) as f32);
+
+        // Feed the session-scoped idiom buffer (offline, end-of-session
+        // analysis). This is on the *worker* thread — the lock + Vec growth
+        // are deliberately off the realtime cpal callback, so the
+        // no-allocation-in-audio-thread rule is upheld. The buffer downsamples
+        // and self-caps, so this stays cheap and bounded.
+        if let Some(buf) = &idiom_buffer {
+            buf.append_downsampled(mono_slice, sample_rate);
+        }
         if phrase_audio.len() > MAX_TONE_SAMPLES {
             let overflow = phrase_audio.len() - MAX_TONE_SAMPLES;
             phrase_audio.drain(..overflow);
@@ -483,6 +601,66 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<i32>();
         drop(tx);
         assert_eq!(drain_latest::<i32>(&rx), None);
+    }
+
+    #[test]
+    fn idiom_buffer_downsamples_44k_to_target_rate() {
+        let buf = SharedIdiomBuffer::new();
+        // 44.1 kHz → integer factor 2 → 22.05 kHz, half the samples.
+        let src: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        buf.append_downsampled(&src, 44_100);
+        let (samples, rate) = buf.snapshot();
+        assert_eq!(rate, 22_050, "factor-2 decimation reports the halved rate");
+        assert_eq!(samples.len(), 500, "factor-2 decimation keeps every 2nd");
+        assert_eq!(samples[0], 0.0);
+        assert_eq!(samples[1], 2.0, "keeps the first sample of each window");
+    }
+
+    #[test]
+    fn idiom_buffer_passthrough_at_target_rate() {
+        let buf = SharedIdiomBuffer::new();
+        // Already at the target rate → factor 1 → passthrough.
+        let src: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        buf.append_downsampled(&src, IDIOM_TARGET_SAMPLE_RATE);
+        let (samples, rate) = buf.snapshot();
+        assert_eq!(rate, IDIOM_TARGET_SAMPLE_RATE);
+        assert_eq!(samples.len(), 100);
+    }
+
+    #[test]
+    fn idiom_buffer_caps_at_max_samples() {
+        let buf = SharedIdiomBuffer::new();
+        // Push more than the cap (at the target rate so factor == 1).
+        let src = vec![0.5_f32; IDIOM_MAX_SAMPLES + 5_000];
+        buf.append_downsampled(&src, IDIOM_TARGET_SAMPLE_RATE);
+        let (samples, _) = buf.snapshot();
+        assert_eq!(
+            samples.len(),
+            IDIOM_MAX_SAMPLES,
+            "buffer must self-cap at IDIOM_MAX_SAMPLES"
+        );
+        // A further append is a no-op once full.
+        buf.append_downsampled(&[1.0; 10], IDIOM_TARGET_SAMPLE_RATE);
+        assert_eq!(buf.snapshot().0.len(), IDIOM_MAX_SAMPLES);
+    }
+
+    #[test]
+    fn idiom_buffer_clear_resets() {
+        let buf = SharedIdiomBuffer::new();
+        buf.append_downsampled(&[1.0, 2.0, 3.0, 4.0], IDIOM_TARGET_SAMPLE_RATE);
+        assert!(!buf.snapshot().0.is_empty());
+        buf.clear();
+        let (samples, rate) = buf.snapshot();
+        assert!(samples.is_empty());
+        assert_eq!(rate, 0);
+    }
+
+    #[test]
+    fn idiom_buffer_ignores_empty_or_zero_rate() {
+        let buf = SharedIdiomBuffer::new();
+        buf.append_downsampled(&[], 44_100);
+        buf.append_downsampled(&[1.0, 2.0], 0);
+        assert!(buf.snapshot().0.is_empty());
     }
 
     // Note on full-pipeline tests: running `AudioPipeline::start` inside

@@ -10,6 +10,7 @@
 pub mod coaching;
 pub mod fingerprint;
 pub mod follower;
+pub mod idiom_recap;
 pub mod phrase;
 pub mod score;
 pub mod scoring;

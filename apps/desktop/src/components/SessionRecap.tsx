@@ -1,5 +1,9 @@
 import { usePracticeStore } from "../stores/practiceStore";
-import type { GrooveDescriptor, IntonationSummary } from "../types/brain";
+import type {
+  GrooveDescriptor,
+  IdiomMatch,
+  IntonationSummary,
+} from "../types/brain";
 import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
 
@@ -64,6 +68,16 @@ function grooveLine(g: GrooveDescriptor): string {
         : "uneven";
   parts.push(steadiness);
   return parts.join(", ");
+}
+
+/**
+ * One quiet, hedged line for the top idiom match. The similarity is a real,
+ * on-device audio-proximity signal (computed fully offline), so we phrase it as
+ * "reminds me of" / "has a … flavour" — never an asserted fact. Names the genre
+ * and an exemplar artist so the note is concrete and grounded.
+ */
+function idiomLine(m: IdiomMatch): string {
+  return `has a ${m.genre} flavour — shares a neighbourhood with ${m.label} (think ${m.exemplar_artist})`;
 }
 
 /**
@@ -183,6 +197,20 @@ export default function SessionRecap() {
           Feel:{" "}
           <span className="text-gray-200">
             {grooveLine(fingerprint.groove)}
+          </span>
+        </p>
+      )}
+
+      {/* Idiom flavour read-out — quiet, hedged, grounded. Computed fully
+          offline on-device and confidence-gated, so it's shown only when a
+          match cleared the engine's threshold (otherwise the recap stays
+          silent on idiom). We surface just the top match to keep it a calm
+          single line. */}
+      {!isEmptyState && recap.idiom_notes && recap.idiom_notes.length > 0 && (
+        <p className="text-sm text-gray-400" data-testid="recap-idiom">
+          Flavour:{" "}
+          <span className="text-gray-200">
+            {idiomLine(recap.idiom_notes[0])}
           </span>
         </p>
       )}

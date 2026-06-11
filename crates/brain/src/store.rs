@@ -900,6 +900,7 @@ mod tests {
             phrase_count,
             instrument: instrument.to_owned(),
             fingerprint: None,
+            idiom_notes: Vec::new(),
             connections: Vec::new(),
         }
     }
@@ -1110,6 +1111,7 @@ mod tests {
             phrase_count: 17,
             instrument: "clarinet".to_owned(),
             fingerprint: None,
+            idiom_notes: Vec::new(),
             connections: Vec::new(),
         };
         let now = Utc::now();

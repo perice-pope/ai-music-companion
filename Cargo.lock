@@ -148,6 +148,7 @@ dependencies = [
  "dirs",
  "ears",
  "groove",
+ "idiom",
  "midly",
  "reqwest",
  "roxmltree",

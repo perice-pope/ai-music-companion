@@ -174,6 +174,38 @@ describe("SessionRecap", () => {
     expect(line).toContain("steady");
   });
 
+  it("shows the idiom flavour read-out only when the recap carries a match", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No idiom_notes → no flavour line (silence > lies).
+    expect(screen.queryByTestId("recap-idiom")).toBeNull();
+
+    // Empty list is also silent.
+    seedRecap(fullRecap({ idiom_notes: [] }));
+    rerender(<SessionRecap />);
+    expect(screen.queryByTestId("recap-idiom")).toBeNull();
+
+    seedRecap(
+      fullRecap({
+        idiom_notes: [
+          {
+            label: "Bebop line",
+            genre: "jazz",
+            exemplar_artist: "Charlie Parker",
+            era: "1940s-50s",
+            similarity: 0.78,
+          },
+        ],
+      }),
+    );
+    rerender(<SessionRecap />);
+    const line = screen.getByTestId("recap-idiom").textContent ?? "";
+    // Hedged + grounded: names the genre and exemplar, phrased as "flavour".
+    expect(line).toContain("jazz flavour");
+    expect(line).toContain("Bebop line");
+    expect(line).toContain("Charlie Parker");
+  });
+
   it("shows cross-genre connections only when the recap carries grounded ones", () => {
     // No connections → no panel (cold start / thin signal / silence).
     seedRecap(fullRecap());
