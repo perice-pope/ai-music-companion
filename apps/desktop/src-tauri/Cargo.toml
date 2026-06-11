@@ -22,6 +22,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Tauri v2 auto-updater (desktop). Powers user-initiated update checks against
+# the GitHub Releases `latest.json` manifest. Update checks are NOT performed on
+# startup — they only run when the frontend explicitly invokes the plugin, so
+# the offline-first guarantee (CLAUDE.md) is preserved. Pairs with the JS-side
+# `@tauri-apps/plugin-updater`.
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

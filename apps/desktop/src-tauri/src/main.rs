@@ -75,7 +75,19 @@ fn init_tracing() {
 fn main() {
     init_tracing();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Register the Tauri v2 auto-updater (desktop only). This makes the
+    // updater commands available to the frontend but performs NO network I/O
+    // on its own — an update check happens only when the UI explicitly calls
+    // it. The endpoint + pubkey live in `tauri.conf.json` under
+    // `plugins.updater`. See docs/release.md for the signing-key workflow.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .setup(|app| {
             // Point transcription at the bundled ONNX Runtime (if present)
             // before any audio import can run. No-op when ORT_DYLIB_PATH is

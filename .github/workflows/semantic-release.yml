@@ -1,0 +1,50 @@
+name: Semantic Release
+
+# Relocated from release.yml (which now drives the Tauri installer build on
+# version tags). This job runs semantic-release on every push to main: it reads
+# Conventional Commits, computes the next version, updates the changelog, and
+# CREATES the `vX.Y.Z` git tag + GitHub Release. That tag push is what triggers
+# `release.yml` to build and attach the platform installers. The two workflows
+# are complementary: this one decides *when* and *what version*; release.yml
+# produces the *artifacts*.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          npx
+          -p semantic-release
+          -p @semantic-release/git
+          -p @semantic-release/changelog
+          -p @semantic-release/github
+          -p conventional-changelog-conventionalcommits
+          semantic-release
