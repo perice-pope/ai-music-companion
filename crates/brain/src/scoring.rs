@@ -27,9 +27,11 @@ pub struct PhraseScore {
     /// High value: notes are evenly spaced and performance is smooth.
     /// Low value: timing is irregular or pitch unstable.
     ///
-    /// Currently based on pitch stability; will incorporate inter-note
-    /// timing variance once score follower provides alignment data.
-    pub rhythmic_stability: f64,
+    /// Currently not computed — will be populated once the score follower
+    /// provides per-note timing alignment data. Until then, None enforces
+    /// silence over lies: coaching will never feed a fake rhythm signal.
+    /// See hotspot #135 and decisions-log "Coaching-off-with-banner".
+    pub rhythmic_stability: Option<f64>,
 
     /// Presence of dynamic shape and direction (0.0-1.0).
     ///
@@ -57,14 +59,12 @@ pub fn score_phrase(phrase: &PhraseSummary) -> PhraseScore {
     // The aggregator's `stability` score is 0.0-1.0 based on coefficient of variation.
     let intonation_tendency = phrase.stability;
 
-    // Rhythmic stability: returned as a neutral placeholder (1.0) until the
-    // score follower's position output is propagated into PhraseSummary so we
-    // can compute real inter-note timing variance. Previously this mirrored
-    // pitch stability, which fed the LLM coaching prompt a fake rhythm signal
-    // — quietly wrong rhythm feedback is worse than no rhythm feedback. See
-    // hotspot #91 for the rationale and #90 for the follow-up that replaces
-    // this placeholder with real timing variance.
-    let rhythmic_stability = 1.0;
+    // Rhythmic stability: not yet computed. Until the score follower's
+    // per-note timing alignment is wired into PhraseSummary, this is None.
+    // This enforces the "silence > lies" principle: we will not feed a fake
+    // rhythm signal to coaching. See hotspot #135 and decisions-log entry
+    // "2026-04-20 — Coaching-off-with-banner, not rule-based filler tips".
+    let rhythmic_stability = None;
 
     // Dynamic arc: based on whether the phrase has significant dynamic range.
     // Normalize the dynamic range to 0-1. A range of 0 = flat (0.0), larger ranges score higher.
@@ -220,14 +220,14 @@ mod tests {
     }
 
     #[test]
-    fn rhythmic_stability_returns_neutral_placeholder() {
-        // Until the score follower's position output reaches PhraseSummary
-        // (see hotspots #90, #91), `rhythmic_stability` is a fixed neutral
-        // 1.0 — both unstable and stable pitch-only phrases must report it.
+    fn rhythmic_stability_not_yet_computed() {
+        // Until the score follower's per-note timing alignment reaches PhraseSummary,
+        // `rhythmic_stability` is None. This enforces "silence > lies": we will not
+        // feed a fake rhythm signal to coaching (hotspot #135).
         let unstable = score_phrase(&make_phrase_summary(0.2, 0.1));
         let stable = score_phrase(&make_phrase_summary(0.95, 0.1));
-        assert_eq!(unstable.rhythmic_stability, 1.0);
-        assert_eq!(stable.rhythmic_stability, 1.0);
+        assert!(unstable.rhythmic_stability.is_none());
+        assert!(stable.rhythmic_stability.is_none());
     }
 
     #[test]
@@ -254,13 +254,13 @@ mod tests {
     fn phrase_score_serialization_roundtrip() {
         let original = PhraseScore {
             intonation_tendency: 0.85,
-            rhythmic_stability: 0.75,
+            rhythmic_stability: Some(0.75),
             dynamic_arc: 0.60,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: PhraseScore = serde_json::from_str(&json).unwrap();
         assert!((deserialized.intonation_tendency - 0.85).abs() < f64::EPSILON);
-        assert!((deserialized.rhythmic_stability - 0.75).abs() < f64::EPSILON);
+        assert_eq!(deserialized.rhythmic_stability, Some(0.75));
         assert!((deserialized.dynamic_arc - 0.60).abs() < f64::EPSILON);
     }
 
@@ -269,8 +269,8 @@ mod tests {
         let phrase = make_phrase_summary(0.65, 0.3);
         let score = score_phrase(&phrase);
         assert!(score.intonation_tendency > 0.6 && score.intonation_tendency < 0.7);
-        // rhythmic_stability is currently a fixed placeholder — see #91.
-        assert_eq!(score.rhythmic_stability, 1.0);
+        // rhythmic_stability is not yet computed (hotspot #135).
+        assert!(score.rhythmic_stability.is_none());
         assert!(score.dynamic_arc > 0.2 && score.dynamic_arc < 0.4);
     }
 }
