@@ -89,13 +89,12 @@ fn main() {
 
     builder
         .setup(|app| {
-            // Point transcription at the bundled ONNX Runtime (if present)
-            // before any audio import can run. No-op when ORT_DYLIB_PATH is
-            // already set (dev/CI) or the runtime isn't bundled yet.
             ai_music_companion::runtime::configure_onnxruntime(app.handle());
-            // Initialise AppState inside setup so the AppHandle is available
-            // for resolving bundled `profiles/` in packaged installs (#112).
-            app.manage(AppState::new_with_app_handle(app.handle()));
+            let state = AppState::new_with_app_handle(app.handle());
+            if state.storage_degraded {
+                eprintln!("startup warning: session storage unavailable; running with in-memory cache only");
+            }
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

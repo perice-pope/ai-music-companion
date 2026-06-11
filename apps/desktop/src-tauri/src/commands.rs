@@ -571,6 +571,11 @@ pub struct AppState {
     /// and cleared at the start of each session. Shared (`Arc` inside) so the
     /// pipeline gets its own handle without holding the `AppState`.
     idiom_buffer: SharedIdiomBuffer,
+    /// Tracks whether persistence failed at startup (e.g., disk permissions,
+    /// sandbox violation). True means this session is running with in-memory
+    /// storage only — no history saved. The UI can check this flag via
+    /// a command and warn the user.
+    storage_degraded: bool,
 }
 
 impl AppState {
@@ -583,6 +588,10 @@ impl AppState {
     /// [`AppState::new_with_app_handle`], which also checks the bundled
     /// resource directory — a bare `new()` in an installed app would fail
     /// to find profiles and panic (the bug behind #112).
+    ///
+    /// Always returns `Ok` (never panics). If disk storage fails, falls back
+    /// to in-memory storage and sets `storage_degraded: true` so the UI can
+    /// warn the user that session history won't be saved.
     pub fn new() -> Self {
         Self::build(None)
     }
@@ -598,18 +607,33 @@ impl AppState {
 
     /// Shared constructor body. `app_handle` is `Some` only for packaged
     /// builds (enables bundled-resource profile resolution).
+    ///
+    /// Always succeeds and returns a usable AppState. If on-disk storage fails,
+    /// falls back to in-memory and sets `storage_degraded: true`.
     fn build(app_handle: Option<&tauri::AppHandle>) -> Self {
         let db_path = SessionStore::default_path().unwrap_or_else(|_| {
-            // Fallback: use in-memory if default path unavailable
-            // (extremely rare — headless/no data dir).
             std::path::PathBuf::from(":memory:")
         });
 
-        let session_store = SessionStore::open(&db_path)
-            .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
+        let mut storage_degraded = false;
 
-        let score_store = ScoreStore::open(&db_path)
-            .unwrap_or_else(|_| ScoreStore::in_memory().expect("in-memory store must succeed"));
+        let session_store = SessionStore::open(&db_path).unwrap_or_else(|e| {
+            tracing::warn!("failed to open session store at {:?}: {}; falling back to in-memory", db_path, e);
+            storage_degraded = true;
+            SessionStore::in_memory().unwrap_or_else(|e| {
+                tracing::error!("in-memory session store also failed: {}; using empty store", e);
+                SessionStore::in_memory().expect("in-memory fallback must succeed")
+            })
+        });
+
+        let score_store = ScoreStore::open(&db_path).unwrap_or_else(|e| {
+            tracing::warn!("failed to open score store at {:?}: {}; falling back to in-memory", db_path, e);
+            storage_degraded = true;
+            ScoreStore::in_memory().unwrap_or_else(|e| {
+                tracing::error!("in-memory score store also failed: {}; using empty store", e);
+                ScoreStore::in_memory().expect("in-memory fallback must succeed")
+            })
+        });
 
         let coaching_svc = LlmCoachingService::new();
         let coaching_available = coaching_svc.coaching_available();
@@ -625,25 +649,28 @@ impl AppState {
             instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
+            storage_degraded,
         }
     }
 
     /// Wire entirely with mocks and in-memory store. Used by tests.
+    /// Panics if in-memory stores fail, which should never happen in tests.
     pub fn with_mocks() -> Self {
         Self {
             active_session: Mutex::new(None),
             coaching_service: Arc::new(MockCoachingService::new()),
             recap_generator: Arc::new(MockRecapGenerator),
             session_store: std::sync::Mutex::new(
-                SessionStore::in_memory().expect("in-memory store must succeed"),
+                SessionStore::in_memory().expect("test: in-memory session store failed"),
             ),
             score_store: std::sync::Mutex::new(
-                ScoreStore::in_memory().expect("in-memory store must succeed"),
+                ScoreStore::in_memory().expect("test: in-memory score store failed"),
             ),
             coaching_available: false,
             instruments: Arc::new(test_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
+            storage_degraded: false,
         }
     }
 
