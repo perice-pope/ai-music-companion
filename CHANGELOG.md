@@ -1,3 +1,9 @@
+## [1.46.0](https://github.com/perice-pope/ai-music-companion/compare/v1.45.0...v1.46.0) (2026-06-11)
+
+### Features
+
+* wire offline idiom engine into practice→recap flow ([#168](https://github.com/perice-pope/ai-music-companion/issues/168)) ([8b73144](https://github.com/perice-pope/ai-music-companion/commit/8b73144bbd518d13692e36214ee439aa06f96f32))
+
 ## [1.45.0](https://github.com/perice-pope/ai-music-companion/compare/v1.44.0...v1.45.0) (2026-06-10)
 
 ### Features
