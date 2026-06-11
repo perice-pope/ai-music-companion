@@ -12,15 +12,78 @@ import { usePracticeStore } from "../stores/practiceStore";
  * render it.
  */
 const TEST_INSTRUMENTS: InstrumentInfo[] = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, vibratoToleranceCents: 20, emoji: "\uD83C\uDFBA" },
-  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB5" },
-  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, vibratoToleranceCents: 20, emoji: "\uD83D\uDCEF" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, vibratoToleranceCents: 30, emoji: "\uD83C\uDFBB" },
-  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, vibratoToleranceCents: 30, emoji: "\uD83C\uDFB6" },
-  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB6" },
-  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, vibratoToleranceCents: 20, emoji: "\uD83C\uDFB5" },
-  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, vibratoToleranceCents: 35, emoji: "\uD83C\uDFA4" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, vibratoToleranceCents: 10, emoji: "\uD83C\uDFB9" },
+  {
+    name: "Trumpet",
+    family: "Brass",
+    freqMinHz: 165,
+    freqMaxHz: 1047,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83C\uDFBA",
+  },
+  {
+    name: "Trombone",
+    family: "Brass",
+    freqMinHz: 58,
+    freqMaxHz: 587,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83C\uDFB5",
+  },
+  {
+    name: "French Horn",
+    family: "Brass",
+    freqMinHz: 87,
+    freqMaxHz: 880,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83D\uDCEF",
+  },
+  {
+    name: "Violin",
+    family: "Strings",
+    freqMinHz: 196,
+    freqMaxHz: 3136,
+    vibratoToleranceCents: 30,
+    emoji: "\uD83C\uDFBB",
+  },
+  {
+    name: "Cello",
+    family: "Strings",
+    freqMinHz: 65,
+    freqMaxHz: 988,
+    vibratoToleranceCents: 30,
+    emoji: "\uD83C\uDFB6",
+  },
+  {
+    name: "Flute",
+    family: "Woodwind",
+    freqMinHz: 262,
+    freqMaxHz: 2093,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83C\uDFB6",
+  },
+  {
+    name: "Clarinet",
+    family: "Woodwind",
+    freqMinHz: 147,
+    freqMaxHz: 1568,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83C\uDFB5",
+  },
+  {
+    name: "Voice",
+    family: "Voice",
+    freqMinHz: 82,
+    freqMaxHz: 1047,
+    vibratoToleranceCents: 35,
+    emoji: "\uD83C\uDFA4",
+  },
+  {
+    name: "Piano",
+    family: "Keyboard",
+    freqMinHz: 28,
+    freqMaxHz: 4186,
+    vibratoToleranceCents: 10,
+    emoji: "\uD83C\uDFB9",
+  },
 ];
 
 const mockInvoke = vi.fn();
@@ -35,9 +98,7 @@ function installDefaultInvokeMock() {
     if (cmd === "list_instruments") {
       return Promise.resolve(TEST_INSTRUMENTS);
     }
-    return Promise.reject(
-      new Error(`no mock configured for invoke("${cmd}")`),
-    );
+    return Promise.reject(new Error(`no mock configured for invoke("${cmd}")`));
   });
 }
 
@@ -229,19 +290,23 @@ describe("InstrumentSelector", () => {
 
   it("Start Practice is disabled until an instrument is selected", async () => {
     render(<InstrumentSelector />);
-    const btn = screen.getByTestId("start-practice-button") as HTMLButtonElement;
+    const btn = screen.getByTestId(
+      "start-practice-button",
+    ) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
 
     fireEvent.click(await screen.findByTestId("instrument-card-trumpet"));
     expect(
-      (screen.getByTestId("start-practice-button") as HTMLButtonElement).disabled,
+      (screen.getByTestId("start-practice-button") as HTMLButtonElement)
+        .disabled,
     ).toBe(false);
   });
 
   it("Start Practice invokes start_practice_session and navigates to session", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
-      if (cmd === "start_practice_session") return Promise.resolve("new-session-id");
+      if (cmd === "start_practice_session")
+        return Promise.resolve("new-session-id");
       return Promise.reject(new Error(`unexpected cmd ${cmd}`));
     });
     render(<InstrumentSelector />);
@@ -252,7 +317,8 @@ describe("InstrumentSelector", () => {
       expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
         instrument: "Violin",
         practiceMode: "practice",
-        coachingEnabled: true,
+        // Off by default (offline-first): narration is opt-in.
+        coachingEnabled: false,
         scoreId: null,
       });
     });
@@ -281,9 +347,7 @@ describe("InstrumentSelector", () => {
 
     expect(usePracticeStore.getState().practiceMode).toBe("warmup");
     expect(
-      screen
-        .getByTestId("practice-mode-warmup")
-        .getAttribute("aria-checked"),
+      screen.getByTestId("practice-mode-warmup").getAttribute("aria-checked"),
     ).toBe("true");
     // The description copy swaps to the Warm-up blurb.
     const desc = screen.getByTestId("practice-mode-description");
@@ -306,7 +370,8 @@ describe("InstrumentSelector", () => {
       expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
         instrument: "Trumpet",
         practiceMode: "run_through",
-        coachingEnabled: true,
+        // Off by default (offline-first): narration is opt-in.
+        coachingEnabled: false,
         scoreId: null,
       });
     });

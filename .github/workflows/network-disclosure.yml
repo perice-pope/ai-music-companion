@@ -1,0 +1,59 @@
+name: Network disclosure
+
+# Enforces the offline-first / network-transparency principle: every outbound
+# network call site in first-party code must be disclosed in the registry
+# (docs/architecture/network-call-sites.allowlist) and the enumeration table in
+# docs/architecture/offline-first-and-network-transparency.md. An undisclosed
+# call site fails the build.
+#
+# Runs on any change that could add or move a call site, the registry, the doc,
+# or the checker itself — and on workflow_dispatch for manual runs.
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'apps/desktop/src-tauri/src/**'
+      - 'docs/architecture/network-call-sites.allowlist'
+      - 'docs/architecture/offline-first-and-network-transparency.md'
+      - 'scripts/check_network_disclosure.sh'
+      - '.github/workflows/network-disclosure.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  disclosure:
+    name: Outbound calls are disclosed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Check network disclosure
+        run: ./scripts/check_network_disclosure.sh
+
+      - name: Self-test — an undisclosed call site must FAIL the check
+        # Defense in depth: prove the guard actually catches a new egress
+        # point by injecting one into a non-disclosed file in a throwaway copy
+        # and asserting the checker exits non-zero. Never touches the real tree
+        # that the previous step validated.
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cp -r crates docs scripts apps "${tmp}/"
+          printf '\nasync fn __egress() { let _ = reqwest::Client::new(); }\n' \
+            >> "${tmp}/crates/brain/src/phrase.rs"
+          if (cd "${tmp}" && ./scripts/check_network_disclosure.sh); then
+            echo "::error::self-test failed — checker did not flag an undisclosed call site"
+            exit 1
+          else
+            echo "self-test OK: undisclosed call site was correctly rejected"
+          fi

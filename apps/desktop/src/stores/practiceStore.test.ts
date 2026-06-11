@@ -61,11 +61,12 @@ describe("practiceStore — state machine", () => {
     expect(s.sessionId).toBe("session-abc-123");
     expect(s.instrumentName).toBe("Trumpet");
     expect(s.startedAtMs).not.toBeNull();
-    // invoke called with the right command + args
+    // invoke called with the right command + args. Coaching narration is
+    // off by default (offline-first), so the session starts with it disabled.
     expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
       instrument: "Trumpet",
       practiceMode: "practice",
-      coachingEnabled: true,
+      coachingEnabled: false,
       scoreId: null,
     });
   });
@@ -78,9 +79,9 @@ describe("practiceStore — state machine", () => {
     expect(useStore.getState().status).toBe("listening");
 
     // Second start must throw — and must NOT call invoke a second time.
-    await expect(
-      useStore.getState().startSession("Piano"),
-    ).rejects.toThrow(/cannot start session from status=listening/);
+    await expect(useStore.getState().startSession("Piano")).rejects.toThrow(
+      /cannot start session from status=listening/,
+    );
     // Only the first call reached invoke.
     expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
@@ -171,9 +172,9 @@ describe("practiceStore — state machine", () => {
 
   it("switchInstrument is rejected when not listening", async () => {
     const useStore = await freshStore();
-    await expect(
-      useStore.getState().switchInstrument("Piano"),
-    ).rejects.toThrow(/cannot switch instrument from status=idle/);
+    await expect(useStore.getState().switchInstrument("Piano")).rejects.toThrow(
+      /cannot switch instrument from status=idle/,
+    );
   });
 });
 
@@ -258,25 +259,38 @@ describe("practiceStore — coachingEnabled persistence", () => {
     localStorageMock.clear();
   });
 
-  it("persists false across fresh store instantiations", async () => {
+  it("persists an explicit opt-in across fresh store instantiations", async () => {
     const useStore = await freshStore();
-    expect(useStore.getState().coachingEnabled).toBe(true);
-
-    useStore.getState().setCoachingEnabled(false);
+    // Off by default (offline-first): narration is opt-in.
     expect(useStore.getState().coachingEnabled).toBe(false);
+
+    useStore.getState().setCoachingEnabled(true);
+    expect(useStore.getState().coachingEnabled).toBe(true);
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "ai-music-companion:coaching-enabled",
+      "true",
+    );
+
+    // Re-import the module to simulate a fresh tab / app restart.
+    const useStore2 = await freshStore();
+    expect(useStore2.getState().coachingEnabled).toBe(true);
+  });
+
+  it("persists an explicit opt-out across fresh store instantiations", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setCoachingEnabled(false);
     expect(localStorageMock.setItem).toHaveBeenCalledWith(
       "ai-music-companion:coaching-enabled",
       "false",
     );
 
-    // Re-import the module to simulate a fresh tab / app restart.
     const useStore2 = await freshStore();
     expect(useStore2.getState().coachingEnabled).toBe(false);
   });
 
-  it("defaults to true when no preference is saved", async () => {
+  it("defaults to false (off) when no preference is saved", async () => {
     const useStore = await freshStore();
-    expect(useStore.getState().coachingEnabled).toBe(true);
+    expect(useStore.getState().coachingEnabled).toBe(false);
   });
 });
 
@@ -321,7 +335,7 @@ describe("practiceStore — practiceMode", () => {
     expect(mockInvoke).toHaveBeenCalledWith("start_practice_session", {
       instrument: "Trumpet",
       practiceMode: "run_through",
-      coachingEnabled: true,
+      coachingEnabled: false,
       scoreId: null,
     });
   });
