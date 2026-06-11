@@ -1,29 +1,25 @@
 import { test, expect, assertNoNetwork } from "../fixtures/app";
 
 /**
- * Offline-by-default, proven at the UI level.
+ * Offline-by-default, proven at the UI level — the real Connections & Privacy
+ * panel.
  *
- * The task asks for a "Connections & Privacy" panel where every networked
- * toggle defaults OFF and disclosure copy ("what's sent / works offline")
- * renders. As of the `main` this suite was written against, that panel
- * component does NOT exist in `apps/desktop/src` — it lives only on the
- * `claude/offline-first-transparency` branch (`ConnectionsPrivacy.tsx` +
- * `connectionsStore.ts`), which has not merged to main. The CI disclosure
- * guard from PR #169 operates on the Rust core, not a React panel.
+ * The panel landed on `main` via PR #167 (`ConnectionsPrivacy.tsx` +
+ * `connectionsStore.ts`). It is the Face-layer expression of the offline-first
+ * principle (`docs/architecture/offline-first-and-network-transparency.md`):
+ * offline by default, every networked feature opt-in and off until the user
+ * turns it on, with plain-language disclosure of what leaves the device.
  *
- * Rather than fake the panel or edit shared components (a parallel agent
- * owns those), this spec:
- *   1. auto-skips the panel-specific assertions with a clear message when
- *      the component is absent (so it goes green today and starts ACTUALLY
- *      asserting the toggles the moment the panel lands), and
- *   2. asserts the offline-by-default guarantees that ARE present on main:
- *      the entire boot + practice surface renders with no networked toggle
- *      in the "on" position and no outbound HTTP — the only networked
- *      surface in the app (cloud sign-in) is opt-in and lives off the
- *      practice path, on the History page.
+ * This suite navigates to that real panel from the selector and asserts:
+ *   1. boot/selector exposes no networked surface and makes no network;
+ *   2. every networked toggle in the panel defaults OFF;
+ *   3. the disclosure copy renders ("works offline" reassurance + a
+ *      what's-sent / leaves-your-device statement);
+ *   4. reaching and reading the whole panel triggers ZERO outbound HTTP.
  *
- * When the panel merges, delete the `panelPresent` guard and the
- * placeholder selectors below describe exactly what to assert.
+ * The toggles are native `<input type="checkbox" role="switch">`, so their
+ * checked state lives in the accessibility tree (Playwright's `toBeChecked`),
+ * not a literal `aria-checked` attribute — native checkboxes don't emit one.
  */
 
 const PANEL = "connections-privacy-panel";
@@ -48,25 +44,20 @@ test.describe("Connections & Privacy (offline-by-default)", () => {
 
   test("Connections & Privacy panel: networked toggles default OFF + disclosure copy", async ({
     page,
+    abortedRequests,
   }) => {
     await page.goto("/");
+    await expect(page.getByTestId("practice-shell-selector")).toBeVisible();
+
+    // Navigate to the real panel via the selector's entry point.
+    await page.getByTestId("open-connections-privacy").click();
 
     const panel = page.getByTestId(PANEL);
-    const present = (await panel.count()) > 0;
-
-    test.skip(
-      !present,
-      "ConnectionsPrivacy panel is not on this `main` (lives on " +
-        "claude/offline-first-transparency). Native/Rust offline guard is " +
-        "covered by crates/brain/tests/e2e_offline.rs + the CI disclosure " +
-        "guard. This assertion activates automatically once the panel merges.",
-    );
-
-    // --- Activates only when the panel exists -----------------------------
     await expect(panel).toBeVisible();
 
-    // Every networked toggle in the panel must default to OFF (unchecked /
-    // aria-checked=false). The panel exposes its switches as role=switch.
+    // Every networked toggle in the panel must default to OFF. The panel
+    // exposes each as a native checkbox with role=switch, so its checked
+    // state is read from the accessibility tree.
     const toggles = panel.getByRole("switch");
     const count = await toggles.count();
     expect(
@@ -74,14 +65,26 @@ test.describe("Connections & Privacy (offline-by-default)", () => {
       "panel should expose at least one networked toggle",
     ).toBeGreaterThan(0);
     for (let i = 0; i < count; i += 1) {
-      await expect(toggles.nth(i)).toHaveAttribute("aria-checked", "false");
+      await expect(
+        toggles.nth(i),
+        `networked toggle #${i} should default OFF`,
+      ).not.toBeChecked();
     }
 
-    // Disclosure copy: "works offline" + "what's sent" must render so the
-    // user can see the privacy posture without trusting us blindly.
-    await expect(panel).toContainText(/works offline/i);
-    await expect(panel).toContainText(
-      /what'?s sent|sent to|leaves your device/i,
-    );
+    // Disclosure copy, the heart of the privacy promise. The user can see
+    // both that the app works offline AND what leaves the device when a
+    // networked feature IS turned on — without trusting us blindly.
+    await expect(
+      panel.getByTestId("offline-reassurance"),
+      "standing 'works offline' reassurance must always render",
+    ).toContainText(/works offline/i);
+    await expect(
+      panel,
+      "panel must disclose what is sent / leaves the device",
+    ).toContainText(/leaves your device|it sends|sent to|what'?s sent/i);
+
+    // Reaching and reading the entire panel triggered no outbound HTTP — the
+    // disclosure screen itself honours the offline guarantee it describes.
+    await assertNoNetwork(page, abortedRequests);
   });
 });

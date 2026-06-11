@@ -87,7 +87,10 @@ export default function ConnectionsPrivacy() {
   );
 
   return (
-    <main className="min-h-screen bg-gray-900 p-8 text-white">
+    <main
+      className="min-h-screen bg-gray-900 p-8 text-white"
+      data-testid="connections-privacy-panel"
+    >
       <div className="mx-auto max-w-2xl">
         <h1 className="text-4xl font-bold">Connections &amp; Privacy</h1>
         <p className="mt-3 text-gray-300">
