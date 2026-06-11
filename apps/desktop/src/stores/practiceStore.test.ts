@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { CoachingTip, SessionRecap } from "../types/brain";
+import type { CoachingTip, PhraseSummary, SessionRecap } from "../types/brain";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -250,6 +250,123 @@ describe("practiceStore — tip queue", () => {
     const queue = useStore.getState().tipQueue;
     expect(queue.length).toBe(1);
     expect(queue[0].id).not.toBe(firstId);
+  });
+});
+
+describe("practiceStore — requestCoachingTip (live loop)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  function samplePhrase(phraseIndex = 0): PhraseSummary {
+    return {
+      phrase_index: phraseIndex,
+      start_time: 0,
+      end_time: 1,
+      duration_secs: 1,
+      note_count: 6,
+      pitch_stats: {
+        mean_hz: 440,
+        min_hz: 430,
+        max_hz: 450,
+        range_cents: 80,
+        pitches: [440, 440, 440],
+      },
+      dynamics: {
+        mean_amplitude: 0.5,
+        min_amplitude: 0.3,
+        max_amplitude: 0.8,
+        dynamic_range: 0.5,
+      },
+      stability: 0.8,
+    };
+  }
+
+  const sampleTip: CoachingTip = {
+    text: "Let the phrase breathe at the top.",
+    severity: "suggestion",
+    category: "tone",
+  };
+
+  async function listeningStore(coachingEnabled: boolean) {
+    if (coachingEnabled) {
+      localStorageMock.setItem("ai-music-companion:coaching-enabled", "true");
+    }
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid"); // start_practice_session
+    await useStore.getState().startSession("Trumpet");
+    mockInvoke.mockClear();
+    return useStore;
+  }
+
+  it("fires no IPC when coaching is disabled", async () => {
+    const useStore = await listeningStore(false);
+    await useStore.getState().requestCoachingTip(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useStore.getState().tipQueue).toHaveLength(0);
+  });
+
+  it("fires no IPC when no session is listening", async () => {
+    localStorageMock.setItem("ai-music-companion:coaching-enabled", "true");
+    const useStore = await freshStore();
+    // Never started a session → status is idle.
+    await useStore.getState().requestCoachingTip(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("when enabled: gets a tip, surfaces it, and persists it", async () => {
+    const useStore = await listeningStore(true);
+    // get_coaching_tip → tip, then record_coaching_tip → ok
+    mockInvoke.mockResolvedValueOnce(sampleTip);
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().requestCoachingTip(samplePhrase(2));
+
+    // Asked the backend for a tip with phrase + context.
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_coaching_tip",
+      expect.objectContaining({
+        phrase: expect.objectContaining({ phrase_index: 2 }),
+        phrasesPlayed: expect.any(Number),
+        sessionDurationSecs: expect.any(Number),
+      }),
+    );
+    // Surfaced into the tip panel queue.
+    const queue = useStore.getState().tipQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0].tip.text).toBe(sampleTip.text);
+    expect(queue[0].phraseIndex).toBe(2);
+    // Persisted via record_coaching_tip.
+    expect(mockInvoke).toHaveBeenCalledWith("record_coaching_tip", {
+      phraseIndex: 2,
+      tip: sampleTip,
+    });
+  });
+
+  it("when the backend returns null (no tip): surfaces nothing, records nothing", async () => {
+    const useStore = await listeningStore(true);
+    mockInvoke.mockResolvedValueOnce(null); // get_coaching_tip → no tip
+
+    await useStore.getState().requestCoachingTip(samplePhrase());
+
+    expect(useStore.getState().tipQueue).toHaveLength(0);
+    // Only get_coaching_tip was called — no record_coaching_tip.
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_coaching_tip",
+      expect.anything(),
+    );
+  });
+
+  it("a failed tip request never throws and leaves the queue empty", async () => {
+    const useStore = await listeningStore(true);
+    mockInvoke.mockRejectedValueOnce(new Error("network down"));
+
+    await expect(
+      useStore.getState().requestCoachingTip(samplePhrase()),
+    ).resolves.toBeUndefined();
+    expect(useStore.getState().tipQueue).toHaveLength(0);
   });
 });
 

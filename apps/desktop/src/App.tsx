@@ -30,6 +30,7 @@ import type { PhraseSummary, ScorePosition } from "./types/brain";
 function App() {
   const setEvent = useAudioStore((s) => s.setEvent);
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
+  const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
 
   useEffect(() => {
@@ -50,6 +51,11 @@ function App() {
         unsubs.push(
           await listen<PhraseSummary>("phrase-detected", ({ payload }) => {
             pushPhrase(payload);
+            // Live coaching loop: ask the backend for a tip on this phrase.
+            // Self-gated on the user's `coachingEnabled` opt-in — when off it
+            // fires no IPC at all. Fire-and-forget; the live session must never
+            // block on (or break from) a coaching round-trip.
+            void requestCoachingTip(payload);
             // Only score-following phrases carry a position; in free play
             // it's absent and the cursor stays put.
             if (payload.score_position) {
@@ -80,7 +86,7 @@ function App() {
     return () => {
       for (const u of unsubs) u();
     };
-  }, [setEvent, pushPhrase, setCursorPosition]);
+  }, [setEvent, pushPhrase, requestCoachingTip, setCursorPosition]);
 
   return <PracticeShell />;
 }
