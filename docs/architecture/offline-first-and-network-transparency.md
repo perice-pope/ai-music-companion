@@ -59,6 +59,20 @@ The one place the core loop *can* reach the network is the coaching narration in
 
 This is the technical guarantee behind "the internet is never required for core value."
 
+#### The airplane switch is enforced in the Rust core, not just the UI
+
+The engine carries an explicit `NetworkPolicy { Offline | Online }`. It **defaults
+to `Offline`**, and both outbound paths (`get_tip`, `generate_recap`) consult it
+*first* — before building any prompt, URL, headers, or request body, and before
+touching the `HttpClient`. When the policy is `Offline`, there is no code path to
+an outbound call: the engine returns the on-device fallback. The command layer
+(`apps/desktop/src-tauri/src/commands.rs`) mirrors the user's persisted
+`coachingEnabled` preference onto this policy at session start, so the guarantee
+lives **below the IPC boundary** — a bug, a malformed IPC payload, or a future
+caller that forgets the FE toggle still cannot trigger a silent outbound call.
+Tests in `coaching.rs` and `commands.rs` use a mock `HttpClient` that **panics if
+hit** to prove that an `Offline` engine never reaches the network.
+
 ---
 
 ## Every feature that can touch the network
@@ -67,13 +81,13 @@ This is the complete enumeration. If a feature is not in this table, it does not
 
 | Feature | What leaves the device | To whom | Opt-in? | Default | Where it lives |
 |---|---|---|---|---|---|
-| **AI coaching narration** | Per-phrase analysis numbers and session summary stats (instrument, durations, pitch/tone/intonation/groove figures, prior tips). **No raw audio.** | The configured LLM provider (Anthropic / OpenAI) | Yes | See note¹ | `crates/brain/src/coaching.rs` |
+| **AI coaching narration** | Per-phrase analysis numbers and session summary stats (instrument, durations, pitch/tone/intonation/groove figures, prior tips). **No raw audio.** | The configured LLM provider (Anthropic / OpenAI) | Yes | **OFF** (opt-in; see note¹) | `crates/brain/src/coaching.rs` |
 | **Cloud sync (sessions)** | Completed-session recaps: instrument, timestamps, duration, phrase count, overall assessment text, and the session tone aggregate. **No raw audio, no per-phrase rows.** | Supabase project (our hosted Postgres) | Yes | **OFF** (requires sign-in) | `apps/desktop/src/stores/syncStore.ts` |
 | **Cloud sync (taste profile)** | Stated personalization preferences (genres, artists, goals, experience). **No raw audio.** Its own switch, independent of session sync. | Supabase project | Yes | **OFF** (separate opt-in) | `apps/desktop/src/stores/syncStore.ts` (`syncTasteProfile`) |
 | **Account sign-in / auth** | Email + password (for account creation / login) | Supabase Auth | Yes | **OFF** (no account needed to practice) | `apps/desktop/src/stores/authStore.ts` |
 | **Teacher linking / dashboard** | Rides on cloud sync: the same synced recaps become visible to a linked teacher account. | Supabase (teacher-dashboard track) | Yes | **OFF** | builds on sync + auth |
 
-¹ **AI coaching narration default.** The on-device analysis (pitch, key, intonation, groove, tone) and the offline-fallback recap are always available with zero network. The LLM *narration* of that analysis is the networked part. Today the in-app coaching preference (`coachingEnabled`, `practiceStore`) defaults **on**; the principle in this doc says networked enhancements should default **off**. Flipping that default is a behavior change in the Rust/practice layer and is tracked as a **follow-up** below — this doc and the Connections & Privacy surface describe the target state and let the user turn narration off today, at which point coaching is served entirely by the on-device fallback.
+¹ **AI coaching narration default — now OFF.** The on-device analysis (pitch, key, intonation, groove, tone) and the offline-fallback recap are always available with zero network. The LLM *narration* of that analysis is the networked part. The in-app coaching preference (`coachingEnabled`, `practiceStore`) now defaults **off**: on first run, narration is disabled and the coach is served entirely by the on-device fallback. Turning it on in **Connections & Privacy** mirrors the choice onto the Rust-core `NetworkPolicy` (the airplane switch) and persists it. This was deferred follow-up #1, now implemented.
 
 ### What never leaves the device
 
@@ -100,6 +114,48 @@ The existing cloud-sync controls (sign-in / sign-out on the History page) remain
 
 ---
 
+## Disclosure registry (CI-enforced)
+
+The enumeration table above is not just documentation — it is **enforced in CI**.
+A new outbound network call that nobody disclosed cannot land silently.
+
+How it works:
+
+- **The registry.** [`network-call-sites.allowlist`](./network-call-sites.allowlist)
+  is a machine-checkable list of every first-party source file allowed to contain
+  an outbound-network call site (an `HttpClient` impl, a `reqwest`/`ureq`/`hyper`
+  client, or a raw socket egress). Today it contains exactly one entry:
+  `crates/brain/src/coaching.rs`.
+- **The scanner.** [`scripts/check_network_disclosure.sh`](../../scripts/check_network_disclosure.sh)
+  scans the first-party Rust sources (`crates/**`, `apps/desktop/src-tauri/src/**`)
+  for outbound-network indicators and **fails** if it finds one in a file that is
+  not in the registry. It strips comment-only lines first (so prose that merely
+  *mentions* `HttpClient` never trips it) and it cross-checks that every
+  registered file is also named in the enumeration table here — defense in depth
+  against a registry entry drifting away from the doc.
+- **The workflow.** [`.github/workflows/network-disclosure.yml`](../../.github/workflows/network-disclosure.yml)
+  runs the scanner on every PR that touches Rust source, the registry, this doc,
+  or the scanner itself. It also runs a self-test that injects a throwaway
+  undisclosed call site and asserts the checker rejects it, so the guard can't
+  silently rot into a no-op.
+
+### How to add a newly-disclosed call site
+
+A new outbound call is a product decision. To add one, in the same change:
+
+1. Add a row to the **enumeration table** above (feature, what leaves the device,
+   to whom, opt-in?, default, where it lives).
+2. Surface it in **Connections & Privacy** (`ConnectionsPrivacy.tsx`) — opt-in,
+   **OFF by default**, with plain-language disclosure of what is sent and to whom.
+3. Make the Rust core honor the **airplane switch** (`NetworkPolicy`) so the call
+   cannot fire when the feature is off.
+4. Add the file path to [`network-call-sites.allowlist`](./network-call-sites.allowlist),
+   with a comment naming the disclosed feature.
+
+If you skip any of these, the `network-disclosure` workflow goes red.
+
+---
+
 ## What we are deliberately NOT doing
 
 - **No telemetry by default.** We do not ship a "usage analytics" pipe that is on out of the box. If we ever add product analytics, it lands in the table above, opt-in, off by default, with disclosure — same rules as everything else.
@@ -110,11 +166,25 @@ The existing cloud-sync controls (sign-in / sign-out on the History page) remain
 
 ---
 
-## Follow-ups (deferred, not in this change)
+## Follow-ups
 
-These require touching the Rust core or sync behavior, which is out of scope for the doc + Face work that establishes the principle:
+### Implemented (the offline-hardening change)
 
-1. **Default AI coaching narration to OFF (or to a first-run choice).** Change `coachingEnabled` to default off, or add an onboarding step that asks. Backend/practice-layer change in `practiceStore` + any Rust coaching gate. (See note¹.)
-2. **A hard "airplane switch" in the Rust core.** A single setting the core respects that prevents the `CoachingEngine` from ever constructing an outbound request, independent of the FE toggle — so the guarantee is enforced below the UI, not just in it.
-3. **Build-time / CI assertion of the enumeration.** A test or lint that fails if a new outbound HTTP call site appears in the codebase that isn't represented in the table above and the Connections & Privacy surface.
+1. **Default AI coaching narration to OFF.** ✅ `coachingEnabled` (`practiceStore`)
+   now defaults **off**; on first run the coach uses the on-device fallback.
+   Connections & Privacy is where the user opts in, and the choice is persisted.
+   (See note¹.)
+2. **A hard "airplane switch" in the Rust core.** ✅ `CoachingEngine` carries an
+   explicit `NetworkPolicy { Offline | Online }`, defaults `Offline`, and consults
+   it before constructing any outbound request — so when offline the `HttpClient`
+   is never invoked, independent of the FE toggle. The command layer threads the
+   persisted preference into the policy. Proven by tests with a mock client that
+   panics if hit. (See *The airplane switch is enforced in the Rust core*.)
+3. **CI assertion of the enumeration.** ✅ `scripts/check_network_disclosure.sh`
+   + `.github/workflows/network-disclosure.yml` fail the build if an outbound call
+   site appears that isn't in the disclosure registry (and the doc table). (See
+   *Disclosure registry (CI-enforced)*.)
+
+### Still deferred
+
 4. **Disclosure of provider region / data handling** for the LLM narration, once the provider contract is finalized.

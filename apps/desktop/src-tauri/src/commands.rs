@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use brain::coaching::{
-    CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, ReqwestClient,
-    SessionContext,
+    CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, NetworkPolicy,
+    ReqwestClient, SessionContext,
 };
 use brain::follower::ScorePosition;
 use brain::phrase::PhraseSummary;
@@ -202,6 +202,12 @@ pub trait CoachingService: Send + Sync {
         phrase: &PhraseSummary,
         context: &SessionContext,
     ) -> Option<CoachingTip>;
+
+    /// Mirror the persisted `coachingEnabled` preference onto the underlying
+    /// engine's [`NetworkPolicy`] — the Rust-core airplane switch. Default is a
+    /// no-op (mocks never touch the network). The real LLM service overrides it
+    /// so that `Offline` makes an outbound tip request structurally impossible.
+    async fn set_network_policy(&self, _policy: NetworkPolicy) {}
 }
 
 /// Real coaching service backed by the Claude API.
@@ -226,6 +232,17 @@ impl LlmCoachingService {
     pub fn coaching_available(&self) -> bool {
         self.engine.is_some()
     }
+
+    /// Test-only constructor that injects a specific [`CoachingEngine`] (e.g.
+    /// one backed by a panicking HTTP client). Lets the airplane-switch tests
+    /// prove that an `Offline` policy prevents any outbound call at the command
+    /// layer without needing a real network client or API key.
+    #[cfg(test)]
+    pub fn with_engine(engine: CoachingEngine) -> Self {
+        Self {
+            engine: Some(Arc::new(Mutex::new(engine))),
+        }
+    }
 }
 
 impl Default for LlmCoachingService {
@@ -247,6 +264,12 @@ impl CoachingService for LlmCoachingService {
                 engine.get_tip(phrase, context).await.ok()
             }
             None => None,
+        }
+    }
+
+    async fn set_network_policy(&self, policy: NetworkPolicy) {
+        if let Some(engine_arc) = &self.engine {
+            engine_arc.lock().await.set_network_policy(policy);
         }
     }
 }
@@ -329,6 +352,15 @@ impl LlmRecapGenerator {
     pub fn coaching_available(&self) -> bool {
         self.engine.is_some()
     }
+
+    /// Test-only constructor that injects a specific [`CoachingEngine`]. See
+    /// [`LlmCoachingService::with_engine`].
+    #[cfg(test)]
+    pub fn with_engine(engine: CoachingEngine) -> Self {
+        Self {
+            engine: Some(Arc::new(Mutex::new(engine))),
+        }
+    }
 }
 
 impl Default for LlmRecapGenerator {
@@ -372,6 +404,12 @@ impl RecapGenerator for LlmRecapGenerator {
         // Call the LLM coaching engine for the full recap.
         let engine = engine_arc.lock().await;
         engine.generate_recap(input).await
+    }
+
+    async fn apply_network_policy(&self, policy: NetworkPolicy) {
+        if let Some(engine_arc) = &self.engine {
+            engine_arc.lock().await.set_network_policy(policy);
+        }
     }
 }
 
@@ -845,6 +883,21 @@ impl AppState {
     ) -> Result<Option<CoachingTip>, CommandError> {
         Ok(self.coaching_service.get_tip(phrase, context).await)
     }
+
+    /// Mirror the user's persisted `coachingEnabled` preference onto the
+    /// Rust-core airplane switch ([`NetworkPolicy`]) for **both** the live-tip
+    /// engine and the recap engine.
+    ///
+    /// This is where the FE toggle becomes a hard, below-the-IPC guarantee:
+    /// when `enabled == false`, both engines are set to [`NetworkPolicy::Offline`]
+    /// and are then structurally incapable of an outbound call — the on-device
+    /// fallback is used instead. Called at session start from the persisted
+    /// preference; the engines default to `Offline` until then.
+    pub async fn set_coaching_network_policy(&self, enabled: bool) {
+        let policy = NetworkPolicy::from_opt_in(enabled);
+        self.coaching_service.set_network_policy(policy).await;
+        self.recap_generator.apply_network_policy(policy).await;
+    }
 }
 
 impl Default for AppState {
@@ -1017,7 +1070,7 @@ pub async fn start_practice_session_impl(
     state: &AppState,
     instrument: String,
     practice_mode: PracticeMode,
-    _coaching_enabled: bool,
+    coaching_enabled: bool,
     score_title: Option<String>,
 ) -> Result<String, CommandError> {
     if instrument.trim().is_empty() {
@@ -1026,6 +1079,12 @@ pub async fn start_practice_session_impl(
     if !state.is_known_instrument(&instrument) {
         return Err(CommandError::UnknownInstrument(instrument));
     }
+
+    // Mirror the user's persisted opt-in onto the Rust-core airplane switch
+    // before any phrase or recap can be generated this session. When coaching
+    // is disabled, both engines go Offline and cannot make an outbound call —
+    // the coach is served entirely by the on-device fallback (offline-first).
+    state.set_coaching_network_policy(coaching_enabled).await;
 
     let mut guard = state.active_session.lock().await;
     if guard.is_some() {
@@ -2490,5 +2549,141 @@ mod tests {
         assert!(!err.is_empty());
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert!(listed.is_empty(), "failed import must not persist a row");
+    }
+
+    // -----------------------------------------------------------------------
+    // Airplane-switch threading (command layer → Rust-core NetworkPolicy)
+    // -----------------------------------------------------------------------
+
+    /// An HTTP client that panics if any outbound call is attempted. Used to
+    /// prove the command-layer threading: when coaching is disabled, the
+    /// engines are set Offline and never reach this client.
+    struct PanickingHttpClient;
+
+    #[async_trait]
+    impl brain::coaching::HttpClient for PanickingHttpClient {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _body: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<String, brain::coaching::CoachingError> {
+            panic!("outbound HTTP attempted while coaching was disabled (Offline policy)");
+        }
+    }
+
+    fn online_engine_with_panicking_client() -> CoachingEngine {
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test-key".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(PanickingHttpClient),
+        )
+        .expect("engine builds with an explicit api key");
+        // Start Online so the test proves the *policy flip* — not a default —
+        // is what prevents the call.
+        engine.set_network_policy(NetworkPolicy::Online);
+        engine
+    }
+
+    fn sample_context() -> SessionContext {
+        SessionContext {
+            instrument: "Trumpet".to_owned(),
+            session_duration_secs: 60.0,
+            phrases_played: 1,
+            previous_tips: Vec::new(),
+            score_title: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn disabling_coaching_makes_get_tip_offline_no_http_call() {
+        // Wire a real LLM service backed by a panicking client, then disable
+        // coaching via the command-layer threading. The engine must go Offline
+        // and return the on-device fallback — never touching the client.
+        let mut s = AppState::with_mocks();
+        s.coaching_service = Arc::new(LlmCoachingService::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+
+        // The FE pref said OFF → Offline.
+        s.set_coaching_network_policy(false).await;
+
+        let tip = s
+            .coaching_service
+            .get_tip(&sample_phrase(), &sample_context())
+            .await
+            .expect("offline coaching still returns an on-device tip");
+        assert!(
+            tip.text.contains("Consistent practice"),
+            "offline path must return the on-device fallback tip, got: {}",
+            tip.text
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_coaching_makes_recap_offline_no_http_call() {
+        let mut s = AppState::with_mocks();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+
+        s.set_coaching_network_policy(false).await;
+
+        let input = RecapInput {
+            instrument: "Trumpet".to_owned(),
+            duration_secs: 300.0,
+            practice_mode: PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: Vec::new(),
+            score_title: None,
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+        };
+
+        // Must not panic (no HTTP) and must return the grounded fallback recap.
+        let recap = s
+            .recap_generator
+            .generate_recap(&input)
+            .await
+            .expect("offline recap still succeeds via on-device fallback");
+        assert!(!recap.overall_assessment.is_empty());
+        assert!(
+            recap.connections.is_empty(),
+            "offline recap must not carry LLM connections"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_session_with_coaching_disabled_threads_offline_policy() {
+        // End-to-end at the command boundary: starting a session with
+        // coaching_enabled = false must put both engines Offline so that a
+        // subsequent tip request never reaches the (panicking) client.
+        let mut s = AppState::with_mocks();
+        s.coaching_service = Arc::new(LlmCoachingService::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+
+        let id = start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::default(),
+            false, // coaching disabled
+            None,
+        )
+        .await
+        .expect("session starts");
+        assert!(!id.is_empty());
+
+        // A tip request now would have panicked if the policy hadn't been
+        // threaded to Offline.
+        let tip = s
+            .coaching_service
+            .get_tip(&sample_phrase(), &sample_context())
+            .await
+            .expect("offline tip");
+        assert!(tip.text.contains("Consistent practice"));
     }
 }

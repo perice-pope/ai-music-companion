@@ -164,10 +164,15 @@ const PRACTICE_MODE_PREF_KEY = "ai-music-companion:practice-mode";
 function loadCoachingPref(): boolean {
   try {
     const raw = localStorage.getItem(COACHING_PREF_KEY);
-    // Default: enabled. Only "false" disables.
-    return raw === null ? true : raw !== "false";
+    // Default: DISABLED (off by default). AI coaching narration is a
+    // networked feature, and the offline-first principle says every networked
+    // feature is opt-in and starts off (see
+    // `docs/architecture/offline-first-and-network-transparency.md`). On first
+    // run the coach is served entirely by the on-device fallback. Only an
+    // explicit "true" turns narration on; the choice is then persisted.
+    return raw === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 

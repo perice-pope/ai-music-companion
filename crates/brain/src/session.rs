@@ -369,6 +369,19 @@ pub struct SessionRecap {
 pub trait RecapGenerator: Send + Sync {
     /// Produce a recap from accumulated session data.
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError>;
+
+    /// Mirror the offline-first airplane switch onto this generator's
+    /// underlying engine, if it has one. The default is a no-op: a generator
+    /// that never touches the network (mocks, on-device fallbacks) ignores it.
+    /// A networked generator (the LLM recap path) overrides this so that an
+    /// `Offline` policy makes an outbound recap request structurally impossible.
+    ///
+    /// Named distinctly from the inherent `CoachingEngine::set_network_policy`
+    /// so the two never collide in method resolution (`CoachingEngine` is itself
+    /// a `RecapGenerator`).
+    ///
+    /// See `docs/architecture/offline-first-and-network-transparency.md`.
+    async fn apply_network_policy(&self, _policy: crate::coaching::NetworkPolicy) {}
 }
 
 // ---------------------------------------------------------------------------

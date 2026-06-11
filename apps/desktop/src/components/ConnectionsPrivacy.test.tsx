@@ -43,9 +43,9 @@ describe("ConnectionsPrivacy", () => {
   });
 
   it("defaults EVERY networked toggle to OFF", () => {
-    // AI coaching narration default comes from practiceStore; force the
-    // documented target (off) so the disclosure surface reads honestly even
-    // before the backend default flip (see follow-up #1 in the design doc).
+    // AI coaching narration now defaults OFF in practiceStore (the offline-first
+    // default flip). The store already reads off-by-default at module init; we
+    // set it here only to keep the test independent of cross-test state leakage.
     usePracticeStore.setState({ coachingEnabled: false });
 
     render(<ConnectionsPrivacy />);
