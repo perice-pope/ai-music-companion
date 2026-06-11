@@ -938,15 +938,17 @@ impl AppState {
         bytes: &[u8],
     ) -> Result<RecognizedScore, String> {
         if !self.omr_enabled {
-            return Err("Reading sheet-music PDFs is an experimental feature that isn't \
+            return Err(
+                "Reading sheet-music PDFs is an experimental feature that isn't \
                         enabled in this build yet."
-                .to_string());
+                    .to_string(),
+            );
         }
         let recognized = omr::pdf_to_musicxml(engine, bytes).map_err(|e| e.to_string())?;
         // Reuse the canonical MusicXML part reader — the exact seam MusicXML
         // import uses — so the picker UX and the stored part_index are shared.
-        let parts = brain::score::musicxml::list_parts(&recognized.music_xml)
-            .map_err(|e| e.to_string())?;
+        let parts =
+            brain::score::musicxml::list_parts(&recognized.music_xml).map_err(|e| e.to_string())?;
         Ok(RecognizedScore {
             music_xml: recognized.music_xml,
             parts,
@@ -2019,9 +2021,11 @@ pub fn recognize_pdf_score<R: Runtime>(
     // Check the beta gate first so the message is "not enabled" rather than a
     // confusing "engine missing" when the feature is simply off.
     if !state.omr_enabled() {
-        return Err("Reading sheet-music PDFs is an experimental feature that isn't \
+        return Err(
+            "Reading sheet-music PDFs is an experimental feature that isn't \
                     enabled in this build yet."
-            .to_string());
+                .to_string(),
+        );
     }
     let engine_path = std::env::var_os("OMR_ENGINE_PATH").ok_or_else(|| {
         "The sheet-music reader isn't included in this build yet, so PDF import \
@@ -2864,9 +2868,8 @@ mod tests {
         assert_eq!(recognized.parts, vec!["Trumpet", "Trombone"]);
         assert!(!recognized.low_content, "this score has measures");
 
-        let reparsed =
-            brain::score::musicxml::parse_musicxml_str_part(&recognized.music_xml, 1)
-                .expect("recognized MusicXML must re-parse for the picked part");
+        let reparsed = brain::score::musicxml::parse_musicxml_str_part(&recognized.music_xml, 1)
+            .expect("recognized MusicXML must re-parse for the picked part");
         assert!(!reparsed.measures.is_empty());
 
         // OMR stores nothing itself — import happens later via the shared path.
@@ -2903,7 +2906,9 @@ mod tests {
             <part id="P1"></part>
         </score-partwise>"#;
         let engine = omr::StaticOmrEngine::new(empty);
-        let recognized = s.recognize_pdf(&engine, FAKE_PDF).expect("recognizes structurally");
+        let recognized = s
+            .recognize_pdf(&engine, FAKE_PDF)
+            .expect("recognizes structurally");
         assert!(
             recognized.low_content,
             "no measures → warn the read likely failed"
