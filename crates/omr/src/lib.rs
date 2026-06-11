@@ -217,7 +217,10 @@ mod tests {
         let engine = StaticOmrEngine::new(empty_score);
         let got = pdf_to_musicxml(&engine, MINIMAL_PDF).expect("structurally a score");
         assert_eq!(got.quality.measure_count, 0);
-        assert!(got.quality.low_content, "no measures → warn the read failed");
+        assert!(
+            got.quality.low_content,
+            "no measures → warn the read failed"
+        );
     }
 
     #[test]

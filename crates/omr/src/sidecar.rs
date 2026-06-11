@@ -70,8 +70,16 @@ impl OmrEngine for SidecarOmrEngine {
         match writer.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-            Ok(Err(e)) => return Err(OmrError::Engine(format!("writing PDF to sidecar failed: {e}"))),
-            Err(_) => return Err(OmrError::Engine("sidecar input thread panicked".to_string())),
+            Ok(Err(e)) => {
+                return Err(OmrError::Engine(format!(
+                    "writing PDF to sidecar failed: {e}"
+                )))
+            }
+            Err(_) => {
+                return Err(OmrError::Engine(
+                    "sidecar input thread panicked".to_string(),
+                ))
+            }
         }
 
         if !output.status.success() {
@@ -119,7 +127,9 @@ mod tests {
             "#!/bin/sh\ncat >/dev/null\nprintf '%s' '<score-partwise><part id=\"P1\"><measure number=\"1\"/></part></score-partwise>'\n",
         );
         let engine = SidecarOmrEngine::new(&bin);
-        let xml = engine.recognize_pdf(b"%PDF-1.7 data").expect("engine succeeds");
+        let xml = engine
+            .recognize_pdf(b"%PDF-1.7 data")
+            .expect("engine succeeds");
         assert!(xml.contains("<score-partwise>"));
         let _ = fs::remove_file(&bin);
     }

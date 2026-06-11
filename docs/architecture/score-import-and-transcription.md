@@ -97,6 +97,36 @@ bundled, but ships a Python-derived executable). Phase 1 will spike the sidecar
 path first to get an end-to-end "PDF → notes" demo behind the beta flag, then
 decide whether the Rust port is worth it.
 
+### Phase 1 status (sidecar spike — landed behind the beta flag)
+
+The **end-to-end seam is built and tested**; what remains is the engine artifact
+itself and on-device verification:
+
+- **`crates/omr`** — an `OmrEngine` trait (PDF bytes → MusicXML), a validated
+  `pdf_to_musicxml` pipeline with a calm `OmrQuality` signal, and
+  `SidecarOmrEngine`, which runs the frozen-oemer binary out-of-process
+  (PDF on stdin → MusicXML on stdout). The engine sits behind a trait, so the
+  later Rust-port decision is a drop-in swap. A dependency-free
+  `StaticOmrEngine` covers the pipeline in tests.
+- **Convergence on the shared path** — `recognize_pdf_score` returns recognized
+  MusicXML + its parts; the frontend feeds that straight into the *existing*
+  `list_parts` → "which part?" picker → `import_musicxml_file` flow from Phase 0.
+  OMR stores nothing of its own. The "read from a scan — check it" note always
+  shows (stronger when the scan yielded almost nothing).
+- **Offline & bundling** — the engine is resolved from the Tauri resource dir at
+  startup (`OMR_ENGINE_PATH`, mirroring `ORT_DYLIB_PATH`) and bundled at build
+  time via `scripts/fetch-omr-engine.sh` into `resources/omr/`. **Zero network
+  at run time; nothing new to disclose.** Missing engine → honest
+  "not available in this build", never a fabricated score.
+- **Gated** by `AMC_ENABLE_PDF_OMR` (off by default) so a normal build never
+  advertises an unverified read path.
+
+**Still open (the actual recognition quality):** produce the frozen-oemer
+artifact + wire `OMR_ENGINE_URL` into the installer pipeline, confirm the model
+license, and verify real recognition accuracy on a Mac with genuine scans. Until
+the artifact ships, the path is exercisable in dev by pointing `OMR_ENGINE_PATH`
+at any binary honouring the stdin-PDF → stdout-MusicXML contract.
+
 ---
 
 ## Decision 2 — Audio: separate stems, then ask which part
@@ -150,7 +180,7 @@ sheet music and play" never requires the internet, a JVM, or a Python runtime.
 | Phase | Deliverable |
 |---|---|
 | **0 (done)** | MusicXML import + part picker; `.mxl` guidance; honest audio quality banner |
-| **1** | PDF→OMR via oemer (ONNX): rasterize → MusicXML → existing part picker + "read from a scan" note |
+| **1 (seam done; engine artifact pending)** | PDF→OMR via a frozen-oemer sidecar: `crates/omr` + `recognize_pdf_score` → existing part picker + "read from a scan" note, behind the `AMC_ENABLE_PDF_OMR` beta flag |
 | **2** | Audio stem separation (Demucs ONNX) + stem picker in front of basic-pitch |
 | **later** | `.mxl` (zip) support; drum/rhythm view; OMR correction UI |
 
