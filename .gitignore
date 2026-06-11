@@ -70,9 +70,12 @@ coverage/
 tarpaulin-report.html
 
 # Claude Code local agent state (sessions, worktrees, transcripts).
-# Must never be committed — nested git repos would register as broken
-# submodules and run logs are noisy / potentially sensitive.
-.claude/
+# Must never be committed — nested git repos (worktrees) would register as
+# broken submodules and run logs are noisy / potentially sensitive.
+# Exception: .claude/skills/ holds shareable project skills (e.g. /test-app)
+# and IS committed so the whole team gets them on checkout.
+.claude/*
+!.claude/skills/
 
 # Locally-cloned sibling repos placed under this project root
 # (e.g. the pitch-deck repo cloned here for cross-working).

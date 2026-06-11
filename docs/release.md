@@ -10,6 +10,35 @@ installers on every desktop platform.
 
 ---
 
+## In plain English (read this first)
+
+This is the developer/maintainer guide for turning the code into the actual
+**installers** people download (the `.dmg` for Mac, the `.exe`/`.msi` for
+Windows, the Linux packages), and for the **auto-update** that quietly offers
+existing users the next version.
+
+**Who runs this:** someone with developer access **and** the paid signing
+accounts (an Apple Developer membership and a Windows code-signing certificate).
+Without those, the app can still be built, but the computer will show a "this is
+from an unidentified developer" warning when people install it.
+
+**The whole flow in one breath:** you merge your changes → the system
+automatically picks the new version number and tags it → that tag makes three
+robots (one per operating system) build the installers and put them in a
+**draft** release → a person downloads them, checks they work, and clicks
+**Publish**.
+
+**What a non-developer can do here:** run the build (step 4) to *see* installers
+get produced, and do the smoke-test + Publish at the end. **What needs a
+developer with accounts:** setting up the one-time signing secrets (section 3)
+and the updater key (section 6). Those are clearly marked.
+
+> Pair this with [`qa-runbook.md`](./qa-runbook.md) — that one (written for
+> anyone, no coding needed) is how you confirm a build actually *works* on real
+> hardware before you publish it.
+
+---
+
 ## 1. Architecture of the release pipeline
 
 | Stage | Workflow | Trigger | Output |
