@@ -835,6 +835,53 @@ impl AppState {
             .map_err(|e| e.to_string())
     }
 
+    /// Import a MusicXML file into the score library.
+    ///
+    /// Parses the MusicXML to derive metadata (title, composer, measure count)
+    /// *in the backend* — business logic stays in Rust (CLAUDE.md), so the
+    /// frontend only ships raw bytes and a chosen part. `part_index` selects
+    /// which `<part>` of a multi-instrument score to read and practice; the UI
+    /// gets the choices from [`list_score_parts`]. The **original** MusicXML is
+    /// stored unchanged so the score follower re-selects the same part by index
+    /// at session start (see [`AppState::build_follower`]). Parsing the chosen
+    /// part up front also means a malformed file fails *here*, at import, with a
+    /// clear message — never silently later when the cursor won't move.
+    ///
+    /// Title falls back to the file's name stem when the score carries no
+    /// `<work-title>` / `<movement-title>` (parser yields `"Untitled"`).
+    fn import_musicxml(
+        &self,
+        source_filename: String,
+        music_xml: String,
+        part_index: usize,
+    ) -> Result<ScoreLibraryEntry, String> {
+        let model = brain::score::musicxml::parse_musicxml_str_part(&music_xml, part_index)
+            .map_err(|e| e.to_string())?;
+
+        let title = if model.title == "Untitled" {
+            filename_stem(&source_filename).unwrap_or_else(|| "Untitled".to_string())
+        } else {
+            model.title.clone()
+        };
+        let composer = model.composer.clone();
+        let duration_measures = model.measures.len();
+
+        let store = self
+            .score_store
+            .lock()
+            .map_err(|e| format!("lock error: {e}"))?;
+        store
+            .import(
+                title,
+                composer,
+                source_filename,
+                music_xml,
+                part_index,
+                duration_measures,
+            )
+            .map_err(|e| e.to_string())
+    }
+
     /// Import an audio recording into the score library.
     ///
     /// Transcribes the recording to MIDI via basic-pitch (the [`transcribe`]
@@ -1737,6 +1784,52 @@ pub fn import_midi_file(
     state.import_midi(source_filename, bytes).map(Into::into)
 }
 
+/// Decode raw file bytes as a UTF-8 MusicXML string.
+///
+/// Uncompressed MusicXML (`.musicxml` / `.xml`) is plain text. Compressed
+/// `.mxl` is a ZIP container, so it won't decode here — we surface a clear,
+/// actionable message rather than a raw UTF-8 error, and point the user at the
+/// uncompressed export their notation app can produce. (Adding a zip dep to
+/// read `.mxl` directly is a deliberate later call, not silent scope creep.)
+fn decode_musicxml_bytes(bytes: Vec<u8>) -> Result<String, String> {
+    String::from_utf8(bytes).map_err(|_| {
+        "This doesn't look like uncompressed MusicXML. If it's a .mxl file, \
+         re-export it as uncompressed .musicxml (or .xml) and try again."
+            .to_string()
+    })
+}
+
+/// List the instrument parts in a MusicXML file, in score order.
+///
+/// Lets the UI ask "which part do you want to read and practice?" before
+/// import. A single-part score returns a one-element vec (the UI can skip the
+/// picker and import part 0 directly). `bytes` is the raw file read on the
+/// frontend. Read-only: nothing is stored.
+#[tauri::command]
+pub fn list_score_parts(bytes: Vec<u8>) -> Result<Vec<String>, String> {
+    let xml = decode_musicxml_bytes(bytes)?;
+    brain::score::musicxml::list_parts(&xml).map_err(|e| e.to_string())
+}
+
+/// Import a MusicXML file into the score library, reading the chosen `part`.
+///
+/// The backend parses the MusicXML (metadata + the selected part) so the
+/// frontend never carries score-parsing logic. `part_index` is the choice the
+/// user made against [`list_score_parts`]; for a single-part score the UI
+/// passes `0`. `bytes` is the raw file content read on the frontend.
+#[tauri::command]
+pub fn import_musicxml_file(
+    state: State<'_, AppState>,
+    source_filename: String,
+    bytes: Vec<u8>,
+    part_index: usize,
+) -> Result<ScoreLibraryEntryDto, String> {
+    let xml = decode_musicxml_bytes(bytes)?;
+    state
+        .import_musicxml(source_filename, xml, part_index)
+        .map(Into::into)
+}
+
 /// Extract a lowercase file extension (no dot) for the audio decode hint.
 fn filename_ext(name: &str) -> Option<String> {
     std::path::Path::new(name)
@@ -2525,6 +2618,112 @@ mod tests {
         // Nothing should have been written to the library.
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert!(listed.is_empty(), "failed import must not persist a row");
+    }
+
+    /// Two-part MusicXML (Trumpet then Trombone) for the part-selection tests.
+    const TWO_PART_MUSICXML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <work><work-title>Little Duet</work-title></work>
+  <identification><creator type="composer">Tester</creator></identification>
+  <part-list>
+    <score-part id="P1"><part-name>Trumpet</part-name></score-part>
+    <score-part id="P2"><part-name>Trombone</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+      <note><pitch><step>G</step><octave>3</octave></pitch><duration>1</duration></note>
+      <note><pitch><step>F</step><octave>3</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+    #[test]
+    fn import_musicxml_stores_metadata_and_selected_part() {
+        let s = state();
+        // Choose the second part (Trombone) — the part the user picked must be
+        // persisted so the follower re-selects it at session start.
+        let entry = s
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                1,
+            )
+            .expect("import valid MusicXML");
+
+        assert_eq!(entry.title, "Little Duet");
+        assert_eq!(entry.composer.as_deref(), Some("Tester"));
+        assert_eq!(entry.part_index, 1, "the chosen part must be stored");
+        assert!(entry.duration_measures >= 1);
+
+        // The stored MusicXML is the original (both parts), and re-parsing the
+        // stored part_index yields the Trombone line (G3=55, F3=53).
+        let reparsed =
+            brain::score::musicxml::parse_musicxml_str_part(&entry.music_xml, entry.part_index)
+                .expect("stored MusicXML must re-parse");
+        let midi: Vec<u8> = reparsed.measures[0]
+            .notes
+            .iter()
+            .map(|n| n.midi_number)
+            .collect();
+        assert_eq!(
+            midi,
+            vec![55, 53],
+            "stored part_index should select Trombone"
+        );
+
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn import_musicxml_falls_back_to_filename_when_untitled() {
+        let s = state();
+        let xml =
+            TWO_PART_MUSICXML.replace("<work><work-title>Little Duet</work-title></work>", "");
+        let entry = s
+            .import_musicxml("scores/my_etude.xml".to_string(), xml, 0)
+            .expect("import untitled MusicXML");
+        assert_eq!(entry.title, "my_etude");
+    }
+
+    #[test]
+    fn import_musicxml_out_of_range_part_errors_without_persisting() {
+        let s = state();
+        let err = s
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                99,
+            )
+            .expect_err("out-of-range part must error");
+        assert!(!err.is_empty());
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert!(listed.is_empty(), "failed import must not persist a row");
+    }
+
+    #[test]
+    fn decode_musicxml_bytes_rejects_compressed_or_binary() {
+        // A .mxl (ZIP) starts with "PK\x03\x04" — not valid UTF-8 text. The
+        // message must steer the user to re-export uncompressed, not leak a
+        // raw decode error.
+        let zip_magic = vec![0x50, 0x4B, 0x03, 0x04, 0xFF, 0xFE];
+        let err = decode_musicxml_bytes(zip_magic).expect_err("binary must be rejected");
+        assert!(err.contains(".mxl") && err.contains("uncompressed"));
+    }
+
+    #[test]
+    fn list_score_parts_returns_names_in_order() {
+        let parts = list_score_parts(TWO_PART_MUSICXML.as_bytes().to_vec())
+            .expect("list parts from MusicXML");
+        assert_eq!(parts, vec!["Trumpet".to_string(), "Trombone".to_string()]);
     }
 
     #[test]
