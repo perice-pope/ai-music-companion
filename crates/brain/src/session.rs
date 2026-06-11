@@ -660,6 +660,26 @@ impl SessionRecorder {
         Ok(())
     }
 
+    /// The texts of the most recent `limit` coaching tips recorded this
+    /// session, oldest-first within the returned window.
+    ///
+    /// Threaded into the live coach's [`SessionContext::previous_tips`] so the
+    /// next tip can avoid repeating recent advice. Walks every segment in order
+    /// and keeps the trailing `limit` texts.
+    pub fn recent_tips(&self, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let all: Vec<String> = self
+            .participants
+            .iter()
+            .flat_map(|p| p.segments.iter().flat_map(|s| s.tips.iter()))
+            .map(|t| t.text.clone())
+            .collect();
+        let start = all.len().saturating_sub(limit);
+        all[start..].to_vec()
+    }
+
     /// Close the currently open segment and open a new one with
     /// `new_instrument` and `new_mode`. Returns the new segment's id.
     ///
@@ -1002,6 +1022,34 @@ mod tests {
         assert_eq!(segs[0].tips[0].text, "old tip");
         assert_eq!(segs[1].tips.len(), 1);
         assert_eq!(segs[1].tips[0].text, "new tip");
+    }
+
+    #[test]
+    fn recent_tips_returns_trailing_window_oldest_first_across_segments() {
+        let mut recorder = SessionRecorder::new("trumpet".to_owned(), PracticeMode::default());
+        recorder.record_phrase(phrase(0)).unwrap();
+        for i in 0..4 {
+            recorder
+                .record_tip(
+                    i,
+                    format!("tip {i}"),
+                    "suggestion".to_owned(),
+                    "tone".to_owned(),
+                )
+                .unwrap();
+        }
+
+        // No tips requested → empty.
+        assert!(recorder.recent_tips(0).is_empty());
+
+        // Fewer recorded than the window → all, oldest-first.
+        assert_eq!(
+            recorder.recent_tips(10),
+            vec!["tip 0", "tip 1", "tip 2", "tip 3"]
+        );
+
+        // Capped to the trailing window.
+        assert_eq!(recorder.recent_tips(2), vec!["tip 2", "tip 3"]);
     }
 
     #[test]

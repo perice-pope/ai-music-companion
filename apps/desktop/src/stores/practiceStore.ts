@@ -138,6 +138,17 @@ export interface PracticeState {
   ) => Promise<void>;
   pushPhrase: (phrase: PhraseSummary) => void;
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
+  /**
+   * Live coaching loop: ask the backend for a tip on a just-completed phrase,
+   * surface it in the tip panel, and persist it in the session recorder.
+   *
+   * Gated on `coachingEnabled` (the user's opt-in): when off we fire **no**
+   * IPC at all — there's nothing to ask for, and the Rust-core airplane switch
+   * (`NetworkPolicy::Offline`) would refuse anyway. When on, the backend may
+   * still return `null` (rate-limited, API failure, or offline) — that means
+   * "no tip", and we honor the silence rather than inventing one.
+   */
+  requestCoachingTip: (phrase: PhraseSummary) => Promise<void>;
   dismissTip: (id: string) => void;
   setCursorPosition: (pos: ScorePosition | null) => void;
   tick: () => void;
@@ -448,6 +459,42 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         { id: newId(), tip, receivedAt: Date.now(), phraseIndex },
       ],
     })),
+
+  requestCoachingTip: async (phrase) => {
+    const { coachingEnabled, status, elapsedSecs, phrases } = get();
+    // Opt-in gate: no IPC at all when the user hasn't enabled online coaching,
+    // and only while a session is live.
+    if (!coachingEnabled || status !== "listening") {
+      return;
+    }
+    try {
+      const tip = await invoke<CoachingTip | null>("get_coaching_tip", {
+        phrase,
+        sessionDurationSecs: elapsedSecs,
+        phrasesPlayed: phrases.length,
+      });
+      // `null` is the honest "no tip" signal (offline / rate-limited / API
+      // failure). Surface nothing — the panel shows its empty state.
+      if (!tip) {
+        return;
+      }
+      get().pushTip(tip, phrase.phrase_index);
+      // Persist it into the session recorder so it lands in history + recap.
+      // A failure here must not break the live loop — log and move on.
+      try {
+        await invoke("record_coaching_tip", {
+          phraseIndex: phrase.phrase_index,
+          tip,
+        });
+      } catch (err) {
+        console.error("Failed to persist coaching tip:", err);
+      }
+    } catch (err) {
+      // The live tip is best-effort; never let a failed request disrupt
+      // the session.
+      console.error("Failed to fetch coaching tip:", err);
+    }
+  },
 
   dismissTip: (id) =>
     set((state) => ({

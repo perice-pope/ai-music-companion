@@ -261,7 +261,11 @@ impl CoachingService for LlmCoachingService {
         match &self.engine {
             Some(engine_arc) => {
                 let mut engine = engine_arc.lock().await;
-                engine.get_tip(phrase, context).await.ok()
+                // `get_tip` returns `Result<Option<CoachingTip>>`: `Ok(None)`
+                // when the engine is offline / rate-limited / the call failed
+                // (silence beats a lie), `Err` only on construction-time issues.
+                // Flatten both "no tip" cases to a single `None`.
+                engine.get_tip(phrase, context).await.ok().flatten()
             }
             None => None,
         }
@@ -320,6 +324,30 @@ impl CoachingService for MockCoachingService {
         self.tips
             .get(phrase.phrase_index % self.tips.len())
             .cloned()
+    }
+}
+
+/// Stable snake_case label for a [`CoachingSeverity`], matching the enum's
+/// serde representation. Used when persisting a tip into the recorder, which
+/// stores severity/category as plain strings.
+fn coaching_severity_label(severity: CoachingSeverity) -> &'static str {
+    match severity {
+        CoachingSeverity::Encouragement => "encouragement",
+        CoachingSeverity::Suggestion => "suggestion",
+        CoachingSeverity::Focus => "focus",
+    }
+}
+
+/// Stable snake_case label for a [`CoachingCategory`], matching the enum's
+/// serde representation.
+fn coaching_category_label(category: CoachingCategory) -> &'static str {
+    match category {
+        CoachingCategory::Tone => "tone",
+        CoachingCategory::Intonation => "intonation",
+        CoachingCategory::Rhythm => "rhythm",
+        CoachingCategory::Dynamics => "dynamics",
+        CoachingCategory::Expression => "expression",
+        CoachingCategory::Technique => "technique",
     }
 }
 
@@ -882,6 +910,36 @@ impl AppState {
         context: &SessionContext,
     ) -> Result<Option<CoachingTip>, CommandError> {
         Ok(self.coaching_service.get_tip(phrase, context).await)
+    }
+
+    /// The texts of the most recent `limit` coaching tips recorded in the
+    /// active session, oldest-first. Empty when there's no active session.
+    /// Threaded into the live coach's `previous_tips` so it can avoid
+    /// repeating recent advice.
+    pub async fn recent_tip_texts(&self, limit: usize) -> Vec<String> {
+        match &*self.active_session.lock().await {
+            Some(s) => s.recorder.recent_tips(limit),
+            None => Vec::new(),
+        }
+    }
+
+    /// Persist a coaching tip into the active session's recorder so it lands in
+    /// the session history and the end-of-session recap input. No-op (returns
+    /// `NoSession`) when there's no active session.
+    pub async fn record_coaching_tip(
+        &self,
+        phrase_index: usize,
+        tip: &CoachingTip,
+    ) -> Result<(), CommandError> {
+        let mut guard = self.active_session.lock().await;
+        let session = guard.as_mut().ok_or(CommandError::NotActive)?;
+        session.recorder.record_tip(
+            phrase_index,
+            tip.text.clone(),
+            coaching_severity_label(tip.severity).to_owned(),
+            coaching_category_label(tip.category).to_owned(),
+        )?;
+        Ok(())
     }
 
     /// Mirror the user's persisted `coachingEnabled` preference onto the
@@ -1485,11 +1543,33 @@ pub async fn get_coaching_tip(
         instrument: state.active_session_instrument().await.unwrap_or_default(),
         session_duration_secs,
         phrases_played,
-        previous_tips: Vec::new(),
+        // Thread the most recent tips from this session into the prompt so the
+        // coach avoids repeating itself. Capped to keep the prompt tight.
+        previous_tips: state.recent_tip_texts(PREVIOUS_TIPS_WINDOW).await,
         score_title: state.active_session_score_title().await,
     };
     state
         .get_coaching_tip(&phrase, &session_ctx)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// How many recent coaching tips to feed back to the live coach as
+/// `previous_tips` (avoid-repetition context). A small window keeps the prompt
+/// focused on what was *just* said without bloating it.
+const PREVIOUS_TIPS_WINDOW: usize = 5;
+
+/// Persist a coaching tip into the active session's recorder so it lands in the
+/// session history and the end-of-session recap input. Called by the frontend
+/// right after a tip is surfaced. No-ops (errors) when no session is active.
+#[tauri::command]
+pub async fn record_coaching_tip(
+    state: State<'_, AppState>,
+    phrase_index: usize,
+    tip: CoachingTip,
+) -> Result<(), String> {
+    state
+        .record_coaching_tip(phrase_index, &tip)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2602,7 +2682,8 @@ mod tests {
     async fn disabling_coaching_makes_get_tip_offline_no_http_call() {
         // Wire a real LLM service backed by a panicking client, then disable
         // coaching via the command-layer threading. The engine must go Offline
-        // and return the on-device fallback — never touching the client.
+        // and return NO live tip — never touching the client, never fabricating
+        // canned encouragement (silence beats a lie).
         let mut s = AppState::with_mocks();
         s.coaching_service = Arc::new(LlmCoachingService::with_engine(
             online_engine_with_panicking_client(),
@@ -2614,12 +2695,10 @@ mod tests {
         let tip = s
             .coaching_service
             .get_tip(&sample_phrase(), &sample_context())
-            .await
-            .expect("offline coaching still returns an on-device tip");
+            .await;
         assert!(
-            tip.text.contains("Consistent practice"),
-            "offline path must return the on-device fallback tip, got: {}",
-            tip.text
+            tip.is_none(),
+            "offline live tip must be silent (None), never a canned fallback"
         );
     }
 
@@ -2678,12 +2757,89 @@ mod tests {
         assert!(!id.is_empty());
 
         // A tip request now would have panicked if the policy hadn't been
-        // threaded to Offline.
+        // threaded to Offline. Offline yields no live tip (silence beats a lie).
         let tip = s
             .coaching_service
             .get_tip(&sample_phrase(), &sample_context())
+            .await;
+        assert!(
+            tip.is_none(),
+            "offline live tip must be silent (None), never a canned fallback"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Live coaching loop wiring (record_coaching_tip + previous_tips threading)
+    // -----------------------------------------------------------------------
+
+    fn focus_tip(text: &str) -> CoachingTip {
+        CoachingTip {
+            text: text.to_owned(),
+            severity: CoachingSeverity::Suggestion,
+            category: CoachingCategory::Tone,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_coaching_tip_persists_into_active_session() {
+        let s = state();
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
             .await
-            .expect("offline tip");
-        assert!(tip.text.contains("Consistent practice"));
+            .expect("session starts");
+
+        s.record_coaching_tip(0, &focus_tip("Let the phrase breathe at the top."))
+            .await
+            .expect("recording a tip into an active session succeeds");
+
+        // It lands in the recorder, surfaced via the recent-tips accessor.
+        let recent = s.recent_tip_texts(5).await;
+        assert_eq!(
+            recent,
+            vec!["Let the phrase breathe at the top.".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn record_coaching_tip_errors_with_no_active_session() {
+        let s = state();
+        let err = s
+            .record_coaching_tip(0, &focus_tip("nope"))
+            .await
+            .expect_err("recording with no session must error");
+        assert!(matches!(err, CommandError::NotActive));
+    }
+
+    #[tokio::test]
+    async fn recent_tip_texts_threads_recent_tips_in_order_and_is_capped() {
+        let s = state();
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
+            .await
+            .expect("session starts");
+
+        for i in 0..7 {
+            s.record_coaching_tip(i, &focus_tip(&format!("tip {i}")))
+                .await
+                .expect("record tip");
+        }
+
+        // Only the most recent 5 are threaded, oldest-first within the window.
+        let recent = s.recent_tip_texts(5).await;
+        assert_eq!(
+            recent,
+            vec![
+                "tip 2".to_owned(),
+                "tip 3".to_owned(),
+                "tip 4".to_owned(),
+                "tip 5".to_owned(),
+                "tip 6".to_owned(),
+            ],
+            "previous_tips window must carry the trailing tips, oldest-first"
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_tip_texts_empty_with_no_active_session() {
+        let s = state();
+        assert!(s.recent_tip_texts(5).await.is_empty());
     }
 }
