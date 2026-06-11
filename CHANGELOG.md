@@ -1,3 +1,9 @@
+## [1.47.0](https://github.com/perice-pope/ai-music-companion/compare/v1.46.1...v1.47.0) (2026-06-11)
+
+### Features
+
+* **score:** wire MusicXML import with part selection ([#179](https://github.com/perice-pope/ai-music-companion/issues/179)) ([80ee3ef](https://github.com/perice-pope/ai-music-companion/commit/80ee3ef84a428598198c740c179f5503fae5e2a2))
+
 ## [1.46.1](https://github.com/perice-pope/ai-music-companion/compare/v1.46.0...v1.46.1) (2026-06-11)
 
 ### Bug Fixes
