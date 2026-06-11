@@ -1,0 +1,34 @@
+# Disclosed outbound-network call-site registry
+#
+# This file is the machine-checkable half of the network-transparency
+# guarantee in `offline-first-and-network-transparency.md`. It enumerates every
+# first-party source file that is ALLOWED to contain an outbound-network call
+# site (an `HttpClient` impl, a `reqwest`/`ureq`/`hyper` client, or a raw socket
+# egress).
+#
+# `scripts/check_network_disclosure.sh` scans the first-party Rust sources for
+# outbound-network indicators and FAILS the build if it finds one in a file that
+# is not listed here. That makes the enumeration in the offline-first doc
+# exhaustive by construction: a new outbound call that nobody disclosed cannot
+# land silently.
+#
+# ── How to add a newly-disclosed call site ───────────────────────────────────
+# A new outbound network call is a product decision, not a drive-by. To add one:
+#   1. Add a row to the enumeration table in
+#      `docs/architecture/offline-first-and-network-transparency.md`
+#      (feature, what leaves the device, to whom, opt-in?, default, where).
+#   2. Surface it in the Connections & Privacy panel
+#      (`apps/desktop/src/components/ConnectionsPrivacy.tsx`) — opt-in, OFF by
+#      default, with plain-language disclosure.
+#   3. Make sure the Rust core honors the airplane switch
+#      (`NetworkPolicy`) so the call cannot fire when the feature is off.
+#   4. Add the file path below, on its own line, with a trailing comment naming
+#      the disclosed feature.
+#
+# Format: one repo-relative path per line. Blank lines and `#` comments ignored.
+# Paths are matched exactly against the scanner's findings.
+
+# AI coaching narration — the LLM tip/recap path. Outbound calls go to the
+# configured LLM provider (Anthropic / OpenAI) and are gated by NetworkPolicy
+# (offline by default). Disclosed in the doc table and in ConnectionsPrivacy.
+crates/brain/src/coaching.rs
