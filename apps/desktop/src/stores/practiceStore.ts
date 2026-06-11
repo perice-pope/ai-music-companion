@@ -122,6 +122,22 @@ export interface PracticeState {
     sourceFilename: string,
     bytes: number[],
   ) => Promise<ImportedAudio>;
+  /**
+   * List the instrument parts in a MusicXML file (read-only, nothing stored)
+   * so the UI can ask which part the user wants to read and practice. A
+   * single-part score returns one entry — the caller can skip the picker.
+   */
+  listScoreParts: (bytes: number[]) => Promise<string[]>;
+  /**
+   * Import a MusicXML file by its raw bytes and make it the active score. The
+   * backend parses the file and reads `partIndex` (the user's choice from
+   * `listScoreParts`; `0` for a single-part score) — see `import_musicxml_file`.
+   */
+  importMusicXmlFromFile: (
+    sourceFilename: string,
+    bytes: number[],
+    partIndex: number,
+  ) => Promise<ScoreLibraryEntry>;
   loadScoreFromId: (id: string) => Promise<void>;
   refreshScoreLibrary: () => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
@@ -306,6 +322,40 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return result;
     } catch (err) {
       throw new Error(`Failed to import audio: ${err}`);
+    }
+  },
+
+  listScoreParts: async (bytes: number[]) => {
+    try {
+      return await invoke<string[]>("list_score_parts", { bytes });
+    } catch (err) {
+      throw new Error(`Couldn't read the parts in that file: ${err}`);
+    }
+  },
+
+  importMusicXmlFromFile: async (
+    sourceFilename: string,
+    bytes: number[],
+    partIndex: number,
+  ) => {
+    try {
+      const entry = await invoke<ScoreLibraryEntry>("import_musicxml_file", {
+        sourceFilename,
+        bytes,
+        partIndex,
+      });
+      // Load the freshly-imported MusicXML so ScoreView can render it without
+      // a second user action (mirrors importMidiFromFile).
+      const loaded = await invoke<LoadedScore>("get_score", { id: entry.id });
+      set((state) => ({
+        activeScore: entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+        scoreLibrary: [entry, ...state.scoreLibrary],
+      }));
+      return entry;
+    } catch (err) {
+      throw new Error(`Failed to import MusicXML: ${err}`);
     }
   },
 

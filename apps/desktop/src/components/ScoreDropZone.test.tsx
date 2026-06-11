@@ -42,6 +42,9 @@ function installInvokeMock() {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === "import_midi_file") return Promise.resolve(ENTRY);
     if (cmd === "import_audio_file") return Promise.resolve(AUDIO_RESULT);
+    if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+    // Default: single-part score, so the picker is skipped.
+    if (cmd === "list_score_parts") return Promise.resolve(["Flute"]);
     if (cmd === "get_score")
       return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
     return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
@@ -189,16 +192,62 @@ describe("ScoreDropZone", () => {
     await screen.findByText(/Imported "recording"/);
   });
 
-  it("does not call import_midi_file for a MusicXML file (not yet wired)", async () => {
+  it("imports a single-part MusicXML file directly (part 0, no picker)", async () => {
     render(<ScoreDropZone />);
-    const file = new File(["<score/>"], "song.musicxml");
+    const file = fileWithBytes("song.musicxml", [0x3c, 0x3f, 0x78]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
-    await screen.findByText(/MusicXML import isn't wired up yet/);
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("import_musicxml_file", {
+        sourceFilename: "song.musicxml",
+        bytes: [0x3c, 0x3f, 0x78],
+        partIndex: 0,
+      }),
+    );
+    await screen.findByText(/Imported "scales"/);
+    // No picker shown for a single-part score.
+    expect(screen.queryByText(/which one do you want to read/i)).toBeNull();
+  });
+
+  it("asks which part to read for a multi-part MusicXML, then imports the choice", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_score_parts")
+        return Promise.resolve(["Trumpet", "Trombone"]);
+      if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("duet.xml", [1, 2, 3]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    // Picker appears with both part names; nothing imported yet.
+    await screen.findByText(/which one do you want to read/i);
     expect(mockInvoke).not.toHaveBeenCalledWith(
-      "import_midi_file",
+      "import_musicxml_file",
       expect.anything(),
     );
+
+    // Pick the second part → imports with partIndex 1.
+    fireEvent.click(screen.getByText("Trombone"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("import_musicxml_file", {
+        sourceFilename: "duet.xml",
+        bytes: [1, 2, 3],
+        partIndex: 1,
+      }),
+    );
+    await screen.findByText(/Imported "scales"/);
+  });
+
+  it("guides the user to re-export a compressed .mxl file", async () => {
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("song.mxl", [0x50, 0x4b, 0x03, 0x04]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await screen.findByText(/Compressed .mxl files aren't supported yet/);
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it("rejects an unsupported extension without invoking anything", async () => {

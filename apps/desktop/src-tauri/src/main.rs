@@ -113,6 +113,8 @@ fn main() {
             ai_music_companion::commands::set_taste_profile,
             ai_music_companion::commands::import_score,
             ai_music_companion::commands::import_midi_file,
+            ai_music_companion::commands::list_score_parts,
+            ai_music_companion::commands::import_musicxml_file,
             ai_music_companion::commands::import_audio_file,
             ai_music_companion::commands::list_scores,
             ai_music_companion::commands::get_score,

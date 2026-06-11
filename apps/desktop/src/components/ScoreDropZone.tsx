@@ -3,7 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { usePracticeStore, type ImportedAudio } from "../stores/practiceStore";
 
 const MIDI_EXTS = ["mid", "midi"];
-const MUSICXML_EXTS = ["musicxml", "mxl", "xml"];
+// Uncompressed MusicXML is plain text we can parse directly. Compressed `.mxl`
+// is a ZIP container — accepted in the picker so we can give a clear "re-export
+// uncompressed" hint rather than a confusing failure, but not parsed yet.
+const MUSICXML_PLAIN_EXTS = ["musicxml", "xml"];
+const MUSICXML_COMPRESSED_EXTS = ["mxl"];
+const MUSICXML_EXTS = [...MUSICXML_PLAIN_EXTS, ...MUSICXML_COMPRESSED_EXTS];
 // Open Question 5 (founder, 2026-05-30): ship .wav + .mp3 in v1. The Rust
 // decoder (Symphonia) supports more (.m4a/.flac); widening is a one-line change
 // here when we want it.
@@ -29,9 +34,35 @@ export default function ScoreDropZone() {
   const [status, setStatus] = useState<string | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [quality, setQuality] = useState<ImportedAudio | null>(null);
+  // A multi-part MusicXML file waiting for the user to pick which part to read.
+  const [partChoice, setPartChoice] = useState<{
+    fileName: string;
+    bytes: number[];
+    parts: string[];
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
   const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
+  const listScoreParts = usePracticeStore((s) => s.listScoreParts);
+  const importMusicXmlFromFile = usePracticeStore((s) => s.importMusicXmlFromFile);
+
+  // Import a (plain) MusicXML file once the part is known: a single-part score
+  // imports part 0 immediately; a multi-part score routes through the picker.
+  const importMusicXml = async (
+    fileName: string,
+    bytes: number[],
+    partIndex: number,
+  ) => {
+    try {
+      setPartChoice(null);
+      setStatus(`Importing ${fileName}…`);
+      const entry = await importMusicXmlFromFile(fileName, bytes, partIndex);
+      setStatus(`Imported "${entry.title}".`);
+    } catch (err) {
+      setStatus(null);
+      setError(`${err instanceof Error ? err.message : err}`);
+    }
+  };
 
   // Route a chosen file by extension. MIDI → backend parse → MusicXML → library.
   // Audio → backend transcribe (basic-pitch) → MIDI → MusicXML → library, with
@@ -42,6 +73,7 @@ export default function ScoreDropZone() {
     setStatus(null);
     setQuality(null);
     setProgress(null);
+    setPartChoice(null);
 
     const ext = file.name.split(".").pop()?.toLowerCase();
     if (!ext || !VALID_EXTS.includes(ext)) {
@@ -90,9 +122,32 @@ export default function ScoreDropZone() {
       return;
     }
 
-    // MusicXML/.xml/.mxl: backend command exists, but the frontend metadata
-    // extraction it expects isn't built yet.
-    setError("MusicXML import isn't wired up yet — MIDI and audio files work today.");
+    if (MUSICXML_COMPRESSED_EXTS.includes(ext)) {
+      setError(
+        "Compressed .mxl files aren't supported yet. Re-export as uncompressed " +
+          "MusicXML (.musicxml or .xml) from your notation app and try again.",
+      );
+      return;
+    }
+
+    // Plain MusicXML (.musicxml / .xml): ask the backend which parts it has.
+    // One part → import it straight away; several → show the part picker so the
+    // user chooses which line to read and practice.
+    try {
+      setStatus(`Reading ${file.name}…`);
+      const buffer = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      const parts = await listScoreParts(bytes);
+      if (parts.length <= 1) {
+        await importMusicXml(file.name, bytes, 0);
+      } else {
+        setStatus(null);
+        setPartChoice({ fileName: file.name, bytes, parts });
+      }
+    } catch (err) {
+      setStatus(null);
+      setError(`${err instanceof Error ? err.message : err}`);
+    }
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -175,6 +230,38 @@ export default function ScoreDropZone() {
       {status && (
         <div className="mt-4 rounded bg-blue-900/20 border border-blue-500 p-3 text-blue-200 text-sm">
           {status}
+        </div>
+      )}
+
+      {partChoice && (
+        <div className="mt-4 rounded bg-gray-900/60 border border-gray-600 p-4 text-sm">
+          <p className="font-semibold text-gray-100">
+            This score has several parts. Which one do you want to read and
+            practice?
+          </p>
+          <p className="mt-1 text-gray-400">
+            That part appears on screen as your sheet music and drives the
+            moving cursor.
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            {partChoice.parts.map((name, idx) => (
+              <button
+                key={`${name}-${idx}`}
+                onClick={() =>
+                  importMusicXml(partChoice.fileName, partChoice.bytes, idx)
+                }
+                className="text-left rounded bg-gray-800 hover:bg-blue-700 border border-gray-600 px-3 py-2 transition"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setPartChoice(null)}
+            className="mt-3 text-gray-400 hover:text-gray-200 text-xs"
+          >
+            Cancel
+          </button>
         </div>
       )}
 
