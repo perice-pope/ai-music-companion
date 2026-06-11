@@ -1,0 +1,16 @@
+[package]
+name = "omr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-device Optical Music Recognition (PDF → MusicXML) for AI Music Companion"
+
+[dependencies]
+# Library errors only — no heavy runtime here. Recognition runs out-of-process
+# in a bundled sidecar (see `sidecar.rs`), so this crate stays dependency-light
+# and fully offline.
+thiserror = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
