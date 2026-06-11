@@ -43,6 +43,14 @@ function installInvokeMock() {
     if (cmd === "import_midi_file") return Promise.resolve(ENTRY);
     if (cmd === "import_audio_file") return Promise.resolve(AUDIO_RESULT);
     if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+    // Default: a single-part recognized PDF, so the picker is skipped.
+    if (cmd === "recognize_pdf_score")
+      return Promise.resolve({
+        music_xml: "<score-partwise/>",
+        parts: ["Piano"],
+        from_scan: true,
+        low_content: false,
+      });
     // Default: single-part score, so the picker is skipped.
     if (cmd === "list_score_parts") return Promise.resolve(["Flute"]);
     if (cmd === "get_score")
@@ -239,6 +247,110 @@ describe("ScoreDropZone", () => {
       }),
     );
     await screen.findByText(/Imported "scales"/);
+  });
+
+  it("recognizes a single-part PDF and imports it via the shared MusicXML path", async () => {
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46]); // %PDF
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("recognize_pdf_score", {
+        sourceFilename: "etude.pdf",
+        bytes: [0x25, 0x50, 0x44, 0x46],
+      }),
+    );
+    // The recognized MusicXML is fed back through the SAME import command,
+    // encoded as UTF-8 bytes — OMR reuses the MusicXML import path.
+    const xmlBytes = Array.from(new TextEncoder().encode("<score-partwise/>"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("import_musicxml_file", {
+        sourceFilename: "etude.pdf",
+        bytes: xmlBytes,
+        partIndex: 0,
+      }),
+    );
+    // The "read from a scan" provenance note is always shown.
+    await screen.findByText(/read from a scan/i);
+  });
+
+  it("asks which part to read for a multi-part PDF, then imports the choice", async () => {
+    const xml = "<score-partwise>duet</score-partwise>";
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "recognize_pdf_score")
+        return Promise.resolve({
+          music_xml: xml,
+          parts: ["Right Hand", "Left Hand"],
+          from_scan: true,
+          low_content: false,
+        });
+      if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("duet.pdf", [0x25, 0x50, 0x44, 0x46]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    // Same picker as MusicXML import; nothing imported until a part is chosen.
+    await screen.findByText(/which one do you want to read/i);
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "import_musicxml_file",
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByText("Left Hand"));
+    const xmlBytes = Array.from(new TextEncoder().encode(xml));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("import_musicxml_file", {
+        sourceFilename: "duet.pdf",
+        bytes: xmlBytes,
+        partIndex: 1,
+      }),
+    );
+  });
+
+  it("warns plainly when a PDF scan yielded almost nothing", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "recognize_pdf_score")
+        return Promise.resolve({
+          music_xml: "<score-partwise/>",
+          parts: ["Piano"],
+          from_scan: true,
+          low_content: true,
+        });
+      if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("blurry.pdf", [0x25, 0x50, 0x44, 0x46]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await screen.findByText(/barely read any music/i);
+  });
+
+  it("surfaces the backend's calm message when PDF import is disabled", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "recognize_pdf_score")
+        return Promise.reject(
+          new Error(
+            "Reading sheet-music PDFs is an experimental feature that isn't enabled in this build yet.",
+          ),
+        );
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await screen.findByText(/experimental feature that isn't enabled/i);
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "import_musicxml_file",
+      expect.anything(),
+    );
   });
 
   it("guides the user to re-export a compressed .mxl file", async () => {

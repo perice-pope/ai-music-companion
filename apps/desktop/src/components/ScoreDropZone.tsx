@@ -13,7 +13,11 @@ const MUSICXML_EXTS = [...MUSICXML_PLAIN_EXTS, ...MUSICXML_COMPRESSED_EXTS];
 // decoder (Symphonia) supports more (.m4a/.flac); widening is a one-line change
 // here when we want it.
 const AUDIO_EXTS = ["wav", "mp3"];
-const VALID_EXTS = [...MUSICXML_EXTS, ...MIDI_EXTS, ...AUDIO_EXTS];
+// Sheet-music PDF → on-device OMR → MusicXML. Experimental beta: the backend
+// gates it (AMC_ENABLE_PDF_OMR) and returns a calm message when it's off, so we
+// can accept the drop and let the explanation come from there.
+const PDF_EXTS = ["pdf"];
+const VALID_EXTS = [...MUSICXML_EXTS, ...MIDI_EXTS, ...AUDIO_EXTS, ...PDF_EXTS];
 
 /** `import-progress` event payload from the backend (audio import only). */
 interface ImportProgress {
@@ -25,6 +29,9 @@ const STAGE_LABELS: Record<string, string> = {
   decoding: "Reading audio…",
   transcribing: "Listening for notes…",
   converting: "Building the score…",
+  // PDF → OMR stages.
+  rasterizing: "Scanning the page…",
+  "reading-notes": "Reading the notes…",
   done: "Finishing up…",
 };
 
@@ -34,6 +41,9 @@ export default function ScoreDropZone() {
   const [status, setStatus] = useState<string | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [quality, setQuality] = useState<ImportedAudio | null>(null);
+  // Set after a PDF is read by OMR — a calm "this came from a scan, check it"
+  // note that stays visible after import (it's about the score's provenance).
+  const [scanNote, setScanNote] = useState<{ lowContent: boolean } | null>(null);
   // A multi-part MusicXML file waiting for the user to pick which part to read.
   const [partChoice, setPartChoice] = useState<{
     fileName: string;
@@ -45,6 +55,7 @@ export default function ScoreDropZone() {
   const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
   const listScoreParts = usePracticeStore((s) => s.listScoreParts);
   const importMusicXmlFromFile = usePracticeStore((s) => s.importMusicXmlFromFile);
+  const recognizePdfFromFile = usePracticeStore((s) => s.recognizePdfFromFile);
 
   // Import a (plain) MusicXML file once the part is known: a single-part score
   // imports part 0 immediately; a multi-part score routes through the picker.
@@ -72,6 +83,7 @@ export default function ScoreDropZone() {
     setError(null);
     setStatus(null);
     setQuality(null);
+    setScanNote(null);
     setProgress(null);
     setPartChoice(null);
 
@@ -111,6 +123,43 @@ export default function ScoreDropZone() {
         // Only surface the banner when something looks off — never nag.
         if (result.polyphonic || result.low_confidence) {
           setQuality(result);
+        }
+      } catch (err) {
+        setStatus(null);
+        setError(`${err instanceof Error ? err.message : err}`);
+      } finally {
+        unlisten?.();
+        setProgress(null);
+      }
+      return;
+    }
+
+    if (PDF_EXTS.includes(ext)) {
+      // PDF → on-device OMR → MusicXML, then the SAME "which part?" picker and
+      // import path as MusicXML (OMR is just another front-end producing it).
+      let unlisten: (() => void) | undefined;
+      try {
+        setStatus(`Reading ${file.name}…`);
+        unlisten = await listen<ImportProgress>("import-progress", (event) => {
+          setProgress(event.payload);
+        });
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        const recognized = await recognizePdfFromFile(file.name, bytes);
+        // OMR is approximate — always surface the "read from a scan" note.
+        setScanNote({ lowContent: recognized.low_content });
+        const xmlBytes = Array.from(
+          new TextEncoder().encode(recognized.music_xml),
+        );
+        if (recognized.parts.length <= 1) {
+          await importMusicXml(file.name, xmlBytes, 0);
+        } else {
+          setStatus(null);
+          setPartChoice({
+            fileName: file.name,
+            bytes: xmlBytes,
+            parts: recognized.parts,
+          });
         }
       } catch (err) {
         setStatus(null);
@@ -192,7 +241,8 @@ export default function ScoreDropZone() {
           {isDragging ? "Drop your score here" : "Drag a score or recording here"}
         </h3>
         <p className="mt-2 text-sm text-gray-400">
-          Scores: .musicxml, .mxl, .xml, .mid, .midi — Recordings: .wav, .mp3
+          Scores: .musicxml, .mxl, .xml, .mid, .midi, .pdf (beta) — Recordings:
+          .wav, .mp3
         </p>
 
         <div className="mt-6 flex justify-center gap-4">
@@ -205,7 +255,7 @@ export default function ScoreDropZone() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".musicxml,.mxl,.xml,.mid,.midi,.wav,.mp3"
+            accept=".musicxml,.mxl,.xml,.mid,.midi,.wav,.mp3,.pdf"
             onChange={handleFileInput}
             className="hidden"
           />
@@ -271,6 +321,23 @@ export default function ScoreDropZone() {
           <button
             onClick={() => setQuality(null)}
             aria-label="Dismiss"
+            className="text-amber-300 hover:text-amber-100 font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {scanNote && (
+        <div className="mt-4 rounded bg-amber-900/20 border border-amber-500 p-3 text-amber-200 text-sm flex items-start justify-between gap-3">
+          <span>
+            {scanNote.lowContent
+              ? "We could barely read any music from that PDF — it may be a photo, a very dense page, or not sheet music. Double-check the result, or try a clearer scan."
+              : "These notes were read from a scan, so double-check they match your sheet music — especially rhythms, accidentals, and ties."}
+          </span>
+          <button
+            onClick={() => setScanNote(null)}
+            aria-label="Dismiss scan note"
             className="text-amber-300 hover:text-amber-100 font-bold"
           >
             ✕

@@ -104,6 +104,11 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       };
     case "get_session_detail":
       throw new Error("devShim: no sessions available in browser preview");
+    case "recognize_pdf_score":
+      // OMR needs the bundled engine, which only exists in the native shell.
+      throw new Error(
+        "Reading sheet-music PDFs needs the desktop app — run `pnpm tauri dev`.",
+      );
     // Tauri v2 event subsystem rides over invoke.
     case "plugin:event|listen":
       return Math.floor(Math.random() * 1_000_000);
