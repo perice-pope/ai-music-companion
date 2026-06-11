@@ -24,12 +24,21 @@
 //!
 //! 1. **The offline recap path itself.** [`CoachingEngine`] is the production
 //!    [`RecapGenerator`]. Its *only* outbound surface is the injected
-//!    [`HttpClient`]. We inject [`OfflineHttpClient`], an in-memory client that
-//!    performs **no real I/O** and returns `Err` (exactly what a machine with no
-//!    internet sees). The engine then degrades to its on-device fallback recap.
-//!    We assert (a) a complete recap still comes back, (b) it carries the
-//!    measured [`MusicalFingerprint`], and (c) the only network-capable object
-//!    in the whole test recorded that it was hit and never opened a socket.
+//!    [`HttpClient`]. Since #169 the engine carries a hard, Rust-core
+//!    [`NetworkPolicy`] that **defaults to `Offline`** — so the default engine
+//!    never even *reaches* its `HttpClient`; it serves the on-device fallback
+//!    recap directly. We inject [`OfflineHttpClient`], an in-memory client that
+//!    performs **no real I/O** and records every call, then assert (a) a complete
+//!    recap still comes back, (b) it carries the measured [`MusicalFingerprint`],
+//!    and (c) the only network-capable object in the whole test recorded **zero**
+//!    calls — a strictly stronger no-network proof than "hit exactly once": the
+//!    offline engine is structurally incapable of an outbound call.
+//!
+//!    To keep that zero honest (and not a tautology born of a dead client), a
+//!    companion check opts the *same* engine type into [`NetworkPolicy::Online`]
+//!    with a fresh recording client and asserts the client **is** hit exactly
+//!    once — proving the policy is the gate, and that when permitted the engine
+//!    really does attempt the call (and still degrades to the fallback on `Err`).
 //!
 //! 2. **A hard `panic!`-if-called guard on the idiom path.** Offline idiom
 //!    analysis ([`analyze_idioms`]) takes **no** `HttpClient` at all — it cannot
@@ -56,7 +65,7 @@ use async_trait::async_trait;
 use ears::pitch::{PitchConfig, PitchDetector};
 use ears::AudioEvent;
 
-use brain::coaching::{CoachingConfig, CoachingEngine, CoachingError, HttpClient};
+use brain::coaching::{CoachingConfig, CoachingEngine, CoachingError, HttpClient, NetworkPolicy};
 use brain::idiom_recap::{analyze_idioms, IDIOM_SIMILARITY_THRESHOLD, IDIOM_TOP_K};
 use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
 use brain::session::{CompletedSession, PracticeMode, SessionError, SessionRecap, SessionRecorder};
@@ -229,6 +238,10 @@ impl HttpClient for PanicHttpClient {
 /// Build a [`CoachingEngine`] (the production [`RecapGenerator`]) over the given
 /// HTTP client. The model id is `claude-*` so the engine resolves the Anthropic
 /// endpoint — which the offline client never actually reaches.
+///
+/// Since #169 the engine defaults to [`NetworkPolicy::Offline`], so this is the
+/// real production "airplane switch is on" engine: it serves the on-device
+/// fallback recap without ever touching its `HttpClient`.
 fn engine_with(client: Box<dyn HttpClient>) -> CoachingEngine {
     CoachingEngine::with_env(
         CoachingConfig {
@@ -242,6 +255,17 @@ fn engine_with(client: Box<dyn HttpClient>) -> CoachingEngine {
         Some("claude-3-5-sonnet"),
     )
     .expect("engine constructs with an explicit key")
+}
+
+/// Like [`engine_with`], but opts the engine into [`NetworkPolicy::Online`] —
+/// the way the command layer does when the user has explicitly enabled coaching.
+/// Used only by the companion "the policy is the gate" check, to prove the
+/// default-Offline zero-call result is enforced by the policy, not an accident
+/// of an inert client.
+fn online_engine_with(client: Box<dyn HttpClient>) -> CoachingEngine {
+    let mut engine = engine_with(client);
+    engine.set_network_policy(NetworkPolicy::Online);
+    engine
 }
 
 /// Record the pipeline's phrases into a real [`SessionRecorder`] and finalise.
@@ -338,8 +362,9 @@ async fn musical_fixture_produces_offline_recap_with_fingerprint_and_idioms() {
     let engine = engine_with(Box::new(offline_client));
 
     // This threads the offline idiom notes through the production recap path.
-    // The engine attempts its single LLM call, the offline client returns Err,
-    // and the engine degrades to its on-device fallback recap.
+    // The engine defaults to `NetworkPolicy::Offline` (the airplane switch is
+    // on), so it serves the on-device fallback recap directly — it never even
+    // reaches the injected `HttpClient`.
     let recap: SessionRecap = completed
         .generate_recap_with_idioms(&engine, idiom_notes.clone())
         .await
@@ -422,12 +447,50 @@ async fn musical_fixture_produces_offline_recap_with_fingerprint_and_idioms() {
     );
 
     // --- The no-network proof: the ONLY network-capable object was our
-    // in-memory client, it was hit exactly once (the single LLM attempt), and it
-    // performed no real I/O. Nothing else in the loop reached out. ---
+    // in-memory client, and with the default `NetworkPolicy::Offline` it was
+    // NEVER hit — the engine produced the full, fingerprint-bearing recap above
+    // without ever reaching for HTTP. Zero is strictly stronger than "hit once":
+    // an Offline engine is structurally incapable of an outbound call. ---
     assert_eq!(
         calls.load(Ordering::SeqCst),
+        0,
+        "default-Offline engine must never touch the HTTP client — zero calls, no socket"
+    );
+
+    // --- Companion check: prove the zero above is enforced by the policy, not by
+    // an inert client. Opt the *same* engine into `NetworkPolicy::Online` with a
+    // fresh recording client and re-run the identical recap path. Now the policy
+    // permits the call, so the client IS hit exactly once; the offline client
+    // returns `Err`, so the engine still degrades to the same on-device fallback
+    // recap (no network ever actually succeeds — the test stays hermetic). ---
+    let online_client = OfflineHttpClient::new();
+    let online_calls = online_client.calls_handle();
+    let online_engine = online_engine_with(Box::new(online_client));
+    let online_recap: SessionRecap = completed
+        .generate_recap_with_idioms(&online_engine, idiom_notes.clone())
+        .await
+        .expect("recap still succeeds via the fallback even when the LLM call errors");
+    assert_eq!(
+        online_calls.load(Ordering::SeqCst),
         1,
-        "exactly one in-memory HTTP attempt (the LLM call) — and it never opened a socket"
+        "an Online engine DOES attempt exactly one outbound call — the policy is the gate"
+    );
+    // The Err-degraded online recap is the same on-device fallback: still fully
+    // populated, still carrying the measured fingerprint, still no fabricated
+    // connections (the model was never actually reached).
+    assert!(
+        !online_recap.overall_assessment.is_empty()
+            && !online_recap.strengths.is_empty()
+            && !online_recap.next_session_suggestions.is_empty(),
+        "the Err-degraded online recap is the fully-populated on-device fallback"
+    );
+    assert!(
+        online_recap.fingerprint.is_some(),
+        "the degraded online recap still carries the measured fingerprint"
+    );
+    assert!(
+        online_recap.connections.is_empty(),
+        "a failed LLM call must not fabricate cross-genre connections"
     );
 }
 
@@ -479,11 +542,11 @@ async fn silence_fixture_yields_calm_empty_state_recap_offline() {
 
     // To prove the empty-state path is genuinely offline even when a recap *is*
     // built (e.g. a session with a single faint phrase the UI still recaps), run
-    // a minimal real recap over a thin (gate-failing) phrase using the offline
-    // client: the fingerprint comes back empty (None), the recap is calm and
-    // generic, no idioms/connections are fabricated, and the only network-capable
-    // object — our in-memory client — is hit exactly once and never opens a
-    // socket.
+    // a minimal real recap over a thin (gate-failing) phrase using the default
+    // (`NetworkPolicy::Offline`) engine: the fingerprint comes back empty (None),
+    // the recap is calm and generic, no idioms/connections are fabricated, and
+    // the only network-capable object — our in-memory client — is NEVER hit
+    // (zero calls) because the airplane switch is on.
     let thin_phrase = thin_unmeasurable_phrase();
     let completed = record_session(std::slice::from_ref(&thin_phrase), "voice");
 
@@ -509,8 +572,8 @@ async fn silence_fixture_yields_calm_empty_state_recap_offline() {
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "exactly one in-memory HTTP attempt, no real network"
+        0,
+        "default-Offline engine serves the calm recap without touching the HTTP client"
     );
 }
 
