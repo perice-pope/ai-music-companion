@@ -1,106 +1,47 @@
-# Test the App — Simple Pass/Fail Checklist
+# Test the App — with Claude (Mac)
 
-**For:** anyone (no tech experience needed). You'll open the app, look at the
-screen, and mark each step **PASS** or **FAIL**.
-
-**You'll need:** the app installed on the Mac, and someone nearby to play an
-instrument or sing when a step asks for sound.
-
-Go one step at a time. After each, decide **PASS** (it did what it should) or
-**FAIL** (it didn't, or something looked broken).
+The easy way: let **Claude Code do the driving** and just answer **PASS** or
+**FAIL** as it walks you through. No tech knowledge needed.
 
 ---
 
-## 1. The app opens
+## The one-step way (recommended)
 
-- Double-click **AI Music Companion** (in the Dock, or the Applications folder).
+1. On the **Mac**, open the **Terminal** and start Claude Code in this project.
+2. Type:
 
-**PASS** if a window appears within a few seconds and there's no error message.
-**FAIL** if nothing opens, it crashes, or an error pops up.
+   ```
+   /test-app
+   ```
 
----
+3. Claude opens the app and walks you through ~7 quick checks, one at a time.
+   When it says **🎵 play now**, the musician plays; you watch the screen and
+   answer **PASS** or **FAIL**. Claude keeps score and gives a final
+   **GO / NO-GO** at the end.
 
-## 2. It asks to use the microphone
+That's it. If `/test-app` isn't offered, just type: **"test the app with me, step
+by step"** and Claude will run the same thing.
 
-- Pick an instrument and press **Start** (or the listen/record button).
-- A small box should ask permission to use the microphone — click **Allow** / **OK**.
-
-**PASS** if it asks and you clicked Allow (or it was already allowed before).
-**FAIL** if it never asks and the app can't hear anything, or it crashes.
-
----
-
-## 3. It reacts to sound right away
-
-- With listening started, ask the player to play **a few short, sharp notes**.
-- Watch the moving pitch display / needle / meter on screen.
-
-**PASS** if the screen reacts **instantly** — no delay you can notice between the
-sound and the screen moving.
-**FAIL** if there's a clear lag, the screen trails behind, or fast notes get
-missed.
+> **Why it has to be on the Mac:** Claude can only open the app and watch it run
+> when it's running *on the Mac itself* (Claude Code in the Mac's Terminal). A
+> cloud chat can't reach your screen — there, Claude can still read you the steps,
+> but you'll click them yourself.
 
 ---
 
-## 4. It shows sheet music (skip if there's no music file handy)
+## The steps Claude walks you through (here for reference)
 
-- Open or drag a music file into the app.
+Answer **PASS** or **FAIL** for each.
 
-**PASS** if the sheet music appears on screen with no error.
-**FAIL** if it errors, freezes, or nothing shows.
-*(If you don't have a music file, skip this and mark it N/A.)*
+1. **It opens** — the app window appears, no error.
+2. **Microphone** — press Start; if asked, click **Allow** to use the mic.
+3. **Reacts instantly** — 🎵 play a few short, sharp notes; the screen reacts with
+   no delay you can notice.
+4. **Shows sheet music** *(optional)* — open a music file; it appears, no error.
+5. **Moving line follows** — 🎵 play along; the moving line stays smooth and on
+   your spot.
+6. **Summary at the end** — press Stop; a summary appears.
+7. **Closes cleanly** — quit (red dot or ⌘Q); it closes with no freeze or error.
 
----
-
-## 5. The moving line follows the music (skip if you skipped step 4)
-
-- With sheet music on screen, ask the player to **play along** with it.
-- Watch the little moving line/cursor that follows the notes.
-
-**PASS** if the line stays **smooth** and stays roughly where they're playing —
-not jerky, not stuck, not far behind.
-**FAIL** if it stutters badly, freezes, or falls way behind.
-
----
-
-## 6. It gives a summary at the end
-
-- Press **Stop** / **End session**.
-
-**PASS** if a summary / recap screen appears (a short message is fine).
-**FAIL** if it crashes or nothing happens.
-
----
-
-## 7. It closes cleanly
-
-- Quit the app: click the red dot, or press **⌘ Q**.
-
-**PASS** if it fully closes with no error and nothing hangs.
-**FAIL** if it freezes, errors, or seems stuck shutting down.
-
----
-
-## Results
-
-Tell whoever's reviewing the result of each step:
-
-| Step | What it checks | PASS / FAIL |
-|---|---|---|
-| 1 | App opens | |
-| 2 | Asks for microphone | |
-| 3 | Reacts to sound instantly | |
-| 4 | Shows sheet music | |
-| 5 | Moving line follows along | |
-| 6 | Gives a summary at the end | |
-| 7 | Closes cleanly | |
-
-**All good** if every step is PASS (steps 4–5 may be N/A if you had no music file).
-
----
-
-> **Want an exact timing number?** (optional, for an engineer) Film step 3 with a
-> phone in slow-motion at 240 fps, with the instrument and screen both in frame.
-> Count the frames between the sound and the screen reacting; each frame is about
-> 4 ms. Aim for under 25 ms (about 6 frames). Deeper hardware checks for other
-> operating systems live in this file's git history.
+**All good** if every step is PASS (steps 4–5 can be skipped if you have no music
+file handy).
