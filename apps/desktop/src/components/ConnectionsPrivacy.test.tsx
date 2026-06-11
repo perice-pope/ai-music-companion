@@ -57,6 +57,14 @@ describe("ConnectionsPrivacy", () => {
       expect(sw.checked).toBe(false);
     }
 
+    // The app-updates disclosure is an INFO row, not a toggle: it must not
+    // introduce a switch (the egress lives in the Tauri updater plugin, gated
+    // by the native consent dialog, not by a Face-layer flag). So the switch
+    // count stays at the three real opt-in toggles — adding a non-functional
+    // switch would be a dark pattern.
+    expect(screen.queryByRole("switch", { name: /App updates/i })).toBeNull();
+    expect(switches.length).toBe(3);
+
     // Named, so a regression that flips one on is caught by feature.
     expect(
       (
@@ -110,6 +118,25 @@ describe("ConnectionsPrivacy", () => {
     expect(
       screen.getByText(/never require an account to practice/i),
     ).toBeTruthy();
+  });
+
+  it("discloses the app auto-updater as an info row: contacts GitHub only on request, never on startup, fully offline", () => {
+    render(<ConnectionsPrivacy />);
+
+    const row = screen.getByTestId("info-app-updates");
+    // What is sent, to whom, and when — in plain language.
+    expect(within(row).getByText(/contacts GitHub/i)).toBeTruthy();
+    expect(
+      within(row).getByText(/never checks on startup and works fully offline/i),
+    ).toBeTruthy();
+    // The "no personal data" promise, the question parents ask.
+    expect(
+      within(row).getByText(
+        /never sends your audio, your practice history, or any personal data/i,
+      ),
+    ).toBeTruthy();
+    // It is disclosure, not a control: no switch in this row.
+    expect(within(row).queryByRole("switch")).toBeNull();
   });
 
   it("explains that AI coaching off means on-device feedback (the offline fallback)", () => {
