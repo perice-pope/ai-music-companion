@@ -2,7 +2,7 @@
 
 use brain::coaching::{
     CoachingCategory, CoachingConfig, CoachingEngine, CoachingError, CoachingSeverity, CoachingTip,
-    HttpClient, SessionContext,
+    HttpClient, NetworkPolicy, SessionContext,
 };
 use brain::phrase::{DynamicsStats, PhraseSummary, PitchStats};
 
@@ -114,6 +114,9 @@ async fn end_to_end_coaching_with_mock_api() {
     };
 
     let mut engine = CoachingEngine::new(config, Box::new(mock)).unwrap();
+    // Opt into the network path: these integration tests exercise the LLM
+    // round-trip, which is OFF by default (offline-first).
+    engine.set_network_policy(NetworkPolicy::Online);
 
     // Build a realistic phrase: A4, high stability, moderate dynamics
     let phrase = make_phrase(440.0, 0.95, 0.7, 0.3, 15);
@@ -150,6 +153,9 @@ async fn multiple_phrases_get_different_prompts() {
     };
 
     let mut engine = CoachingEngine::new(config, Box::new(mock)).unwrap();
+    // Opt into the network path: these integration tests exercise the LLM
+    // round-trip, which is OFF by default (offline-first).
+    engine.set_network_policy(NetworkPolicy::Online);
 
     // Phrase 1: High pitch, stable, soft
     let phrase1 = make_phrase(880.0, 0.98, 0.3, 0.1, 8);

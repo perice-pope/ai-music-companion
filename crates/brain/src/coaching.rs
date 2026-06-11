@@ -35,6 +35,54 @@ pub enum CoachingError {
 }
 
 // ---------------------------------------------------------------------------
+// Network policy — the Rust-core "airplane switch"
+// ---------------------------------------------------------------------------
+
+/// Whether the coaching engine is permitted to make an outbound network call.
+///
+/// This is the **hard, Rust-core enforcement** of the offline-first principle
+/// (see `docs/architecture/offline-first-and-network-transparency.md`). It is
+/// not a UI toggle and not a hint: when [`NetworkPolicy::Offline`], the
+/// recap/tip generation path **never constructs an outbound request and never
+/// invokes the [`HttpClient`]**. The on-device fallback is used instead.
+///
+/// The frontend `coachingEnabled` preference is mirrored into this policy at
+/// the command layer (see `apps/desktop/src-tauri/src/commands.rs`). Because
+/// the guarantee lives here — below the IPC boundary — a bug, a malformed IPC
+/// payload, or a future caller that forgets the FE toggle still cannot cause a
+/// silent outbound call: an `Offline` engine is structurally incapable of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicy {
+    /// No outbound calls. The `HttpClient` is never invoked; tips and recaps
+    /// are served entirely by the on-device fallback. This is the default —
+    /// offline by default, the internet is never required.
+    #[default]
+    Offline,
+    /// Outbound LLM narration is permitted. The user has opted in.
+    Online,
+}
+
+impl NetworkPolicy {
+    /// True when the engine may reach the network. The single predicate every
+    /// outbound path must consult before touching the [`HttpClient`].
+    #[inline]
+    pub fn allows_network(self) -> bool {
+        matches!(self, NetworkPolicy::Online)
+    }
+
+    /// Build a policy from a plain opt-in flag (the FE `coachingEnabled` pref).
+    /// `true` → [`NetworkPolicy::Online`], `false` → [`NetworkPolicy::Offline`].
+    pub fn from_opt_in(enabled: bool) -> Self {
+        if enabled {
+            NetworkPolicy::Online
+        } else {
+            NetworkPolicy::Offline
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
@@ -242,6 +290,10 @@ pub struct CoachingEngine {
     last_call_time: Option<Instant>,
     resolved_api_key: String,
     resolved_model: String,
+    /// The airplane switch. When [`NetworkPolicy::Offline`], no outbound
+    /// request is ever built and [`Self::http_client`] is never invoked.
+    /// Defaults to [`NetworkPolicy::Offline`] — offline by default.
+    policy: NetworkPolicy,
 }
 
 impl CoachingEngine {
@@ -290,7 +342,25 @@ impl CoachingEngine {
             last_call_time: None,
             resolved_api_key,
             resolved_model,
+            // Offline by default. The internet is never required; callers
+            // opt in explicitly via `set_network_policy`.
+            policy: NetworkPolicy::Offline,
         })
+    }
+
+    /// Set the [`NetworkPolicy`] — the airplane switch. The command layer
+    /// calls this from the persisted `coachingEnabled` preference at session
+    /// start, so the engine's network behavior tracks the user's choice.
+    ///
+    /// While [`NetworkPolicy::Offline`], `get_tip` and `generate_recap` return
+    /// the on-device fallback without ever touching the [`HttpClient`].
+    pub fn set_network_policy(&mut self, policy: NetworkPolicy) {
+        self.policy = policy;
+    }
+
+    /// The engine's current [`NetworkPolicy`].
+    pub fn network_policy(&self) -> NetworkPolicy {
+        self.policy
     }
 
     /// Request a coaching tip for the given phrase and session context.
@@ -306,6 +376,14 @@ impl CoachingEngine {
         phrase: &PhraseSummary,
         context: &SessionContext,
     ) -> Result<CoachingTip, CoachingError> {
+        // Airplane switch (hard, Rust-core). When offline we return the
+        // on-device tip *before* building any prompt, URL, headers, or request
+        // body — and crucially before touching `http_client`. There is no code
+        // path from `Offline` to an outbound call.
+        if !self.policy.allows_network() {
+            return Ok(Self::fallback_tip());
+        }
+
         // Rate limiting
         if let Some(last) = self.last_call_time {
             let elapsed = last.elapsed().as_secs_f64();
@@ -684,6 +762,17 @@ Choose the category that best matches the most notable aspect of the phrase data
 #[async_trait]
 impl RecapGenerator for CoachingEngine {
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        // Airplane switch (hard, Rust-core). When offline we return the
+        // grounded on-device fallback recap *before* building any prompt or
+        // request and before touching `http_client`. The fallback is sourced
+        // only from locally measured facts (see `fallback_recap`), so the
+        // offline recap is still honest — it just reads more generally. All
+        // existing grounding behavior (the `aggregate_*` evidence gates) is
+        // preserved on this path.
+        if !self.policy.allows_network() {
+            return Ok(Self::fallback_recap(input));
+        }
+
         // Cross-genre connections are only in play when a taste profile exists
         // AND the session produced enough measured signal to ground one — both
         // the prompt's grounding instructions and the response parsing key off
@@ -2055,15 +2144,14 @@ mod tests {
         })
         .to_string();
 
-        let engine_with = CoachingEngine::new(
+        let engine_with = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(MockHttpClient::succeeding(&response)),
-        )
-        .unwrap();
+        );
 
         // Gate open: profile + groundable signal.
         let with = engine_with
@@ -2083,15 +2171,14 @@ mod tests {
 
         // Gate closed (no profile): the model's connections are discarded, the
         // data model stays honest about when a connection was grounded.
-        let engine_without = CoachingEngine::new(
+        let engine_without = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(MockHttpClient::succeeding(&response)),
-        )
-        .unwrap();
+        );
         let without = engine_without
             .generate_recap(&recap_input_with(vec![groundable_phrase()], None))
             .await
@@ -2131,7 +2218,38 @@ mod tests {
             model: "claude-3-5-sonnet".to_owned(),
             rate_limit_secs: 3.0,
         };
-        CoachingEngine::new(config, Box::new(mock)).unwrap()
+        online_engine(config, Box::new(mock))
+    }
+
+    /// Construct an engine and opt it into [`NetworkPolicy::Online`], the way
+    /// the command layer does when the user has enabled coaching. Engines
+    /// default to `Offline` (offline by default), so any test that exercises
+    /// the *network* path must opt in explicitly — exactly as production does.
+    fn online_engine(config: CoachingConfig, client: Box<dyn HttpClient>) -> CoachingEngine {
+        let mut engine = CoachingEngine::new(config, client).unwrap();
+        engine.set_network_policy(NetworkPolicy::Online);
+        engine
+    }
+
+    /// A mock that **panics** if any HTTP method is invoked. Used by the
+    /// airplane-switch tests to prove that an `Offline` engine is structurally
+    /// incapable of an outbound call: if the policy ever leaks, the test fails
+    /// loudly instead of silently passing.
+    struct PanickingHttpClient;
+
+    #[async_trait::async_trait]
+    impl HttpClient for PanickingHttpClient {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _body: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<String, CoachingError> {
+            panic!(
+                "HttpClient::post_json was called while NetworkPolicy::Offline — \
+                 the airplane switch must prevent every outbound call"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2380,7 +2498,7 @@ mod tests {
             model: "gpt-4".to_owned(),
             rate_limit_secs: 0.0,
         };
-        let mut engine = CoachingEngine::new(config, Box::new(mock)).unwrap();
+        let mut engine = online_engine(config, Box::new(mock));
 
         let tip = engine
             .get_tip(&sample_phrase(), &sample_context())
@@ -2670,15 +2788,14 @@ mod tests {
     async fn rate_limiting_blocks_rapid_calls() {
         let mock = MockHttpClient::succeeding(&mock_anthropic_response());
         let call_count = mock.call_count.clone();
-        let mut engine = CoachingEngine::new(
+        let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 10.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let phrase = sample_phrase();
         let context = sample_context();
@@ -2707,15 +2824,14 @@ mod tests {
     #[tokio::test]
     async fn api_failure_returns_fallback_tip() {
         let mock = MockHttpClient::failing("Service unavailable");
-        let mut engine = CoachingEngine::new(
+        let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let phrase = sample_phrase();
         let context = sample_context();
@@ -2738,15 +2854,14 @@ mod tests {
     #[tokio::test]
     async fn malformed_response_returns_fallback() {
         let mock = MockHttpClient::succeeding("{\"invalid\": \"json\"}");
-        let mut engine = CoachingEngine::new(
+        let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let phrase = sample_phrase();
         let context = sample_context();
@@ -2760,6 +2875,154 @@ mod tests {
         assert!(
             !tip.text.is_empty(),
             "Fallback should be provided for malformed response"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Airplane-switch tests (NetworkPolicy)
+    //
+    // These prove the hard, Rust-core guarantee: when the policy is Offline,
+    // NO HttpClient method is ever called, and the on-device fallback is
+    // returned. The mock client panics if hit, so a policy leak fails loudly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn engine_defaults_to_offline() {
+        // Offline by default — the internet is never required. A freshly
+        // constructed engine must not be in a network-permitting state.
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(PanickingHttpClient),
+        )
+        .unwrap();
+        assert_eq!(engine.network_policy(), NetworkPolicy::Offline);
+        assert!(!engine.network_policy().allows_network());
+    }
+
+    #[test]
+    fn network_policy_from_opt_in_maps_correctly() {
+        assert_eq!(NetworkPolicy::from_opt_in(true), NetworkPolicy::Online);
+        assert_eq!(NetworkPolicy::from_opt_in(false), NetworkPolicy::Offline);
+        assert!(NetworkPolicy::Online.allows_network());
+        assert!(!NetworkPolicy::Offline.allows_network());
+    }
+
+    #[tokio::test]
+    async fn offline_get_tip_never_calls_http_client_and_returns_fallback() {
+        // The mock panics if `post_json` is ever reached. An Offline engine
+        // must return the on-device fallback tip without touching it.
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(PanickingHttpClient),
+        )
+        .unwrap();
+        // Default is already Offline, but set it explicitly to document intent.
+        engine.set_network_policy(NetworkPolicy::Offline);
+
+        let tip = engine
+            .get_tip(&sample_phrase(), &sample_context())
+            .await
+            .expect("offline tip must succeed without network");
+
+        // The on-device fallback tip.
+        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
+        assert!(
+            tip.text.contains("Consistent practice"),
+            "offline path must return the on-device fallback tip, got: {}",
+            tip.text
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_generate_recap_never_calls_http_client_and_returns_grounded_fallback() {
+        let engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(PanickingHttpClient),
+        )
+        .unwrap();
+        assert_eq!(engine.network_policy(), NetworkPolicy::Offline);
+
+        // A session with enough measured signal to ground intonation + groove.
+        let mut p = sample_phrase();
+        p.pitch_stats.pitches = vec![440.0; 16];
+        p.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+        let input = RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 600.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![p],
+            tips: vec![],
+            score_title: None,
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+        };
+
+        // Must NOT panic (no HttpClient call) and must return the fallback.
+        let recap = engine
+            .generate_recap(&input)
+            .await
+            .expect("offline recap must succeed without network");
+
+        assert_eq!(recap.instrument, "trumpet");
+        assert!(!recap.overall_assessment.is_empty());
+        // Grounding intact: the offline fallback still carries the measured
+        // fingerprint (intonation + groove cleared their gates).
+        let fingerprint = recap
+            .fingerprint
+            .as_ref()
+            .expect("offline fallback still carries the measured fingerprint");
+        assert!(
+            fingerprint.intonation.is_some(),
+            "offline recap preserves grounded intonation"
+        );
+        assert!(
+            fingerprint.groove.is_some(),
+            "offline recap preserves grounded groove"
+        );
+        // Offline never fabricates cross-genre connections.
+        assert!(
+            recap.connections.is_empty(),
+            "offline recap must not carry LLM connections"
+        );
+    }
+
+    #[tokio::test]
+    async fn online_get_tip_does_call_http_client() {
+        // Counterpart to the offline test: with Online policy the recording
+        // mock IS hit, proving the policy is what gates the call (not an
+        // unrelated short-circuit).
+        let mock = MockHttpClient::succeeding(&mock_anthropic_response());
+        let call_count = Arc::clone(&mock.call_count);
+        let mut engine = online_engine(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        );
+
+        let _ = engine
+            .get_tip(&sample_phrase(), &sample_context())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "online policy must permit exactly one outbound call"
         );
     }
 
@@ -2786,15 +3049,14 @@ mod tests {
         });
 
         let mock = MockHttpClient::succeeding(&anthropic_response.to_string());
-        let engine = CoachingEngine::new(
+        let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
@@ -2838,15 +3100,14 @@ mod tests {
         });
 
         let mock = MockHttpClient::succeeding(&openai_response.to_string());
-        let engine = CoachingEngine::new(
+        let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "gpt-4".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let input = RecapInput {
             instrument: "violin".to_owned(),
@@ -2871,15 +3132,14 @@ mod tests {
         use crate::session::RecapInput;
 
         let mock = MockHttpClient::failing("Service unavailable");
-        let engine = CoachingEngine::new(
+        let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let input = RecapInput {
             instrument: "voice".to_owned(),
@@ -2912,15 +3172,14 @@ mod tests {
         );
 
         let mock = MockHttpClient::succeeding(&anthropic_response);
-        let engine = CoachingEngine::new(
+        let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
                 model: "claude-3-5-sonnet".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
-        )
-        .unwrap();
+        );
 
         let input = RecapInput {
             instrument: "piano".to_owned(),
