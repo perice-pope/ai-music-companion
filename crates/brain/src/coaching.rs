@@ -365,30 +365,37 @@ impl CoachingEngine {
 
     /// Request a coaching tip for the given phrase and session context.
     ///
-    /// Respects rate limiting: if the last call was fewer than
-    /// `config.rate_limit_secs` seconds ago, returns a rate-limited
-    /// generic tip without calling the API.
+    /// Returns `Ok(None)` — **no tip at all** — whenever a genuine LLM tip can't
+    /// be produced: the engine is [`NetworkPolicy::Offline`], the call is
+    /// rate-limited, the API request fails, or the response can't be parsed.
+    /// This is deliberate: for *live* tips, **silence beats a lie**. We never
+    /// substitute canned encouragement for a real observation, because a
+    /// fabricated "great work!" the model never actually said is dishonest in a
+    /// way an empty panel is not. (The session *recap* keeps its grounded
+    /// on-device fallback — that is built from measured facts, so it stays
+    /// honest; see [`Self::fallback_recap`].)
     ///
-    /// On API failure, returns a generic encouraging tip instead of an error
-    /// (graceful degradation).
+    /// On success, returns `Ok(Some(tip))` with the parsed LLM tip.
     pub async fn get_tip(
         &mut self,
         phrase: &PhraseSummary,
         context: &SessionContext,
-    ) -> Result<CoachingTip, CoachingError> {
-        // Airplane switch (hard, Rust-core). When offline we return the
-        // on-device tip *before* building any prompt, URL, headers, or request
-        // body — and crucially before touching `http_client`. There is no code
-        // path from `Offline` to an outbound call.
+    ) -> Result<Option<CoachingTip>, CoachingError> {
+        // Airplane switch (hard, Rust-core). When offline we return *no tip*
+        // before building any prompt, URL, headers, or request body — and
+        // crucially before touching `http_client`. There is no code path from
+        // `Offline` to an outbound call, and we never invent encouragement to
+        // fill the silence.
         if !self.policy.allows_network() {
-            return Ok(Self::fallback_tip());
+            return Ok(None);
         }
 
-        // Rate limiting
+        // Rate limiting. Too soon since the last call → stay silent rather than
+        // emit a canned filler tip.
         if let Some(last) = self.last_call_time {
             let elapsed = last.elapsed().as_secs_f64();
             if elapsed < self.config.rate_limit_secs {
-                return Ok(Self::rate_limited_tip());
+                return Ok(None);
             }
         }
 
@@ -411,9 +418,11 @@ impl CoachingEngine {
             .post_json(&url, &request_body, &header_refs)
             .await;
 
+        // On API failure or an unparseable response, return no tip rather than
+        // fabricating one. A genuine observation or nothing.
         match response {
-            Ok(body) => Self::parse_tip_from_response(&body).or_else(|_| Ok(Self::fallback_tip())),
-            Err(_) => Ok(Self::fallback_tip()),
+            Ok(body) => Ok(Self::parse_tip_from_response(&body).ok()),
+            Err(_) => Ok(None),
         }
     }
 
@@ -725,33 +734,6 @@ Choose the category that best matches the most notable aspect of the phrase data
 
         serde_json::from_str::<CoachingTip>(cleaned)
             .map_err(|e| CoachingError::ParseError(e.to_string()))
-    }
-
-    // -----------------------------------------------------------------------
-    // Fallback tips
-    // -----------------------------------------------------------------------
-
-    /// Generic encouraging tip returned when the API fails.
-    fn fallback_tip() -> CoachingTip {
-        CoachingTip {
-            text: "Great work keeping at it! Consistent practice is the key to improvement. \
-                   Try focusing on the passages that feel most comfortable and gradually \
-                   push your boundaries."
-                .to_owned(),
-            severity: CoachingSeverity::Encouragement,
-            category: CoachingCategory::Expression,
-        }
-    }
-
-    /// Generic tip returned when rate-limited.
-    fn rate_limited_tip() -> CoachingTip {
-        CoachingTip {
-            text: "Keep up the momentum! Take a moment to listen back to what you just \
-                   played and notice what felt natural."
-                .to_owned(),
-            severity: CoachingSeverity::Encouragement,
-            category: CoachingCategory::Expression,
-        }
     }
 }
 
@@ -2278,7 +2260,8 @@ mod tests {
         let tip = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a successful API call yields Some(tip)");
 
         assert_eq!(tip.severity, CoachingSeverity::Suggestion);
         assert_eq!(tip.category, CoachingCategory::Expression);
@@ -2290,36 +2273,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_tip_gracefully_degrades_on_api_failure() {
+    async fn get_tip_returns_none_on_api_failure() {
+        // Silence beats a lie: on API failure the live-tip path returns NO tip
+        // (None), never canned encouragement.
         let mock = MockHttpClient::failing("connection refused");
         let mut engine = make_engine(mock);
 
-        // Should NOT return Err — should return a fallback tip
         let result = engine.get_tip(&sample_phrase(), &sample_context()).await;
 
-        assert!(result.is_ok(), "API failure should degrade gracefully");
-        let tip = result.unwrap();
-        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
+        assert!(result.is_ok(), "API failure should not surface as Err");
         assert!(
-            tip.text.contains("Consistent practice"),
-            "Fallback tip should encourage practice, got: {}",
-            tip.text
+            result.unwrap().is_none(),
+            "API failure must yield no tip, not a fabricated one"
         );
     }
 
     #[tokio::test]
-    async fn rate_limiter_skips_call_when_too_soon() {
+    async fn rate_limiter_skips_call_and_returns_none_when_too_soon() {
         let mock = MockHttpClient::succeeding(&mock_anthropic_response());
         let call_count = Arc::clone(&mock.call_count);
         let mut engine = make_engine(mock);
 
-        // First call — should hit the API
-        let _tip1 = engine
+        // First call — should hit the API and produce a real tip.
+        let tip1 = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
             .unwrap();
+        assert!(tip1.is_some(), "first call returns a genuine tip");
 
-        // Second call immediately — should be rate-limited
+        // Second call immediately — should be rate-limited and return no tip.
         let tip2 = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
@@ -2330,11 +2312,9 @@ mod tests {
             1,
             "Rate limiter should have prevented the second API call"
         );
-        // The rate-limited tip has specific text
         assert!(
-            tip2.text.contains("Keep up the momentum"),
-            "Rate-limited tip should be the generic one, got: {}",
-            tip2.text
+            tip2.is_none(),
+            "rate-limited live tip must be silent, not a canned filler"
         );
     }
 
@@ -2503,15 +2483,17 @@ mod tests {
         let tip = engine
             .get_tip(&sample_phrase(), &sample_context())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a successful OpenAI response yields Some(tip)");
 
         assert_eq!(tip.category, CoachingCategory::Dynamics);
         assert_eq!(tip.severity, CoachingSeverity::Encouragement);
     }
 
     #[tokio::test]
-    async fn malformed_llm_response_triggers_fallback() {
-        // The LLM returns text that isn't valid JSON
+    async fn malformed_llm_response_returns_none() {
+        // The LLM returns text that isn't valid tip JSON. Rather than fabricate
+        // a canned tip, the live-tip path stays silent (None).
         let bad_response = serde_json::json!({
             "content": [{
                 "type": "text",
@@ -2528,9 +2510,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Should get the fallback, not an error
-        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
-        assert!(tip.text.contains("Consistent practice"));
+        // No parseable tip → no tip, not a fabricated one.
+        assert!(
+            tip.is_none(),
+            "an unparseable response must yield no tip, got {tip:?}"
+        );
     }
 
     #[test]
@@ -2810,19 +2794,15 @@ mod tests {
             initial_calls, after_rapid_calls,
             "Rate limiting should prevent second API call within window"
         );
-        assert_eq!(
-            tip2.severity,
-            CoachingSeverity::Encouragement,
-            "Rate-limited response should be encouragement"
-        );
         assert!(
-            tip2.text.contains("momentum"),
-            "Rate-limited tip should have characteristic wording"
+            tip2.is_none(),
+            "rate-limited live tip must be silent, not a canned filler"
         );
     }
 
     #[tokio::test]
-    async fn api_failure_returns_fallback_tip() {
+    async fn api_failure_returns_none_tip() {
+        // Silence beats a lie: the live-tip path returns no tip on API failure.
         let mock = MockHttpClient::failing("Service unavailable");
         let mut engine = online_engine(
             CoachingConfig {
@@ -2838,21 +2818,14 @@ mod tests {
 
         let result = engine.get_tip(&phrase, &context).await;
         assert!(result.is_ok(), "API failure should not propagate error");
-
-        let tip = result.unwrap();
         assert!(
-            !tip.text.is_empty(),
-            "Fallback tip should have non-empty text"
-        );
-        assert_eq!(
-            tip.severity,
-            CoachingSeverity::Encouragement,
-            "Fallback tip should be encouraging"
+            result.unwrap().is_none(),
+            "API failure must yield no tip, not a fabricated one"
         );
     }
 
     #[tokio::test]
-    async fn malformed_response_returns_fallback() {
+    async fn malformed_response_returns_none() {
         let mock = MockHttpClient::succeeding("{\"invalid\": \"json\"}");
         let mut engine = online_engine(
             CoachingConfig {
@@ -2871,10 +2844,9 @@ mod tests {
             result.is_ok(),
             "Malformed response should not propagate error"
         );
-        let tip = result.unwrap();
         assert!(
-            !tip.text.is_empty(),
-            "Fallback should be provided for malformed response"
+            result.unwrap().is_none(),
+            "an unparseable response must yield no tip"
         );
     }
 
@@ -2912,9 +2884,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn offline_get_tip_never_calls_http_client_and_returns_fallback() {
+    async fn offline_get_tip_never_calls_http_client_and_returns_none() {
         // The mock panics if `post_json` is ever reached. An Offline engine
-        // must return the on-device fallback tip without touching it.
+        // must return NO tip (silence) without touching the client — it never
+        // fabricates canned encouragement to fill the gap.
         let mut engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
@@ -2932,12 +2905,9 @@ mod tests {
             .await
             .expect("offline tip must succeed without network");
 
-        // The on-device fallback tip.
-        assert_eq!(tip.severity, CoachingSeverity::Encouragement);
         assert!(
-            tip.text.contains("Consistent practice"),
-            "offline path must return the on-device fallback tip, got: {}",
-            tip.text
+            tip.is_none(),
+            "offline live tip must be silent (None), never a canned fallback"
         );
     }
 

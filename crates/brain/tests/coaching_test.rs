@@ -122,7 +122,11 @@ async fn end_to_end_coaching_with_mock_api() {
     let phrase = make_phrase(440.0, 0.95, 0.7, 0.3, 15);
     let context = make_context("trumpet");
 
-    let tip = engine.get_tip(&phrase, &context).await.unwrap();
+    let tip = engine
+        .get_tip(&phrase, &context)
+        .await
+        .unwrap()
+        .expect("online success yields Some(tip)");
 
     // Verify the returned tip has correct structure
     assert_eq!(tip.severity, CoachingSeverity::Suggestion);
