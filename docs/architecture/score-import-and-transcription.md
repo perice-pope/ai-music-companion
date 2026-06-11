@@ -78,9 +78,24 @@ then the **same part picker** as MusicXML import.
 Surface a calm "this was read from a scan — check it looks right" note, exactly
 like the audio quality banner. Never present a guessed score as ground truth.
 
+**Model delivery (decided, 2026-06-11):** the OMR (and later stem-separation)
+models ship **bundled at build/package time**, fetched by CI the same way the
+ONNX Runtime is today (`scripts/fetch-onnxruntime.sh`, gitignored — never
+committed to keep the repo lean). This means **zero network at runtime** for the
+user and nothing new to disclose in `ConnectionsPrivacy.tsx` or the
+network-transparency doc. The rejected alternative — download-on-first-use —
+would be a runtime outbound call that breaks offline-by-default. Trade-off
+accepted: a larger installer (~100–300 MB) in exchange for a feature that works
+on a plane.
+
 **Open items before building:** confirm oemer model license; choose the PDF
 rasterizer (a Rust `pdfium`/`pdf` binding vs. a small bundled helper);
-multi-page stitching; model size / bundle budget.
+**resolve the engine-integration fork** — port oemer's post-processing to Rust
+(faithful to the ONNX-in-`ort` story, but a large port) vs. bundle a frozen
+oemer as a Tauri **sidecar** binary (far less code, still offline since it's
+bundled, but ships a Python-derived executable). Phase 1 will spike the sidecar
+path first to get an end-to-end "PDF → notes" demo behind the beta flag, then
+decide whether the Rust port is worth it.
 
 ---
 
