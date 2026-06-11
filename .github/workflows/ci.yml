@@ -120,15 +120,15 @@ jobs:
 
       - name: Lint
         working-directory: apps/desktop
-        run: pnpm lint || true
+        run: pnpm lint
 
       - name: Test
         working-directory: apps/desktop
-        run: pnpm test --passWithNoTests || true
+        run: pnpm test
 
       - name: Build
         working-directory: apps/desktop
-        run: pnpm build || true
+        run: pnpm build
 
   tauri-rust:
     name: Tauri Rust checks
