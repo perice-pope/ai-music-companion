@@ -1,0 +1,325 @@
+/**
+ * Browser-injected mock of the Tauri IPC boundary + an outbound-network
+ * guard, used by the GUI E2E suite (Option B: UI E2E against the Vite web
+ * build with mocked IPC; the native Tauri shell is covered separately by
+ * the Rust E2E harness in `crates/brain/tests/e2e_offline.rs`).
+ *
+ * Why a dedicated mock and NOT the app's own `devShim`:
+ *  - `devShim` is `import.meta.env.DEV`-gated and dead-code-eliminated from
+ *    the production bundle the E2E suite drives, so it isn't present.
+ *  - The E2E mock must additionally *record* every IPC call and *block +
+ *    record* any outbound HTTP, so the suite can assert the practice→recap
+ *    flow needs no network. `devShim` does neither.
+ *
+ * Playwright runs `installTauriMockAndNetGuard` via `addInitScript` BEFORE
+ * any app code, so `window.__TAURI_INTERNALS__` already exists by the time
+ * the React tree mounts and the app's `installDevShimIfNeeded()` sees it and
+ * leaves it alone (it early-returns when internals are present). No app
+ * source is touched.
+ *
+ * `makeIpcHandler` factors the seeded IPC logic out as a pure function so the
+ * same behaviour can be unit-checked under Node/Vitest without a browser —
+ * see `e2e/tests/tauri-mock.unit.test.ts`. The browser-injected function
+ * below intentionally inlines an equivalent handler because `addInitScript`
+ * serialises a single self-contained function and cannot close over module
+ * scope.
+ */
+
+/** A recorded IPC invocation. */
+export interface RecordedInvoke {
+  cmd: string;
+  args: Record<string, unknown> | undefined;
+}
+
+/** A recorded (blocked) outbound network attempt. */
+export interface RecordedNetwork {
+  kind: "fetch" | "xhr" | "websocket" | "beacon";
+  url: string;
+}
+
+declare global {
+  interface Window {
+    /** Ordered log of every IPC command the app invoked. */
+    __ipcCalls: RecordedInvoke[];
+    /** Ordered log of every outbound network attempt (all blocked). */
+    __netCalls: RecordedNetwork[];
+    __TAURI_INTERNALS__?: unknown;
+  }
+}
+
+/**
+ * Instruments the seeded backend returns. Mirrors the camelCase
+ * `InstrumentInfo` wire contract (`commands::InstrumentInfo`,
+ * `rename_all = "camelCase"`). Small but real-shaped.
+ */
+export const SEEDED_INSTRUMENTS = [
+  {
+    name: "Trumpet",
+    family: "Brass",
+    freqMinHz: 155,
+    freqMaxHz: 988,
+    vibratoToleranceCents: 15,
+    emoji: "🎺",
+  },
+  {
+    name: "Voice",
+    family: "Voice",
+    freqMinHz: 82,
+    freqMaxHz: 1047,
+    vibratoToleranceCents: 30,
+    emoji: "🎤",
+  },
+  {
+    name: "Violin",
+    family: "Strings",
+    freqMinHz: 196,
+    freqMaxHz: 2637,
+    vibratoToleranceCents: 20,
+    emoji: "🎻",
+  },
+];
+
+/**
+ * Recap returned from `end_practice_session`. Shaped to
+ * `brain::session::SessionRecap` (frontend `SessionRecap` type).
+ * `phrase_count > 0` so the recap renders the full summary variant
+ * (strengths before areas — the product invariant the UI enforces),
+ * not the empty state.
+ */
+export const SEEDED_RECAP = {
+  overall_assessment:
+    "Solid, focused session — your sound stayed centered and your phrasing was musical.",
+  strengths: ["Steady air support", "Clean attacks on the upper register"],
+  areas_to_improve: ["Watch the tuning on sustained high notes"],
+  next_session_suggestions: ["Try long tones with a drone for intonation"],
+  duration_secs: 312,
+  phrase_count: 7,
+  instrument: "Trumpet",
+  fingerprint: {
+    intonation: {
+      note_count: 64,
+      mean_cents: 3,
+      mean_abs_cents: 8,
+      in_tune_ratio: 0.82,
+      tendencies: [],
+    },
+    groove: {
+      tempo_bpm: 96,
+      swing_ratio: null,
+      mean_ioi_secs: 0.62,
+      timing_consistency: 0.88,
+      onset_count: 120,
+    },
+  },
+};
+
+/**
+ * Build the seeded IPC handler. Same contract the app's `invoke()` expects:
+ * `(cmd, args) => Promise<unknown>`. Every call is appended to `ipcCalls`
+ * first. Pure apart from that log, so it can be exercised directly in a Node
+ * unit test.
+ */
+export function makeIpcHandler(ipcCalls: RecordedInvoke[]) {
+  let sessionSeq = 0;
+  return async function handleInvoke(
+    cmd: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    ipcCalls.push({ cmd, args });
+    switch (cmd) {
+      case "list_instruments":
+        return SEEDED_INSTRUMENTS;
+      case "start_practice_session":
+        sessionSeq += 1;
+        return `e2e-session-${sessionSeq}`;
+      case "switch_instrument":
+        return `e2e-segment-${Date.now()}`;
+      case "end_practice_session":
+        return SEEDED_RECAP;
+      case "get_session_history":
+        return [];
+      case "list_scores":
+        return [];
+      case "get_practice_stats":
+        return {
+          total_sessions: 0,
+          total_time_secs: 0,
+          sessions_this_week: 0,
+          avg_session_length_secs: 0,
+          trend: "stable",
+        };
+      // Tauri v2 routes its event subsystem over invoke. The seeded backend
+      // never emits live events (no mic headless), so listen/unlisten just
+      // hand back / accept a throwaway id.
+      case "plugin:event|listen":
+        return Math.floor(Math.random() * 1_000_000);
+      case "plugin:event|unlisten":
+        return undefined;
+      default:
+        // Unknown command — reject so a regression that adds a new IPC
+        // dependency to the core offline flow surfaces loudly.
+        throw new Error(`[e2e tauri-mock] unmocked command "${cmd}"`);
+    }
+  };
+}
+
+/**
+ * Injected into the page before app code runs. It:
+ *  1. installs the recording mock IPC on `window.__TAURI_INTERNALS__`, and
+ *  2. wraps `fetch` / `XMLHttpRequest` / `WebSocket` / `sendBeacon` so any
+ *     outbound network attempt is recorded AND blocked. The offline
+ *     guarantee is then asserted by checking `window.__netCalls` is empty
+ *     (Playwright also aborts non-local requests at the route layer as a
+ *     second, independent guard).
+ *
+ * Self-contained: it must not reference any module-scope binding, because
+ * `addInitScript` serialises only this function body into the page.
+ */
+export function installTauriMockAndNetGuard(): void {
+  const ipcCalls: RecordedInvoke[] = [];
+  const netCalls: RecordedNetwork[] = [];
+  window.__ipcCalls = ipcCalls;
+  window.__netCalls = netCalls;
+
+  let sessionSeq = 0;
+  const instruments = [
+    {
+      name: "Trumpet",
+      family: "Brass",
+      freqMinHz: 155,
+      freqMaxHz: 988,
+      vibratoToleranceCents: 15,
+      emoji: "🎺",
+    },
+    {
+      name: "Voice",
+      family: "Voice",
+      freqMinHz: 82,
+      freqMaxHz: 1047,
+      vibratoToleranceCents: 30,
+      emoji: "🎤",
+    },
+    {
+      name: "Violin",
+      family: "Strings",
+      freqMinHz: 196,
+      freqMaxHz: 2637,
+      vibratoToleranceCents: 20,
+      emoji: "🎻",
+    },
+  ];
+  const recap = {
+    overall_assessment:
+      "Solid, focused session — your sound stayed centered and your phrasing was musical.",
+    strengths: ["Steady air support", "Clean attacks on the upper register"],
+    areas_to_improve: ["Watch the tuning on sustained high notes"],
+    next_session_suggestions: ["Try long tones with a drone for intonation"],
+    duration_secs: 312,
+    phrase_count: 7,
+    instrument: "Trumpet",
+    fingerprint: {
+      intonation: {
+        note_count: 64,
+        mean_cents: 3,
+        mean_abs_cents: 8,
+        in_tune_ratio: 0.82,
+        tendencies: [],
+      },
+      groove: {
+        tempo_bpm: 96,
+        swing_ratio: null,
+        mean_ioi_secs: 0.62,
+        timing_consistency: 0.88,
+        onset_count: 120,
+      },
+    },
+  };
+
+  async function handleInvoke(
+    cmd: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    ipcCalls.push({ cmd, args });
+    switch (cmd) {
+      case "list_instruments":
+        return instruments;
+      case "start_practice_session":
+        sessionSeq += 1;
+        return `e2e-session-${sessionSeq}`;
+      case "switch_instrument":
+        return `e2e-segment-${Date.now()}`;
+      case "end_practice_session":
+        return recap;
+      case "get_session_history":
+        return [];
+      case "list_scores":
+        return [];
+      case "get_practice_stats":
+        return {
+          total_sessions: 0,
+          total_time_secs: 0,
+          sessions_this_week: 0,
+          avg_session_length_secs: 0,
+          trend: "stable",
+        };
+      case "plugin:event|listen":
+        return Math.floor(Math.random() * 1_000_000);
+      case "plugin:event|unlisten":
+        return undefined;
+      default:
+        throw new Error(`[e2e tauri-mock] unmocked command "${cmd}"`);
+    }
+  }
+
+  window.__TAURI_INTERNALS__ = {
+    invoke: handleInvoke,
+    transformCallback: (cb: unknown) => {
+      const id = Math.floor(Math.random() * 1_000_000);
+      (window as unknown as Record<string, unknown>)[`_${id}`] = cb;
+      return id;
+    },
+    ipc: { postMessage: () => {} },
+    metadata: {
+      currentWindow: { label: "main" },
+      currentWebview: { label: "main" },
+    },
+  };
+
+  // --- Outbound-network guard --------------------------------------------
+  // Any HTTP/WS the practice flow attempts is a bug in the offline promise.
+  // Record + block it here (in addition to Playwright's route-level abort).
+  window.fetch = ((input: RequestInfo | URL) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : (input as Request).url;
+    netCalls.push({ kind: "fetch", url: String(url) });
+    return Promise.reject(new Error(`[e2e net-guard] blocked fetch → ${url}`));
+  }) as typeof window.fetch;
+
+  const RealXHR = window.XMLHttpRequest;
+  class GuardedXHR extends RealXHR {
+    open(method: string, url: string | URL): void {
+      netCalls.push({ kind: "xhr", url: String(url) });
+      // Redirect at a target that can never leave the page.
+      super.open(method, "data:,blocked");
+    }
+  }
+  window.XMLHttpRequest = GuardedXHR as unknown as typeof XMLHttpRequest;
+
+  if (typeof window.WebSocket === "function") {
+    window.WebSocket = function (url: string | URL) {
+      netCalls.push({ kind: "websocket", url: String(url) });
+      throw new Error(`[e2e net-guard] blocked WebSocket → ${url}`);
+    } as unknown as typeof WebSocket;
+  }
+
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon = ((url: string | URL) => {
+      netCalls.push({ kind: "beacon", url: String(url) });
+      return false;
+    }) as typeof navigator.sendBeacon;
+  }
+}

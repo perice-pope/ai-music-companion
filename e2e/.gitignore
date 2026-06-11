@@ -1,0 +1,5 @@
+# Playwright generated artifacts
+test-results/
+playwright-report/
+.playwright/
+blob-report/

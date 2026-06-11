@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    // The E2E suite has no node_modules of its own — its dev deps
+    // (@playwright/test, vitest, @types/node) are installed in the
+    // desktop app's workspace (apps/desktop). Point type + module
+    // resolution there so `tsc --project e2e/tsconfig.json` (run from
+    // anywhere) typechecks against the same versions the runner uses.
+    "typeRoots": ["../apps/desktop/node_modules/@types"],
+    "baseUrl": ".",
+    "paths": {
+      "@playwright/test": ["../apps/desktop/node_modules/@playwright/test"],
+      "vitest": ["../apps/desktop/node_modules/vitest"],
+      "vitest/config": ["../apps/desktop/node_modules/vitest/config"]
+    }
+  },
+  "include": ["**/*.ts"]
+}
