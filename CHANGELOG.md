@@ -1,3 +1,9 @@
+## [1.47.1](https://github.com/perice-pope/ai-music-companion/compare/v1.47.0...v1.47.1) (2026-06-12)
+
+### Bug Fixes
+
+* **score:** enforce silence > lies — rhythmic_stability is Option<f64>, not fake 1.0 ([#180](https://github.com/perice-pope/ai-music-companion/issues/180)) ([47a6c03](https://github.com/perice-pope/ai-music-companion/commit/47a6c03f716f188aad912904b5917439eacc964a)), closes [#135](https://github.com/perice-pope/ai-music-companion/issues/135)
+
 ## [1.47.0](https://github.com/perice-pope/ai-music-companion/compare/v1.46.1...v1.47.0) (2026-06-11)
 
 ### Features
