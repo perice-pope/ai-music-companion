@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
@@ -32,6 +33,28 @@ function App() {
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
   const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
+  const [storageDegraded, setStorageDegraded] = useState(false);
+
+  useEffect(() => {
+    // Check app capabilities on mount — specifically whether session
+    // storage degraded during startup (e.g., disk permissions, sandbox).
+    (async () => {
+      try {
+        const caps = await invoke<{ coaching_available: boolean; storage_degraded: boolean }>(
+          "get_app_capabilities"
+        );
+        if (caps.storage_degraded) {
+          setStorageDegraded(true);
+          console.warn(
+            "Session storage unavailable — running with in-memory cache only. " +
+            "Session history will not be saved."
+          );
+        }
+      } catch (err: unknown) {
+        console.error("Failed to fetch app capabilities:", err);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const unsubs: Array<() => void> = [];
@@ -88,7 +111,18 @@ function App() {
     };
   }, [setEvent, pushPhrase, requestCoachingTip, setCursorPosition]);
 
-  return <PracticeShell />;
+  return (
+    <>
+      {storageDegraded && (
+        <div className="fixed top-0 left-0 right-0 bg-yellow-900 text-yellow-100 px-4 py-3 text-sm z-50 border-b border-yellow-700">
+          ⚠️ Session storage is unavailable. Your practice history won't be saved this session.
+        </div>
+      )}
+      <div className={storageDegraded ? "pt-12" : ""}>
+        <PracticeShell />
+      </div>
+    </>
+  );
 }
 
 export default App;

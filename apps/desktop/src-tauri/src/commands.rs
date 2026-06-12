@@ -948,6 +948,13 @@ impl AppState {
         self.coaching_available
     }
 
+    /// Check if session storage degraded during startup (e.g., disk permissions,
+    /// sandbox violation). When true, the app is running with in-memory storage only
+    /// and session history will not persist. The UI should warn the user.
+    pub fn storage_degraded(&self) -> bool {
+        self.storage_degraded
+    }
+
     /// Peek at the current phase. Returns `Idle` when no session
     /// exists. Exposed so tests can assert on the state machine
     /// without holding the internal lock themselves.
@@ -1658,12 +1665,14 @@ pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppCapabilities {
     pub coaching_available: bool,
+    pub storage_degraded: bool,
 }
 
 #[tauri::command]
 pub fn get_app_capabilities(state: State<'_, AppState>) -> Result<AppCapabilities, String> {
     Ok(AppCapabilities {
         coaching_available: state.coaching_available(),
+        storage_degraded: state.storage_degraded(),
     })
 }
 
