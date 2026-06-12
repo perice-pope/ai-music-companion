@@ -1,3 +1,9 @@
+## [1.48.0](https://github.com/perice-pope/ai-music-companion/compare/v1.47.1...v1.48.0) (2026-06-12)
+
+### Features
+
+* **import:** PDF → sheet music via on-device OMR (Phase 1, behind beta flag) ([#181](https://github.com/perice-pope/ai-music-companion/issues/181)) ([9774b71](https://github.com/perice-pope/ai-music-companion/commit/9774b7135b84344aa51928f39d01b580cec3fd31))
+
 ## [1.47.1](https://github.com/perice-pope/ai-music-companion/compare/v1.47.0...v1.47.1) (2026-06-12)
 
 ### Bug Fixes
