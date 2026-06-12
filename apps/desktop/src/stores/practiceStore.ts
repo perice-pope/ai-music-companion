@@ -63,6 +63,23 @@ export interface ImportedAudio {
   low_confidence: boolean;
 }
 
+/**
+ * Result of recognizing a sheet-music PDF on-device (OMR). Field names mirror
+ * the Rust `RecognizedPdfDto`. Recognition stores nothing: `music_xml` is fed
+ * back through `importMusicXmlFromFile` with the chosen part, so PDF import
+ * reuses the same part-picker + library path as MusicXML import.
+ */
+export interface RecognizedPdf {
+  /** The recognized MusicXML — import this with the chosen part index. */
+  music_xml: string;
+  /** Parts found, in score order — drives the same "which part?" picker. */
+  parts: string[];
+  /** Always true: a scan is approximate; the UI shows a "check it" note. */
+  from_scan: boolean;
+  /** The scan yielded almost nothing — warn the read likely failed. */
+  low_content: boolean;
+}
+
 /** All the state the free-play flow needs. */
 export interface PracticeState {
   // Routing ---------------------------------------------------------------
@@ -138,6 +155,17 @@ export interface PracticeState {
     bytes: number[],
     partIndex: number,
   ) => Promise<ScoreLibraryEntry>;
+  /**
+   * Recognize a sheet-music PDF on-device (experimental beta — OMR). Returns the
+   * recognized MusicXML and its parts; nothing is stored. The caller runs the
+   * shared part picker and then imports the chosen part via
+   * `importMusicXmlFromFile` — see `recognize_pdf_score`. Rejects with a calm
+   * message when the beta is off or the engine isn't bundled.
+   */
+  recognizePdfFromFile: (
+    sourceFilename: string,
+    bytes: number[],
+  ) => Promise<RecognizedPdf>;
   loadScoreFromId: (id: string) => Promise<void>;
   refreshScoreLibrary: () => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
@@ -356,6 +384,22 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return entry;
     } catch (err) {
       throw new Error(`Failed to import MusicXML: ${err}`);
+    }
+  },
+
+  recognizePdfFromFile: async (sourceFilename: string, bytes: number[]) => {
+    try {
+      // OMR is just a front-end that produces MusicXML — it stores nothing.
+      // The caller hands the result to importMusicXmlFromFile with the chosen
+      // part, reusing the same picker + library path as MusicXML import.
+      return await invoke<RecognizedPdf>("recognize_pdf_score", {
+        sourceFilename,
+        bytes,
+      });
+    } catch (err) {
+      // Preserve the backend's calm, specific message (beta off, engine not
+      // bundled, unreadable scan) — it's written for the user.
+      throw new Error(`${err}`);
     }
   },
 

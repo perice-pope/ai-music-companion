@@ -37,7 +37,8 @@
     "longDescription": "AI Music Companion is a desktop practice tool for musicians (brass, voice, strings, woodwinds, piano). It delivers real-time audio analysis, score following, and coaching feedback with sub-25ms latency.",
     "resources": {
       "../../../profiles": "profiles",
-      "resources/onnxruntime": "onnxruntime"
+      "resources/onnxruntime": "onnxruntime",
+      "resources/omr": "omr"
     },
     "icon": [
       "icons/32x32.png",

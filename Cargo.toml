@@ -8,6 +8,7 @@ members = [
     "crates/theory",
     "crates/groove",
     "crates/idiom",
+    "crates/omr",
 ]
 
 [workspace.package]

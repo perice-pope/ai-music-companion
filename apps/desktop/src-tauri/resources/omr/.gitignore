@@ -1,0 +1,7 @@
+# The OMR (oemer) sidecar engine is fetched at build time by
+# scripts/fetch-omr-engine.sh — never commit the (large, platform-specific)
+# engine binary or its bundled models. Keep this directory and its docs tracked
+# as the bundling seam, exactly like resources/onnxruntime.
+*
+!.gitignore
+!README.md
