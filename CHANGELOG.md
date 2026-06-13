@@ -1,3 +1,9 @@
+## [1.51.0](https://github.com/perice-pope/ai-music-companion/compare/v1.50.2...v1.51.0) (2026-06-13)
+
+### Features
+
+* **desktop:** persist per-phrase metrics to a session_phrases table ([#202](https://github.com/perice-pope/ai-music-companion/issues/202)) ([e385015](https://github.com/perice-pope/ai-music-companion/commit/e385015428b54963301848b4950e6334ff5acde3)), closes [#196](https://github.com/perice-pope/ai-music-companion/issues/196)
+
 ## [1.50.2](https://github.com/perice-pope/ai-music-companion/compare/v1.50.1...v1.50.2) (2026-06-13)
 
 ### Bug Fixes
