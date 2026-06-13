@@ -114,6 +114,52 @@ export const SEEDED_RECAP = {
 };
 
 /**
+ * Duration-aware empty-state recap (`brain::session::SessionRecap` with
+ * `phrase_count: 0`). Mirrors what the backend's `empty_state_recap` returns
+ * for a session that ran long enough that the user clearly *was* there — a
+ * calm "couldn't pick out phrases, check your mic" note, never "you didn't
+ * play" (#185). The seeded backend returns this for a **Voice** session so the
+ * suite can exercise empty-recap rendering + the recap's dark surface (#186).
+ */
+export const SEEDED_EMPTY_RECAP = {
+  overall_assessment:
+    "I couldn't quite pick out distinct phrases this time. If you were playing, try moving a little closer to the mic or nudging your input level up — then come back and I'll listen again.",
+  strengths: [],
+  areas_to_improve: [],
+  next_session_suggestions: [
+    "Check your microphone input level, then play a few clear, sustained notes.",
+  ],
+  duration_secs: 312,
+  phrase_count: 0,
+  instrument: "Voice",
+  fingerprint: null,
+  idiom_notes: [],
+  connections: [],
+};
+
+/** A seeded library score (`brain::store::ScoreLibraryEntry` wire shape). */
+export const SEEDED_SCORE = {
+  id: "00000000-0000-0000-0000-0000000000aa",
+  title: "Seeded Etude",
+  composer: "E2E",
+  source_filename: "seeded-etude.musicxml",
+  added_at: "2026-06-12T00:00:00Z",
+  last_practiced_at: null,
+  part_index: 0,
+  duration_measures: 8,
+};
+
+/** Minimal valid MusicXML returned by `get_score` for the seeded score. */
+export const SEEDED_MUSICXML =
+  '<?xml version="1.0"?><score-partwise version="4.0"><part-list>' +
+  '<score-part id="P1"><part-name>Music</part-name></score-part></part-list>' +
+  "<part id=\"P1\"><measure number=\"1\"><attributes><divisions>1</divisions>" +
+  "<key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>" +
+  "<clef><sign>G</sign><line>2</line></clef></attributes>" +
+  "<note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>" +
+  "<type>whole</type></note></measure></part></score-partwise>";
+
+/**
  * Build the seeded IPC handler. Same contract the app's `invoke()` expects:
  * `(cmd, args) => Promise<unknown>`. Every call is appended to `ipcCalls`
  * first. Pure apart from that log, so it can be exercised directly in a Node
@@ -121,6 +167,9 @@ export const SEEDED_RECAP = {
  */
 export function makeIpcHandler(ipcCalls: RecordedInvoke[]) {
   let sessionSeq = 0;
+  // Track the instrument the current session started with so the recap can vary
+  // (Voice → empty-state recap, exercising the #185/#186 rendering path).
+  let lastInstrument: string | undefined;
   return async function handleInvoke(
     cmd: string,
     args?: Record<string, unknown>,
@@ -131,15 +180,22 @@ export function makeIpcHandler(ipcCalls: RecordedInvoke[]) {
         return SEEDED_INSTRUMENTS;
       case "start_practice_session":
         sessionSeq += 1;
+        lastInstrument = args?.instrument as string | undefined;
         return `e2e-session-${sessionSeq}`;
       case "switch_instrument":
+        lastInstrument = (args?.name as string | undefined) ?? lastInstrument;
         return `e2e-segment-${Date.now()}`;
       case "end_practice_session":
-        return SEEDED_RECAP;
+        // A Voice session returns the duration-aware empty-state recap so the
+        // suite can drive empty-recap rendering (#185/#186); every other
+        // instrument returns the full summary recap.
+        return lastInstrument === "Voice" ? SEEDED_EMPTY_RECAP : SEEDED_RECAP;
       case "get_session_history":
         return [];
       case "list_scores":
-        return [];
+        return [SEEDED_SCORE];
+      case "get_score":
+        return { entry: SEEDED_SCORE, music_xml: SEEDED_MUSICXML };
       case "get_practice_stats":
         return {
           total_sessions: 0,
@@ -182,6 +238,7 @@ export function installTauriMockAndNetGuard(): void {
   window.__netCalls = netCalls;
 
   let sessionSeq = 0;
+  let lastInstrument: string | undefined;
   const instruments = [
     {
       name: "Trumpet",
@@ -234,6 +291,41 @@ export function installTauriMockAndNetGuard(): void {
       },
     },
   };
+  // Duration-aware empty-state recap (phrase_count 0) — returned for a Voice
+  // session so the suite can drive empty-recap rendering (#185/#186).
+  const emptyRecap = {
+    overall_assessment:
+      "I couldn't quite pick out distinct phrases this time. If you were playing, try moving a little closer to the mic or nudging your input level up — then come back and I'll listen again.",
+    strengths: [],
+    areas_to_improve: [],
+    next_session_suggestions: [
+      "Check your microphone input level, then play a few clear, sustained notes.",
+    ],
+    duration_secs: 312,
+    phrase_count: 0,
+    instrument: "Voice",
+    fingerprint: null,
+    idiom_notes: [],
+    connections: [],
+  };
+  const score = {
+    id: "00000000-0000-0000-0000-0000000000aa",
+    title: "Seeded Etude",
+    composer: "E2E",
+    source_filename: "seeded-etude.musicxml",
+    added_at: "2026-06-12T00:00:00Z",
+    last_practiced_at: null,
+    part_index: 0,
+    duration_measures: 8,
+  };
+  const musicXml =
+    '<?xml version="1.0"?><score-partwise version="4.0"><part-list>' +
+    '<score-part id="P1"><part-name>Music</part-name></score-part></part-list>' +
+    '<part id="P1"><measure number="1"><attributes><divisions>1</divisions>' +
+    '<key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>' +
+    '<clef><sign>G</sign><line>2</line></clef></attributes>' +
+    '<note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>' +
+    "<type>whole</type></note></measure></part></score-partwise>";
 
   async function handleInvoke(
     cmd: string,
@@ -245,15 +337,19 @@ export function installTauriMockAndNetGuard(): void {
         return instruments;
       case "start_practice_session":
         sessionSeq += 1;
+        lastInstrument = args?.instrument as string | undefined;
         return `e2e-session-${sessionSeq}`;
       case "switch_instrument":
+        lastInstrument = (args?.name as string | undefined) ?? lastInstrument;
         return `e2e-segment-${Date.now()}`;
       case "end_practice_session":
-        return recap;
+        return lastInstrument === "Voice" ? emptyRecap : recap;
       case "get_session_history":
         return [];
       case "list_scores":
-        return [];
+        return [score];
+      case "get_score":
+        return { entry: score, music_xml: musicXml };
       case "get_practice_stats":
         return {
           total_sessions: 0,
