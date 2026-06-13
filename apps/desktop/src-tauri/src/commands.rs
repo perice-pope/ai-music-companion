@@ -557,6 +557,11 @@ pub struct AppState {
     session_store: std::sync::Mutex<SessionStore>,
     score_store: std::sync::Mutex<ScoreStore>,
     coaching_available: bool,
+    /// On-disk persistence fell back to in-memory at startup (e.g. corrupt data
+    /// dir, sandbox, or full disk): the practice loop still works, but this
+    /// session's history and scores won't survive a restart. Surfaced so the UI
+    /// can warn calmly — startup never crashes over it (#137).
+    persistence_degraded: bool,
     /// PDF→sheet-music import (on-device OMR) is an experimental beta, **off by
     /// default**. Enabled when `AMC_ENABLE_PDF_OMR` is set in the environment.
     /// Gated here so a normal build never advertises an unverified read path;
@@ -588,6 +593,42 @@ pub struct AppState {
     /// empty and **every** recap was the "you didn't play" empty state — the
     /// real root cause behind #185 (the confidence gate was only half of it).
     phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
+}
+
+/// Open the on-disk session + score stores, degrading to in-memory if the
+/// on-disk database can't be opened (corrupt data dir, sandbox, full disk).
+///
+/// Returns the two stores plus whether **on-disk** persistence is active. A
+/// `false` means this session's history and scores won't survive a restart — we
+/// log that plainly and carry on, because the practice loop needs no
+/// persistence. This replaces the back-to-back `.expect` that turned a bad data
+/// directory into a hard startup crash (#137).
+fn open_stores(db_path: &std::path::Path) -> (SessionStore, ScoreStore, bool) {
+    match (SessionStore::open(db_path), ScoreStore::open(db_path)) {
+        (Ok(session), Ok(score)) => (session, score, true),
+        (session_res, score_res) => {
+            let reason = session_res
+                .err()
+                .map(|e| e.to_string())
+                .or_else(|| score_res.err().map(|e| e.to_string()))
+                .unwrap_or_default();
+            tracing::warn!(
+                path = %db_path.display(),
+                error = %reason,
+                "could not open the on-disk store; practice still works but this session's \
+                 history and scores won't be saved"
+            );
+            // In-memory SQLite touches no filesystem, so a failure here would
+            // mean rusqlite itself is unusable (a broken build/link), which is
+            // not a recoverable runtime condition — hence the single, documented
+            // expect rather than the previous back-to-back pair.
+            let session = SessionStore::in_memory()
+                .expect("in-memory SQLite must open — a failure means rusqlite is unusable");
+            let score = ScoreStore::in_memory()
+                .expect("in-memory SQLite must open — a failure means rusqlite is unusable");
+            (session, score, false)
+        }
+    }
 }
 
 impl AppState {
@@ -622,11 +663,9 @@ impl AppState {
             std::path::PathBuf::from(":memory:")
         });
 
-        let session_store = SessionStore::open(&db_path)
-            .unwrap_or_else(|_| SessionStore::in_memory().expect("in-memory store must succeed"));
-
-        let score_store = ScoreStore::open(&db_path)
-            .unwrap_or_else(|_| ScoreStore::in_memory().expect("in-memory store must succeed"));
+        // Open the on-disk stores, degrading to in-memory (with a clear warning)
+        // rather than crashing if the data directory is unusable (#137).
+        let (session_store, score_store, persisted) = open_stores(&db_path);
 
         let coaching_svc = LlmCoachingService::new();
         let coaching_available = coaching_svc.coaching_available();
@@ -639,6 +678,7 @@ impl AppState {
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
             coaching_available,
+            persistence_degraded: !persisted,
             omr_enabled: pdf_omr_enabled_from_env(),
             instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
@@ -660,6 +700,9 @@ impl AppState {
                 ScoreStore::in_memory().expect("in-memory store must succeed"),
             ),
             coaching_available: false,
+            // In-memory by design here — that's the test default, not a
+            // degradation.
+            persistence_degraded: false,
             omr_enabled: false,
             instruments: Arc::new(test_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
@@ -991,6 +1034,13 @@ impl AppState {
     /// Whether the experimental PDF→sheet-music (OMR) beta is enabled.
     pub fn omr_enabled(&self) -> bool {
         self.omr_enabled
+    }
+
+    /// Whether on-disk persistence degraded to in-memory at startup (#137).
+    /// `true` means this session's history/scores won't survive a restart — the
+    /// UI can surface a calm "not saving this session" note.
+    pub fn persistence_degraded(&self) -> bool {
+        self.persistence_degraded
     }
 
     /// Peek at the current phase. Returns `Idle` when no session
@@ -2182,6 +2232,30 @@ mod tests {
 
     fn state() -> AppState {
         AppState::with_mocks()
+    }
+
+    #[test]
+    fn open_stores_degrades_to_in_memory_instead_of_panicking() {
+        // Put a regular FILE where a directory component is expected, so the
+        // on-disk open fails with ENOTDIR even though the store creates parent
+        // dirs — and regardless of the test user's permissions (#137).
+        let blocker = std::env::temp_dir().join(format!("amc_137_blocker_{}", std::process::id()));
+        std::fs::write(&blocker, b"x").unwrap();
+        let bad = blocker.join("sub").join("amc.db");
+
+        let (session, score, persisted) = open_stores(&bad);
+        let _ = std::fs::remove_file(&blocker);
+
+        assert!(
+            !persisted,
+            "an unusable data dir must report degraded, not persisted"
+        );
+        // The degraded stores are still usable, so the session can run.
+        assert!(
+            session.list_recent(1).is_ok(),
+            "degraded session store must still work"
+        );
+        assert!(score.list().is_ok(), "degraded score store must still work");
     }
 
     fn sample_phrase() -> PhraseSummary {
