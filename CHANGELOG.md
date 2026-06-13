@@ -1,3 +1,10 @@
+## [1.50.1](https://github.com/perice-pope/ai-music-companion/compare/v1.50.0...v1.50.1) (2026-06-13)
+
+### Bug Fixes
+
+* **desktop:** persist completed practice sessions to the on-disk store ([#196](https://github.com/perice-pope/ai-music-companion/issues/196)) ([a1b5ee4](https://github.com/perice-pope/ai-music-companion/commit/a1b5ee42b26861491883324c0d61893c3bec2f5f))
+* **tuner:** smooth displayed cents for readability ([#187](https://github.com/perice-pope/ai-music-companion/issues/187)) ([#198](https://github.com/perice-pope/ai-music-companion/issues/198)) ([031b29d](https://github.com/perice-pope/ai-music-companion/commit/031b29db508ee0f6f20230922030024cbaccc332))
+
 ## [1.50.0](https://github.com/perice-pope/ai-music-companion/compare/v1.49.0...v1.50.0) (2026-06-13)
 
 ### Features
