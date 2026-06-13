@@ -1,3 +1,9 @@
+## [1.52.0](https://github.com/perice-pope/ai-music-companion/compare/v1.51.0...v1.52.0) (2026-06-13)
+
+### Features
+
+* **store:** user_version migrations + session debug columns ([#203](https://github.com/perice-pope/ai-music-companion/issues/203)) ([237e67a](https://github.com/perice-pope/ai-music-companion/commit/237e67a1933804d7471167659dafc0e8c2fee99c))
+
 ## [1.51.0](https://github.com/perice-pope/ai-music-companion/compare/v1.50.2...v1.51.0) (2026-06-13)
 
 ### Features
