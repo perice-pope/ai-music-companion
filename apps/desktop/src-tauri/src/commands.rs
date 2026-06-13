@@ -1435,8 +1435,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
 
     match session.recorder.complete() {
         Ok(completed) => {
-            let recap =
-                build_recap(&completed, &*generator, taste_profile, idiom_notes).await?;
+            let recap = build_recap(&completed, &*generator, taste_profile, idiom_notes).await?;
             // Persist the completed session so practice history, the stats
             // surface, and (opt-in) cloud sync all have something to read.
             // The store can degrade to in-memory at startup (see `open_stores`),
