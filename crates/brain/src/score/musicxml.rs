@@ -124,53 +124,13 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
 
         for child in measure_node.children() {
             if child.has_tag_name("attributes") {
-                if let Some(div) = find_descendant_text(&child, "divisions") {
-                    // `<divisions>` sets ticks-per-quarter for the part; a non-
-                    // positive value would make every `duration / divisions`
-                    // below zero or produce a divide-by-zero. Reject it
-                    // explicitly instead of silently coercing to 0.0.
-                    let d = div.parse::<f64>().map_err(|_| {
-                        ScoreError::MusicXml(format!(
-                            "invalid <divisions> value '{div}' at measure {measure_number}"
-                        ))
-                    })?;
-                    if !(d.is_finite() && d > 0.0) {
-                        return Err(ScoreError::MusicXml(format!(
-                            "<divisions> must be a positive finite number (got {d}) \
-                             at measure {measure_number}"
-                        )));
-                    }
-                    divisions = d;
-                }
-                if let Some(time_node) = find_descendant(&child, "time") {
-                    if let (Some(beats_str), Some(bt_str)) = (
-                        find_descendant_text(&time_node, "beats"),
-                        find_descendant_text(&time_node, "beat-type"),
-                    ) {
-                        if let (Ok(b), Ok(bt)) = (beats_str.parse::<u8>(), bt_str.parse::<u8>()) {
-                            time_signature = TimeSignature {
-                                beats: b,
-                                beat_type: bt,
-                            };
-                        }
-                    }
-                }
-                if let Some(key_node) = find_descendant(&child, "key") {
-                    if let Some(fifths_str) = find_descendant_text(&key_node, "fifths") {
-                        if let Ok(f) = fifths_str.parse::<i8>() {
-                            let mode = find_descendant_text(&key_node, "mode")
-                                .map(|m| {
-                                    if m.to_lowercase() == "minor" {
-                                        KeyMode::Minor
-                                    } else {
-                                        KeyMode::Major
-                                    }
-                                })
-                                .unwrap_or(KeyMode::Major);
-                            key_signature = KeySignature { fifths: f, mode };
-                        }
-                    }
-                }
+                apply_attributes(
+                    &child,
+                    measure_number,
+                    &mut divisions,
+                    &mut time_signature,
+                    &mut key_signature,
+                )?;
             }
 
             if child.has_tag_name("direction") {
@@ -189,106 +149,21 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
             }
 
             if child.has_tag_name("note") {
-                let is_rest = find_descendant(&child, "rest").is_some();
-
-                // `<duration>` is required on non-grace notes. Silently
-                // defaulting to 0.0 (as we used to) produces zero-length
-                // events that corrupt downstream beat math. Grace notes
-                // (the one legitimate case without `<duration>`) are
-                // handled below: they're marked with `<grace/>` and may
-                // legally omit duration — we treat them as 0-beat and skip
-                // advancing current_beat.
-                let is_grace = find_descendant(&child, "grace").is_some();
-                let duration_divs = match find_descendant_text(&child, "duration") {
-                    Some(s) => s.parse::<f64>().map_err(|_| {
-                        ScoreError::MusicXml(format!(
-                            "invalid <duration> '{s}' in note at measure {measure_number}"
-                        ))
-                    })?,
-                    None if is_grace => 0.0,
-                    None => {
-                        return Err(ScoreError::MusicXml(format!(
-                            "note at measure {measure_number} is missing <duration>"
-                        )));
-                    }
-                };
-                // `divisions` is validated above to be > 0 before use.
-                let duration_beats = duration_divs / divisions;
-
-                // Handle chord: chord notes share the same start_beat as the
-                // previous note (don't advance current_beat).
-                let is_chord = find_descendant(&child, "chord").is_some();
-                let start_beat = if is_chord {
-                    last_note_start
-                } else {
-                    current_beat
-                };
-
-                let (pitch_hz, midi_number) = if is_rest {
-                    (0.0, 0)
-                } else if let Some(pitch_node) = find_descendant(&child, "pitch") {
-                    // A <pitch> child must provide a valid step and octave;
-                    // fabricating defaults (e.g. C4) when the data is missing
-                    // or malformed produces silently-wrong notes that are
-                    // worse than an error.
-                    let step_raw = find_descendant_text(&pitch_node, "step").ok_or_else(|| {
-                        ScoreError::MusicXml(format!(
-                            "missing <step> in pitch at measure {measure_number}"
-                        ))
-                    })?;
-                    let step = step_raw.to_uppercase();
-                    if !matches!(step.as_str(), "C" | "D" | "E" | "F" | "G" | "A" | "B") {
-                        return Err(ScoreError::MusicXml(format!(
-                            "invalid pitch step '{step_raw}' at measure {measure_number} \
-                             (expected one of C, D, E, F, G, A, B)"
-                        )));
-                    }
-
-                    let octave_str =
-                        find_descendant_text(&pitch_node, "octave").ok_or_else(|| {
-                            ScoreError::MusicXml(format!(
-                                "missing <octave> in pitch at measure {measure_number}"
-                            ))
-                        })?;
-                    let octave = octave_str.parse::<i8>().map_err(|_| {
-                        ScoreError::MusicXml(format!(
-                            "invalid octave '{octave_str}' at measure {measure_number}"
-                        ))
-                    })?;
-
-                    // <alter> is optional; defaults to 0 (natural). An
-                    // unparseable value IS an error (don't silently drop it).
-                    let alter = match find_descendant_text(&pitch_node, "alter") {
-                        None => 0.0,
-                        Some(s) => s.parse::<f64>().map_err(|_| {
-                            ScoreError::MusicXml(format!(
-                                "invalid alter '{s}' at measure {measure_number}"
-                            ))
-                        })?,
-                    };
-
-                    let midi = pitch_to_midi(&step, octave, alter);
-                    let hz = midi_to_hz(midi);
-                    (hz, midi.round() as u8)
-                } else {
-                    return Err(ScoreError::MusicXml(format!(
-                        "note at measure {measure_number} has neither <pitch> nor <rest>"
-                    )));
-                };
-
-                notes.push(ScoreNote {
-                    pitch_hz,
-                    midi_number,
-                    duration_beats,
-                    start_beat,
-                    dynamic: current_dynamic,
-                    is_rest,
-                });
-
-                if !is_chord {
-                    last_note_start = start_beat;
-                    current_beat += duration_beats;
+                let parsed = parse_note(
+                    &child,
+                    divisions,
+                    current_dynamic,
+                    current_beat,
+                    last_note_start,
+                    measure_number,
+                )?;
+                // A chord note shares the previous note's start beat and does
+                // not advance the cursor; a normal note does both.
+                if !parsed.is_chord {
+                    last_note_start = parsed.note.start_beat;
+                    current_beat += parsed.note.duration_beats;
                 }
+                notes.push(parsed.note);
             }
 
             // <forward> advances the beat cursor
@@ -323,6 +198,174 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
+
+/// Apply an `<attributes>` element to the running parser state: divisions,
+/// time signature, and key signature. Errors on an invalid `<divisions>`
+/// (it's used as a divisor downstream, so a non-positive value is rejected
+/// rather than silently coerced).
+fn apply_attributes(
+    attributes: &Node,
+    measure_number: usize,
+    divisions: &mut f64,
+    time_signature: &mut TimeSignature,
+    key_signature: &mut KeySignature,
+) -> Result<(), ScoreError> {
+    if let Some(div) = find_descendant_text(attributes, "divisions") {
+        let d = div.parse::<f64>().map_err(|_| {
+            ScoreError::MusicXml(format!(
+                "invalid <divisions> value '{div}' at measure {measure_number}"
+            ))
+        })?;
+        if !(d.is_finite() && d > 0.0) {
+            return Err(ScoreError::MusicXml(format!(
+                "<divisions> must be a positive finite number (got {d}) \
+                 at measure {measure_number}"
+            )));
+        }
+        *divisions = d;
+    }
+    if let Some(time_node) = find_descendant(attributes, "time") {
+        if let (Some(beats_str), Some(bt_str)) = (
+            find_descendant_text(&time_node, "beats"),
+            find_descendant_text(&time_node, "beat-type"),
+        ) {
+            if let (Ok(b), Ok(bt)) = (beats_str.parse::<u8>(), bt_str.parse::<u8>()) {
+                *time_signature = TimeSignature {
+                    beats: b,
+                    beat_type: bt,
+                };
+            }
+        }
+    }
+    if let Some(key_node) = find_descendant(attributes, "key") {
+        if let Some(fifths_str) = find_descendant_text(&key_node, "fifths") {
+            if let Ok(f) = fifths_str.parse::<i8>() {
+                let mode = find_descendant_text(&key_node, "mode")
+                    .map(|m| {
+                        if m.to_lowercase() == "minor" {
+                            KeyMode::Minor
+                        } else {
+                            KeyMode::Major
+                        }
+                    })
+                    .unwrap_or(KeyMode::Major);
+                *key_signature = KeySignature { fifths: f, mode };
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A parsed `<note>`: the score note plus whether it was a chord member. Chord
+/// notes share the previous note's start beat and don't advance the cursor.
+struct ParsedNote {
+    note: ScoreNote,
+    is_chord: bool,
+}
+
+/// Parse a `<note>` element at the given beat cursor.
+///
+/// `<duration>` is required except on grace notes (`<grace/>`), which legally
+/// omit it and are treated as zero-beat. A rest yields a 0 Hz / 0 MIDI note;
+/// otherwise a valid `<pitch>` is required (see [`parse_pitch`]).
+fn parse_note(
+    note: &Node,
+    divisions: f64,
+    current_dynamic: Option<Dynamic>,
+    current_beat: f64,
+    last_note_start: f64,
+    measure_number: usize,
+) -> Result<ParsedNote, ScoreError> {
+    let is_rest = find_descendant(note, "rest").is_some();
+    let is_grace = find_descendant(note, "grace").is_some();
+
+    let duration_divs = match find_descendant_text(note, "duration") {
+        Some(s) => s.parse::<f64>().map_err(|_| {
+            ScoreError::MusicXml(format!(
+                "invalid <duration> '{s}' in note at measure {measure_number}"
+            ))
+        })?,
+        None if is_grace => 0.0,
+        None => {
+            return Err(ScoreError::MusicXml(format!(
+                "note at measure {measure_number} is missing <duration>"
+            )));
+        }
+    };
+    // `divisions` is validated > 0 before any note is parsed.
+    let duration_beats = duration_divs / divisions;
+
+    let is_chord = find_descendant(note, "chord").is_some();
+    let start_beat = if is_chord {
+        last_note_start
+    } else {
+        current_beat
+    };
+
+    let (pitch_hz, midi_number) = if is_rest {
+        (0.0, 0)
+    } else if let Some(pitch_node) = find_descendant(note, "pitch") {
+        parse_pitch(&pitch_node, measure_number)?
+    } else {
+        return Err(ScoreError::MusicXml(format!(
+            "note at measure {measure_number} has neither <pitch> nor <rest>"
+        )));
+    };
+
+    Ok(ParsedNote {
+        note: ScoreNote {
+            pitch_hz,
+            midi_number,
+            duration_beats,
+            start_beat,
+            dynamic: current_dynamic,
+            is_rest,
+        },
+        is_chord,
+    })
+}
+
+/// Parse a `<pitch>` node into `(frequency_hz, midi_number)`.
+///
+/// A `<pitch>` must carry a valid `<step>` and `<octave>`; fabricating defaults
+/// (e.g. C4) when the data is missing or malformed produces silently-wrong
+/// notes that are worse than an error. `<alter>` is optional (natural = 0) but
+/// an unparseable value is still an error.
+fn parse_pitch(pitch_node: &Node, measure_number: usize) -> Result<(f64, u8), ScoreError> {
+    let step_raw = find_descendant_text(pitch_node, "step").ok_or_else(|| {
+        ScoreError::MusicXml(format!(
+            "missing <step> in pitch at measure {measure_number}"
+        ))
+    })?;
+    let step = step_raw.to_uppercase();
+    if !matches!(step.as_str(), "C" | "D" | "E" | "F" | "G" | "A" | "B") {
+        return Err(ScoreError::MusicXml(format!(
+            "invalid pitch step '{step_raw}' at measure {measure_number} \
+             (expected one of C, D, E, F, G, A, B)"
+        )));
+    }
+
+    let octave_str = find_descendant_text(pitch_node, "octave").ok_or_else(|| {
+        ScoreError::MusicXml(format!(
+            "missing <octave> in pitch at measure {measure_number}"
+        ))
+    })?;
+    let octave = octave_str.parse::<i8>().map_err(|_| {
+        ScoreError::MusicXml(format!(
+            "invalid octave '{octave_str}' at measure {measure_number}"
+        ))
+    })?;
+
+    let alter = match find_descendant_text(pitch_node, "alter") {
+        None => 0.0,
+        Some(s) => s.parse::<f64>().map_err(|_| {
+            ScoreError::MusicXml(format!("invalid alter '{s}' at measure {measure_number}"))
+        })?,
+    };
+
+    let midi = pitch_to_midi(&step, octave, alter);
+    Ok((midi_to_hz(midi), midi.round() as u8))
+}
 
 /// Extract the title from `<work><work-title>` or `<movement-title>`.
 fn extract_title(root: &Node) -> String {
