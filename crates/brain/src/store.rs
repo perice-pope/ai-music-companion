@@ -15,6 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::phrase::PhraseSummary;
 use crate::session::{ScoreId, SessionId, SessionRecap};
 
 /// Raw column tuple for a `scores` row, in `SELECT` order: `id, title,
@@ -304,6 +305,16 @@ CREATE TABLE IF NOT EXISTS taste_profile (
     profile_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_phrases (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    phrase_index INTEGER NOT NULL,
+    note_count INTEGER NOT NULL,
+    start_secs REAL NOT NULL,
+    end_secs REAL NOT NULL,
+    phrase_json TEXT NOT NULL,
+    PRIMARY KEY (session_id, phrase_index)
+);
+CREATE INDEX IF NOT EXISTS idx_session_phrases_session ON session_phrases(session_id);
 ";
 
 /// The `user_id` used for the single local taste profile before any cloud
@@ -391,6 +402,56 @@ impl SessionStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Persist the per-phrase metrics for a session.
+    ///
+    /// Stored alongside the session row (FK with `ON DELETE CASCADE`) so a
+    /// user-reported issue can be debugged from the raw phrase data —
+    /// pitch/cents/confidence/timing — not just the summary recap. Each phrase
+    /// is kept as JSON (additive `serde` keeps old rows readable) plus a few
+    /// indexed columns for cheap querying. Idempotent per
+    /// `(session_id, phrase_index)` via `INSERT OR REPLACE`.
+    pub fn save_phrases(
+        &self,
+        session_id: SessionId,
+        phrases: &[PhraseSummary],
+    ) -> Result<(), StoreError> {
+        let id_str = session_id.as_str();
+        for phrase in phrases {
+            let phrase_json = serde_json::to_string(phrase)?;
+            self.conn.execute(
+                "INSERT OR REPLACE INTO session_phrases \
+                 (session_id, phrase_index, note_count, start_secs, end_secs, phrase_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id_str,
+                    i64::try_from(phrase.phrase_index).unwrap_or(i64::MAX),
+                    i64::try_from(phrase.note_count).unwrap_or(i64::MAX),
+                    phrase.start_time,
+                    phrase.end_time,
+                    phrase_json,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Load the persisted phrases for a session, ordered by phrase index.
+    ///
+    /// Returns an empty vec for a session with no stored phrases (e.g. a row
+    /// written before phrase persistence shipped).
+    pub fn load_phrases(&self, session_id: SessionId) -> Result<Vec<PhraseSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT phrase_json FROM session_phrases \
+             WHERE session_id = ?1 ORDER BY phrase_index",
+        )?;
+        let rows = stmt.query_map(params![session_id.as_str()], |r| r.get::<_, String>(0))?;
+        let mut phrases = Vec::new();
+        for row in rows {
+            phrases.push(serde_json::from_str(&row?)?);
+        }
+        Ok(phrases)
     }
 
     /// Load the recap for a specific session id.

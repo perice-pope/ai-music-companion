@@ -1,0 +1,37 @@
+     Running BeforeDevCommand (`pnpm dev`)
+
+> ai-music-companion@0.1.0 dev /Users/pericepope/Documents/musa-app/apps/desktop
+> vite
+
+       Error Found version mismatched Tauri packages. Make sure the NPM package and Rust crate versions are on the same major/minor releases:
+tauri (v2.11.2) : @tauri-apps/api (v2.10.1)
+
+  VITE v6.4.2  ready in 120 ms
+
+  ➜  Local:   http://localhost:1420/
+  ➜  Network: use --host to expose
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+        Info Watching /Users/pericepope/Documents/musa-app/apps/desktop/src-tauri for changes...
+[1m[92m     Locking[0m 1 package to latest compatible version
+[1m[92m      Adding[0m omr v0.1.0 (/Users/pericepope/Documents/musa-app/crates/omr)
+[1m[92m   Compiling[0m ears v0.1.0 (/Users/pericepope/Documents/musa-app/crates/ears)
+[1m[92m   Compiling[0m ai-music-companion v0.1.0 (/Users/pericepope/Documents/musa-app/apps/desktop/src-tauri)
+[1m[92m   Compiling[0m omr v0.1.0 (/Users/pericepope/Documents/musa-app/crates/omr)
+[1m[96m    Building[0m [=======================> ] 516/523: ai-music-companion(build), …[1m[96m    Building[0m [=======================> ] 517/523: omr, ears                   [1m[96m    Building[0m [=======================> ] 518/523: ears                        [K[1m[92m   Compiling[0m groove v0.1.0 (/Users/pericepope/Documents/musa-app/crates/groove)
+[1m[96m    Building[0m [=======================> ] 518/523: groove, ears                [K[1m[92m   Compiling[0m brain v0.1.0 (/Users/pericepope/Documents/musa-app/crates/brain)
+[1m[96m    Building[0m [=======================> ] 518/523: groove, brain, ears         [1m[96m    Building[0m [=======================> ] 519/523: brain, ears                 [1m[96m    Building[0m [=======================> ] 520/523: brain                       [1m[96m    Building[0m [=======================> ] 520/523: ai-music-companion, brain   [1m[96m    Building[0m [=======================> ] 521/523: ai-music-companion          [1m[96m    Building[0m [=======================> ] 522/523: ai-music-companion(bin)     [K[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 29.70s
+[1m[92m     Running[0m `target/debug/ai-music-companion`
+        Info File src-tauri/src/commands.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+[1m[92m   Compiling[0m ai-music-companion v0.1.0 (/Users/pericepope/Documents/musa-app/apps/desktop/src-tauri)
+[1m[96m    Building[0m [=======================> ] 521/523: ai-music-companion          [1m[96m    Building[0m [=======================> ] 522/523: ai-music-companion(bin)             Info File src-tauri/src/commands.rs.tmp.22714.92fa6dc41794 changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+[1m[92m   Compiling[0m ai-music-companion v0.1.0 (/Users/pericepope/Documents/musa-app/apps/desktop/src-tauri)
+[1m[96m    Building[0m [=======================> ] 521/523: ai-music-companion          [1m[96m    Building[0m [=======================> ] 522/523: ai-music-companion(bin)     [K[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 4.44s
+[1m[92m     Running[0m `target/debug/ai-music-companion`
+        Info File src-tauri/src/commands.rs.tmp.22714.2fdcebd1263c changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+[1m[92m   Compiling[0m ai-music-companion v0.1.0 (/Users/pericepope/Documents/musa-app/apps/desktop/src-tauri)
+[1m[96m    Building[0m [=======================> ] 521/523: ai-music-companion          [1m[96m    Building[0m [=======================> ] 522/523: ai-music-companion(bin)     [K[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 8.92s
+[1m[92m     Running[0m `target/debug/ai-music-companion`
+ ELIFECYCLE  Command failed with exit code 143.
