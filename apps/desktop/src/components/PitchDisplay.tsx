@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef } from "react";
 import { useAudioStore } from "../stores/audioStore";
 
 /** Clamp a value between min and max. */
@@ -12,29 +12,31 @@ function clamp(value: number, min: number, max: number): number {
  * responsive. This is display-layer smoothing only — the real-time pitch
  * detection path is untouched.
  */
-const CENTS_SMOOTHING_ALPHA = 0.3;
+const CENTS_SMOOTHING_ALPHA = 0.25;
 
 export default function PitchDisplay() {
   const { currentNote, latestEvent, isListening } = useAudioStore();
   const rawCents = currentNote?.cents_deviation ?? null;
 
   // Exponential moving average of the displayed cents so the number glides
-  // instead of jumping on every audio event. The first reading of a note shows
-  // exactly (no lag); subsequent readings are damped. Resets when the note
-  // drops out so a new note starts fresh. Hooks run before the early returns
-  // below to keep hook order stable.
-  const [smoothedCents, setSmoothedCents] = useState<number | null>(null);
-  useEffect(() => {
-    if (rawCents == null) {
-      setSmoothedCents(null);
-      return;
-    }
-    setSmoothedCents((prev) =>
-      prev == null
+  // instead of snapping on every audio event (#187). Held in a ref so each
+  // audio event folds into the existing value during render — no extra
+  // re-render, no one-frame lag behind the store. The first reading of a note
+  // shows exactly (no startup lag); subsequent readings are damped. Resets to
+  // null when idle (not listening) or when the note drops out so a new session
+  // never starts from a stale value. Computed before the early returns below to
+  // keep hook order stable.
+  const smoothedRef = useRef<number | null>(null);
+  if (!isListening || rawCents == null) {
+    smoothedRef.current = null;
+  } else {
+    smoothedRef.current =
+      smoothedRef.current == null
         ? rawCents
-        : prev + CENTS_SMOOTHING_ALPHA * (rawCents - prev),
-    );
-  }, [rawCents]);
+        : smoothedRef.current +
+          CENTS_SMOOTHING_ALPHA * (rawCents - smoothedRef.current);
+  }
+  const smoothedCents = smoothedRef.current;
 
   if (!isListening) {
     return (
@@ -59,8 +61,8 @@ export default function PitchDisplay() {
   }
 
   const { name, octave, frequency_hz } = currentNote;
-  // Show the smoothed value; fall back to the raw reading on the very first
-  // render (before the effect has run).
+  // Show the smoothed value; fall back to the raw reading defensively (the ref
+  // is always seeded above whenever we reach this point).
   const cents = smoothedCents ?? currentNote.cents_deviation;
   const meterOffset = clamp(cents, -50, 50);
   // Convert -50..+50 cents to 0..100% for the meter position
