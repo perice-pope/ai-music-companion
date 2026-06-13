@@ -1434,7 +1434,29 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         .to_owned();
 
     match session.recorder.complete() {
-        Ok(completed) => build_recap(&completed, &*generator, taste_profile, idiom_notes).await,
+        Ok(completed) => {
+            let recap =
+                build_recap(&completed, &*generator, taste_profile, idiom_notes).await?;
+            // Persist the completed session so practice history, the stats
+            // surface, and (opt-in) cloud sync all have something to read.
+            // The store can degrade to in-memory at startup (see `open_stores`),
+            // and a recap the user is waiting on must never be sunk by a
+            // persistence failure — so we log and carry on rather than erroring.
+            if let Err(e) = state
+                .session_store
+                .lock()
+                .expect("session store mutex poisoned")
+                .save(
+                    completed.id,
+                    completed.started_at,
+                    completed.ended_at,
+                    &recap,
+                )
+            {
+                tracing::warn!(error = %e, "could not persist the completed session");
+            }
+            Ok(recap)
+        }
         Err(SessionError::Empty) => Ok(empty_state_recap(elapsed_secs, instrument)),
         Err(other) => Err(CommandError::Recorder(other)),
     }
@@ -2378,6 +2400,55 @@ mod tests {
         assert!(!recap.strengths.is_empty());
         assert!(!recap.areas_to_improve.is_empty());
         assert_eq!(s.current_phase().await, SessionPhase::Idle);
+    }
+
+    #[tokio::test]
+    async fn end_session_persists_the_completed_session() {
+        // Regression guard: a completed (non-empty) session must be written to
+        // the store so practice history, the stats surface, and opt-in cloud
+        // sync have data. Before this was wired, `end_practice_session` built
+        // the recap and dropped it — the `sessions` table stayed empty forever.
+        let s = state();
+        assert_eq!(
+            s.session_store.lock().unwrap().count_sessions().unwrap(),
+            0,
+            "store must start empty"
+        );
+
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+
+        // Feed the recorder a phrase so it completes via the rich-recap branch
+        // (the empty-state path is a separate decision — see follow-up).
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+
+        let recap = end_practice_session_impl(&s).await.unwrap();
+
+        let store = s.session_store.lock().unwrap();
+        assert_eq!(
+            store.count_sessions().unwrap(),
+            1,
+            "the completed session must be persisted"
+        );
+        let recent = store.list_recent(10).unwrap();
+        assert_eq!(recent.len(), 1, "exactly one persisted session");
+        assert_eq!(recent[0].instrument, recap.instrument);
+        assert_eq!(recent[0].phrase_count, recap.phrase_count);
     }
 
     /// A pure sine tone — deterministic, embeddable audio for the offline
