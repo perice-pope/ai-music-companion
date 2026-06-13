@@ -64,6 +64,28 @@ describe("SessionRecap", () => {
     expect(following).toBeTruthy();
   });
 
+  it("renders on a dark full-height surface in every variant (#186)", () => {
+    // Light recap text must sit on a dark surface, not the browser's white.
+    // Every branch (summary / error / empty) wraps in the same dark screen.
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    const summaryShell = screen.getByTestId("session-recap").parentElement;
+    expect(summaryShell).toHaveClass("bg-gray-900");
+    expect(summaryShell).toHaveClass("min-h-screen");
+
+    seedRecap(null, "something went wrong");
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("session-recap").parentElement).toHaveClass(
+      "bg-gray-900",
+    );
+
+    seedRecap(null);
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("session-recap").parentElement).toHaveClass(
+      "bg-gray-900",
+    );
+  });
+
   it("renders the overall assessment and all three sections", () => {
     seedRecap(fullRecap());
     render(<SessionRecap />);

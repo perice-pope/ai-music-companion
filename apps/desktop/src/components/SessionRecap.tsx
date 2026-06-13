@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 import type {
   GrooveDescriptor,
@@ -105,18 +106,20 @@ export default function SessionRecap() {
   // Error path — takes precedence over any partial recap.
   if (recapError) {
     return (
-      <section
-        className="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 py-12 text-gray-100"
-        data-testid="session-recap"
-        data-variant="error"
-      >
-        <h2 className="text-2xl font-semibold">Recap unavailable</h2>
-        <p className="text-center text-gray-300">
-          I had trouble generating your recap, but your session is safe. Come
-          back whenever you're ready to play again.
-        </p>
-        <RecapActions onDone={returnToSelector} />
-      </section>
+      <RecapScreen>
+        <section
+          className="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 py-12 text-gray-100"
+          data-testid="session-recap"
+          data-variant="error"
+        >
+          <h2 className="text-2xl font-semibold">Recap unavailable</h2>
+          <p className="text-center text-gray-300">
+            I had trouble generating your recap, but your session is safe. Come
+            back whenever you're ready to play again.
+          </p>
+          <RecapActions onDone={returnToSelector} />
+        </section>
+      </RecapScreen>
     );
   }
 
@@ -124,14 +127,16 @@ export default function SessionRecap() {
     // Shouldn't happen in the normal flow — the router only sends us
     // here after endSession sets either `recap` or `recapError`.
     return (
-      <section
-        className="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 py-12 text-gray-100"
-        data-testid="session-recap"
-        data-variant="empty"
-      >
-        <p>No recap yet.</p>
-        <RecapActions onDone={returnToSelector} />
-      </section>
+      <RecapScreen>
+        <section
+          className="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 py-12 text-gray-100"
+          data-testid="session-recap"
+          data-variant="empty"
+        >
+          <p>No recap yet.</p>
+          <RecapActions onDone={returnToSelector} />
+        </section>
+      </RecapScreen>
     );
   }
 
@@ -142,142 +147,154 @@ export default function SessionRecap() {
   const fingerprint = recap.fingerprint;
 
   return (
-    <section
-      className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-12 text-gray-100"
-      data-testid="session-recap"
-      data-variant={isEmptyState ? "empty" : "summary"}
-    >
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold">Nice session.</h2>
-        <p className="text-sm text-gray-400">
-          {recap.instrument
-            ? `${recap.instrument} · ${durationMinutes} minute${
-                durationMinutes === 1 ? "" : "s"
-              }`
-            : `${durationMinutes} minute${durationMinutes === 1 ? "" : "s"}`}
-        </p>
-        {/* Detected key/mode, when confident. Quiet, factual — it grounds the
+    <RecapScreen>
+      <section
+        className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-12 text-gray-100"
+        data-testid="session-recap"
+        data-variant={isEmptyState ? "empty" : "summary"}
+      >
+        <header className="flex flex-col gap-1">
+          <h2 className="text-2xl font-semibold">Nice session.</h2>
+          <p className="text-sm text-gray-400">
+            {recap.instrument
+              ? `${recap.instrument} · ${durationMinutes} minute${
+                  durationMinutes === 1 ? "" : "s"
+                }`
+              : `${durationMinutes} minute${durationMinutes === 1 ? "" : "s"}`}
+          </p>
+          {/* Detected key/mode, when confident. Quiet, factual — it grounds the
             coaching above (and, later, the cultural-relevance connections). */}
-        {!isEmptyState && fingerprint?.key && (
-          <p className="text-sm text-gray-400" data-testid="recap-key">
-            Key:{" "}
-            <span className="text-gray-200">{keyName(fingerprint.key)}</span>
+          {!isEmptyState && fingerprint?.key && (
+            <p className="text-sm text-gray-400" data-testid="recap-key">
+              Key:{" "}
+              <span className="text-gray-200">{keyName(fingerprint.key)}</span>
+            </p>
+          )}
+        </header>
+
+        <p
+          className="text-lg leading-relaxed text-gray-200"
+          data-testid="recap-assessment"
+        >
+          {recap.overall_assessment}
+        </p>
+
+        {/* Tone read-out (secondary to the coaching text above). Only shown
+          when tone analysis produced a session aggregate. */}
+        {!isEmptyState && fingerprint?.tone && (
+          <ToneSummary tone={fingerprint.tone} />
+        )}
+
+        {/* Intonation read-out — quiet, factual. Only shown when enough notes
+          were observed to report honestly (backend gate). */}
+        {!isEmptyState && fingerprint?.intonation && (
+          <p className="text-sm text-gray-400" data-testid="recap-intonation">
+            Intonation:{" "}
+            <span className="text-gray-200">
+              {intonationLine(fingerprint.intonation)}
+            </span>
           </p>
         )}
-      </header>
 
-      <p
-        className="text-lg leading-relaxed text-gray-200"
-        data-testid="recap-assessment"
-      >
-        {recap.overall_assessment}
-      </p>
-
-      {/* Tone read-out (secondary to the coaching text above). Only shown
-          when tone analysis produced a session aggregate. */}
-      {!isEmptyState && fingerprint?.tone && (
-        <ToneSummary tone={fingerprint.tone} />
-      )}
-
-      {/* Intonation read-out — quiet, factual. Only shown when enough notes
-          were observed to report honestly (backend gate). */}
-      {!isEmptyState && fingerprint?.intonation && (
-        <p className="text-sm text-gray-400" data-testid="recap-intonation">
-          Intonation:{" "}
-          <span className="text-gray-200">
-            {intonationLine(fingerprint.intonation)}
-          </span>
-        </p>
-      )}
-
-      {/* Rhythmic-feel read-out — quiet, factual. Only shown when enough
+        {/* Rhythmic-feel read-out — quiet, factual. Only shown when enough
           onsets were observed to estimate groove (backend gate). */}
-      {!isEmptyState && fingerprint?.groove && (
-        <p className="text-sm text-gray-400" data-testid="recap-groove">
-          Feel:{" "}
-          <span className="text-gray-200">
-            {grooveLine(fingerprint.groove)}
-          </span>
-        </p>
-      )}
+        {!isEmptyState && fingerprint?.groove && (
+          <p className="text-sm text-gray-400" data-testid="recap-groove">
+            Feel:{" "}
+            <span className="text-gray-200">
+              {grooveLine(fingerprint.groove)}
+            </span>
+          </p>
+        )}
 
-      {/* Idiom flavour read-out — quiet, hedged, grounded. Computed fully
+        {/* Idiom flavour read-out — quiet, hedged, grounded. Computed fully
           offline on-device and confidence-gated, so it's shown only when a
           match cleared the engine's threshold (otherwise the recap stays
           silent on idiom). We surface just the top match to keep it a calm
           single line. */}
-      {!isEmptyState && recap.idiom_notes && recap.idiom_notes.length > 0 && (
-        <p className="text-sm text-gray-400" data-testid="recap-idiom">
-          Flavour:{" "}
-          <span className="text-gray-200">
-            {idiomLine(recap.idiom_notes[0])}
-          </span>
-        </p>
-      )}
+        {!isEmptyState && recap.idiom_notes && recap.idiom_notes.length > 0 && (
+          <p className="text-sm text-gray-400" data-testid="recap-idiom">
+            Flavour:{" "}
+            <span className="text-gray-200">
+              {idiomLine(recap.idiom_notes[0])}
+            </span>
+          </p>
+        )}
 
-      {/* Cross-genre connections — a quiet, warm bridge from what they played
+        {/* Cross-genre connections — a quiet, warm bridge from what they played
           to the music in their world. Shown ONLY when the Rust core grounded
           one (profile present + enough measured signal + the coach returned a
           hedged reference). Empty/absent → nothing rendered, mirroring the
           tone/key/intonation/groove treatment: silence over a hollow link. */}
-      {!isEmptyState &&
-        recap.connections != null &&
-        recap.connections.length > 0 && (
-          <div data-testid="recap-connections">
+        {!isEmptyState &&
+          recap.connections != null &&
+          recap.connections.length > 0 && (
+            <div data-testid="recap-connections">
+              <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
+                In your world
+              </h3>
+              <ul className="list-disc space-y-1 pl-6 text-gray-200">
+                {recap.connections.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+        {/* Strengths first — product invariant enforced by DOM order. */}
+        {recap.strengths.length > 0 && (
+          <div data-testid="recap-strengths">
             <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
-              In your world
+              Strengths
             </h3>
-            <ul className="list-disc space-y-1 pl-6 text-gray-200">
-              {recap.connections.map((c) => (
-                <li key={c}>{c}</li>
+            <ul className="list-disc space-y-1 pl-6">
+              {recap.strengths.map((s) => (
+                <li key={s}>{s}</li>
               ))}
             </ul>
           </div>
         )}
 
-      {/* Strengths first — product invariant enforced by DOM order. */}
-      {recap.strengths.length > 0 && (
-        <div data-testid="recap-strengths">
-          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
-            Strengths
-          </h3>
-          <ul className="list-disc space-y-1 pl-6">
-            {recap.strengths.map((s) => (
-              <li key={s}>{s}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+        {recap.areas_to_improve.length > 0 && (
+          <div data-testid="recap-areas">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
+              Areas to work on
+            </h3>
+            <ul className="list-disc space-y-1 pl-6">
+              {recap.areas_to_improve.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-      {recap.areas_to_improve.length > 0 && (
-        <div data-testid="recap-areas">
-          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
-            Areas to work on
-          </h3>
-          <ul className="list-disc space-y-1 pl-6">
-            {recap.areas_to_improve.map((s) => (
-              <li key={s}>{s}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+        {recap.next_session_suggestions.length > 0 && (
+          <div data-testid="recap-next">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
+              Next time, try
+            </h3>
+            <ul className="list-disc space-y-1 pl-6">
+              {recap.next_session_suggestions.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-      {recap.next_session_suggestions.length > 0 && (
-        <div data-testid="recap-next">
-          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
-            Next time, try
-          </h3>
-          <ul className="list-disc space-y-1 pl-6">
-            {recap.next_session_suggestions.map((s) => (
-              <li key={s}>{s}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <RecapActions onDone={returnToSelector} />
-    </section>
+        <RecapActions onDone={returnToSelector} />
+      </section>
+    </RecapScreen>
   );
+}
+
+/**
+ * Full-height dark surface for the recap. Every other screen owns its own
+ * `bg-gray-900` (PracticeShell mounts each screen bare), so without this the
+ * recap's light text rendered on the browser's default white — unreadable
+ * (#186). Kept as a wrapper so all three recap branches share one surface.
+ */
+function RecapScreen({ children }: { children: ReactNode }) {
+  return <div className="min-h-screen bg-gray-900">{children}</div>;
 }
 
 /**
