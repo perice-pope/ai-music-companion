@@ -73,52 +73,14 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
             abs_tick += event.delta.as_int() as u64;
 
             match event.kind {
-                TrackEventKind::Meta(meta) => {
-                    match meta {
-                        midly::MetaMessage::TrackName(name_bytes) => {
-                            if let Ok(name) = std::str::from_utf8(name_bytes) {
-                                let name = name.trim().to_string();
-                                if !name.is_empty() {
-                                    // Title: use the first non-empty TrackName we encounter,
-                                    // regardless of which track it's on. Format 1 files often
-                                    // leave track 0 as tempo/meta-only with the real title on
-                                    // track 1; requiring `track_idx == 0` misses those.
-                                    if title == "Untitled" {
-                                        title = name.clone();
-                                    }
-                                    // Instrument: first track-name that isn't the piece title.
-                                    if instrument.is_none() && title != name {
-                                        instrument = Some(name);
-                                    }
-                                }
-                            }
-                        }
-                        midly::MetaMessage::Tempo(t) => {
-                            // Microseconds per quarter-note → quarter-note BPM.
-                            let uspqn = t.as_int() as f64;
-                            if uspqn > 0.0 {
-                                tempo_quarter_bpm = 60_000_000.0 / uspqn;
-                            }
-                        }
-                        midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
-                            time_signature = TimeSignature {
-                                beats: num,
-                                beat_type: 1u8.checked_shl(denom_pow as u32).unwrap_or(4),
-                            };
-                        }
-                        midly::MetaMessage::KeySignature(sf, minor) => {
-                            key_signature = KeySignature {
-                                fifths: sf,
-                                mode: if minor {
-                                    KeyMode::Minor
-                                } else {
-                                    KeyMode::Major
-                                },
-                            };
-                        }
-                        _ => {}
-                    }
-                }
+                TrackEventKind::Meta(meta) => apply_meta_message(
+                    meta,
+                    &mut title,
+                    &mut instrument,
+                    &mut time_signature,
+                    &mut key_signature,
+                    &mut tempo_quarter_bpm,
+                ),
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
                     match message {
@@ -203,6 +165,61 @@ struct RawNote {
 }
 
 /// Close the first matching active note (same channel AND key) and push a RawNote.
+/// Apply a MIDI `Meta` event to the running header state: title, instrument,
+/// tempo, time signature, key signature. Unhandled meta types are ignored.
+///
+/// Title is the first non-empty `TrackName` seen on any track (Format-1 files
+/// often put the real title on track 1, not track 0); the instrument is the
+/// first track-name that isn't the title.
+fn apply_meta_message(
+    meta: midly::MetaMessage,
+    title: &mut String,
+    instrument: &mut Option<String>,
+    time_signature: &mut TimeSignature,
+    key_signature: &mut KeySignature,
+    tempo_quarter_bpm: &mut f64,
+) {
+    match meta {
+        midly::MetaMessage::TrackName(name_bytes) => {
+            if let Ok(name) = std::str::from_utf8(name_bytes) {
+                let name = name.trim().to_string();
+                if !name.is_empty() {
+                    if *title == "Untitled" {
+                        *title = name.clone();
+                    }
+                    if instrument.is_none() && *title != name {
+                        *instrument = Some(name);
+                    }
+                }
+            }
+        }
+        midly::MetaMessage::Tempo(t) => {
+            // Microseconds per quarter-note → quarter-note BPM.
+            let uspqn = t.as_int() as f64;
+            if uspqn > 0.0 {
+                *tempo_quarter_bpm = 60_000_000.0 / uspqn;
+            }
+        }
+        midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
+            *time_signature = TimeSignature {
+                beats: num,
+                beat_type: 1u8.checked_shl(denom_pow as u32).unwrap_or(4),
+            };
+        }
+        midly::MetaMessage::KeySignature(sf, minor) => {
+            *key_signature = KeySignature {
+                fifths: sf,
+                mode: if minor {
+                    KeyMode::Minor
+                } else {
+                    KeyMode::Major
+                },
+            };
+        }
+        _ => {}
+    }
+}
+
 fn close_note(
     active: &mut Vec<(u8, u8, u8, u64)>,
     out: &mut Vec<RawNote>,
