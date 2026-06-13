@@ -1,3 +1,9 @@
+## [1.48.2](https://github.com/perice-pope/ai-music-companion/compare/v1.48.1...v1.48.2) (2026-06-13)
+
+### Bug Fixes
+
+* **startup:** degrade to in-memory with a warning instead of panicking ([#137](https://github.com/perice-pope/ai-music-companion/issues/137)) ([#191](https://github.com/perice-pope/ai-music-companion/issues/191)) ([20900f9](https://github.com/perice-pope/ai-music-companion/commit/20900f9d95d6062d2aa00958c6e6c4d54b8e4b30))
+
 ## [1.48.1](https://github.com/perice-pope/ai-music-companion/compare/v1.48.0...v1.48.1) (2026-06-13)
 
 ### Bug Fixes
