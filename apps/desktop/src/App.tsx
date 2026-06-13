@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
@@ -32,6 +33,24 @@ function App() {
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
   const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
+  const [storageDegraded, setStorageDegraded] = useState(false);
+
+  useEffect(() => {
+    // One-shot capability check at mount. If on-disk persistence fell back to
+    // in-memory at startup (disk permissions, sandbox, full disk), warn the
+    // musician calmly rather than silently dropping their history (#137).
+    void (async () => {
+      try {
+        const caps = await invoke<{
+          coaching_available: boolean;
+          storage_degraded: boolean;
+        }>("get_app_capabilities");
+        setStorageDegraded(caps.storage_degraded);
+      } catch (err: unknown) {
+        console.error("Failed to fetch app capabilities:", err);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const unsubs: Array<() => void> = [];
@@ -88,7 +107,22 @@ function App() {
     };
   }, [setEvent, pushPhrase, requestCoachingTip, setCursorPosition]);
 
-  return <PracticeShell />;
+  return (
+    <>
+      {storageDegraded && (
+        <div
+          role="status"
+          className="fixed top-0 left-0 right-0 z-50 border-b border-yellow-700 bg-yellow-900 px-4 py-3 text-sm text-yellow-100"
+        >
+          ⚠️ Session storage is unavailable — your practice history won't be
+          saved this session.
+        </div>
+      )}
+      <div className={storageDegraded ? "pt-12" : ""}>
+        <PracticeShell />
+      </div>
+    </>
+  );
 }
 
 export default App;

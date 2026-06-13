@@ -1826,12 +1826,19 @@ pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppCapabilities {
     pub coaching_available: bool,
+    /// On-disk persistence fell back to in-memory at startup (e.g. corrupt
+    /// data dir, sandbox, or full disk). The practice loop still works, but
+    /// this session's history and scores won't survive a restart. Surfaced so
+    /// the UI can warn the musician calmly instead of silently dropping their
+    /// history (#137).
+    pub storage_degraded: bool,
 }
 
 #[tauri::command]
 pub fn get_app_capabilities(state: State<'_, AppState>) -> Result<AppCapabilities, String> {
     Ok(AppCapabilities {
         coaching_available: state.coaching_available(),
+        storage_degraded: state.persistence_degraded(),
     })
 }
 
