@@ -581,6 +581,13 @@ pub struct AppState {
     /// and cleared at the start of each session. Shared (`Arc` inside) so the
     /// pipeline gets its own handle without holding the `AppState`.
     idiom_buffer: SharedIdiomBuffer,
+    /// Phrases the audio worker detected this session. The worker emits each
+    /// completed phrase to the UI **and** pushes a copy here (off the realtime
+    /// callback); `end_practice_session_impl` drains it into the recorder after
+    /// the worker has stopped and flushed. Without this wire the recorder stayed
+    /// empty and **every** recap was the "you didn't play" empty state — the
+    /// real root cause behind #185 (the confidence gate was only half of it).
+    phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
 }
 
 impl AppState {
@@ -636,6 +643,7 @@ impl AppState {
             instruments: Arc::new(load_instrument_catalog(app_handle)),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
+            phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -656,6 +664,7 @@ impl AppState {
             instruments: Arc::new(test_instrument_catalog()),
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
+            phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -1318,8 +1327,26 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         session.phase = SessionPhase::Ending;
         guard.take()
     };
-    let session = taken.expect("session was Some under the lock we just took");
+    let mut session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
+
+    // Record the phrases the audio worker detected this session into the
+    // recorder *before* finalising it. The worker emits each phrase to the UI
+    // for the live display and buffers a copy here; `end_practice_session` (our
+    // wrapper) already stopped+joined the worker before calling us, so the
+    // buffer now holds the complete set including the final flushed phrase.
+    // Without this the recorder is empty and the recap is always the
+    // "you didn't play" empty state regardless of how much was played (#185).
+    let detected_phrases: Vec<PhraseSummary> = state
+        .phrase_buffer
+        .lock()
+        .map(|mut buf| std::mem::take(&mut *buf))
+        .unwrap_or_default();
+    for phrase in detected_phrases {
+        if let Err(e) = session.recorder.record_phrase(phrase) {
+            tracing::warn!(error = %e, "could not record a detected phrase into the session");
+        }
+    }
 
     // Run the offline idiom analysis once, at the session boundary, off the
     // realtime audio path. `analyze_idioms` is fully on-device (no network) and
@@ -1570,6 +1597,12 @@ pub async fn start_practice_session<R: Runtime>(
                 // so it can fill it (offline, off the realtime callback).
                 state.idiom_buffer.clear();
                 let idiom_buffer = state.idiom_buffer.clone();
+                // Fresh phrase buffer too — the worker fills it as phrases close
+                // so end_practice_session can record them into the recap (#185).
+                if let Ok(mut buf) = state.phrase_buffer.lock() {
+                    buf.clear();
+                }
+                let phrase_buffer = state.phrase_buffer.clone();
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
@@ -1578,6 +1611,11 @@ pub async fn start_practice_session<R: Runtime>(
                         let _ = app_for_emit.emit("audio-event", event);
                     },
                     move |phrase| {
+                        // Buffer a copy for the recap (drained into the recorder
+                        // at session end), then emit to the UI for live display.
+                        if let Ok(mut buf) = phrase_buffer.lock() {
+                            buf.push(phrase.clone());
+                        }
                         emit_phrase_detected(&app_for_phrase, phrase);
                     },
                     move |position| {
@@ -2407,6 +2445,30 @@ mod tests {
         let idle = empty_state_recap(2.0, String::new());
         assert!(idle.overall_assessment.contains("didn't get to play"));
         assert_eq!(idle.duration_secs, 2.0);
+    }
+
+    #[tokio::test]
+    async fn end_session_records_worker_buffered_phrases_into_the_recap() {
+        // #185 root cause: phrases the audio worker detects must reach the
+        // recorder so the recap reflects them. They used to be emitted only to
+        // the UI, so the recorder stayed empty and EVERY recap was the empty
+        // "you didn't play" state. Simulate the worker buffering phrases (what
+        // the live phrase callback does) and confirm they land in the recap.
+        let s = state();
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .unwrap();
+        {
+            let mut buf = s.phrase_buffer.lock().unwrap();
+            buf.push(sample_phrase());
+            buf.push(sample_phrase());
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(
+            recap.phrase_count, 2,
+            "worker-detected phrases must populate the recap, not be dropped on the floor"
+        );
+        assert_eq!(s.current_phase().await, SessionPhase::Idle);
     }
 
     #[tokio::test]
