@@ -328,6 +328,18 @@ pub const LOCAL_TASTE_PROFILE_USER_ID: &str = "local";
 // SessionStore
 // ---------------------------------------------------------------------------
 
+/// Session-level debug metadata stored on the `sessions` row, surfaced for
+/// diagnosing user-reported issues (which build, free-play vs score, etc.).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionMeta {
+    /// App version that produced the session (`None` on older rows).
+    pub app_version: Option<String>,
+    /// Practice mode label (e.g. free-play vs a score-following mode).
+    pub practice_mode: Option<String>,
+    /// Id of the score practised, if any.
+    pub score_id: Option<String>,
+}
+
 /// SQLite-backed store of completed practice sessions.
 pub struct SessionStore {
     conn: Connection,
@@ -361,6 +373,45 @@ impl SessionStore {
     /// Execute the schema migrations. Idempotent.
     fn migrate(&self) -> Result<(), StoreError> {
         self.conn.execute_batch(SCHEMA)?;
+        // Versioned migrations for changes `CREATE TABLE IF NOT EXISTS` can't
+        // express — e.g. adding a column to a table that already exists.
+        // `PRAGMA user_version` records progress so each step runs once per DB.
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            // v1: session-level debug columns. Databases created before these
+            // (and before `score_id` was added to SCHEMA) gain them now; a
+            // fresh DB already has the column, so the guard skips it.
+            self.add_column_if_missing("sessions", "score_id", "TEXT")?;
+            self.add_column_if_missing("sessions", "app_version", "TEXT")?;
+            self.add_column_if_missing("sessions", "practice_mode", "TEXT")?;
+            self.conn.execute_batch("PRAGMA user_version = 1;")?;
+        }
+        Ok(())
+    }
+
+    /// Add `column` to `table` only if absent. SQLite's
+    /// `ALTER TABLE ADD COLUMN` is not idempotent, so we check `table_info`
+    /// first — keeping `migrate()` safe to run on fresh and already-migrated
+    /// databases alike. `table`/`column`/`decl` are internal constants, never
+    /// user input.
+    fn add_column_if_missing(
+        &self,
+        table: &str,
+        column: &str,
+        decl: &str,
+    ) -> Result<(), StoreError> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|name| name == column);
+        drop(stmt);
+        if !exists {
+            self.conn
+                .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
         Ok(())
     }
 
@@ -402,6 +453,43 @@ impl SessionStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Attach session-level debug metadata to an already-saved session row.
+    ///
+    /// Kept separate from [`save`](Self::save) so its many callers stay
+    /// unchanged. Best-effort: any `None` leaves that column NULL, and an
+    /// unknown id updates zero rows. Call right after `save` so the row exists.
+    pub fn record_session_meta(
+        &self,
+        id: SessionId,
+        app_version: Option<&str>,
+        practice_mode: Option<&str>,
+        score_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE sessions SET app_version = ?2, practice_mode = ?3, score_id = ?4 \
+             WHERE id = ?1",
+            params![id.as_str(), app_version, practice_mode, score_id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the session-level debug metadata `(app_version, practice_mode,
+    /// score_id)` for a session. Each element is `None` when unset.
+    pub fn session_meta(&self, id: SessionId) -> Result<SessionMeta, StoreError> {
+        let meta = self.conn.query_row(
+            "SELECT app_version, practice_mode, score_id FROM sessions WHERE id = ?1",
+            params![id.as_str()],
+            |r| {
+                Ok(SessionMeta {
+                    app_version: r.get(0)?,
+                    practice_mode: r.get(1)?,
+                    score_id: r.get(2)?,
+                })
+            },
+        )?;
+        Ok(meta)
     }
 
     /// Persist the per-phrase metrics for a session.
@@ -1436,6 +1524,82 @@ mod tests {
         }
 
         assert_eq!(store.count_sessions().unwrap(), 5);
+    }
+
+    #[test]
+    fn migration_adds_session_debug_columns_to_legacy_db() {
+        // A DB created before the debug columns existed: the legacy `sessions`
+        // shape, user_version 0, and a row already present.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY, instrument TEXT NOT NULL,
+                 started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+                 duration_secs REAL NOT NULL, phrase_count INTEGER NOT NULL,
+                 recap_json TEXT NOT NULL);
+             INSERT INTO sessions VALUES ('s1','Trumpet','t0','t1',60.0,3,'{}');",
+        )
+        .unwrap();
+        let store = SessionStore { conn };
+
+        store
+            .migrate()
+            .expect("migration must succeed on a legacy DB");
+
+        let cols: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        for c in ["score_id", "app_version", "practice_mode"] {
+            assert!(cols.iter().any(|n| n == c), "column {c} must be added");
+        }
+        // Existing data survived the ALTERs untouched.
+        let instrument: String = store
+            .conn
+            .query_row("SELECT instrument FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(instrument, "Trumpet");
+        // Idempotent: a second migrate is a no-op (user_version already 1).
+        store.migrate().expect("second migrate must be a no-op");
+    }
+
+    #[test]
+    fn record_session_meta_round_trips() {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        store
+            .save(
+                id,
+                now,
+                now + Duration::seconds(30),
+                &recap_with("trumpet", 30.0, 2),
+            )
+            .unwrap();
+
+        assert_eq!(store.session_meta(id).unwrap(), SessionMeta::default());
+
+        // A score must exist for the score_id FK to be satisfiable.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO scores (id, title, source_filename, added_at, music_xml) \
+                 VALUES ('score-123', 't', 'f', 't0', '<x/>');",
+            )
+            .unwrap();
+        store
+            .record_session_meta(id, Some("9.9.9"), Some("Practice"), Some("score-123"))
+            .unwrap();
+        let meta = store.session_meta(id).unwrap();
+        assert_eq!(meta.app_version.as_deref(), Some("9.9.9"));
+        assert_eq!(meta.practice_mode.as_deref(), Some("Practice"));
+        assert_eq!(meta.score_id.as_deref(), Some("score-123"));
     }
 
     #[test]
