@@ -1,3 +1,9 @@
+## [1.49.0](https://github.com/perice-pope/ai-music-companion/compare/v1.48.2...v1.49.0) (2026-06-13)
+
+### Features
+
+* **ears:** SuperFlux spectral-flux onset detection, vibrato-robust ([#138](https://github.com/perice-pope/ai-music-companion/issues/138)) ([57eeb68](https://github.com/perice-pope/ai-music-companion/commit/57eeb6867e47ab81dc776556443df3bfe7c90089))
+
 ## [1.48.2](https://github.com/perice-pope/ai-music-companion/compare/v1.48.1...v1.48.2) (2026-06-13)
 
 ### Bug Fixes
