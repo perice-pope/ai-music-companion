@@ -1,3 +1,9 @@
+## [1.50.0](https://github.com/perice-pope/ai-music-companion/compare/v1.49.0...v1.50.0) (2026-06-13)
+
+### Features
+
+* **desktop:** surface degraded storage to the musician ([#137](https://github.com/perice-pope/ai-music-companion/issues/137)) + salvage Score Mode e2e test ([#183](https://github.com/perice-pope/ai-music-companion/issues/183)) ([#194](https://github.com/perice-pope/ai-music-companion/issues/194)) ([48fdf25](https://github.com/perice-pope/ai-music-companion/commit/48fdf250b679e6228649c714233c458b2f739f3b)), closes [#191](https://github.com/perice-pope/ai-music-companion/issues/191) [#188](https://github.com/perice-pope/ai-music-companion/issues/188) [185/#191](https://github.com/185/ai-music-companion/issues/191) [#185](https://github.com/perice-pope/ai-music-companion/issues/185)
+
 ## [1.49.0](https://github.com/perice-pope/ai-music-companion/compare/v1.48.2...v1.49.0) (2026-06-13)
 
 ### Features
