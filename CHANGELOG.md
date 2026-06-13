@@ -1,3 +1,9 @@
+## [1.48.1](https://github.com/perice-pope/ai-music-companion/compare/v1.48.0...v1.48.1) (2026-06-13)
+
+### Bug Fixes
+
+* **session:** record worker-detected phrases into the recap ([#185](https://github.com/perice-pope/ai-music-companion/issues/185) root cause) ([#190](https://github.com/perice-pope/ai-music-companion/issues/190)) ([d93c1c2](https://github.com/perice-pope/ai-music-companion/commit/d93c1c28c564307a5106222af01e31ec02c2e9ba))
+
 ## [1.48.0](https://github.com/perice-pope/ai-music-companion/compare/v1.47.1...v1.48.0) (2026-06-12)
 
 ### Features
