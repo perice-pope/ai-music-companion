@@ -30,6 +30,7 @@ fn end_to_end_session_with_multiple_phrases() {
     let config = PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 2,
+        voiced_confidence_threshold: 0.5,
     };
     let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -127,6 +128,7 @@ fn streaming_phrases_with_take_new() {
     let config = PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 2,
+        voiced_confidence_threshold: 0.5,
     };
     let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -183,6 +185,7 @@ fn silence_gap_equal_to_threshold_does_not_split_phrase() {
     let config = PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 2,
+        voiced_confidence_threshold: 0.5,
     };
     let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -246,6 +249,7 @@ fn phrase_summary_carries_score_position_when_follower_is_set() {
     let config = PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 2,
+        voiced_confidence_threshold: 0.5,
     };
     let mut agg = PhraseAggregator::new(config).unwrap();
     agg.set_score_follower(follower);
@@ -273,6 +277,7 @@ fn phrase_summary_score_position_is_none_in_free_play_mode() {
     let config = PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 2,
+        voiced_confidence_threshold: 0.5,
     };
     let mut agg = PhraseAggregator::new(config).unwrap();
 

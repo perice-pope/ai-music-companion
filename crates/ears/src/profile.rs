@@ -62,6 +62,18 @@ pub struct InstrumentProfile {
     /// string when a profile predates this field.
     #[serde(default)]
     pub emoji: String,
+    /// Minimum pitch-detection confidence for an event to count as **voiced**
+    /// (i.e. as practice). Breathy, vibrato-rich instruments like Voice detect
+    /// at lower confidence than a piano, so a fixed gate silently dropped whole
+    /// sung sessions (#185). Lower this for such instruments. Defaults to 0.5
+    /// for profiles that predate this field.
+    #[serde(default = "default_voiced_confidence_threshold")]
+    pub voiced_confidence_threshold: f64,
+}
+
+/// Default voiced-confidence gate (0.5) for profiles that don't set one.
+fn default_voiced_confidence_threshold() -> f64 {
+    0.5
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
