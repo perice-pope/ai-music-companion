@@ -520,6 +520,9 @@ pub struct ActiveSession {
     phase: SessionPhase,
     recorder: SessionRecorder,
     practice_mode: PracticeMode,
+    /// Score id this session was started against, retained so the persisted
+    /// session row can record which piece was practised. `None` in free play.
+    score_id: Option<String>,
     /// Held so PR 2 can spawn tokio tasks off a phrase completion.
     /// Unused directly in PR 1 — hence the `allow(dead_code)`.
     #[allow(dead_code)]
@@ -536,6 +539,7 @@ impl ActiveSession {
             phase: SessionPhase::Starting,
             recorder: SessionRecorder::new(instrument, practice_mode),
             practice_mode,
+            score_id: None,
             coaching,
         }
     }
@@ -1432,6 +1436,10 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         .current_instrument()
         .unwrap_or_default()
         .to_owned();
+    // Session-level debug metadata, captured before `complete()` consumes the
+    // recorder, so the persisted row records how/what was practised (#201).
+    let practice_mode_label = format!("{:?}", session.practice_mode);
+    let session_score_id = session.score_id.take();
 
     match session.recorder.complete() {
         Ok(completed) => {
@@ -1453,11 +1461,21 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                     &recap,
                 ) {
                     tracing::warn!(error = %e, "could not persist the completed session");
-                } else if let Err(e) = store.save_phrases(completed.id, &completed.all_phrases()) {
-                    // Per-phrase rows are debug detail and depend on the session
-                    // row's FK, so only attempt them after `save` succeeds — and
-                    // never fail the recap over them.
-                    tracing::warn!(error = %e, "could not persist the session's phrases");
+                } else {
+                    // Per-phrase rows depend on the session row's FK, so only
+                    // after `save` succeeds — and never fail the recap over them.
+                    if let Err(e) = store.save_phrases(completed.id, &completed.all_phrases()) {
+                        tracing::warn!(error = %e, "could not persist the session's phrases");
+                    }
+                    // Session-level debug columns (#201), best-effort like the rest.
+                    if let Err(e) = store.record_session_meta(
+                        completed.id,
+                        Some(env!("CARGO_PKG_VERSION")),
+                        Some(practice_mode_label.as_str()),
+                        session_score_id.as_deref(),
+                    ) {
+                        tracing::warn!(error = %e, "could not persist session metadata");
+                    }
                 }
             }
             Ok(recap)
@@ -1662,6 +1680,11 @@ pub async fn start_practice_session<R: Runtime>(
     .await
     {
         Ok(id) => {
+            // Record the score id on the committed session so the persisted
+            // row can name the piece practised (see `record_session_meta`).
+            if let Some(active) = state.active_session.lock().await.as_mut() {
+                active.score_id = score_id;
+            }
             // Spin up the pipeline only after state-machine commit —
             // if we can't open the mic we at least want the recorder
             // in a consistent state.
@@ -2491,6 +2514,39 @@ mod tests {
         let phrases = store.load_phrases(recent[0].id).unwrap();
         assert_eq!(phrases.len(), 1, "the session's phrase must be persisted");
         assert_eq!(phrases[0].note_count, recorded.note_count);
+    }
+
+    #[tokio::test]
+    async fn end_session_records_session_debug_metadata() {
+        // A completed session's row carries practice mode + app version. This
+        // free-play path has no score, so score_id stays None (#201).
+        let s = state();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+        end_practice_session_impl(&s).await.unwrap();
+
+        let store = s.session_store.lock().unwrap();
+        let recent = store.list_recent(1).unwrap();
+        let meta = store.session_meta(recent[0].id).unwrap();
+        assert_eq!(meta.practice_mode.as_deref(), Some("Practice"));
+        assert!(meta.app_version.is_some(), "app version must be recorded");
+        assert!(meta.score_id.is_none(), "free-play session has no score id");
     }
 
     /// A pure sine tone — deterministic, embeddable audio for the offline
