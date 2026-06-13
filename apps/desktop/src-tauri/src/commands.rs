@@ -1441,18 +1441,24 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             // The store can degrade to in-memory at startup (see `open_stores`),
             // and a recap the user is waiting on must never be sunk by a
             // persistence failure — so we log and carry on rather than erroring.
-            if let Err(e) = state
-                .session_store
-                .lock()
-                .expect("session store mutex poisoned")
-                .save(
+            {
+                let store = state
+                    .session_store
+                    .lock()
+                    .expect("session store mutex poisoned");
+                if let Err(e) = store.save(
                     completed.id,
                     completed.started_at,
                     completed.ended_at,
                     &recap,
-                )
-            {
-                tracing::warn!(error = %e, "could not persist the completed session");
+                ) {
+                    tracing::warn!(error = %e, "could not persist the completed session");
+                } else if let Err(e) = store.save_phrases(completed.id, &completed.all_phrases()) {
+                    // Per-phrase rows are debug detail and depend on the session
+                    // row's FK, so only attempt them after `save` succeeds — and
+                    // never fail the recap over them.
+                    tracing::warn!(error = %e, "could not persist the session's phrases");
+                }
             }
             Ok(recap)
         }
@@ -2448,6 +2454,43 @@ mod tests {
         assert_eq!(recent.len(), 1, "exactly one persisted session");
         assert_eq!(recent[0].instrument, recap.instrument);
         assert_eq!(recent[0].phrase_count, recap.phrase_count);
+    }
+
+    #[tokio::test]
+    async fn end_session_persists_per_phrase_metrics() {
+        // The session row only keeps a phrase *count*; the raw per-phrase data
+        // (pitch/cents/timing) must also persist so a user-reported issue can
+        // be debugged after the fact, not just summarized (#197).
+        let s = state();
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+
+        let recorded = sample_phrase();
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(recorded.clone())
+                .unwrap();
+        }
+
+        end_practice_session_impl(&s).await.unwrap();
+
+        let store = s.session_store.lock().unwrap();
+        let recent = store.list_recent(1).unwrap();
+        assert_eq!(recent.len(), 1);
+        let phrases = store.load_phrases(recent[0].id).unwrap();
+        assert_eq!(phrases.len(), 1, "the session's phrase must be persisted");
+        assert_eq!(phrases[0].note_count, recorded.note_count);
     }
 
     /// A pure sine tone — deterministic, embeddable audio for the offline
