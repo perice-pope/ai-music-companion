@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import ScorePicker from "./ScorePicker";
 import { usePracticeStore } from "../stores/practiceStore";
+import { useAudioStore } from "../stores/audioStore";
 
 // The picker's children hit Tauri IPC; stub them so we test the picker alone.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -23,17 +24,23 @@ const SCORE = {
   duration_measures: 12,
 };
 
-/** Seed the store with a selected score; override instrument/startSession per test. */
-function seed(overrides: Record<string, unknown> = {}) {
+/**
+ * Seed a selected score (practiceStore) and the instrument the user picked on
+ * the selector (audioStore — the source of truth the picker must read; #184).
+ */
+function seed(
+  selectedInstrument: string | null,
+  startSession = vi.fn().mockResolvedValue(undefined),
+) {
+  useAudioStore.setState({ selectedInstrument });
   usePracticeStore.setState({
     screen: "score-picker",
     activeScore: SCORE,
-    instrumentName: null,
     scoreLibrary: [],
     refreshScoreLibrary: vi.fn().mockResolvedValue(undefined),
-    startSession: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
+    startSession,
   } as Partial<ReturnType<typeof usePracticeStore.getState>>);
+  return startSession;
 }
 
 const startButton = () =>
@@ -45,8 +52,7 @@ describe("ScorePicker — start-with-score (#184)", () => {
   });
 
   it("disables Start and explains why when no instrument is selected", () => {
-    const startSession = vi.fn().mockResolvedValue(undefined);
-    seed({ instrumentName: null, startSession });
+    const startSession = seed(null);
     render(<ScorePicker />);
 
     // The button must not look clickable-but-dead: it is disabled...
@@ -58,9 +64,10 @@ describe("ScorePicker — start-with-score (#184)", () => {
     expect(startSession).not.toHaveBeenCalled();
   });
 
-  it("starts the session with the chosen instrument and score", async () => {
-    const startSession = vi.fn().mockResolvedValue(undefined);
-    seed({ instrumentName: "Trumpet", startSession });
+  it("starts the session with the picked instrument and score", async () => {
+    // Regression for #184: the picker must use the *selected* instrument, not
+    // practiceStore.instrumentName (which is null until a session is running).
+    const startSession = seed("Trumpet");
     render(<ScorePicker />);
 
     expect(startButton()).toBeEnabled();
@@ -75,7 +82,7 @@ describe("ScorePicker — start-with-score (#184)", () => {
     const startSession = vi
       .fn()
       .mockRejectedValue(new Error("mic permission denied"));
-    seed({ instrumentName: "Trumpet", startSession });
+    seed("Trumpet", startSession);
     render(<ScorePicker />);
 
     fireEvent.click(startButton());

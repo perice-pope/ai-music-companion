@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
+import { useAudioStore } from "../stores/audioStore";
 import ScoreDropZone from "./ScoreDropZone";
 import ScoreLibrary from "./ScoreLibrary";
 
@@ -11,9 +12,13 @@ export default function ScorePicker() {
     clearActiveScore,
     loadScoreFromId,
     startSession,
-    instrumentName,
     returnToSelector,
   } = usePracticeStore();
+  // The instrument the user picked on the selector. This is the source of
+  // truth here — `practiceStore.instrumentName` is only set once a session is
+  // running, so it's always null on this screen. Reading it was the root cause
+  // of the dead "Start Practice with This Score" button (#184).
+  const selectedInstrument = useAudioStore((s) => s.selectedInstrument);
 
   const initRef = useRef(false);
   // Surfaced when starting the session fails — previously this only went to
@@ -32,10 +37,10 @@ export default function ScorePicker() {
 
   const handleStartWithScore = async () => {
     // The button is disabled in this case, but guard anyway.
-    if (!activeScore || !instrumentName) return;
+    if (!activeScore || !selectedInstrument) return;
     setStartError(null);
     try {
-      await startSession(instrumentName, 15.0, activeScore.id);
+      await startSession(selectedInstrument, 15.0, activeScore.id);
     } catch (err) {
       // Surface the failure in the UI instead of swallowing it (#184).
       setStartError(err instanceof Error ? err.message : String(err));
@@ -75,12 +80,12 @@ export default function ScorePicker() {
               <div className="mt-4 flex gap-2">
                 <button
                   onClick={handleStartWithScore}
-                  disabled={!instrumentName}
+                  disabled={!selectedInstrument}
                   title={
-                    instrumentName ? undefined : "Pick an instrument first"
+                    selectedInstrument ? undefined : "Pick an instrument first"
                   }
                   className={`flex-1 rounded px-4 py-2 font-semibold transition ${
-                    instrumentName
+                    selectedInstrument
                       ? "bg-green-600 hover:bg-green-700"
                       : "cursor-not-allowed bg-gray-600 text-gray-400"
                   }`}
@@ -97,7 +102,7 @@ export default function ScorePicker() {
 
               {/* Tell the user why the button is disabled instead of letting
                   it look like a dead no-op (#184). */}
-              {!instrumentName && (
+              {!selectedInstrument && (
                 <p className="mt-2 text-xs text-amber-300" role="status">
                   Pick an instrument first —{" "}
                   <button
