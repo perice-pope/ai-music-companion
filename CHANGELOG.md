@@ -1,3 +1,9 @@
+## [1.50.2](https://github.com/perice-pope/ai-music-companion/compare/v1.50.1...v1.50.2) (2026-06-13)
+
+### Bug Fixes
+
+* **score:** emit <chord/> for simultaneous notes in the MusicXML emitter ([#200](https://github.com/perice-pope/ai-music-companion/issues/200)) ([d2dd027](https://github.com/perice-pope/ai-music-companion/commit/d2dd0277d65e81995a45b50cbd0f7f71b295629f))
+
 ## [1.50.1](https://github.com/perice-pope/ai-music-companion/compare/v1.50.0...v1.50.1) (2026-06-13)
 
 ### Bug Fixes
