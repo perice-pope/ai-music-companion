@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useAudioStore } from "../stores/audioStore";
 
 /** Clamp a value between min and max. */
@@ -5,12 +6,42 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * EMA factor for the *displayed* cents. Low enough to calm the per-event
+ * flicker that made the read-out impossible to read (#187), high enough to stay
+ * responsive. This is display-layer smoothing only — the real-time pitch
+ * detection path is untouched.
+ */
+const CENTS_SMOOTHING_ALPHA = 0.3;
+
 export default function PitchDisplay() {
   const { currentNote, latestEvent, isListening } = useAudioStore();
+  const rawCents = currentNote?.cents_deviation ?? null;
+
+  // Exponential moving average of the displayed cents so the number glides
+  // instead of jumping on every audio event. The first reading of a note shows
+  // exactly (no lag); subsequent readings are damped. Resets when the note
+  // drops out so a new note starts fresh. Hooks run before the early returns
+  // below to keep hook order stable.
+  const [smoothedCents, setSmoothedCents] = useState<number | null>(null);
+  useEffect(() => {
+    if (rawCents == null) {
+      setSmoothedCents(null);
+      return;
+    }
+    setSmoothedCents((prev) =>
+      prev == null
+        ? rawCents
+        : prev + CENTS_SMOOTHING_ALPHA * (rawCents - prev),
+    );
+  }, [rawCents]);
 
   if (!isListening) {
     return (
-      <div className="flex flex-col items-center gap-2" data-testid="pitch-display">
+      <div
+        className="flex flex-col items-center gap-2"
+        data-testid="pitch-display"
+      >
         <p className="text-gray-500">Not listening</p>
       </div>
     );
@@ -18,14 +49,20 @@ export default function PitchDisplay() {
 
   if (!currentNote || !latestEvent) {
     return (
-      <div className="flex flex-col items-center gap-2" data-testid="pitch-display">
+      <div
+        className="flex flex-col items-center gap-2"
+        data-testid="pitch-display"
+      >
         <p className="text-gray-400">Listening...</p>
       </div>
     );
   }
 
-  const { name, octave, cents_deviation, frequency_hz } = currentNote;
-  const meterOffset = clamp(cents_deviation, -50, 50);
+  const { name, octave, frequency_hz } = currentNote;
+  // Show the smoothed value; fall back to the raw reading on the very first
+  // render (before the effect has run).
+  const cents = smoothedCents ?? currentNote.cents_deviation;
+  const meterOffset = clamp(cents, -50, 50);
   // Convert -50..+50 cents to 0..100% for the meter position
   const meterPercent = ((meterOffset + 50) / 100) * 100;
 
@@ -39,19 +76,17 @@ export default function PitchDisplay() {
     >
       {/* Note name */}
       <div className="text-center">
-        <span className="text-6xl font-bold text-gray-100">
-          {name}
-        </span>
+        <span className="text-6xl font-bold text-gray-100">{name}</span>
         <span className="text-2xl text-gray-400">{octave}</span>
       </div>
 
       {/* Frequency */}
       <p className="text-sm text-gray-500">{frequency_hz} Hz</p>
 
-      {/* Cents deviation */}
+      {/* Cents deviation (smoothed for readability) */}
       <p className="text-lg font-mono text-gray-300">
-        {cents_deviation > 0 ? "+" : ""}
-        {cents_deviation.toFixed(1)} cents
+        {cents > 0 ? "+" : ""}
+        {cents.toFixed(1)} cents
       </p>
 
       {/* Pitch meter bar */}
