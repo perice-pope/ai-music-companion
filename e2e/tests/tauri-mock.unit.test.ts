@@ -17,6 +17,8 @@ import {
   makeIpcHandler,
   SEEDED_INSTRUMENTS,
   SEEDED_RECAP,
+  SEEDED_EMPTY_RECAP,
+  SEEDED_SCORE,
   type RecordedInvoke,
 } from "../support/tauri-mock";
 
@@ -64,6 +66,38 @@ describe("seeded Tauri IPC handler", () => {
     const a = await invoke("start_practice_session");
     const b = await invoke("start_practice_session");
     expect(a).not.toEqual(b);
+  });
+
+  it("returns the duration-aware empty recap for a Voice session (#185/#186)", async () => {
+    const invoke = makeIpcHandler([]);
+    await invoke("start_practice_session", { instrument: "Voice" });
+    const recap = (await invoke(
+      "end_practice_session",
+    )) as typeof SEEDED_EMPTY_RECAP;
+    expect(recap.phrase_count).toBe(0); // ⇒ empty variant
+    expect(recap.duration_secs).toBeGreaterThan(0); // real time, not floored
+    // Never the accusatory copy when the session actually ran.
+    expect(recap.overall_assessment).not.toMatch(/didn't get to play/i);
+    expect(recap.overall_assessment).toMatch(/pick out distinct phrases/i);
+  });
+
+  it("returns the full summary recap for a non-Voice session", async () => {
+    const invoke = makeIpcHandler([]);
+    await invoke("start_practice_session", { instrument: "Trumpet" });
+    const recap = (await invoke("end_practice_session")) as typeof SEEDED_RECAP;
+    expect(recap.phrase_count).toBeGreaterThan(0);
+  });
+
+  it("serves a seeded score library and a loadable score (#184)", async () => {
+    const invoke = makeIpcHandler([]);
+    const scores = (await invoke("list_scores")) as unknown[];
+    expect(scores.length).toBeGreaterThan(0);
+    const loaded = (await invoke("get_score", { id: SEEDED_SCORE.id })) as {
+      entry: typeof SEEDED_SCORE;
+      music_xml: string;
+    };
+    expect(loaded.entry.id).toBe(SEEDED_SCORE.id);
+    expect(loaded.music_xml).toContain("score-partwise");
   });
 
   it("rejects an unmocked command loudly", async () => {

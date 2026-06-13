@@ -20,6 +20,8 @@ pub enum PhraseError {
     InvalidSilenceGap(f64),
     #[error("min_phrase_events must be >= 1, got {0}")]
     InvalidMinEvents(usize),
+    #[error("voiced_confidence_threshold must be in (0, 1], got {0}")]
+    InvalidConfidenceThreshold(f64),
 }
 
 /// Configuration for phrase boundary detection.
@@ -29,6 +31,15 @@ pub struct PhraseConfig {
     pub silence_gap_secs: f64,
     /// Minimum number of voiced events to form a valid phrase. Default: 3.
     pub min_phrase_events: usize,
+    /// Minimum pitch-detection confidence for an event to count as **voiced**
+    /// (and therefore as practice). Default: 0.5.
+    ///
+    /// This is **per-instrument**: breathy, vibrato-rich voice detects at lower
+    /// confidence than, say, a piano, so a fixed 0.5 gate silently dropped whole
+    /// sung sessions (they formed no phrases → "you didn't play", #185). The
+    /// Tauri shell sets this from the active instrument profile
+    /// (`voiced_confidence_threshold`); Voice uses a lower value.
+    pub voiced_confidence_threshold: f64,
 }
 
 impl Default for PhraseConfig {
@@ -36,6 +47,7 @@ impl Default for PhraseConfig {
         Self {
             silence_gap_secs: 0.3,
             min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
         }
     }
 }
@@ -48,6 +60,14 @@ impl PhraseConfig {
         }
         if self.min_phrase_events == 0 {
             return Err(PhraseError::InvalidMinEvents(self.min_phrase_events));
+        }
+        if !(self.voiced_confidence_threshold.is_finite()
+            && self.voiced_confidence_threshold > 0.0
+            && self.voiced_confidence_threshold <= 1.0)
+        {
+            return Err(PhraseError::InvalidConfidenceThreshold(
+                self.voiced_confidence_threshold,
+            ));
         }
         Ok(())
     }
@@ -219,7 +239,8 @@ impl PhraseAggregator {
         /// e.g. `0.4 - 0.1 = 0.30000000000000004 > 0.3`.
         const GAP_EPSILON: f64 = 1e-6;
 
-        let is_voiced = event.pitch_hz.is_some() && event.confidence > 0.5;
+        let is_voiced =
+            event.pitch_hz.is_some() && event.confidence > self.config.voiced_confidence_threshold;
 
         if is_voiced {
             // Check for score measure boundaries if a score is loaded
@@ -514,6 +535,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -549,6 +571,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -590,6 +613,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -619,6 +643,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -644,6 +669,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -666,6 +692,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -705,6 +732,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -727,6 +755,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -752,6 +781,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -774,6 +804,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: -1.0,
             min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
         };
         assert!(PhraseAggregator::new(config).is_err());
     }
@@ -783,8 +814,73 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 0,
+            voiced_confidence_threshold: 0.5,
         };
         assert!(PhraseAggregator::new(config).is_err());
+    }
+
+    #[test]
+    fn invalid_confidence_threshold_rejected() {
+        for bad in [0.0, -0.1, 1.5, f64::NAN] {
+            let config = PhraseConfig {
+                silence_gap_secs: 0.3,
+                min_phrase_events: 2,
+                voiced_confidence_threshold: bad,
+            };
+            assert!(
+                PhraseAggregator::new(config).is_err(),
+                "threshold {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn lower_threshold_lets_low_confidence_voice_count_as_practice() {
+        // Breathy / vibrato-rich singing often detects below the default 0.5
+        // gate. With a fixed gate those events were silently dropped, so a sung
+        // session formed no phrases and the recap said "you didn't play" (#185).
+        let breathy = |hz: f64, t: f64| AudioEvent {
+            pitch_hz: Some(hz),
+            confidence: 0.4, // below default 0.5, above a voice gate of 0.3
+            amplitude: 0.3,
+            timestamp_secs: t,
+            is_onset: false,
+        };
+
+        // Default gate (0.5): nothing voiced → no phrases.
+        let mut strict = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
+        })
+        .unwrap();
+        for i in 0..5 {
+            strict.push(&breathy(220.0, i as f64 * 0.05));
+        }
+        strict.flush();
+        assert_eq!(
+            strict.phrases().len(),
+            0,
+            "the default 0.5 gate drops a quietly-sung session"
+        );
+
+        // Voice gate (0.3): the same singing now registers as a phrase.
+        let mut voice = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.3,
+        })
+        .unwrap();
+        for i in 0..5 {
+            voice.push(&breathy(220.0, i as f64 * 0.05));
+        }
+        voice.flush();
+        assert_eq!(
+            voice.phrases().len(),
+            1,
+            "a lower voice gate counts the singing as practice"
+        );
+        assert_eq!(voice.phrases()[0].note_count, 5);
     }
 
     // --- Phrase timing ---
@@ -794,6 +890,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -815,6 +912,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -919,6 +1017,7 @@ mod tests {
         let mut agg = PhraseAggregator::new(PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
         })
         .unwrap();
         // C D E F G A B, with the tonic (C) and fifth (G) emphasised the way
@@ -954,6 +1053,7 @@ mod tests {
         let config = PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 2,
+            voiced_confidence_threshold: 0.5,
         };
         let mut agg = PhraseAggregator::new(config).unwrap();
 
@@ -1000,6 +1100,7 @@ mod tests {
         let mut agg = PhraseAggregator::new(PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
         })
         .unwrap();
         for i in 0..3 {

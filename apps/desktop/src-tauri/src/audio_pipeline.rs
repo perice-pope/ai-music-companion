@@ -158,6 +158,9 @@ pub struct DetectorProfile {
     pub threshold: f64,
     pub freq_min_hz: f64,
     pub freq_max_hz: f64,
+    /// Per-instrument voiced-confidence gate fed to the phrase aggregator so
+    /// quiet/breathy playing (notably Voice) still counts as practice (#185).
+    pub voiced_confidence_threshold: f64,
 }
 
 impl DetectorProfile {
@@ -319,10 +322,14 @@ fn run_worker<F, P, S>(
 
     // Phrase aggregator groups events into musical phrases. With a score
     // follower attached it also tags each phrase with the score position
-    // it began on — the anchor the cursor follows. Constructed with the
-    // default config (validated, so `expect` is unreachable in practice).
-    let mut aggregator =
-        PhraseAggregator::new(PhraseConfig::default()).expect("default PhraseConfig is valid");
+    // it began on — the anchor the cursor follows. The voiced-confidence gate
+    // comes from the active instrument profile so quiet, breathy singing still
+    // forms phrases (#185); the rest of the config is the validated default.
+    let mut aggregator = PhraseAggregator::new(PhraseConfig {
+        voiced_confidence_threshold: initial_profile.voiced_confidence_threshold,
+        ..PhraseConfig::default()
+    })
+    .expect("PhraseConfig derived from the instrument profile is valid");
     let has_follower = follower.is_some();
     if let Some(f) = follower {
         aggregator.set_score_follower(f);

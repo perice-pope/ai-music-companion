@@ -70,6 +70,10 @@ pub struct InstrumentInfo {
     pub freq_max_hz: f64,
     pub vibrato_tolerance_cents: f64,
     pub emoji: String,
+    /// Per-instrument voiced-confidence gate (see
+    /// [`InstrumentProfile::voiced_confidence_threshold`]). Carried through so
+    /// the phrase aggregator can count quiet singing as practice (#185).
+    pub voiced_confidence_threshold: f64,
 }
 
 /// Payload of the `session-status` Tauri event.
@@ -691,12 +695,13 @@ impl AppState {
             .find(|i| i.name == name)
             .map(|i| DetectorProfile {
                 // YIN threshold of 0.15 is the ears-crate default and
-                // works across brass/strings/voice. Per-instrument
-                // overrides belong in `profiles/*.json` later — for now
-                // the detector config is purely frequency-windowed.
+                // works across brass/strings/voice.
                 threshold: 0.15,
                 freq_min_hz: i.freq_min_hz.max(DETECTOR_MIN_HZ),
                 freq_max_hz: i.freq_max_hz,
+                // Per-instrument voiced gate from the profile — Voice is lower
+                // so breathy singing still forms phrases (#185).
+                voiced_confidence_threshold: i.voiced_confidence_threshold,
             })
     }
 
@@ -1086,6 +1091,7 @@ fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
         freq_max_hz: profile.freq_max_hz,
         vibrato_tolerance_cents: profile.vibrato_tolerance_cents,
         emoji: profile.emoji.clone(),
+        voiced_confidence_threshold: profile.voiced_confidence_threshold,
     }
 }
 
@@ -1182,6 +1188,9 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         freq_max_hz: hi,
         vibrato_tolerance_cents: 25.0,
         emoji: String::new(),
+        // Voice uses a lower gate so quiet singing registers (#185); others
+        // keep the 0.5 default.
+        voiced_confidence_threshold: if name == "Voice" { 0.3 } else { 0.5 },
     })
     .collect()
 }
@@ -1336,9 +1345,20 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         .ok()
         .flatten();
 
+    // Capture the real session length and instrument before `complete()`
+    // consumes the recorder — the empty-state path needs them so a session with
+    // genuine elapsed time never reads as "you didn't play" (#185).
+    let elapsed_secs =
+        (Utc::now() - session.recorder.started_at()).num_milliseconds() as f64 / 1000.0;
+    let instrument = session
+        .recorder
+        .current_instrument()
+        .unwrap_or_default()
+        .to_owned();
+
     match session.recorder.complete() {
         Ok(completed) => build_recap(&completed, &*generator, taste_profile, idiom_notes).await,
-        Err(SessionError::Empty) => Ok(empty_state_recap()),
+        Err(SessionError::Empty) => Ok(empty_state_recap(elapsed_secs, instrument)),
         Err(other) => Err(CommandError::Recorder(other)),
     }
 }
@@ -1362,22 +1382,51 @@ async fn build_recap(
         .map_err(CommandError::from)
 }
 
-/// Minimal recap for the zero-phrase case. Tone is intentionally
-/// "yoga teacher not gym coach" — we don't shame the user for
-/// not playing.
-fn empty_state_recap() -> SessionRecap {
+/// A session can be in this state for ~this long before we stop assuming the
+/// user simply didn't get started. Past it, a zero-phrase session more likely
+/// means "we heard you but couldn't pick out phrases" than "you didn't play".
+const HEARD_SOMETHING_SECS: f64 = 20.0;
+
+/// Minimal recap for the zero-phrase case. Tone is intentionally "yoga teacher
+/// not gym coach" — we never shame the user.
+///
+/// **Duration safety net (#185):** a session with real elapsed time must never
+/// read as "you didn't play" — a vocalist who sang for a minute did play; the
+/// gate just didn't form phrases. So when the session ran long enough, we show
+/// a calm "couldn't quite pick out distinct phrases — check your mic" instead,
+/// and always report the *real* `duration_secs` (so the header stops flooring a
+/// zero-length session up to "1 minute").
+fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
+    let (overall_assessment, next_session_suggestions) = if duration_secs >= HEARD_SOMETHING_SECS {
+        (
+            "I couldn't quite pick out distinct phrases this time. If you were playing, \
+             try moving a little closer to the mic or nudging your input level up — then \
+             come back and I'll listen again."
+                .to_owned(),
+            vec![
+                "Check your microphone input level, then play a few clear, sustained notes."
+                    .to_owned(),
+            ],
+        )
+    } else {
+        (
+            "Looks like you didn't get to play this time — come back when you're ready."
+                .to_owned(),
+            vec![
+                "Open the app a few minutes before you want to play — just having it running can help."
+                    .to_owned(),
+            ],
+        )
+    };
+
     SessionRecap {
-        overall_assessment:
-            "Looks like you didn't get to play this time — come back when you're ready.".to_owned(),
+        overall_assessment,
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),
-        next_session_suggestions: vec![
-            "Open the app a few minutes before you want to play — just having it running can help."
-                .to_owned(),
-        ],
-        duration_secs: 0.0,
+        next_session_suggestions,
+        duration_secs,
         phrase_count: 0,
-        instrument: String::new(),
+        instrument,
         fingerprint: None,
         idiom_notes: Vec::new(),
         connections: Vec::new(),
@@ -2337,6 +2386,40 @@ mod tests {
         let s = state();
         let err = end_practice_session_impl(&s).await.unwrap_err();
         assert!(matches!(err, CommandError::NotActive), "{err:?}");
+        assert_eq!(s.current_phase().await, SessionPhase::Idle);
+    }
+
+    #[test]
+    fn empty_state_recap_is_duration_aware() {
+        // A real session (heard time) must NOT say "you didn't play"; it shows a
+        // calm mic-check note and reports the real duration + instrument (#185).
+        let heard = empty_state_recap(75.0, "Voice".to_owned());
+        assert_eq!(heard.phrase_count, 0);
+        assert_eq!(heard.duration_secs, 75.0);
+        assert_eq!(heard.instrument, "Voice");
+        assert!(
+            !heard.overall_assessment.contains("didn't get to play"),
+            "a minute-long session must not read as 'didn't play': {}",
+            heard.overall_assessment
+        );
+
+        // A blink-and-gone session keeps the gentle "come back" copy.
+        let idle = empty_state_recap(2.0, String::new());
+        assert!(idle.overall_assessment.contains("didn't get to play"));
+        assert_eq!(idle.duration_secs, 2.0);
+    }
+
+    #[tokio::test]
+    async fn end_session_with_no_phrases_carries_instrument_and_does_not_error() {
+        let s = state();
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .unwrap();
+        // No phrase recorded — the recorder is empty.
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(recap.phrase_count, 0);
+        // The empty path now carries the real instrument (was blank before).
+        assert_eq!(recap.instrument, "Voice");
         assert_eq!(s.current_phase().await, SessionPhase::Idle);
     }
 

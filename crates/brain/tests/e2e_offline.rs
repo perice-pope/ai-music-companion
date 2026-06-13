@@ -119,6 +119,7 @@ fn run_scale_through_pipeline(repeats: usize) -> (Vec<AudioEvent>, Vec<PhraseSum
     let mut aggregator = PhraseAggregator::new(PhraseConfig {
         silence_gap_secs: 0.3,
         min_phrase_events: 3,
+        voiced_confidence_threshold: 0.5,
     })
     .expect("valid phrase config");
 
