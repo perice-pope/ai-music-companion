@@ -116,6 +116,12 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
             out.push_str("      </direction>\n");
         }
 
+        // Two onsets within this many beats count as simultaneous (a chord).
+        const CHORD_ONSET_EPSILON: f64 = 1e-6;
+        // Onset of the previous sounding note, so a note sharing it can be
+        // flagged as a chord member. MusicXML stacks notes only when the
+        // 2nd+ of a simultaneity carries a <chord/> element.
+        let mut prev_sounding_start: Option<f64> = None;
         for note in &measure.notes {
             // Emit a dynamics direction when the marking changes (skip on
             // rests — dynamics attach to sounding notes).
@@ -133,7 +139,13 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
                 }
             }
 
-            write_note(&mut out, note);
+            let is_chord = !note.is_rest
+                && prev_sounding_start
+                    .is_some_and(|prev| (note.start_beat - prev).abs() < CHORD_ONSET_EPSILON);
+            write_note(&mut out, note, is_chord);
+            if !note.is_rest {
+                prev_sounding_start = Some(note.start_beat);
+            }
         }
 
         out.push_str("    </measure>\n");
@@ -145,10 +157,15 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
 }
 
 /// Write a single `<note>` element (rest or pitched).
-fn write_note(out: &mut String, note: &ScoreNote) {
+fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool) {
     let duration_divs = beats_to_divs(note.duration_beats);
 
     out.push_str("      <note>\n");
+    // A <chord/> on the 2nd+ simultaneous note stacks it on the previous note
+    // instead of advancing time. The first note of a chord never carries it.
+    if is_chord {
+        out.push_str("        <chord/>\n");
+    }
     if note.is_rest {
         out.push_str("        <rest/>\n");
     } else {
@@ -339,6 +356,39 @@ mod tests {
         assert_eq!(reparsed.time_signature, model.time_signature);
         assert_eq!(reparsed.key_signature, model.key_signature);
         assert!((reparsed.tempo_bpm - 96.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn simultaneous_notes_emit_chord_elements() {
+        // A C-major triad (all three notes share onset 0.0) followed by a
+        // single note. The 2nd and 3rd triad notes must carry <chord/>; the
+        // root never does, and the trailing note (distinct onset) must not.
+        let notes = vec![
+            note(60, 1.0, 0.0), // C4  — chord root, no <chord/>
+            note(64, 1.0, 0.0), // E4  — <chord/>
+            note(67, 1.0, 0.0), // G4  — <chord/>
+            note(72, 1.0, 1.0), // C5  — separate onset, no <chord/>
+        ];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(
+            xml.matches("<chord/>").count(),
+            2,
+            "exactly the 2nd and 3rd triad notes carry <chord/>:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn sequential_notes_emit_no_chord_elements() {
+        // Four distinct onsets — nothing should be flagged as a chord.
+        let xml = score_model_to_musicxml(&c_major_scale());
+        assert!(
+            !xml.contains("<chord/>"),
+            "no chord tags for sequential notes:\n{xml}"
+        );
     }
 
     #[test]
