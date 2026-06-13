@@ -3,6 +3,7 @@
 //! YIN is the algorithm family that Aubio's `yinfft` is based on.
 //! This implementation is suitable for real-time use with ~5-6ms hop sizes.
 
+use crate::onset::{OnsetConfig, SuperFluxOnset};
 use crate::AudioEvent;
 
 /// Errors from pitch detector construction.
@@ -50,8 +51,9 @@ pub struct PitchDetector {
     timestamp: f64,
     /// Analysis window size (samples). Must contain ≥2 periods of freq_min.
     window_size: usize,
-    /// Whether the previous frame was voiced (for onset edge detection).
-    prev_voiced: bool,
+    /// SuperFlux onset detector (spectral-flux with a frequency max filter).
+    /// Replaces the old voiced-edge heuristic that mis-fired on vibrato (#138).
+    onset: SuperFluxOnset,
     // --- Pre-allocated scratch buffers (no alloc in detect) ---
     tau_min: usize,
     tau_max: usize,
@@ -90,7 +92,7 @@ impl PitchDetector {
             config,
             timestamp: 0.0,
             window_size,
-            prev_voiced: false,
+            onset: SuperFluxOnset::new(window_size, OnsetConfig::default()),
             tau_min,
             tau_max,
             diff,
@@ -116,7 +118,9 @@ impl PitchDetector {
 
         // Silence gate — don't bother detecting pitch in silence
         if amplitude < 0.01 {
-            self.prev_voiced = false;
+            // Reset onset state so the next note after silence reads as a fresh
+            // attack (its first frame is a strong silence→sound flux).
+            self.onset.reset();
             return AudioEvent {
                 pitch_hz: None,
                 confidence: 0.0,
@@ -128,10 +132,9 @@ impl PitchDetector {
 
         let (pitch_hz, confidence) = self.yin_pitch(samples);
 
-        // Onset edge detection: fire only on the transition from unvoiced → voiced
-        let currently_voiced = confidence > 0.8 && amplitude > 0.05;
-        let is_onset = currently_voiced && !self.prev_voiced;
-        self.prev_voiced = currently_voiced;
+        // Onset detection via SuperFlux (spectral flux + a frequency max filter)
+        // — vibrato-robust, unlike the old voiced-edge heuristic (#138).
+        let is_onset = self.onset.process(samples);
 
         AudioEvent {
             pitch_hz,
@@ -357,26 +360,38 @@ mod tests {
     }
 
     #[test]
-    fn onset_only_fires_on_transition() {
-        let config = PitchConfig::default();
-        let mut detector = PitchDetector::new(config).unwrap();
-        let samples = generate_sine(440.0, 44100, detector.window_size());
+    fn onset_fires_once_per_note_not_during_sustain() {
+        // The SuperFlux detector (#138) fires one onset per note attack — with
+        // one frame of latency (it confirms a spectral-flux peak once the next
+        // frame falls back) — and stays quiet through the sustain. Silence
+        // resets it so a re-entry fires again.
+        let mut detector = PitchDetector::new(PitchConfig::default()).unwrap();
+        let tone = generate_sine(440.0, 44100, detector.window_size());
 
-        // First voiced frame → onset
-        let e1 = detector.detect(&samples);
-        assert!(e1.is_onset, "First voiced frame should be an onset");
+        let onsets_in = |det: &mut PitchDetector, frames: usize, buf: &[f32]| {
+            (0..frames).filter(|_| det.detect(buf).is_onset).count()
+        };
 
-        // Second voiced frame → NOT an onset (sustained)
-        let e2 = detector.detect(&samples);
-        assert!(!e2.is_onset, "Sustained frame should not be an onset");
+        // A held note → exactly one onset across many frames.
+        assert_eq!(
+            onsets_in(&mut detector, 8, &tone),
+            1,
+            "a held note should fire exactly one onset, not one per frame"
+        );
 
-        // Silence → no onset
+        // Silence → no onsets (and resets the detector internally).
         let silence = vec![0.0f32; detector.window_size()];
-        let e3 = detector.detect(&silence);
-        assert!(!e3.is_onset);
+        assert_eq!(
+            onsets_in(&mut detector, 3, &silence),
+            0,
+            "silence has no onset"
+        );
 
-        // Voice again → onset (transition from silence)
-        let e4 = detector.detect(&samples);
-        assert!(e4.is_onset, "Re-entry after silence should be an onset");
+        // Re-entry after silence → a fresh onset.
+        assert_eq!(
+            onsets_in(&mut detector, 8, &tone),
+            1,
+            "re-entry after silence should fire one onset"
+        );
     }
 }

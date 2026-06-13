@@ -8,6 +8,7 @@
 //! - Instrument profile loading
 
 pub mod capture;
+pub mod onset;
 pub mod output;
 pub mod pitch;
 pub mod profile;

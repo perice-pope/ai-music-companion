@@ -15,6 +15,9 @@ tracing.workspace = true
 ringbuf = "0.4"
 cpal = "0.15"
 crossbeam-channel = "0.5"
+# Spectral-flux (SuperFlux) onset detection needs an FFT. rustfft is the
+# pure-Rust FFT the workspace already standardises on (crates/tone, crates/idiom).
+rustfft = "6"
 
 [dev-dependencies]
 tempfile = "3"
