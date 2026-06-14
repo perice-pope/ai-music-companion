@@ -39,8 +39,8 @@ AI Music Companion is a desktop practice tool for brass, voice, strings, woodwin
 | Phase | Description | Status |
 |---|---|---|
 | 0 | Spike -- architecture validation | Complete |
-| 1 | Practice Companion MVP | In Progress |
-| 2 | Smart Import + Tone Quality | Planned |
+| 1 | Practice Companion MVP | Complete (v2.0.0) |
+| 2 | Smart Import + Tone Quality | In Progress |
 | 3 | Teacher Platform + Mobile | Planned |
 
 ## Repository Layout
