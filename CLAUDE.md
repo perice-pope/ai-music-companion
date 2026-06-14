@@ -124,3 +124,8 @@ which runs this loop. Hooks auto-format on edit and block finishing on a red for
 These are multi-slice epics — never one mega-PR. Spec the epic, then ship a sequence of small
 PRs (e.g. accompaniment = audio-output engine → local synth → live tempo lock → opt-in cloud
 bed). Each slice is independently testable and useful.
+
+Drive an epic with **`/epic <issue#>`**: it plans the slice/dependency graph, fans out builder
+agents in parallel waves (disjoint file footprints only), reviews each PR, and serializes merges
+to keep `main` green. Parallelism is bounded by dependencies, file overlap, and compute — never by
+lowering the quality bar.

@@ -39,9 +39,15 @@ How it fits what exists (name the files/crates). Offline-first: if it touches ne
 how it's opt-in + disclosed. Real-time: if it's near the audio thread, the allocation story.
 
 ## 9. Slice breakdown (ordered, each a shippable PR)
-For an epic, the sequence of small PRs. Each < ~400 lines, independently testable.
-1. Slice 1 — ...
-2. Slice 2 — ...
+For an epic, the small PRs. Each < ~400 lines, independently testable. Record each slice's
+**file/module footprint** and **depends-on** so `/epic` can schedule non-overlapping slices into
+parallel waves (disjoint footprints + merged deps = same wave). Define shared **interfaces/
+contracts** as their own early slice — that's the seam others build behind in parallel.
+| # | Slice (goal) | Footprint (files/modules) | Depends on | Heavy build? |
+|---|---|---|---|---|
+| S1 | e.g. audio-output engine interface + stub | `crates/audio/`, `commands.rs` | — | yes |
+| S2 | local synth behind the interface | `crates/audio/synth.rs` | S1 | yes |
+| S3 | frontend "play with me" button | `apps/desktop/src/...` | S1 | no |
 
 ## 10. Risks / open questions
 What could go wrong, what you're unsure about, what needs a human decision.
