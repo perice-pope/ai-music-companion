@@ -1,3 +1,13 @@
+## [2.0.0](https://github.com/perice-pope/ai-music-companion/compare/v1.55.0...v2.0.0) (2026-06-14)
+
+### ⚠ BREAKING CHANGES
+
+* the practice-session data model changed substantially — sessions persist with a new schema (per-phrase table + session debug columns via PRAGMA user_version migrations) and the recap gained grounded fields (fingerprint, flavour). 1.x databases are migrated forward automatically; the session/recap contract is not backward-compatible with 1.x readers.
+
+### Features
+
+* 2.0 — persisted, grounded AI practice companion ([#218](https://github.com/perice-pope/ai-music-companion/issues/218)) ([4bef6cd](https://github.com/perice-pope/ai-music-companion/commit/4bef6cdfc9b7b87f25e59080709ffb445ad08e54))
+
 ## [1.55.0](https://github.com/perice-pope/ai-music-companion/compare/v1.54.0...v1.55.0) (2026-06-14)
 
 ### Features
