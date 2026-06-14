@@ -1,3 +1,9 @@
+## [1.53.0](https://github.com/perice-pope/ai-music-companion/compare/v1.52.0...v1.53.0) (2026-06-14)
+
+### Features
+
+* **score:** quantize rhythm before notation ([#206](https://github.com/perice-pope/ai-music-companion/issues/206)) ([d6247e9](https://github.com/perice-pope/ai-music-companion/commit/d6247e9a3eb1db08212278e85e49f2dd18d6f724))
+
 ## [1.52.0](https://github.com/perice-pope/ai-music-companion/compare/v1.51.0...v1.52.0) (2026-06-13)
 
 ### Features
