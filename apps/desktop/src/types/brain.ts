@@ -301,10 +301,21 @@ export interface SessionRecap {
    */
   fingerprint?: MusicalFingerprint | null;
   /**
+   * A short, hedged "flavour" line grounded in the reliable signal the app
+   * measures — the key's mode + the groove's swing ratio (Rust
+   * `brain::coaching::theory_flavour`). Drives the recap's "Flavour:" line.
+   * `null`/absent when there's no clear signal ("silence > lies"). This
+   * replaces the placeholder idiom corpus (#208) as the displayed flavour;
+   * {@link idiom_notes} is kept for the real-corpus future but no longer
+   * rendered as the flavour.
+   */
+  flavour?: string | null;
+  /**
    * Confidence-gated, offline idiom flavours for the session — grounded,
    * hedged "reminds me of" notes. Empty/absent when nothing cleared the
    * engine's gate ("silence > lies"). `serde(default)` on the Rust side, so
-   * older recaps load with this absent.
+   * older recaps load with this absent. Kept as plumbing for the real-corpus
+   * future (#208); no longer rendered as the recap's "Flavour:" line.
    */
   idiom_notes?: IdiomMatch[];
   /**

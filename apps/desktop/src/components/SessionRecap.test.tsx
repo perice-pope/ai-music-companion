@@ -196,36 +196,30 @@ describe("SessionRecap", () => {
     expect(line).toContain("steady");
   });
 
-  it("shows the idiom flavour read-out only when the recap carries a match", () => {
+  it("shows the theory-grounded flavour line only when the recap carries one", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No idiom_notes → no flavour line (silence > lies).
-    expect(screen.queryByTestId("recap-idiom")).toBeNull();
+    // No flavour → no line (silence > lies). The placeholder idiom corpus
+    // (#208) no longer drives this line.
+    expect(screen.queryByTestId("recap-flavour")).toBeNull();
 
-    // Empty list is also silent.
-    seedRecap(fullRecap({ idiom_notes: [] }));
+    // Explicit null is also silent.
+    seedRecap(fullRecap({ flavour: null }));
     rerender(<SessionRecap />);
-    expect(screen.queryByTestId("recap-idiom")).toBeNull();
+    expect(screen.queryByTestId("recap-flavour")).toBeNull();
 
+    // A populated, hedged flavour (mode + swing) renders verbatim.
     seedRecap(
       fullRecap({
-        idiom_notes: [
-          {
-            label: "Bebop line",
-            genre: "jazz",
-            exemplar_artist: "Charlie Parker",
-            era: "1940s-50s",
-            similarity: 0.78,
-          },
-        ],
+        flavour:
+          "a modal-jazz feel — modal lines over a swung pulse (think Miles Davis)",
       }),
     );
     rerender(<SessionRecap />);
-    const line = screen.getByTestId("recap-idiom").textContent ?? "";
-    // Hedged + grounded: names the genre and exemplar, phrased as "flavour".
-    expect(line).toContain("jazz flavour");
-    expect(line).toContain("Bebop line");
-    expect(line).toContain("Charlie Parker");
+    const line = screen.getByTestId("recap-flavour").textContent ?? "";
+    expect(line).toContain("Flavour:");
+    expect(line).toContain("modal-jazz feel");
+    expect(line).toContain("Miles Davis");
   });
 
   it("shows cross-genre connections only when the recap carries grounded ones", () => {

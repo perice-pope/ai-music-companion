@@ -462,6 +462,7 @@ impl MockRecapGenerator {
             phrase_count: 0,
             instrument: String::new(),
             fingerprint: None,
+            flavour: None,
             idiom_notes: input.idiom_notes.clone(),
             connections: Vec::new(),
         })
@@ -1529,6 +1530,7 @@ fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
         phrase_count: 0,
         instrument,
         fingerprint: None,
+        flavour: None,
         idiom_notes: Vec::new(),
         connections: Vec::new(),
     }
