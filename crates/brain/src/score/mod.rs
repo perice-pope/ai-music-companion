@@ -8,6 +8,7 @@
 pub mod emit;
 pub mod midi;
 pub mod musicxml;
+pub mod quantize;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

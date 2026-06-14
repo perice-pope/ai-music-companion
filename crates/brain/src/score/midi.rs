@@ -4,6 +4,7 @@
 
 use midly::{Format, MidiMessage, Smf, TrackEventKind};
 
+use super::quantize::{quantize_notes, QuantizeConfig, QuantizedEvent, RawNoteEvent};
 use super::{
     midi_to_hz, KeyMode, KeySignature, Measure, ScoreError, ScoreModel, ScoreNote, TimeSignature,
 };
@@ -135,7 +136,28 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     let ticks_per_beat = ticks_per_quarter * (4.0 / beat_type);
     let beats_per_measure = time_signature.beats as f64;
     let ticks_per_measure = ticks_per_beat * beats_per_measure;
-    let measures = build_measures(&raw_notes, ticks_per_beat, ticks_per_measure);
+
+    // Quantize raw performance/transcription timing onto a rhythmic grid and
+    // fill gaps with rests *before* notating. Without this, fractional onsets
+    // and durations (e.g. a 0.97-beat "quarter") render as garbage rhythms.
+    // See `super::quantize`. Quantization is offline, deterministic and pure.
+    let raw_events: Vec<RawNoteEvent> = raw_notes
+        .iter()
+        .map(|n| RawNoteEvent {
+            midi_key: n.midi_key,
+            start_tick: n.start_tick,
+            duration_ticks: n.duration_ticks,
+        })
+        .collect();
+    let quantized = quantize_notes(
+        &raw_events,
+        ticks_per_beat,
+        ticks_per_measure,
+        &QuantizeConfig::default(),
+    )
+    .map_err(|e| ScoreError::Midi(e.to_string()))?;
+
+    let measures = build_measures(&quantized.events, ticks_per_beat, ticks_per_measure);
 
     // Convert quarter-note BPM to signature-beat BPM so downstream consumers
     // using `duration_beats` (which is in signature-beat units) see consistent
@@ -240,13 +262,21 @@ fn close_note(
     }
 }
 
-/// Group raw notes into measures.
-fn build_measures(notes: &[RawNote], ticks_per_beat: f64, ticks_per_measure: f64) -> Vec<Measure> {
-    if notes.is_empty() {
+/// Group quantized events (notes and rests) into measures.
+///
+/// Events arrive grid-snapped and gap-filled from [`super::quantize`], so this
+/// stage only has to assign each event to its measure, compute its in-measure
+/// `start_beat`, and convert tick durations to beats.
+fn build_measures(
+    events: &[QuantizedEvent],
+    ticks_per_beat: f64,
+    ticks_per_measure: f64,
+) -> Vec<Measure> {
+    if events.is_empty() {
         return Vec::new();
     }
 
-    let max_tick = notes
+    let max_tick = events
         .iter()
         .map(|n| n.start_tick + n.duration_ticks)
         .max()
@@ -266,35 +296,39 @@ fn build_measures(notes: &[RawNote], ticks_per_beat: f64, ticks_per_measure: f64
         })
         .collect();
 
-    for note in notes {
+    for event in events {
         let measure_idx = if ticks_per_measure > 0.0 {
-            (note.start_tick as f64 / ticks_per_measure).floor() as usize
+            (event.start_tick as f64 / ticks_per_measure).floor() as usize
         } else {
             0
         };
         let measure_idx = measure_idx.min(measures.len() - 1);
 
         let beat_in_measure = if ticks_per_beat > 0.0 {
-            (note.start_tick as f64 - (measure_idx as f64 * ticks_per_measure)) / ticks_per_beat
+            (event.start_tick as f64 - (measure_idx as f64 * ticks_per_measure)) / ticks_per_beat
         } else {
             0.0
         };
 
         let duration_beats = if ticks_per_beat > 0.0 {
-            note.duration_ticks as f64 / ticks_per_beat
+            event.duration_ticks as f64 / ticks_per_beat
         } else {
-            note.duration_ticks as f64
+            event.duration_ticks as f64
         };
 
-        let hz = midi_to_hz(note.midi_key as f64);
+        let (pitch_hz, midi_number) = if event.is_rest {
+            (0.0, 0)
+        } else {
+            (midi_to_hz(event.midi_key as f64), event.midi_key)
+        };
 
         measures[measure_idx].notes.push(ScoreNote {
-            pitch_hz: hz,
-            midi_number: note.midi_key,
+            pitch_hz,
+            midi_number,
             duration_beats,
             start_beat: beat_in_measure,
             dynamic: None,
-            is_rest: false,
+            is_rest: event.is_rest,
         });
     }
 
@@ -607,12 +641,20 @@ mod tests {
         let midi_bytes = build_two_channel_overlap_midi();
         let model = parse_midi_bytes(&midi_bytes).expect("parse two-channel MIDI");
 
+        // Filter to sounding notes: quantization inserts rests to fill gaps
+        // (e.g. the tail of the measure after the 2-beat note), so the measure
+        // now contains rests in addition to the two sounding notes.
         let mut durations: Vec<f64> = model
             .measures
             .iter()
-            .flat_map(|m| m.notes.iter().map(|n| n.duration_beats))
+            .flat_map(|m| {
+                m.notes
+                    .iter()
+                    .filter(|n| !n.is_rest)
+                    .map(|n| n.duration_beats)
+            })
             .collect();
-        assert_eq!(durations.len(), 2, "Expected 2 notes");
+        assert_eq!(durations.len(), 2, "Expected 2 sounding notes");
 
         durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
         // With the fix: ch1 lasts 0.5 beats, ch0 lasts 2.0 beats.
