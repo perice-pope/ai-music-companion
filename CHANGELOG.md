@@ -1,3 +1,9 @@
+## [1.54.0](https://github.com/perice-pope/ai-music-companion/compare/v1.53.0...v1.54.0) (2026-06-14)
+
+### Features
+
+* **coaching:** grounded offline recap from the fingerprint ([#207](https://github.com/perice-pope/ai-music-companion/issues/207)) ([1dc5534](https://github.com/perice-pope/ai-music-companion/commit/1dc553411bd6ee6ea5867ee45f18d0c3fe80e5e7))
+
 ## [1.53.0](https://github.com/perice-pope/ai-music-companion/compare/v1.52.0...v1.53.0) (2026-06-14)
 
 ### Features
