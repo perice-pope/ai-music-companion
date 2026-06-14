@@ -1084,6 +1084,11 @@ All text should be written as a teacher would speak — warm, specific, and acti
         let parsed: serde_json::Value = serde_json::from_str(cleaned)
             .map_err(|e| SessionError::RecapFailed(format!("JSON parse error: {}", e)))?;
 
+        // Build the fingerprint once so the persisted fingerprint and the
+        // theory-grounded flavour (#209) read from the same measured signal.
+        let fingerprint = build_fingerprint(&input.phrases);
+        let flavour = theory_flavour(&fingerprint);
+
         let recap = SessionRecap {
             overall_assessment: parsed
                 .get("overall_assessment")
@@ -1122,7 +1127,10 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
-            fingerprint: fingerprint_for_recap(&input.phrases),
+            fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
+            // Theory-grounded flavour from mode + swing (#209), shared with the
+            // offline path. Hedged, and `None` when there's no clear signal.
+            flavour,
             // Carry the gated, offline idiom matches straight through. They are
             // grounded facts the recorder computed, not LLM output — so we
             // persist them verbatim regardless of what the model returned.
@@ -1163,6 +1171,97 @@ All text should be written as a teacher would speak — warm, specific, and acti
     }
 }
 
+/// A short, **hedged** "flavour" line grounded in the two signals the app
+/// measures reliably — the key's **mode** and the groove's **swing ratio** —
+/// or `None` when there is no clear signal to stand on ("silence > lies").
+///
+/// This deliberately replaces the placeholder offline idiom engine (#208) as
+/// the *displayed* flavour: that corpus is synthetic, so it would report
+/// "Chopin" for a G-Dorian swung scat. Mode + swing, by contrast, are computed
+/// from the audio and trustworthy. The phrasing is always a "… feel" / "…
+/// colour" — a hedge, never an asserted fact.
+///
+/// # Thresholds (tuned, documented)
+///
+/// - **swung**: `swing_ratio` present and `>= SWING_MIN` (1.4). Triplet swing
+///   is ≈ 2.0, light swing ≈ 1.5; 1.4 keeps a clearly-swung feel in while
+///   leaving a dead band before the straight cutoff so borderline grooves go
+///   silent rather than mislabelled.
+/// - **straight**: `swing_ratio` present and `< STRAIGHT_MAX` (1.25). Even
+///   eighths come back ≈ 1.0; 1.25 absorbs measurement jitter.
+/// - The `[1.25, 1.4)` band is intentionally ambiguous → no swing verdict.
+/// - **mode trust**: the `key` is only consulted when its `confidence` is
+///   `>= KEY_MIN_CONFIDENCE` (0.5), matching the recap's existing key gate.
+///   *modal* = Dorian/Phrygian/Lydian/Mixolydian/Locrian; *diatonic* =
+///   Ionian/Aeolian (plain major/minor — not distinctive on its own).
+///
+/// # Mapping
+///
+/// | swing    | mode     | flavour                                              |
+/// |----------|----------|------------------------------------------------------|
+/// | swung    | modal    | modal-jazz feel — modal lines over a swung pulse     |
+/// | swung    | diatonic | swung, jazz-leaning feel                             |
+/// | straight | modal    | modal colour                                         |
+/// | straight | diatonic | `None` (plain major/minor + straight ⇒ no signal)    |
+/// | (other)  | (other)  | `None`                                               |
+///
+/// `key` and `groove` are independent gates: a usable mode with no swing read,
+/// or a swing read with no usable mode, still produce a line where the table
+/// allows; only the all-ambiguous / no-signal case returns `None`.
+pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
+    /// At/above this swing ratio we call the feel swung (triplet ≈ 2.0).
+    const SWING_MIN: f32 = 1.4;
+    /// Below this swing ratio we call the feel straight (even eighths ≈ 1.0).
+    const STRAIGHT_MAX: f32 = 1.25;
+    /// Don't trust the mode below this key confidence (matches the recap gate).
+    const KEY_MIN_CONFIDENCE: f32 = 0.5;
+
+    // Swing verdict: Some(true) swung, Some(false) straight, None ambiguous/absent.
+    let swung = fp
+        .groove
+        .as_ref()
+        .and_then(|g| g.swing_ratio)
+        .and_then(|r| {
+            if r >= SWING_MIN {
+                Some(true)
+            } else if r < STRAIGHT_MAX {
+                Some(false)
+            } else {
+                None
+            }
+        });
+
+    // Mode verdict: only when the key cleared its confidence gate.
+    let modal = fp
+        .key
+        .as_ref()
+        .filter(|k| k.confidence >= KEY_MIN_CONFIDENCE)
+        .map(|k| {
+            matches!(
+                k.mode,
+                theory::Mode::Dorian
+                    | theory::Mode::Phrygian
+                    | theory::Mode::Lydian
+                    | theory::Mode::Mixolydian
+                    | theory::Mode::Locrian
+            )
+        });
+
+    match (swung, modal) {
+        (Some(true), Some(true)) => Some(
+            "a modal-jazz feel — modal lines over a swung pulse (think Miles Davis)".to_owned(),
+        ),
+        // Swung but the mode is diatonic or untrusted → jazz-leaning, no modal claim.
+        (Some(true), Some(false)) | (Some(true), None) => {
+            Some("a swung, jazz-leaning feel (think bebop)".to_owned())
+        }
+        // Trusted modal mode with a straight or absent swing read → modal colour.
+        (Some(false), Some(true)) | (None, Some(true)) => Some("a modal colour".to_owned()),
+        // Straight + diatonic, or no usable signal at all → silence > lies.
+        _ => None,
+    }
+}
+
 /// Build a grounded, fully offline [`SessionRecap`] from the session's measured
 /// [`MusicalFingerprint`], reusing the same `describe_*` helpers the online
 /// prompt uses. Deterministic and network-free — the prose varies with the
@@ -1177,6 +1276,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
 /// nothing was measured), never thrown away.
 pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     let fingerprint = build_fingerprint(&input.phrases);
+    let flavour = theory_flavour(&fingerprint);
     let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
     let phrase_count = input.phrases.len();
 
@@ -1353,6 +1453,10 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         // `None` only when nothing cleared a gate, so "nothing measured" stays
         // distinct from "some dimensions measured".
         fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
+        // Theory-grounded flavour from mode + swing (#209) — hedged, and `None`
+        // when there's no clear signal. Replaces the placeholder idiom corpus
+        // (#208) as the *displayed* flavour.
+        flavour,
         // Offline idiom matches are computed independently of any LLM, so carry
         // them through — the frontend hedges the "reminds me of" phrasing.
         idiom_notes: input.idiom_notes.clone(),
@@ -3418,6 +3522,95 @@ mod tests {
                 || recap_a.next_session_suggestions != recap_b.next_session_suggestions,
             "distinct fingerprints must yield distinct strengths/areas/suggestions"
         );
+    }
+
+    // ── theory_flavour: mode + swing → hedged flavour, or silence ───────────
+
+    /// Build a fingerprint carrying only a key (at `confidence`) and/or a swing
+    /// ratio — the two signals `theory_flavour` consults. `None` for either
+    /// arg omits that dimension.
+    fn fp_with(mode_conf: Option<(theory::Mode, f32)>, swing: Option<f32>) -> MusicalFingerprint {
+        MusicalFingerprint {
+            tone: None,
+            key: mode_conf.map(|(mode, confidence)| theory::KeyEstimate {
+                tonic: 2, // D — arbitrary; tonic doesn't affect the flavour.
+                mode,
+                confidence,
+                margin: 0.1,
+            }),
+            intonation: None,
+            groove: swing.map(|swing_ratio| groove::GrooveDescriptor {
+                tempo_bpm: Some(120.0),
+                swing_ratio: Some(swing_ratio),
+                mean_ioi_secs: 0.5,
+                timing_consistency: 0.9,
+                onset_count: 16,
+            }),
+        }
+    }
+
+    #[test]
+    fn theory_flavour_swung_modal_is_modal_jazz() {
+        // G-Dorian swung scat — the motivating case (was "Chopin").
+        let f = theory_flavour(&fp_with(Some((theory::Mode::Dorian, 0.8)), Some(1.8)))
+            .expect("swung + modal → Some");
+        assert!(f.contains("modal-jazz"), "got: {f}");
+        assert!(f.contains("Miles Davis"), "names an exemplar, got: {f}");
+        // Hedged, never asserted as fact.
+        assert!(f.contains("feel"), "must be hedged, got: {f}");
+    }
+
+    #[test]
+    fn theory_flavour_swung_diatonic_is_jazz_leaning() {
+        let f = theory_flavour(&fp_with(Some((theory::Mode::Ionian, 0.8)), Some(1.8)))
+            .expect("swung + diatonic → Some");
+        assert!(f.contains("jazz-leaning"), "got: {f}");
+        assert!(f.contains("feel"), "must be hedged, got: {f}");
+    }
+
+    #[test]
+    fn theory_flavour_straight_diatonic_is_none() {
+        // Plain major + straight feel ⇒ no distinctive signal → silence.
+        assert!(theory_flavour(&fp_with(Some((theory::Mode::Ionian, 0.8)), Some(1.0))).is_none());
+    }
+
+    #[test]
+    fn theory_flavour_straight_modal_is_modal_colour() {
+        let f = theory_flavour(&fp_with(Some((theory::Mode::Mixolydian, 0.8)), Some(1.0)))
+            .expect("straight + modal → Some");
+        assert!(f.contains("modal colour"), "got: {f}");
+    }
+
+    #[test]
+    fn theory_flavour_low_confidence_key_is_not_trusted() {
+        // Modal but below the 0.5 confidence gate, straight feel → no signal.
+        assert!(theory_flavour(&fp_with(Some((theory::Mode::Dorian, 0.3)), Some(1.0))).is_none());
+        // Even swung, a low-confidence modal key falls back to the jazz-leaning
+        // (mode untrusted) line, not the modal-jazz one.
+        let f = theory_flavour(&fp_with(Some((theory::Mode::Dorian, 0.3)), Some(1.8)))
+            .expect("swung with untrusted mode → jazz-leaning");
+        assert!(f.contains("jazz-leaning"), "got: {f}");
+        assert!(!f.contains("modal-jazz"), "must not claim modal, got: {f}");
+    }
+
+    #[test]
+    fn theory_flavour_ambiguous_swing_band_is_silent() {
+        // Swing ratio in the [1.25, 1.4) dead band, plain major → no verdict.
+        assert!(theory_flavour(&fp_with(Some((theory::Mode::Ionian, 0.8)), Some(1.3))).is_none());
+    }
+
+    #[test]
+    fn theory_flavour_no_signal_is_none() {
+        assert!(theory_flavour(&fp_with(None, None)).is_none());
+    }
+
+    #[test]
+    fn theory_flavour_modal_only_no_swing_is_modal_colour() {
+        // A trusted modal key with no usable swing read still earns a hedged
+        // modal colour (key and groove are independent gates).
+        let f = theory_flavour(&fp_with(Some((theory::Mode::Lydian, 0.8)), None))
+            .expect("modal key, no swing → Some");
+        assert!(f.contains("modal colour"), "got: {f}");
     }
 
     /// The offline recap must persist the measured fingerprint, not throw it

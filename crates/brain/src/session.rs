@@ -329,6 +329,21 @@ pub struct SessionRecap {
     /// load (defaulting to `None`).
     #[serde(default)]
     pub fingerprint: Option<MusicalFingerprint>,
+    /// A short, **hedged** "flavour" line for the session, grounded in the two
+    /// signals the app measures reliably — the key's **mode** and the groove's
+    /// **swing ratio** (see [`crate::coaching::theory_flavour`]). `None` when
+    /// there's no clear signal ("silence > lies").
+    ///
+    /// This is what the recap's "Flavour:" line renders. It replaces the
+    /// placeholder offline idiom corpus (#208) as the *displayed* flavour —
+    /// that corpus is synthetic and unreliable (a G-Dorian swung scat reported
+    /// "Chopin"). The [`idiom_notes`](Self::idiom_notes) plumbing is kept for
+    /// the real-corpus future; it just no longer drives the displayed flavour.
+    ///
+    /// Additive + `serde(default)` so recaps saved before this field existed
+    /// still load (defaulting to `None`).
+    #[serde(default)]
+    pub flavour: Option<String>,
     /// Confidence-gated idiom flavours for the session — grounded, hedged
     /// "reminds me of" notes computed **fully offline** on-device from the
     /// captured audio (see [`crate::idiom_recap`]). Each [`IdiomMatch`] is a
@@ -877,6 +892,7 @@ mod tests {
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
+            flavour: None,
             idiom_notes: Vec::new(),
             connections: Vec::new(),
         }
