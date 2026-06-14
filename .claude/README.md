@@ -4,9 +4,13 @@ This directory turns "prompt and pray" into an enforced engineering loop. See
 `CLAUDE.md` → **Engineering workflow & Definition of Done** for the full contract.
 
 ## What's here
-- **`commands/feature.md`** — the `/feature <issue#>` command. Drives an issue through
-  spec → small slice → build → tests-from-acceptance-criteria → local gates → adversarial
-  review → manual-verify → PR. This is the default way to build anything non-trivial.
+- **`commands/feature.md`** — the `/feature <issue#>` command. Drives **one slice** through
+  spec → build → tests-from-acceptance-criteria → local gates → adversarial review → manual-verify
+  → PR. The default way to build anything non-trivial.
+- **`commands/epic.md`** — the `/epic <issue#>` orchestrator. The **dev-team** version: plans a
+  multi-slice epic into a dependency/footprint graph, fans out builder agents in parallel **waves**
+  (disjoint files only), reviews each PR, and **serializes merges** so `main` stays green. Use it
+  for the big features (#208, #212–217); it calls the per-slice `/feature` loop under the hood.
 - **`agents/code-reviewer.md`** — adversarial correctness reviewer (vs the spec's acceptance criteria).
 - **`agents/test-auditor.md`** — audits tests for real rigor (catches tests that pass but prove nothing).
 - **`hooks/format.sh`** — `PostToolUse` auto-formatter: rustfmt / prettier the file just edited.
