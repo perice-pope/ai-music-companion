@@ -76,6 +76,15 @@ tarpaulin-report.html
 # and IS committed so the whole team gets them on checkout.
 .claude/*
 !.claude/skills/
+# The shared dev-quality system (committed so the whole team gets it):
+!.claude/commands/
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json
+!.claude/README.md
+
+# Local build logs from `pnpm tauri dev` runs — never commit.
+devlog*.txt
 
 # Locally-cloned sibling repos placed under this project root
 # (e.g. the pitch-deck repo cloned here for cross-working).

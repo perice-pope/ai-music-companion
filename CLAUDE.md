@@ -80,3 +80,47 @@ and **fails the build** if the mean exceeds 25 ms. The gate is enforced by
 - Do not put business logic in the frontend — it belongs in the Rust core
 - Do not use Electron patterns (IPC should be thin JSON, not heavy serialization)
 - Do not skip tests — every acceptance criterion from the story must have a corresponding test
+
+## Engineering workflow & Definition of Done
+
+Quality is enforced, not hoped for. Drive non-trivial work through `/feature <issue#>`,
+which runs this loop. Hooks auto-format on edit and block finishing on a red format gate.
+
+### The loop (spec → slice → build → verify → review → ship)
+1. **Spec first.** Before code, write/confirm a spec from `docs/specs/_TEMPLATE.md` with
+   **testable acceptance criteria**. No spec → no code.
+2. **Slice small.** Decompose into vertical slices that each ship and review on their own
+   (aim < ~400 changed lines per PR). One slice = one PR.
+3. **Build the slice.**
+4. **Test from the acceptance criteria.** Each AC maps to ≥1 test that asserts **behavior**
+   and can fail for a real reason (see the test bar).
+5. **Gates green locally.** Run `just ci` (fmt, clippy `-D warnings`, tests, audit,
+   frontend lint/test/build) **and** the desktop-manifest checks until green. Never
+   declare done on red.
+6. **Independent review.** The adversarial `code-reviewer` and `test-auditor` agents review
+   the diff against the spec. Address must-fix findings.
+7. **Manual-verify.** Produce a short checklist of what a human should click/observe in the
+   running app, and confirm behavior — not just green tests.
+8. **Ship.** Open a PR linking the issue/slice with the DoD checklist.
+
+### Definition of Done (a slice is NOT done until all are true)
+- [ ] Every acceptance criterion has a behavior test that can fail for a real reason.
+- [ ] `just ci` + desktop-manifest fmt/clippy/test pass locally.
+- [ ] `code-reviewer` + `test-auditor` findings addressed (or deferred with a written reason).
+- [ ] Manual-verify checklist run against the app.
+- [ ] Conventional-commit message; PR links the issue and states scope + what's deferred.
+- [ ] No new outbound network call without opt-in gating + disclosure (offline-first).
+
+### Test quality bar (where "tests that pass but prove nothing" die)
+- A test asserts **observable behavior or a contract** tied to an acceptance criterion —
+  never just "a value exists" or "it didn't panic."
+- Every test must be able to **fail for a real reason**: if you can't name the bug it would
+  catch, it isn't a test.
+- Cover **edges and failure modes**, not only the happy path.
+- Assert **outputs/effects**, not implementation details, so honest refactors don't break tests.
+- New behavior with no test you've seen fail first is a smell.
+
+### Decomposition for the big features (#212–217, #208)
+These are multi-slice epics — never one mega-PR. Spec the epic, then ship a sequence of small
+PRs (e.g. accompaniment = audio-output engine → local synth → live tempo lock → opt-in cloud
+bed). Each slice is independently testable and useful.
