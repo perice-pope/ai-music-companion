@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use brain::coaching::{
-    CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity, CoachingTip, NetworkPolicy,
-    ReqwestClient, SessionContext,
+    grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
+    CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
 };
 use brain::follower::ScorePosition;
 use brain::phrase::PhraseSummary;
@@ -405,32 +405,11 @@ impl Default for LlmRecapGenerator {
 impl RecapGenerator for LlmRecapGenerator {
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         let Some(engine_arc) = &self.engine else {
-            // No API key: return fallback recap with canned text.
-            return Ok(SessionRecap {
-                overall_assessment: format!(
-                    "Nice {}-minute session. You kept the tone centered and stayed with the music.",
-                    (input.duration_secs / 60.0).round().max(1.0) as u32,
-                ),
-                strengths: vec![
-                    "Consistent, focused tone throughout the session.".to_owned(),
-                    "Good breath support and phrasing.".to_owned(),
-                ],
-                areas_to_improve: vec![
-                    "Intonation wandered slightly on the upper register.".to_owned()
-                ],
-                next_session_suggestions: vec![
-                    "Open with long tones in the key you ended on.".to_owned(),
-                    "Try a slow scale with a drone to tune up the top of the range.".to_owned(),
-                ],
-                duration_secs: 0.0,
-                phrase_count: 0,
-                instrument: String::new(),
-                fingerprint: None,
-                // Offline idiom matches are computed independently of the LLM,
-                // so carry them through even on the no-API-key fallback.
-                idiom_notes: input.idiom_notes.clone(),
-                connections: Vec::new(),
-            });
+            // No API key: build the recap from the fingerprint the app already
+            // computes — grounded, deterministic, and fully offline (no network
+            // call). This is the path users on the free/offline tier see, so it
+            // must reflect *their* session rather than canned text.
+            return Ok(grounded_offline_recap(input));
         };
 
         // Call the LLM coaching engine for the full recap.

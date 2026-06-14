@@ -1152,40 +1152,213 @@ All text should be written as a teacher would speak — warm, specific, and acti
         Ok(recap)
     }
 
-    /// Fallback recap returned when the API fails.
+    /// Fallback recap returned when the API fails or no key is configured.
+    ///
+    /// Delegates to [`grounded_offline_recap`] so both offline paths — the
+    /// engine's network-failure fallback and the command layer's no-API-key
+    /// branch — share one grounded generator that builds prose from the
+    /// measured fingerprint instead of canned text.
     fn fallback_recap(input: &RecapInput) -> SessionRecap {
-        SessionRecap {
-            overall_assessment: format!(
-                "You completed a {} minute practice session on {}. \
-                 That's excellent dedication! You played {} phrases and showed consistent engagement.",
-                (input.duration_secs / 60.0).round() as i32,
-                input.instrument,
-                input.phrases.len()
-            ),
-            strengths: vec![
-                "Consistent practice and focus.".to_owned(),
-                "You showed up and played — that's what matters most.".to_owned(),
-            ],
-            areas_to_improve: vec![
-                "Every session builds on the last one.".to_owned(),
-                "Keep recording yourself to track progress.".to_owned(),
-            ],
-            next_session_suggestions: vec![
-                "Work on the passages that felt most challenging.".to_owned(),
-                "Try breaking difficult sections into smaller chunks.".to_owned(),
-            ],
-            duration_secs: input.duration_secs,
-            phrase_count: input.phrases.len(),
-            instrument: input.instrument.clone(),
-            fingerprint: fingerprint_for_recap(&input.phrases),
-            // Even when the LLM call fails, the offline idiom matches stand on
-            // their own — surface them so the fallback recap still gets the
-            // grounded "reminds me of" note. The frontend hedges the phrasing.
-            idiom_notes: input.idiom_notes.clone(),
-            // The offline fallback never reached the model, so there is no
-            // grounded cross-genre reference to surface — empty, by design.
-            connections: Vec::new(),
+        grounded_offline_recap(input)
+    }
+}
+
+/// Build a grounded, fully offline [`SessionRecap`] from the session's measured
+/// [`MusicalFingerprint`], reusing the same `describe_*` helpers the online
+/// prompt uses. Deterministic and network-free — the prose varies with the
+/// numbers, never with a clock or RNG.
+///
+/// The contract is honesty over filler: every claim is sourced from a
+/// fingerprint dimension that passed its evidence gate. A dimension that is
+/// absent (its gate failed) contributes nothing — we never invent a tempo, a
+/// cents figure, or a key that wasn't measured. A quiet session with no signal
+/// therefore degrades to engagement-level encouragement with **no fabricated
+/// numeric claims**, and `fingerprint` is carried through (`None` only when
+/// nothing was measured), never thrown away.
+pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
+    let fingerprint = build_fingerprint(&input.phrases);
+    let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
+    let phrase_count = input.phrases.len();
+
+    // --- Overall assessment ------------------------------------------------
+    // Open with the session frame (always honest), then weave in the single
+    // strongest measured read so the line reflects *this* session.
+    let mut overall = format!(
+        "You practiced for about {duration_mins} minute{} on {} across {phrase_count} phrase{}.",
+        if duration_mins == 1 { "" } else { "s" },
+        input.instrument,
+        if phrase_count == 1 { "" } else { "s" },
+    );
+    if let Some(s) = &fingerprint.intonation {
+        let centered = s.mean_cents.abs() <= 1.0;
+        overall.push_str(&format!(
+            " Intonation: {} — {}.",
+            if centered {
+                "centered overall".to_owned()
+            } else if s.mean_cents > 0.0 {
+                "running a touch sharp".to_owned()
+            } else {
+                "running a touch flat".to_owned()
+            },
+            describe_intonation(s),
+        ));
+    }
+    if let Some(g) = &fingerprint.groove {
+        overall.push_str(&format!(" Feel held {}.", describe_groove(g)));
+    }
+    if fingerprint.is_empty() {
+        // No measured signal at all — stay honest, claim no numbers.
+        overall.push_str(
+            " We didn't capture enough clear signal to read tone, key, intonation, or feel this \
+             time, but showing up and playing is what moves you forward.",
+        );
+    }
+
+    // --- Strengths ---------------------------------------------------------
+    // Each is gated on a dimension that actually cleared its evidence bar.
+    let mut strengths: Vec<String> = Vec::new();
+    if let Some(s) = &fingerprint.intonation {
+        if s.in_tune_ratio >= 0.7 {
+            strengths.push(format!(
+                "Solid intonation — {:.0}% of {} notes landed in tune.",
+                s.in_tune_ratio * 100.0,
+                s.note_count,
+            ));
         }
+    }
+    if let Some(g) = &fingerprint.groove {
+        if g.timing_consistency >= 0.85 {
+            let tempo = g
+                .tempo_bpm
+                .map(|bpm| format!(" around {bpm:.0} BPM"))
+                .unwrap_or_default();
+            strengths.push(format!("Steady time{tempo} — your pulse stayed locked in."));
+        }
+    }
+    if let Some(k) = &fingerprint.key {
+        if k.confidence >= 0.6 {
+            strengths.push(format!(
+                "Clear tonal center — the session sat firmly in {}.",
+                k.name(),
+            ));
+        }
+    }
+    if let Some(t) = &fingerprint.tone {
+        if t.core_clarity >= 0.7 {
+            strengths.push("Focused, present tone with a clear core.".to_owned());
+        }
+    }
+    if strengths.is_empty() {
+        // Nothing cleared a "strength" threshold — stay encouraging without
+        // inventing a measured win.
+        strengths.push("You showed up and played — that consistency is what builds.".to_owned());
+    }
+
+    // --- Areas to improve --------------------------------------------------
+    let mut areas: Vec<String> = Vec::new();
+    if let Some(s) = &fingerprint.intonation {
+        if s.in_tune_ratio < 0.7 {
+            areas.push(format!(
+                "Intonation drifted — only {:.0}% of notes sat in tune.",
+                s.in_tune_ratio * 100.0,
+            ));
+        }
+        if let Some(worst) = s
+            .tendencies
+            .iter()
+            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
+            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
+        {
+            let degree = degree_name(worst.semitones_from_tonic);
+            let dir = if worst.mean_cents >= 0.0 {
+                "sharp"
+            } else {
+                "flat"
+            };
+            areas.push(format!(
+                "Your {degree} ran {:+.0} cents {dir} — worth a tuner check.",
+                worst.mean_cents,
+            ));
+        }
+    }
+    if let Some(g) = &fingerprint.groove {
+        if g.timing_consistency < 0.7 {
+            areas.push("Timing wandered — the pulse drifted between phrases.".to_owned());
+        }
+    }
+    if let Some(t) = &fingerprint.tone {
+        if t.air_noise >= 0.5 {
+            areas.push(
+                "A bit of air in the tone — tighten the core for a cleaner sound.".to_owned(),
+            );
+        }
+    }
+    if areas.is_empty() {
+        areas.push(
+            "Keep recording yourself — each session builds on the last and tracks your progress."
+                .to_owned(),
+        );
+    }
+
+    // --- Next-session suggestions ------------------------------------------
+    // Targeted to the weakest measured read, with safe defaults when quiet.
+    let mut suggestions: Vec<String> = Vec::new();
+    if let Some(k) = &fingerprint.key {
+        if k.confidence >= 0.5 {
+            suggestions.push(format!(
+                "Open with long tones in {}, the key you ended on.",
+                k.name()
+            ));
+        }
+    }
+    if let Some(s) = &fingerprint.intonation {
+        if let Some(worst) = s
+            .tendencies
+            .iter()
+            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
+            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
+        {
+            suggestions.push(format!(
+                "Play a slow scale against a drone, listening for the {}.",
+                degree_name(worst.semitones_from_tonic),
+            ));
+        } else if s.in_tune_ratio < 0.7 {
+            suggestions
+                .push("Spend a few minutes with a tuner drone to settle your pitch.".to_owned());
+        }
+    }
+    if let Some(g) = &fingerprint.groove {
+        if g.timing_consistency < 0.85 {
+            let tempo = g
+                .tempo_bpm
+                .map(|bpm| format!(" at {bpm:.0} BPM"))
+                .unwrap_or_default();
+            suggestions.push(format!("Run the tricky passages with a metronome{tempo}."));
+        }
+    }
+    if suggestions.is_empty() {
+        suggestions
+            .push("Warm up with long tones, then revisit what felt hardest today.".to_owned());
+    }
+
+    SessionRecap {
+        overall_assessment: overall,
+        strengths,
+        areas_to_improve: areas,
+        next_session_suggestions: suggestions,
+        duration_secs: input.duration_secs,
+        phrase_count,
+        instrument: input.instrument.clone(),
+        // Persist the measured fingerprint instead of throwing it away —
+        // `None` only when nothing cleared a gate, so "nothing measured" stays
+        // distinct from "some dimensions measured".
+        fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
+        // Offline idiom matches are computed independently of any LLM, so carry
+        // them through — the frontend hedges the "reminds me of" phrasing.
+        idiom_notes: input.idiom_notes.clone(),
+        // The offline path never reached the model, so there is no grounded
+        // cross-genre reference to surface — empty, by design.
+        connections: Vec::new(),
     }
 }
 
@@ -3167,5 +3340,156 @@ mod tests {
         assert_eq!(recap.instrument, "piano");
         assert!(!recap.overall_assessment.is_empty());
         assert!(recap.strengths.is_empty() || !recap.strengths[0].is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // grounded_offline_recap — the no-key / network-failure offline path
+    // -----------------------------------------------------------------------
+
+    /// A phrase whose pitches and onsets are caller-controlled, so a test can
+    /// produce a deliberately distinct fingerprint (key / intonation / groove).
+    fn phrase_from(pitches: Vec<f64>, onsets_secs: Vec<f64>) -> PhraseSummary {
+        let mut p = sample_phrase();
+        p.note_count = pitches.len();
+        p.pitch_stats.pitches = pitches;
+        p.onsets_secs = onsets_secs;
+        p
+    }
+
+    fn offline_input(phrases: Vec<PhraseSummary>) -> RecapInput {
+        RecapInput {
+            instrument: "trumpet".to_owned(),
+            duration_secs: 600.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases,
+            tips: Vec::new(),
+            score_title: None,
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+        }
+    }
+
+    /// Core regression: two sessions with different intonation/groove/key
+    /// fingerprints must produce *different* recap prose. This is what proves
+    /// the offline recap is no longer canned.
+    #[test]
+    fn grounded_offline_recap_differs_across_distinct_fingerprints() {
+        // Session A: C-major content, dead-on 440-region tuning, slow steady
+        // pulse (~120 BPM).
+        let a = offline_input(vec![phrase_from(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        )]);
+
+        // Session B: D-major content, audibly sharp tuning, faster pulse
+        // (~150 BPM). Different key, different intonation, different groove.
+        let sharp = |hz: f64| hz * 2f64.powf(30.0 / 1200.0); // +30 cents
+        let b = offline_input(vec![phrase_from(
+            vec![
+                sharp(293.66),
+                sharp(329.63),
+                sharp(369.99),
+                sharp(440.00),
+                sharp(493.88),
+                sharp(277.18),
+                sharp(293.66),
+                sharp(369.99),
+                sharp(440.00),
+                sharp(293.66),
+                sharp(369.99),
+                sharp(440.00),
+            ],
+            vec![0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8],
+        )]);
+
+        let recap_a = grounded_offline_recap(&a);
+        let recap_b = grounded_offline_recap(&b);
+
+        assert_ne!(
+            recap_a.overall_assessment, recap_b.overall_assessment,
+            "distinct fingerprints must yield distinct overall prose"
+        );
+        assert!(
+            recap_a.strengths != recap_b.strengths
+                || recap_a.areas_to_improve != recap_b.areas_to_improve
+                || recap_a.next_session_suggestions != recap_b.next_session_suggestions,
+            "distinct fingerprints must yield distinct strengths/areas/suggestions"
+        );
+    }
+
+    /// The offline recap must persist the measured fingerprint, not throw it
+    /// away (`fingerprint: None` was the original bug).
+    #[test]
+    fn grounded_offline_recap_populates_fingerprint() {
+        let input = offline_input(vec![phrase_from(
+            vec![440.0; 16],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        )]);
+        let recap = grounded_offline_recap(&input);
+        let fp = recap
+            .fingerprint
+            .as_ref()
+            .expect("offline recap must carry the measured fingerprint");
+        assert!(
+            fp.intonation.is_some() || fp.groove.is_some(),
+            "a session with clear pitch + onsets must surface at least one dimension"
+        );
+    }
+
+    /// The grounded prose must reflect the measured numbers: a sharp session
+    /// reads as sharp and names a cents figure somewhere.
+    #[test]
+    fn grounded_offline_recap_reflects_measured_intonation() {
+        let sharp = |hz: f64| hz * 2f64.powf(25.0 / 1200.0);
+        let input = offline_input(vec![phrase_from(
+            (0..16).map(|_| sharp(440.0)).collect(),
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        )]);
+        let recap = grounded_offline_recap(&input);
+        let prose = format!(
+            "{} {} {} {}",
+            recap.overall_assessment,
+            recap.strengths.join(" "),
+            recap.areas_to_improve.join(" "),
+            recap.next_session_suggestions.join(" "),
+        );
+        assert!(
+            prose.contains("cents") || prose.contains("sharp") || prose.contains("tune"),
+            "grounded prose must surface the measured intonation, got: {prose}"
+        );
+    }
+
+    /// A quiet/empty session (no clear pitch, no onsets) must degrade
+    /// gracefully: no fingerprint, and no fabricated numeric claims.
+    #[test]
+    fn grounded_offline_recap_quiet_session_degrades_gracefully() {
+        // Empty pitch + no onsets → no dimension clears its gate.
+        let input = offline_input(vec![phrase_from(Vec::new(), Vec::new())]);
+        let recap = grounded_offline_recap(&input);
+
+        assert!(
+            recap.fingerprint.is_none(),
+            "a quiet session measured nothing, so it must carry no fingerprint"
+        );
+        let prose = format!(
+            "{} {} {} {}",
+            recap.overall_assessment,
+            recap.strengths.join(" "),
+            recap.areas_to_improve.join(" "),
+            recap.next_session_suggestions.join(" "),
+        );
+        // No fabricated measurements: no cents figures, no BPM, no in-tune
+        // percentages invented out of an empty session.
+        assert!(
+            !prose.contains("cents") && !prose.contains("BPM") && !prose.contains('%'),
+            "a quiet session must not fabricate numeric claims, got: {prose}"
+        );
+        // Still honest and non-empty.
+        assert!(!recap.overall_assessment.is_empty());
+        assert!(!recap.strengths.is_empty());
+        assert!(!recap.next_session_suggestions.is_empty());
     }
 }
