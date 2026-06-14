@@ -1,3 +1,9 @@
+## [1.55.0](https://github.com/perice-pope/ai-music-companion/compare/v1.54.0...v1.55.0) (2026-06-14)
+
+### Features
+
+* **recap:** theory-grounded flavour from mode + swing ([#211](https://github.com/perice-pope/ai-music-companion/issues/211)) ([3ea2fbc](https://github.com/perice-pope/ai-music-companion/commit/3ea2fbca2d6be54ebf71b00f8f6ca0c24e1de87a)), closes [#208](https://github.com/perice-pope/ai-music-companion/issues/208)
+
 ## [1.54.0](https://github.com/perice-pope/ai-music-companion/compare/v1.53.0...v1.54.0) (2026-06-14)
 
 ### Features
