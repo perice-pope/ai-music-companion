@@ -159,9 +159,9 @@ pub struct CoachingConfig {
     /// API key for the LLM provider. If empty, the engine will attempt to
     /// read `MUSIC_COMPANION_LLM_API_KEY` from the environment.
     pub api_key: String,
-    /// Model identifier (e.g. "claude-3-5-sonnet", "gpt-4").
+    /// Model identifier (e.g. "claude-opus-4-8", "gpt-4").
     /// Falls back to `MUSIC_COMPANION_LLM_MODEL` env var, then to
-    /// `"claude-3-5-sonnet"`.
+    /// `"claude-opus-4-8"`.
     pub model: String,
     /// Minimum seconds between consecutive API calls. Default: 3.0.
     pub rate_limit_secs: f64,
@@ -275,7 +275,7 @@ fn resolve_model(config_model: &str, env_value: Option<&str>) -> String {
     }
     match env_value {
         Some(v) if !v.is_empty() => v.to_owned(),
-        _ => "claude-opus-4-7".to_owned(),
+        _ => "claude-opus-4-8".to_owned(),
     }
 }
 
@@ -306,7 +306,7 @@ impl CoachingEngine {
     /// The model is resolved in this order:
     /// 1. `config.model` (if non-empty)
     /// 2. `MUSIC_COMPANION_LLM_MODEL` environment variable
-    /// 3. `"claude-3-5-sonnet"` default
+    /// 3. `"claude-opus-4-8"` default
     pub fn new(
         config: CoachingConfig,
         http_client: Box<dyn HttpClient>,
@@ -2406,7 +2406,7 @@ mod tests {
         let engine_with = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(MockHttpClient::succeeding(&response)),
@@ -2433,7 +2433,7 @@ mod tests {
         let engine_without = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(MockHttpClient::succeeding(&response)),
@@ -2474,7 +2474,7 @@ mod tests {
     fn make_engine(mock: MockHttpClient) -> CoachingEngine {
         let config = CoachingConfig {
             api_key: "test-key-12345".to_owned(),
-            model: "claude-3-5-sonnet".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
             rate_limit_secs: 3.0,
         };
         online_engine(config, Box::new(mock))
@@ -2802,7 +2802,7 @@ mod tests {
         // other tests reading MUSIC_COMPANION_LLM_API_KEY.
         let config = CoachingConfig {
             api_key: String::new(),
-            model: "claude-3-5-sonnet".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
             rate_limit_secs: 3.0,
         };
         let mock = MockHttpClient::succeeding("{}");
@@ -2847,8 +2847,8 @@ mod tests {
         // Env wins when config empty
         assert_eq!(resolve_model("", Some("claude-3-opus")), "claude-3-opus");
         // Default when both empty
-        assert_eq!(resolve_model("", None), "claude-opus-4-7");
-        assert_eq!(resolve_model("", Some("")), "claude-opus-4-7");
+        assert_eq!(resolve_model("", None), "claude-opus-4-8");
+        assert_eq!(resolve_model("", Some("")), "claude-opus-4-8");
     }
 
     #[test]
@@ -3052,7 +3052,7 @@ mod tests {
         let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 10.0,
             },
             Box::new(mock),
@@ -3084,7 +3084,7 @@ mod tests {
         let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -3107,7 +3107,7 @@ mod tests {
         let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -3142,7 +3142,7 @@ mod tests {
         let engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(PanickingHttpClient),
@@ -3168,7 +3168,7 @@ mod tests {
         let mut engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(PanickingHttpClient),
@@ -3193,7 +3193,7 @@ mod tests {
         let engine = CoachingEngine::new(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(PanickingHttpClient),
@@ -3255,7 +3255,7 @@ mod tests {
         let mut engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -3299,7 +3299,7 @@ mod tests {
         let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -3382,7 +3382,7 @@ mod tests {
         let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
@@ -3422,7 +3422,7 @@ mod tests {
         let engine = online_engine(
             CoachingConfig {
                 api_key: "test".to_owned(),
-                model: "claude-3-5-sonnet".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
                 rate_limit_secs: 0.0,
             },
             Box::new(mock),
