@@ -69,6 +69,7 @@ fn voiced_event(hz: f64, ts: f64) -> AudioEvent {
         amplitude: 0.7,
         timestamp_secs: ts,
         is_onset: true,
+        note_info: None,
     }
 }
 
@@ -152,6 +153,7 @@ fn benchmark_score_follower_with_unvoiced_events(c: &mut Criterion) {
                 amplitude: if is_voiced { 0.7 } else { 0.0 },
                 timestamp_secs: black_box((event_idx as f64) * 0.05),
                 is_onset: is_voiced,
+                note_info: None,
             };
 
             let _pos = follower.align(&event);
