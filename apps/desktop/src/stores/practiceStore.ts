@@ -555,38 +555,58 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     })),
 
   requestCoachingTip: async (phrase) => {
-    const { coachingEnabled, status, elapsedSecs, phrases } = get();
-    // Opt-in gate: no IPC at all when the user hasn't enabled online coaching,
-    // and only while a session is live.
-    if (!coachingEnabled || status !== "listening") {
+    const { practiceMode, coachingEnabled, status } = get();
+    // Mode-driven cadence gate: RunThrough mode never shows live tips (recap only).
+    // Practice mode always tries to show per-phrase feedback.
+    if (practiceMode === "runthrough" || status !== "listening") {
       return;
     }
+
+    let tip: CoachingTip | null = null;
+
+    // First, try offline grounded tip (always available, no API key needed).
+    // This is the default path for Practice mode.
     try {
-      const tip = await invoke<CoachingTip | null>("get_coaching_tip", {
+      tip = await invoke<CoachingTip | null>("get_offline_phrase_tip", {
         phrase,
-        sessionDurationSecs: elapsedSecs,
-        phrasesPlayed: phrases.length,
       });
-      // `null` is the honest "no tip" signal (offline / rate-limited / API
-      // failure). Surface nothing — the panel shows its empty state.
-      if (!tip) {
-        return;
-      }
-      get().pushTip(tip, phrase.phrase_index);
-      // Persist it into the session recorder so it lands in history + recap.
-      // A failure here must not break the live loop — log and move on.
+    } catch (err) {
+      console.error("Failed to fetch offline phrase tip:", err);
+    }
+
+    // If offline tip found, use it; otherwise try online coaching if enabled.
+    // This way Practice mode works offline by default, with LLM as an opt-in
+    // enhancement. Online coach can override a quiet offline tip if desired.
+    if (!tip && coachingEnabled) {
       try {
-        await invoke("record_coaching_tip", {
-          phraseIndex: phrase.phrase_index,
-          tip,
+        const { elapsedSecs, phrases } = get();
+        tip = await invoke<CoachingTip | null>("get_coaching_tip", {
+          phrase,
+          sessionDurationSecs: elapsedSecs,
+          phrasesPlayed: phrases.length,
         });
       } catch (err) {
-        console.error("Failed to persist coaching tip:", err);
+        // The online coach is best-effort; never let a failed request disrupt.
+        console.error("Failed to fetch coaching tip:", err);
       }
+    }
+
+    // Surface the tip if we have one (offline or online).
+    if (!tip) {
+      return;
+    }
+
+    get().pushTip(tip, phrase.phrase_index);
+
+    // Persist it into the session recorder so it lands in history + recap.
+    // A failure here must not break the live loop — log and move on.
+    try {
+      await invoke("record_coaching_tip", {
+        phraseIndex: phrase.phrase_index,
+        tip,
+      });
     } catch (err) {
-      // The live tip is best-effort; never let a failed request disrupt
-      // the session.
-      console.error("Failed to fetch coaching tip:", err);
+      console.error("Failed to persist coaching tip:", err);
     }
   },
 

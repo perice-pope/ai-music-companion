@@ -1262,6 +1262,95 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
     }
 }
 
+/// Generate a grounded, offline coaching tip for a single phrase.
+///
+/// This is the real-time analog of the grounded recap: measure-based, no LLM,
+/// fully offline. Used in Practice mode to deliver per-phrase feedback even
+/// without an API key.
+///
+/// Returns `None` when the phrase has no measured signal to ground a tip on,
+/// honoring the "no fabricated feedback" principle.
+pub fn grounded_phrase_tip(phrase: &PhraseSummary) -> Option<CoachingTip> {
+    // Pitch stability gate: if we have enough notes and a clear read on
+    // pitch stability, offer feedback on intonation or accuracy.
+    if phrase.note_count >= 3 {
+        // Use range (max-min) in cents as a rough intonation scatter measure.
+        // A wide range (>100 cents) suggests wandering intonation.
+        if phrase.pitch_stats.range_cents > 150.0 {
+            return Some(CoachingTip {
+                text:
+                    "Your intonation scattered widely in this phrase. Lock in on the lower notes \
+                       and build from there."
+                        .to_owned(),
+                severity: CoachingSeverity::Focus,
+                category: CoachingCategory::Intonation,
+            });
+        }
+        // Narrow range is encouraging.
+        if phrase.pitch_stats.range_cents < 50.0 && phrase.stability > 0.8 {
+            return Some(CoachingTip {
+                text: "Solid pitch control — your notes held steady.".to_owned(),
+                severity: CoachingSeverity::Encouragement,
+                category: CoachingCategory::Intonation,
+            });
+        }
+    }
+
+    // Stability gate: if stability score is very high or very low and we have
+    // enough notes, offer rhythm/timing feedback.
+    if phrase.note_count >= 4 {
+        if phrase.stability > 0.9 {
+            return Some(CoachingTip {
+                text: "Steady execution — your rhythm was locked in.".to_owned(),
+                severity: CoachingSeverity::Encouragement,
+                category: CoachingCategory::Rhythm,
+            });
+        }
+        if phrase.stability < 0.65 {
+            return Some(CoachingTip {
+                text: "This phrase felt a bit rushed or uneven. Try it again with a metronome."
+                    .to_owned(),
+                severity: CoachingSeverity::Suggestion,
+                category: CoachingCategory::Rhythm,
+            });
+        }
+    }
+
+    // Tone gate: if we have a tone descriptor with a clear strength or weakness.
+    if let Some(tone) = &phrase.tone {
+        // Encourage if core clarity is strong and air/noise is low.
+        if tone.core_clarity > 0.7 && tone.air_noise < 0.2 {
+            return Some(CoachingTip {
+                text: "Clear, focused tone with good core.".to_owned(),
+                severity: CoachingSeverity::Encouragement,
+                category: CoachingCategory::Tone,
+            });
+        }
+        // Suggest if core clarity is weak.
+        if tone.core_clarity < 0.5 {
+            return Some(CoachingTip {
+                text:
+                    "Tone was thin or airy in this phrase. Focus on a fuller, more centered sound."
+                        .to_owned(),
+                severity: CoachingSeverity::Suggestion,
+                category: CoachingCategory::Tone,
+            });
+        }
+    }
+
+    // Dynamics gate: if the dynamic range is noticeably wide or flat.
+    if phrase.note_count >= 4 && phrase.dynamics.dynamic_range > 0.3 {
+        return Some(CoachingTip {
+            text: "Good dynamic shape — you shaped the phrase with volume.".to_owned(),
+            severity: CoachingSeverity::Encouragement,
+            category: CoachingCategory::Dynamics,
+        });
+    }
+
+    // No measured signal crossed a confidence gate — return nothing.
+    None
+}
+
 /// Build a grounded, fully offline [`SessionRecap`] from the session's measured
 /// [`MusicalFingerprint`], reusing the same `describe_*` helpers the online
 /// prompt uses. Deterministic and network-free — the prose varies with the

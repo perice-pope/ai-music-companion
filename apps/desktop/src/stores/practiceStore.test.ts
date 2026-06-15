@@ -300,9 +300,11 @@ describe("practiceStore — requestCoachingTip (live loop)", () => {
     return useStore;
   }
 
-  it("fires no IPC when coaching is disabled", async () => {
+  it("fires no IPC when practiceMode is runthrough (even with offline tips available)", async () => {
     const useStore = await listeningStore(false);
+    useStore.getState().setPracticeMode("runthrough");
     await useStore.getState().requestCoachingTip(samplePhrase());
+    // RunThrough mode gates all live tips, even offline ones.
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(useStore.getState().tipQueue).toHaveLength(0);
   });
@@ -315,48 +317,55 @@ describe("practiceStore — requestCoachingTip (live loop)", () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("when enabled: gets a tip, surfaces it, and persists it", async () => {
+  it("in practice mode: uses offline tip when available, skips online coach", async () => {
     const useStore = await listeningStore(true);
-    // get_coaching_tip → tip, then record_coaching_tip → ok
-    mockInvoke.mockResolvedValueOnce(sampleTip);
-    mockInvoke.mockResolvedValueOnce(undefined);
+    // Practice mode (default) tries offline first, then online if enabled.
+    // Mock offline tip to be found.
+    const offlineTip = { text: "Offline feedback", severity: "suggestion", category: "intonation" };
+    mockInvoke.mockResolvedValueOnce(offlineTip); // get_offline_phrase_tip → tip
+    mockInvoke.mockResolvedValueOnce(undefined); // record_coaching_tip → ok
 
     await useStore.getState().requestCoachingTip(samplePhrase(2));
 
-    // Asked the backend for a tip with phrase + context.
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "get_coaching_tip",
-      expect.objectContaining({
-        phrase: expect.objectContaining({ phrase_index: 2 }),
-        phrasesPlayed: expect.any(Number),
-        sessionDurationSecs: expect.any(Number),
-      }),
-    );
+    // First call should be to get_offline_phrase_tip.
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "get_offline_phrase_tip", {
+      phrase: expect.objectContaining({ phrase_index: 2 }),
+    });
     // Surfaced into the tip panel queue.
     const queue = useStore.getState().tipQueue;
     expect(queue).toHaveLength(1);
-    expect(queue[0].tip.text).toBe(sampleTip.text);
+    expect(queue[0].tip.text).toBe(offlineTip.text);
     expect(queue[0].phraseIndex).toBe(2);
     // Persisted via record_coaching_tip.
-    expect(mockInvoke).toHaveBeenCalledWith("record_coaching_tip", {
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "record_coaching_tip", {
       phraseIndex: 2,
-      tip: sampleTip,
+      tip: offlineTip,
     });
+    // Only two calls total (offline + record), no online coach call.
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
-  it("when the backend returns null (no tip): surfaces nothing, records nothing", async () => {
+  it("when offline returns null and online coaching is enabled: tries online coach", async () => {
     const useStore = await listeningStore(true);
-    mockInvoke.mockResolvedValueOnce(null); // get_coaching_tip → no tip
+    // Offline tip is null, then try online.
+    mockInvoke.mockResolvedValueOnce(null); // get_offline_phrase_tip → no tip
+    mockInvoke.mockResolvedValueOnce(sampleTip); // get_coaching_tip → tip
+    mockInvoke.mockResolvedValueOnce(undefined); // record_coaching_tip → ok
 
     await useStore.getState().requestCoachingTip(samplePhrase());
 
-    expect(useStore.getState().tipQueue).toHaveLength(0);
-    // Only get_coaching_tip was called — no record_coaching_tip.
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "get_coaching_tip",
-      expect.anything(),
-    );
+    // First try offline, then fall back to online since no offline tip.
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "get_offline_phrase_tip", {
+      phrase: expect.anything(),
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_coaching_tip", {
+      phrase: expect.anything(),
+      sessionDurationSecs: expect.any(Number),
+      phrasesPlayed: expect.any(Number),
+    });
+    // Tip from online coach surfaces.
+    expect(useStore.getState().tipQueue).toHaveLength(1);
+    expect(useStore.getState().tipQueue[0].tip).toEqual(sampleTip);
   });
 
   it("a failed tip request never throws and leaves the queue empty", async () => {

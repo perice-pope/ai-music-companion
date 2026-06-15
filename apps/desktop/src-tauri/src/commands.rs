@@ -1827,6 +1827,15 @@ pub async fn get_coaching_tip(
         .map_err(|e| e.to_string())
 }
 
+/// Generate a grounded, offline coaching tip for a single phrase.
+///
+/// Used in Practice mode to deliver per-phrase feedback with no API key or
+/// network. Returns `None` when the phrase has no measured signal.
+#[tauri::command]
+pub fn get_offline_phrase_tip(phrase: PhraseSummary) -> Result<Option<CoachingTip>, String> {
+    Ok(coaching::grounded_phrase_tip(&phrase))
+}
+
 /// How many recent coaching tips to feed back to the live coach as
 /// `previous_tips` (avoid-repetition context). A small window keeps the prompt
 /// focused on what was *just* said without bloating it.
