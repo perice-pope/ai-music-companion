@@ -27,6 +27,7 @@ fn voiced(pitch_hz: f64, amplitude: f64, timestamp_secs: f64) -> AudioEvent {
         amplitude,
         timestamp_secs,
         is_onset: false,
+        note_info: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn silence(timestamp_secs: f64) -> AudioEvent {
         amplitude: 0.001,
         timestamp_secs,
         is_onset: false,
+        note_info: None,
     }
 }
 

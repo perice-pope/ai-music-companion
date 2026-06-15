@@ -417,6 +417,7 @@ mod tests {
                 amplitude: 0.8,
                 timestamp_secs: 0.0,
                 is_onset: true,
+                note_info: None,
             },
             ears::AudioEvent {
                 pitch_hz: Some(440.0),
@@ -424,6 +425,7 @@ mod tests {
                 amplitude: 0.7,
                 timestamp_secs: 0.1,
                 is_onset: false, // continuation — must be excluded
+                note_info: None,
             },
             ears::AudioEvent {
                 pitch_hz: Some(494.0),
@@ -431,6 +433,7 @@ mod tests {
                 amplitude: 0.75,
                 timestamp_secs: 0.5,
                 is_onset: true,
+                note_info: None,
             },
             ears::AudioEvent {
                 pitch_hz: None,
@@ -438,6 +441,7 @@ mod tests {
                 amplitude: 0.01,
                 timestamp_secs: 0.9,
                 is_onset: false, // silence — must be excluded
+                note_info: None,
             },
         ];
 
@@ -463,6 +467,7 @@ mod tests {
             amplitude: 0.8,
             timestamp_secs: 1.0,
             is_onset: false,
+            note_info: None,
         }];
         let onsets = onsets_from_events(&events);
         assert!(onsets.is_empty(), "no onsets flagged → empty result");

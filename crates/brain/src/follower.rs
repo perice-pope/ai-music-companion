@@ -454,6 +454,7 @@ mod tests {
             amplitude: 0.5,
             timestamp_secs,
             is_onset: true,
+            note_info: None,
         }
     }
 
@@ -537,6 +538,7 @@ mod tests {
             amplitude: 0.1,
             timestamp_secs: 0.0,
             is_onset: false,
+            note_info: None,
         };
 
         let pos_before = follower.current_position();
