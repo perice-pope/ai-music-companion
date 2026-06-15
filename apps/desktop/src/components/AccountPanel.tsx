@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuthStore } from "../stores/authStore";
+import { useConnectionsStore } from "../stores/connectionsStore";
 import { useSyncStore } from "../stores/syncStore";
 
 /**
@@ -15,6 +16,7 @@ export default function AccountPanel() {
   const { status, user, error, init, signIn, signUp, signOut, clearError } =
     useAuthStore();
   const sync = useSyncStore();
+  const cloudSyncEnabled = useConnectionsStore((s) => s.cloudSyncEnabled);
 
   const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
   const [email, setEmail] = useState("");
@@ -26,13 +28,14 @@ export default function AccountPanel() {
     init();
   }, [init]);
 
-  // Push local sessions whenever we have a signed-in user (initial sign-in,
-  // session restore on boot, or a revisit that may have new sessions).
+  // Push local sessions whenever we have a signed-in user AND cloud sync is
+  // enabled (initial sign-in, session restore on boot, or a revisit that may
+  // have new sessions). Gated by cloudSyncEnabled to respect opt-in.
   const userId = user?.id;
   const runSync = sync.syncAll;
   useEffect(() => {
-    if (userId) runSync(userId);
-  }, [userId, runSync]);
+    runSync(userId, cloudSyncEnabled);
+  }, [userId, cloudSyncEnabled, runSync]);
 
   if (status === "loading") {
     return (

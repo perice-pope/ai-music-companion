@@ -111,7 +111,15 @@ describe("syncStore", () => {
 
   it("is a no-op when called without a user id", async () => {
     const useStore = await freshStore();
-    await useStore.getState().syncAll(null);
+    await useStore.getState().syncAll(null, true);
+    expect(useStore.getState().status).toBe("idle");
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when not opted in (switch off)", async () => {
+    const useStore = await freshStore();
+    await useStore.getState().syncAll("user-1", false);
     expect(useStore.getState().status).toBe("idle");
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(mockUpsert).not.toHaveBeenCalled();
@@ -121,7 +129,7 @@ describe("syncStore", () => {
     wireInvoke([summary("s1"), summary("s2")]);
     const useStore = await freshStore();
 
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
 
     expect(mockFrom).toHaveBeenCalledWith("sessions");
     expect(mockUpsert).toHaveBeenCalledTimes(1);
@@ -152,12 +160,12 @@ describe("syncStore", () => {
     wireInvoke([summary("s1")]);
     const useStore = await freshStore();
 
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
     expect(useStore.getState().syncedThisRun).toBe(1);
 
     // Second run: s1 is remembered, nothing new to push.
     mockUpsert.mockClear();
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
     expect(mockUpsert).not.toHaveBeenCalled();
     expect(useStore.getState().status).toBe("synced");
     expect(useStore.getState().syncedThisRun).toBe(0);
@@ -167,10 +175,10 @@ describe("syncStore", () => {
     wireInvoke([summary("s1")]);
     const useStore = await freshStore();
 
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
     mockUpsert.mockClear();
 
-    await useStore.getState().syncAll("user-2");
+    await useStore.getState().syncAll("user-2", true);
     expect(mockUpsert).toHaveBeenCalledTimes(1);
     expect(useStore.getState().syncedThisRun).toBe(1);
   });
@@ -180,13 +188,13 @@ describe("syncStore", () => {
     mockUpsert.mockResolvedValue({ error: { message: "rls denied" } });
     const useStore = await freshStore();
 
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
     expect(useStore.getState().status).toBe("error");
     expect(useStore.getState().error).toContain("rls denied");
 
     // A retry after the failure should attempt the push again (not skipped).
     mockUpsert.mockResolvedValue({ error: null });
-    await useStore.getState().syncAll("user-1");
+    await useStore.getState().syncAll("user-1", true);
     expect(useStore.getState().status).toBe("synced");
     expect(useStore.getState().syncedThisRun).toBe(1);
   });

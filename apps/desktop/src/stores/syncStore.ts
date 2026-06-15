@@ -43,11 +43,11 @@ export interface SyncState {
   tasteProfileError: string | null;
 
   /**
-   * Push any not-yet-synced local sessions for `userId`. No-op (returns to
-   * idle) when called with a falsy userId, so callers can wire it to an auth
-   * effect without guarding.
+   * Push any not-yet-synced local sessions for `userId`, but only when the
+   * user has opted into session sync (`optedIn`). No-op (returns to idle) when
+   * called with a falsy userId or when optedIn is false.
    */
-  syncAll: (userId: string | null | undefined) => Promise<void>;
+  syncAll: (userId: string | null | undefined, optedIn: boolean) => Promise<void>;
 
   /**
    * Push the local taste profile for `userId` to Supabase — but only when the
@@ -99,8 +99,8 @@ export const useSyncStore = create<SyncState>((set) => ({
   tasteProfileStatus: "idle",
   tasteProfileError: null,
 
-  syncAll: async (userId) => {
-    if (!userId) {
+  syncAll: async (userId, optedIn) => {
+    if (!userId || !optedIn) {
       set({ status: "idle", error: null });
       return;
     }
