@@ -21,26 +21,48 @@ case "$uname_s" in
       x86_64)        pkg="onnxruntime-linux-x64-${ORT_VERSION}";      lib="libonnxruntime.so" ;;
       aarch64|arm64) pkg="onnxruntime-linux-aarch64-${ORT_VERSION}";  lib="libonnxruntime.so" ;;
       *) echo "unsupported arch: $uname_m" >&2; exit 1 ;;
-    esac ;;
+    esac
+    is_zip=false
+    ;;
   Darwin)
-    pkg="onnxruntime-osx-universal2-${ORT_VERSION}"; lib="libonnxruntime.dylib" ;;
+    pkg="onnxruntime-osx-universal2-${ORT_VERSION}"; lib="libonnxruntime.dylib"
+    is_zip=false
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    pkg="onnxruntime-win-x64-${ORT_VERSION}"; lib="onnxruntime.dll"
+    is_zip=true
+    ;;
   *)
     echo "Unsupported OS: $uname_s." >&2
-    echo "On Windows, download onnxruntime-win-x64-${ORT_VERSION}.zip from the" >&2
-    echo "ONNX Runtime GitHub releases and copy onnxruntime.dll into:" >&2
-    echo "  $DEST" >&2
     exit 1 ;;
 esac
 
-url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${pkg}.tgz"
+if [ "$is_zip" = true ]; then
+  archive_ext="zip"
+  url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${pkg}.zip"
+else
+  archive_ext="tgz"
+  url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${pkg}.tgz"
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Downloading $url"
-curl -fsSL -o "$tmp/ort.tgz" "$url"
-tar xzf "$tmp/ort.tgz" -C "$tmp"
+curl -fsSL -o "$tmp/ort.$archive_ext" "$url"
 
-# Copy the versioned and unversioned library files (e.g. libonnxruntime.so,
-# libonnxruntime.so.1, libonnxruntime.so.1.24.2) so the loader resolves cleanly.
-cp "$tmp/${pkg}/lib/${lib}"* "$DEST/" 2>/dev/null || cp "$tmp/${pkg}/lib/${lib}" "$DEST/"
+if [ "$is_zip" = true ]; then
+  unzip -q "$tmp/ort.$archive_ext" -d "$tmp"
+else
+  tar xzf "$tmp/ort.$archive_ext" -C "$tmp"
+fi
+
+# Copy the library file(s). For Unix, copy all versions (symlinks).
+# For Windows, copy just the single .dll.
+if [ "$is_zip" = true ]; then
+  cp "$tmp/${pkg}/lib/${lib}" "$DEST/"
+else
+  # Unix: copy libonnxruntime.so, libonnxruntime.so.1, libonnxruntime.so.1.24.2, etc.
+  cp "$tmp/${pkg}/lib/${lib}"* "$DEST/" 2>/dev/null || cp "$tmp/${pkg}/lib/${lib}" "$DEST/"
+fi
 echo "Placed ${lib} (ONNX Runtime ${ORT_VERSION}) in $DEST"

@@ -92,14 +92,8 @@ jobs:
       # The transcribe crate dynamically loads ONNX Runtime; vendor it so the
       # release build links the same runtime CI tests use. (Bundled into the
       # installer via tauri.conf.json `bundle.resources`.)
-      - name: Vendor ONNX Runtime (Linux)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          ORT_VERSION=1.24.2
-          curl -fsSL -o /tmp/onnxruntime.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-          tar xzf /tmp/onnxruntime.tgz -C /tmp
-          echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+      - name: Vendor ONNX Runtime (all platforms)
+        run: bash ./scripts/fetch-onnxruntime.sh
 
       - name: Import Apple code-signing certificate
         # Only runs when the cert secret is present; otherwise macOS builds are
