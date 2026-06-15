@@ -469,6 +469,7 @@ mod tests {
             amplitude,
             timestamp_secs,
             is_onset: false,
+            note_info: None,
         }
     }
 
@@ -480,6 +481,7 @@ mod tests {
             amplitude: 0.001,
             timestamp_secs,
             is_onset: false,
+            note_info: None,
         }
     }
 
@@ -845,6 +847,7 @@ mod tests {
             amplitude: 0.3,
             timestamp_secs: t,
             is_onset: false,
+            note_info: None,
         };
 
         // Default gate (0.5): nothing voiced → no phrases.
@@ -1063,6 +1066,7 @@ mod tests {
             amplitude: 0.8,
             timestamp_secs: t,
             is_onset: true,
+            note_info: None,
         };
 
         agg.push(&onset(440.0, 0.0));

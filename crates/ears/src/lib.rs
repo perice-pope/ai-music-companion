@@ -15,6 +15,21 @@ pub mod profile;
 pub mod recorder;
 pub mod retention;
 
+/// Computed note information from a detected pitch.
+/// Present when pitch_hz is Some and the frequency maps to a valid MIDI note.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NoteInfo {
+    /// MIDI note number (0–127, A4 = 69)
+    pub midi_note: u8,
+    /// Name of the note (e.g. "A", "C#")
+    pub note_name: String,
+    /// Octave number (A4 is octave 4)
+    pub octave: i8,
+    /// Cents deviation from equal temperament, range (-50, 50]
+    /// (positive = sharp, negative = flat)
+    pub cents_deviation: f32,
+}
+
 /// Audio event emitted by the Ears layer to the Brain.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioEvent {
@@ -28,6 +43,10 @@ pub struct AudioEvent {
     pub timestamp_secs: f64,
     /// Whether an onset (note attack) was detected
     pub is_onset: bool,
+    /// Computed note info from the detected pitch (None if pitch_hz is None
+    /// or out of MIDI range; always present when pitch_hz is a valid in-range
+    /// frequency).
+    pub note_info: Option<NoteInfo>,
 }
 
 #[cfg(test)]
@@ -42,10 +61,17 @@ mod tests {
             amplitude: 0.8,
             timestamp_secs: 1.234,
             is_onset: true,
+            note_info: Some(NoteInfo {
+                midi_note: 69,
+                note_name: "A".to_string(),
+                octave: 4,
+                cents_deviation: 0.0,
+            }),
         };
         let json = serde_json::to_string(&event).unwrap();
         let parsed: AudioEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.pitch_hz, Some(440.0));
         assert!(parsed.is_onset);
+        assert!(parsed.note_info.is_some());
     }
 }

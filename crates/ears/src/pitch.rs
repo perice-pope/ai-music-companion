@@ -4,7 +4,8 @@
 //! This implementation is suitable for real-time use with ~5-6ms hop sizes.
 
 use crate::onset::{OnsetConfig, SuperFluxOnset};
-use crate::AudioEvent;
+use crate::{AudioEvent, NoteInfo};
+use theory::PITCH_CLASS_NAMES;
 
 /// Errors from pitch detector construction.
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +128,7 @@ impl PitchDetector {
                 amplitude,
                 timestamp_secs,
                 is_onset: false,
+                note_info: None,
             };
         }
 
@@ -136,12 +138,28 @@ impl PitchDetector {
         // — vibrato-robust, unlike the old voiced-edge heuristic (#138).
         let is_onset = self.onset.process(samples);
 
+        // Compute note info if pitch was detected.
+        let note_info = pitch_hz.and_then(|hz| {
+            let hz_f32 = hz as f32;
+            theory::cents_off_equal_temperament(hz_f32).map(|(midi_note, cents)| {
+                let pitch_class = (midi_note % 12) as usize;
+                let octave = (midi_note as i8 / 12) - 1;
+                NoteInfo {
+                    midi_note,
+                    note_name: PITCH_CLASS_NAMES[pitch_class].to_string(),
+                    octave,
+                    cents_deviation: cents,
+                }
+            })
+        });
+
         AudioEvent {
             pitch_hz,
             confidence,
             amplitude,
             timestamp_secs,
             is_onset,
+            note_info,
         }
     }
 

@@ -81,6 +81,12 @@ describe("audioStore", () => {
       amplitude: 0.8,
       timestamp_secs: 1.0,
       is_onset: false,
+      note_info: {
+        midi_note: 69,
+        note_name: "A",
+        octave: 4,
+        cents_deviation: 0,
+      },
     });
 
     const state = useAudioStore.getState();
@@ -96,6 +102,7 @@ describe("audioStore", () => {
       amplitude: 0.01,
       timestamp_secs: 2.0,
       is_onset: false,
+      note_info: null,
     });
 
     const state = useAudioStore.getState();
@@ -124,6 +131,12 @@ describe("audioStore", () => {
       amplitude: 0.8,
       timestamp_secs: 1.0,
       is_onset: false,
+      note_info: {
+        midi_note: 69,
+        note_name: "A",
+        octave: 4,
+        cents_deviation: 0,
+      },
     });
     expect(useAudioStore.getState().isListening).toBe(true);
   });

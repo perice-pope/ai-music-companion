@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+theory = { path = "../theory" }
 ringbuf = "0.4"
 cpal = "0.15"
 crossbeam-channel = "0.5"

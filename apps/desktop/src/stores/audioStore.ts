@@ -4,6 +4,14 @@ import type { InstrumentInfo } from "../types/brain";
 /** Re-exported so existing callers can keep `import ... from "./audioStore"`. */
 export type { InstrumentInfo };
 
+/** Mirrors the Rust NoteInfo struct sent over Tauri IPC. */
+export interface RustNoteInfo {
+  midi_note: number;
+  note_name: string;
+  octave: number;
+  cents_deviation: number;
+}
+
 /** Mirrors the Rust AudioEvent struct sent over Tauri IPC. */
 export interface AudioEvent {
   pitch_hz: number | null;
@@ -11,9 +19,10 @@ export interface AudioEvent {
   amplitude: number;
   timestamp_secs: number;
   is_onset: boolean;
+  note_info: RustNoteInfo | null;
 }
 
-/** Derived note info computed from frequency. */
+/** Derived note info for the UI. */
 export interface NoteInfo {
   name: string;
   octave: number;
@@ -56,7 +65,9 @@ const NOTE_NAMES = [
 /** Convert a frequency in Hz to the nearest note name, octave, and cents deviation. */
 export function frequencyToNote(hz: number): NoteInfo {
   if (!Number.isFinite(hz) || hz <= 0) {
-    throw new RangeError("frequencyToNote expects a finite, positive frequency");
+    throw new RangeError(
+      "frequencyToNote expects a finite, positive frequency",
+    );
   }
   // A4 = 440 Hz = MIDI note 69
   const semitones = 12.0 * Math.log2(hz / 440.0);
@@ -94,10 +105,15 @@ export const useAudioStore = create<AudioState>((set) => ({
   instrumentVibratoToleranceCents: 15.0,
 
   setEvent: (event: AudioEvent) => {
-    const hz = event.pitch_hz;
+    // Convert pre-computed Rust note info to UI format.
     const currentNote =
-      hz !== null && Number.isFinite(hz) && hz > 0
-        ? frequencyToNote(hz)
+      event.note_info !== null && event.pitch_hz !== null
+        ? {
+            name: event.note_info.note_name,
+            octave: event.note_info.octave,
+            cents_deviation: event.note_info.cents_deviation,
+            frequency_hz: Math.round(event.pitch_hz * 10) / 10,
+          }
         : null;
     // Flip `isListening` on first event — an arriving event is proof
     // that the backend pipeline is hot. This keeps the flag
@@ -117,6 +133,9 @@ export const useAudioStore = create<AudioState>((set) => ({
     } catch {
       // localStorage may be unavailable in some environments
     }
-    set({ selectedInstrument: name, instrumentVibratoToleranceCents: vibratoToleranceCents });
+    set({
+      selectedInstrument: name,
+      instrumentVibratoToleranceCents: vibratoToleranceCents,
+    });
   },
 }));
