@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/perice-pope/ai-music-companion/compare/v2.0.0...v2.0.1) (2026-06-15)
+
+### Bug Fixes
+
+* enforce cloudSyncEnabled toggle in cloud sync flow ([#228](https://github.com/perice-pope/ai-music-companion/issues/228)) ([5a543dc](https://github.com/perice-pope/ai-music-companion/commit/5a543dc7bb5f4272fd9ba65a63e593615243da0e)), closes [#223](https://github.com/perice-pope/ai-music-companion/issues/223) [#222](https://github.com/perice-pope/ai-music-companion/issues/222)
+* update default LLM model from claude-opus-4-7 to claude-opus-4-8 ([#227](https://github.com/perice-pope/ai-music-companion/issues/227)) ([64fccae](https://github.com/perice-pope/ai-music-companion/commit/64fccaea6b2c6cabcd4149030a2675a2b9be83b9)), closes [#223](https://github.com/perice-pope/ai-music-companion/issues/223)
+
 ## [2.0.0](https://github.com/perice-pope/ai-music-companion/compare/v1.55.0...v2.0.0) (2026-06-14)
 
 ### ⚠ BREAKING CHANGES
