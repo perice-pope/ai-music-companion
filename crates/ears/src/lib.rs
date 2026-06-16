@@ -6,10 +6,13 @@
 //! - Pitch detection via Aubio/PESTO
 //! - Onset detection
 //! - Instrument profile loading
+//! - Audio output: practice-aid sample generators ([`output`]) and a cpal
+//!   output engine fed by a lock-free ring buffer ([`output_engine`])
 
 pub mod capture;
 pub mod onset;
 pub mod output;
+pub mod output_engine;
 pub mod pitch;
 pub mod profile;
 pub mod recorder;
