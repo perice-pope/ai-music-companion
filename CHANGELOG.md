@@ -1,3 +1,9 @@
+## [2.2.0](https://github.com/perice-pope/ai-music-companion/compare/v2.1.0...v2.2.0) (2026-06-16)
+
+### Features
+
+* **groove:** continuous live clock — tempo/beat/swing tracker ([#212](https://github.com/perice-pope/ai-music-companion/issues/212)) ([#234](https://github.com/perice-pope/ai-music-companion/issues/234)) ([a0459a4](https://github.com/perice-pope/ai-music-companion/commit/a0459a4cc91967eb55f359585d5c9f33d4e73670))
+
 ## [2.1.0](https://github.com/perice-pope/ai-music-companion/compare/v2.0.1...v2.1.0) (2026-06-16)
 
 ### Features
