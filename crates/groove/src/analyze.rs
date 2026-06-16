@@ -145,7 +145,7 @@ fn mean_f64(xs: &[f64]) -> f64 {
 ///
 /// Returns `1.0` for a single-element IOI slice (no variance possible) or
 /// when the mean is effectively zero.
-fn ioi_consistency(iois: &[f64]) -> f32 {
+pub(crate) fn ioi_consistency(iois: &[f64]) -> f32 {
     if iois.len() < 2 {
         // Only one IOI → no variance information.
         return 1.0;
@@ -178,7 +178,7 @@ fn tempo_from_median_ioi(iois: &[f64]) -> Option<f32> {
 /// Median of a non-empty f64 slice.  Returns `None` for an empty slice.
 ///
 /// Works on a sorted copy to avoid mutating the input.
-fn median_f64(xs: &[f64]) -> Option<f64> {
+pub(crate) fn median_f64(xs: &[f64]) -> Option<f64> {
     if xs.is_empty() {
         return None;
     }
@@ -202,7 +202,7 @@ fn median_f64(xs: &[f64]) -> Option<f64> {
 ///
 /// Returns `None` when there are fewer than 3 IOIs (need at least 2 pairs for
 /// a meaningful ratio, i.e. ≥ 4 onsets → ≥ 3 IOIs).
-fn swing_ratio_from_iois(iois: &[f64]) -> Option<f32> {
+pub(crate) fn swing_ratio_from_iois(iois: &[f64]) -> Option<f32> {
     if iois.len() < 3 {
         return None;
     }
