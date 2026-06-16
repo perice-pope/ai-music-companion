@@ -41,5 +41,7 @@
 //! as a future extension.
 
 mod analyze;
+mod clock;
 
 pub use analyze::{analyze_groove, onsets_from_events, GrooveDescriptor};
+pub use clock::{ClockState, LiveClock};
