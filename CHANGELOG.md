@@ -1,3 +1,9 @@
+## [2.1.0](https://github.com/perice-pope/ai-music-companion/compare/v2.0.1...v2.1.0) (2026-06-16)
+
+### Features
+
+* **ears:** audio output engine — cpal output + lock-free ring buffer ([#212](https://github.com/perice-pope/ai-music-companion/issues/212) slice 1) ([#233](https://github.com/perice-pope/ai-music-companion/issues/233)) ([065456f](https://github.com/perice-pope/ai-music-companion/commit/065456f9e5b8c02da0114d4f3e010a9714ce582d)), closes [#229](https://github.com/perice-pope/ai-music-companion/issues/229)
+
 ## [2.0.1](https://github.com/perice-pope/ai-music-companion/compare/v2.0.0...v2.0.1) (2026-06-15)
 
 ### Bug Fixes
