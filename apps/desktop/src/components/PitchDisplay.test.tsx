@@ -32,6 +32,7 @@ describe("PitchDisplay", () => {
         amplitude: 0.8,
         timestamp_secs: 1.0,
         is_onset: false,
+        note_info: null,
       },
       currentNote: {
         name: "A",
@@ -56,6 +57,7 @@ describe("PitchDisplay", () => {
         amplitude: 0.7,
         timestamp_secs: 1.0,
         is_onset: false,
+        note_info: null,
       },
       currentNote: {
         name: "A",
@@ -78,6 +80,7 @@ describe("PitchDisplay", () => {
         amplitude: 0.8,
         timestamp_secs: 1.0,
         is_onset: false,
+        note_info: null,
       },
       currentNote: {
         name: "A",
@@ -100,6 +103,7 @@ describe("PitchDisplay", () => {
         amplitude: 0.8,
         timestamp_secs: 1.0,
         is_onset: false,
+        note_info: null,
       },
       currentNote: {
         name: "A",
@@ -123,6 +127,7 @@ describe("PitchDisplay", () => {
         amplitude: 0.8,
         timestamp_secs: 1.0,
         is_onset: false,
+        note_info: null,
       },
       currentNote: {
         name: "A",
@@ -144,6 +149,7 @@ describe("PitchDisplay", () => {
           amplitude: 0.8,
           timestamp_secs: 1.05,
           is_onset: false,
+          note_info: null,
         },
         currentNote: {
           name: "A",

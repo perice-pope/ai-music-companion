@@ -7,42 +7,58 @@
 //! algorithmic-purity proxy used elsewhere, this test installs a global
 //! allocator that counts allocations and asserts that the steady-state
 //! drain/push path — for all three sample formats — performs **zero** of them.
+//!
+//! Counting is **per-thread**: the `GlobalAlloc` is process-global and runs on
+//! every thread (including libtest's own harness thread, which allocates
+//! concurrently), so a global flag would count unrelated allocations and the
+//! test would be flaky across platforms. A thread-local flag scopes the count to
+//! exactly the thread under measurement. The flag/counter use `const`-initialised
+//! `Cell`s, so reading them inside the allocator never itself allocates.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
 
-use ears::output_engine::create_output_buffer;
+thread_local! {
+    /// When true on the current thread, allocations on this thread are counted.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// Allocations observed on the current thread while `COUNTING` was true.
+    static ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
-/// A pass-through allocator that counts allocations while `COUNTING` is on.
+/// A pass-through allocator that counts allocations on the measuring thread.
 struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static COUNTING: AtomicBool = AtomicBool::new(false);
+#[inline]
+fn note_alloc() {
+    // `try_with` so an allocation during TLS teardown can't panic.
+    let counting = COUNTING.try_with(|c| c.get()).unwrap_or(false);
+    if counting {
+        let _ = ALLOC_COUNT.try_with(|c| c.set(c.get() + 1));
+    }
+}
 
 // SAFETY: `CountingAlloc` forwards every call verbatim to the `System`
-// allocator (which upholds the `GlobalAlloc` contract) and adds only a counter
-// increment on an atomic. It allocates no memory of its own and returns exactly
-// what `System` returns, so all pointer/layout invariants are preserved.
+// allocator (which upholds the `GlobalAlloc` contract) and adds only a
+// thread-local counter bump. It allocates no memory of its own and returns
+// exactly what `System` returns, so all pointer/layout invariants are preserved.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
+        note_alloc();
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         System.dealloc(ptr, layout);
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
+        note_alloc();
         System.realloc(ptr, layout, new_size)
     }
 }
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
+
+use ears::output_engine::create_output_buffer;
 
 #[test]
 fn fill_and_push_do_not_allocate_in_steady_state() {
@@ -64,16 +80,16 @@ fn fill_and_push_do_not_allocate_in_steady_state() {
     // Measure: a realistic loop of pushes and drains across all three formats.
     // None of these may allocate — the ring storage and all scratch buffers
     // already exist.
-    COUNTING.store(true, Ordering::SeqCst);
+    COUNTING.with(|c| c.set(true));
     for _ in 0..1000 {
         producer.push_samples(&block);
         consumer.fill(&mut out_f32, 2);
         consumer.fill_i16(&mut out_i16, 2);
         consumer.fill_u16(&mut out_u16, 2);
     }
-    COUNTING.store(false, Ordering::SeqCst);
+    COUNTING.with(|c| c.set(false));
 
-    let allocs = ALLOC_COUNT.load(Ordering::SeqCst);
+    let allocs = ALLOC_COUNT.with(|c| c.get());
     assert_eq!(
         allocs, 0,
         "output ring hot path allocated {allocs} times; the audio callback must never allocate"
