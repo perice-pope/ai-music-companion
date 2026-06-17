@@ -1,3 +1,9 @@
+## [2.3.0](https://github.com/perice-pope/ai-music-companion/compare/v2.2.0...v2.3.0) (2026-06-17)
+
+### Features
+
+* **brain:** synthesized accompaniment rhythm section — bass + drums ([#212](https://github.com/perice-pope/ai-music-companion/issues/212)) ([#235](https://github.com/perice-pope/ai-music-companion/issues/235)) ([88f033f](https://github.com/perice-pope/ai-music-companion/commit/88f033f109624b0fe07935bb8af0860fa500c219))
+
 ## [2.2.0](https://github.com/perice-pope/ai-music-companion/compare/v2.1.0...v2.2.0) (2026-06-16)
 
 ### Features
