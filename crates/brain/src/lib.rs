@@ -7,6 +7,7 @@
 //! - Adaptive practice planning (spaced repetition)
 //! - Session recording and persistence (SQLite-backed)
 
+pub mod accompaniment;
 pub mod coaching;
 pub mod fingerprint;
 pub mod follower;
