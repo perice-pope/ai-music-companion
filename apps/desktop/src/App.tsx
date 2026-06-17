@@ -6,6 +6,7 @@ import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
 import type {
   AccompanimentStatus,
+  PerceptionSnapshot,
   PhraseSummary,
   ScorePosition,
 } from "./types/brain";
@@ -40,6 +41,7 @@ function App() {
   const setAccompanimentPlaying = usePracticeStore(
     (s) => s.setAccompanimentPlaying,
   );
+  const setPerception = usePracticeStore((s) => s.setPerception);
   const [storageDegraded, setStorageDegraded] = useState(false);
 
   useEffect(() => {
@@ -122,6 +124,17 @@ function App() {
       } catch (err: unknown) {
         console.error("Failed to subscribe to accompaniment-status:", err);
       }
+
+      try {
+        unsubs.push(
+          // Live "what the app hears" (~8 Hz): tempo / feel / key + confidence.
+          await listen<PerceptionSnapshot>("perception", ({ payload }) => {
+            setPerception(payload);
+          }),
+        );
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to perception:", err);
+      }
     })();
 
     return () => {
@@ -133,6 +146,7 @@ function App() {
     requestCoachingTip,
     setCursorPosition,
     setAccompanimentPlaying,
+    setPerception,
   ]);
 
   return (

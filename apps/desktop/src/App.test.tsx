@@ -37,7 +37,7 @@ describe("App", () => {
   it("sets up the audio-event and phrase-detected listeners on mount", async () => {
     render(<App />);
     await vi.waitFor(() => {
-      expect(mockListen).toHaveBeenCalledTimes(4);
+      expect(mockListen).toHaveBeenCalledTimes(5);
     });
     expect(mockListen).toHaveBeenCalledWith(
       "audio-event",
@@ -55,6 +55,43 @@ describe("App", () => {
       "accompaniment-status",
       expect.any(Function),
     );
+    expect(mockListen).toHaveBeenCalledWith("perception", expect.any(Function));
+  });
+
+  it("reflects the backend's perception event in the store", async () => {
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(
+      async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      },
+    );
+
+    const { usePracticeStore } = await import("./stores/practiceStore");
+    usePracticeStore.getState().setPerception(null);
+
+    render(<App />);
+    await vi.waitFor(() => expect(handlers["perception"]).toBeDefined());
+
+    handlers["perception"]({
+      payload: {
+        tempo_bpm: 100,
+        swing_ratio: null,
+        locked: true,
+        key: {
+          tonic: 7,
+          mode: "major",
+          name: "G major",
+          confidence: 0.7,
+          alternative: "E minor",
+        },
+      },
+    });
+
+    const p = usePracticeStore.getState().perception;
+    expect(p?.tempo_bpm).toBe(100);
+    expect(p?.locked).toBe(true);
+    expect(p?.key?.name).toBe("G major");
   });
 
   it("reflects the backend's accompaniment-status event in the store", async () => {

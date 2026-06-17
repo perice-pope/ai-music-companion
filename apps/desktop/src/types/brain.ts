@@ -360,6 +360,29 @@ export interface AccompanimentStatus {
   playing: boolean;
 }
 
+/** The detected key, with its honest relative alternative. Mirrors `brain::perception::KeySnapshot`. */
+export interface KeySnapshot {
+  /** Tonic pitch class, 0–11 (C = 0). */
+  tonic: number;
+  /** Mode label, e.g. "major" / "minor" / "Mixolydian". */
+  mode: string;
+  /** Full name, e.g. "G major". */
+  name: string;
+  /** Best-fit confidence, 0–1. */
+  confidence: number;
+  /** Relative-key reading the player might mean, e.g. "E minor" for "G major". */
+  alternative: string | null;
+}
+
+/** Payload of the `perception` Tauri event — what the app hears live. Mirrors `brain::perception::PerceptionSnapshot`. */
+export interface PerceptionSnapshot {
+  tempo_bpm: number | null;
+  swing_ratio: number | null;
+  /** A confident, steady pulse is present. */
+  locked: boolean;
+  key: KeySnapshot | null;
+}
+
 /** Payload of the `segment-changed` Tauri event. */
 export interface SegmentChangedPayload {
   segment_id: string;
