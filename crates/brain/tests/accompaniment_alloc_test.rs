@@ -9,7 +9,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use brain::accompaniment::AccompanimentSynth;
+use brain::accompaniment::{
+    accompaniment_control_channel, AccompanimentSynth, AccompanimentSynthSource,
+};
 use ears::output_engine::RenderSource;
 use groove::ClockState;
 use theory::Mode;
@@ -88,5 +90,37 @@ fn render_does_not_allocate_in_steady_state() {
     assert_eq!(
         allocs, 0,
         "AccompanimentSynth::render allocated {allocs} times; it feeds the audio callback and must not"
+    );
+}
+
+#[test]
+fn source_render_with_control_drain_does_not_allocate() {
+    // The render-thread source drains the control channel then renders — both
+    // on the audio thread, so neither may allocate. Push a control every
+    // iteration so the drain path is exercised inside the counting window.
+    let (mut tx, rx) = accompaniment_control_channel(64);
+    let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(44_100), rx);
+    let locked = ClockState {
+        tempo_bpm: Some(120.0),
+        swing_ratio: None,
+        beat_phase: 0.0,
+        confidence: 1.0,
+    };
+    let mut buf = vec![0.0f32; 1024];
+    tx.set_key(7, Mode::Mixolydian);
+    tx.set_clock(locked);
+    source.render(&mut buf); // warm up
+
+    COUNTING.with(|c| c.set(true));
+    for _ in 0..1000 {
+        tx.set_clock(locked); // producer push (processing-thread side, but alloc-free)
+        source.render(&mut buf); // drain + render (render-thread side)
+    }
+    COUNTING.with(|c| c.set(false));
+
+    let allocs = ALLOC_COUNT.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "control drain + render allocated {allocs} times; the audio path must not allocate"
     );
 }
