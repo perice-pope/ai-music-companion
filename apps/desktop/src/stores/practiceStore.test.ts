@@ -600,4 +600,23 @@ describe("practiceStore — follow-me accompaniment", () => {
     useStore.getState().returnToSelector();
     expect(useStore.getState().accompanimentPlaying).toBe(false);
   });
+
+  it("setPerception stores the live snapshot and returnToSelector clears it", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setPerception({
+      tempo_bpm: 96,
+      swing_ratio: null,
+      locked: true,
+      key: {
+        tonic: 7,
+        mode: "major",
+        name: "G major",
+        confidence: 0.6,
+        alternative: "E minor",
+      },
+    });
+    expect(useStore.getState().perception?.tempo_bpm).toBe(96);
+    useStore.getState().returnToSelector();
+    expect(useStore.getState().perception).toBeNull();
+  });
 });

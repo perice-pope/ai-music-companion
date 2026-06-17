@@ -24,6 +24,7 @@ use brain::coaching::{
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
 };
 use brain::follower::ScorePosition;
+use brain::perception::PerceptionTracker;
 use brain::phrase::PhraseSummary;
 use brain::session::{
     CompletedSession, PracticeMode, RecapGenerator, RecapInput, ScoreId, SessionError,
@@ -613,6 +614,10 @@ struct Accompaniment {
 /// Control-channel depth (messages). Comfortably more than the render thread can
 /// fall behind between drains; excess is dropped (the next tick is fresher).
 const ACCOMPANIMENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Minimum spacing between `perception` event emits (~8 Hz). Smooth enough for a
+/// live readout without flooding IPC; driven off event timestamps, not wall clock.
+const PERCEPTION_EMIT_INTERVAL_SECS: f64 = 0.125;
 
 /// Open the on-disk session + score stores, degrading to in-memory if the
 /// on-disk database can't be opened (corrupt data dir, sandbox, full disk).
@@ -1763,6 +1768,12 @@ pub async fn start_practice_session<R: Runtime>(
                 // no band is playing these locks see `None` and do nothing.
                 let accomp_for_event = state.accompaniment.clone();
                 let accomp_for_phrase = state.accompaniment.clone();
+                // Always-on perception (independent of whether the band is
+                // playing) so the UI can show what the app hears the moment the
+                // session starts. Owned by the closure → lives on the worker
+                // thread; allocation here is fine (not the realtime callback).
+                let mut perception = PerceptionTracker::new();
+                let mut last_perception_secs: Option<f64> = None;
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
@@ -1778,6 +1789,16 @@ pub async fn start_practice_session<R: Runtime>(
                                     .driver
                                     .observe_event(event.is_onset, event.timestamp_secs);
                             }
+                        }
+                        // Update perception and emit a throttled snapshot so the
+                        // UI shows live tempo/key/feel as the player plays.
+                        perception.observe(&event);
+                        let now = event.timestamp_secs;
+                        let due = last_perception_secs
+                            .is_none_or(|last| now - last >= PERCEPTION_EMIT_INTERVAL_SECS);
+                        if due {
+                            let _ = app_for_emit.emit("perception", perception.snapshot(now));
+                            last_perception_secs = Some(now);
                         }
                         let _ = app_for_emit.emit("audio-event", event);
                     },

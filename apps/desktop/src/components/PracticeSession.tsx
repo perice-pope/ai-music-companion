@@ -7,6 +7,7 @@ import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
 import AccompanimentToggle from "./AccompanimentToggle";
+import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
 import ScoreView from "./ScoreView";
 
@@ -188,6 +189,8 @@ export default function PracticeSession() {
           <EndSessionButton />
         </div>
       </header>
+
+      <PerceptionPanel />
 
       {activeScoreXml ? (
         // Score mode: sheet music leads, pitch + tips sit alongside.

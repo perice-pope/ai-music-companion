@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CoachingTip,
+  PerceptionSnapshot,
   PhraseSummary,
   PracticeMode,
   SessionRecap,
@@ -123,6 +124,12 @@ export interface PracticeState {
    * local state. Per-session, not a saved pref.
    */
   accompanimentPlaying: boolean;
+  /**
+   * Live "what the app hears" snapshot (tempo / feel / key + confidence) from
+   * the backend `perception` event, updated ~8 Hz during a session. `null`
+   * before anything is heard. Per-session, not persisted.
+   */
+  perception: PerceptionSnapshot | null;
 
   // UI prefs (persisted) --------------------------------------------------
   coachingEnabled: boolean;
@@ -203,6 +210,8 @@ export interface PracticeState {
   stopAccompaniment: () => Promise<void>;
   /** Reflect the backend's `accompaniment-status` event. */
   setAccompanimentPlaying: (playing: boolean) => void;
+  /** Reflect the backend's live `perception` event (what the app hears). */
+  setPerception: (perception: PerceptionSnapshot | null) => void;
   /**
    * Live coaching loop: ask the backend for a tip on a just-completed phrase,
    * surface it in the tip panel, and persist it in the session recorder.
@@ -311,6 +320,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   scoreLibrary: [],
   cursorPosition: null,
   accompanimentPlaying: false,
+  perception: null,
   coachingEnabled: loadCoachingPref(),
   practiceMode: loadPracticeModePref(),
 
@@ -550,8 +560,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     // The backend tears the band down on session end and emits
     // `accompaniment-status { playing: false }`, but flip it here too so the
-    // toggle resets immediately even if that event is missed.
-    set({ accompanimentPlaying: false });
+    // toggle resets immediately even if that event is missed. Perception also
+    // stops once the session ends.
+    set({ accompanimentPlaying: false, perception: null });
   },
 
   startAccompaniment: async () => {
@@ -567,6 +578,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
+
+  setPerception: (perception) => set({ perception }),
 
   switchInstrument: async (name: string, vibratoToleranceCents = 15.0) => {
     const { status } = get();
@@ -664,6 +677,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       activeScoreXml: null,
       cursorPosition: null,
       accompanimentPlaying: false,
+      perception: null,
     }),
 
   setCoachingEnabled: (on) => {
