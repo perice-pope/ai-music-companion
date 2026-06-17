@@ -3,7 +3,7 @@
 //!
 //! [`AccompanimentSynth`] is driven by the live [`ClockState`] (tempo, beat
 //! phase, lock) from [`groove::LiveClock`] and the detected key, and renders a
-//! drums + bass groove into the audio output engine via [`RenderSource`]. It is
+//! drums + bass + pad groove into the audio output engine via [`RenderSource`]. It is
 //! **synthesized** (oscillators + noise + envelopes) — no sample assets, so it
 //! ships with zero licensing burden and works with no network.
 //!
@@ -11,9 +11,9 @@
 //! (every voice has fixed, pre-allocated state). `set_key` / `set_clock` carry
 //! control changes from the processing thread.
 //!
-//! This slice (3a) is the rhythm section: a kick on each beat, a hi-hat on the
-//! eighths, and a bass alternating the root and the fifth of the key. The
-//! harmony **pad** is a follow-up slice (3b).
+//! The arrangement: a kick on each beat, a hi-hat on the eighths, a bass
+//! alternating the root and the fifth of the key, and a sustained harmony **pad**
+//! voicing the key's triad (root/third/fifth) under the groove.
 //!
 //! [`ClockState`]: groove::ClockState
 //! [`RenderSource`]: ears::output_engine::RenderSource
@@ -28,8 +28,12 @@ use theory::Mode;
 /// `BASS_MIDI_BASE + tonic`, putting the root around the low-bass register
 /// (e.g. tonic G → MIDI 43 = G2 ≈ 98 Hz).
 const BASS_MIDI_BASE: u8 = 36; // C2
-/// Master gain applied to the summed voices before clipping.
-const MASTER_GAIN: f32 = 0.6;
+/// MIDI octave base for the harmony pad's triad (mid register, above the bass).
+const PAD_MIDI_BASE: u8 = 48; // C3
+/// Master gain applied to the summed voices before clipping. Set so the worst
+/// case (all voices peaking on a downbeat, incl. the pad) sums with headroom and
+/// the clamp is a safety net, not engaged on every beat.
+const MASTER_GAIN: f32 = 0.55;
 
 /// Convert a MIDI note number to its equal-tempered frequency in Hz.
 fn midi_to_hz(midi: u8) -> f64 {
@@ -132,7 +136,7 @@ impl KickVoice {
             phase: 0.0,
             t: 0,
             env: Env::new(0.18, sample_rate),
-            gain: 0.9,
+            gain: 0.8,
         }
     }
 
@@ -190,7 +194,52 @@ impl HatVoice {
     }
 }
 
-/// A synthesized drums + bass accompaniment driven by a live clock and key.
+/// A sustained harmony pad: three sine partials voicing the key's triad
+/// (root / third / fifth). Unlike the drum/bass voices it is not retriggered per
+/// beat — it sustains continuously while the band plays, giving harmonic context
+/// under the groove.
+#[derive(Debug, Clone, Copy)]
+struct PadVoice {
+    sample_rate: u32,
+    phases: [f64; 3],
+    incs: [f64; 3],
+    gain: f32,
+}
+
+impl PadVoice {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            phases: [0.0; 3],
+            incs: [0.0; 3],
+            gain: 0.14,
+        }
+    }
+
+    /// Voice the three chord tones (MIDI). Phases are preserved so a chord change
+    /// doesn't click.
+    fn set_chord(&mut self, midis: [u8; 3]) {
+        for (inc, &midi) in self.incs.iter_mut().zip(midis.iter()) {
+            *inc = midi_to_hz(midi) / self.sample_rate as f64;
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        let mut sum = 0.0f32;
+        for (phase, inc) in self.phases.iter_mut().zip(self.incs.iter()) {
+            sum += (TAU * *phase).sin() as f32;
+            *phase += *inc;
+            if *phase >= 1.0 {
+                *phase -= 1.0;
+            }
+        }
+        // Average the three partials so the pad sits politely under the groove.
+        sum / 3.0 * self.gain
+    }
+}
+
+/// A synthesized drums + bass + harmony-pad accompaniment driven by a live clock
+/// and key.
 ///
 /// Feed it control updates with [`set_key`](Self::set_key) /
 /// [`set_clock`](Self::set_clock) (processing thread), and pull audio with
@@ -210,13 +259,14 @@ pub struct AccompanimentSynth {
     bass: BassVoice,
     kick: KickVoice,
     hat: HatVoice,
+    pad: PadVoice,
 }
 
 impl AccompanimentSynth {
     /// Create a synth at the device sample rate. Defaults to C Ionian, silent
     /// (no clock yet).
     pub fn new(sample_rate: u32) -> Self {
-        Self {
+        let mut synth = Self {
             sample_rate,
             tempo_bpm: None,
             locked: false,
@@ -227,13 +277,35 @@ impl AccompanimentSynth {
             bass: BassVoice::new(sample_rate),
             kick: KickVoice::new(sample_rate),
             hat: HatVoice::new(sample_rate),
-        }
+            pad: PadVoice::new(sample_rate),
+        };
+        synth.pad.set_chord(synth.pad_chord());
+        synth
     }
 
     /// Set the key the accompaniment plays in. `tonic` is a pitch class (0–11).
     pub fn set_key(&mut self, tonic: u8, mode: Mode) {
         self.tonic = tonic % 12;
         self.mode = mode;
+        self.pad.set_chord(self.pad_chord());
+    }
+
+    /// The pad's triad (MIDI) for the current key: the **diatonic tonic triad** —
+    /// the 1st, 3rd, and 5th scale degrees of the mode — voiced around the mid
+    /// register. All three are in-key by construction.
+    ///
+    /// This deliberately follows the mode rather than forcing a perfect fifth:
+    /// degree 5 (`intervals()[4]`) is a perfect fifth for six of the seven modes;
+    /// only **Locrian** yields a diminished fifth, giving a (correct) diminished
+    /// tonic triad. Forcing a perfect fifth there would voice a note *outside*
+    /// the detected key, which is worse than honouring Locrian's own tonality.
+    fn pad_chord(&self) -> [u8; 3] {
+        let intervals = self.mode.intervals();
+        [
+            PAD_MIDI_BASE + self.tonic,                // root (degree 1)
+            PAD_MIDI_BASE + self.tonic + intervals[2], // third (degree 3)
+            PAD_MIDI_BASE + self.tonic + intervals[4], // fifth (degree 5)
+        ]
     }
 
     /// Apply the latest live clock. When the clock transitions into lock, the
@@ -296,7 +368,8 @@ impl RenderSource for AccompanimentSynth {
                 self.hat.trigger();
             }
 
-            let mixed = self.bass.next() + self.kick.next() + self.hat.next();
+            // The pad sustains continuously under the groove (not retriggered).
+            let mixed = self.bass.next() + self.kick.next() + self.hat.next() + self.pad.next();
             *slot = (mixed * MASTER_GAIN).clamp(-1.0, 1.0);
         }
     }
@@ -366,12 +439,35 @@ mod tests {
     fn solo_kick(s: &mut AccompanimentSynth) {
         s.bass.gain = 0.0;
         s.hat.gain = 0.0;
+        s.pad.gain = 0.0;
     }
 
     /// Mute every voice except the bass.
     fn solo_bass(s: &mut AccompanimentSynth) {
         s.kick.gain = 0.0;
         s.hat.gain = 0.0;
+        s.pad.gain = 0.0;
+    }
+
+    /// Mute every voice except the pad.
+    fn solo_pad(s: &mut AccompanimentSynth) {
+        s.bass.gain = 0.0;
+        s.kick.gain = 0.0;
+        s.hat.gain = 0.0;
+    }
+
+    /// Goertzel single-bin magnitude: how much energy `samples` has at `freq`.
+    /// Lets us assert specific pad partials are present without a full FFT.
+    fn goertzel(samples: &[f32], sample_rate: u32, freq: f64) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * freq / sample_rate as f64;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &x in samples {
+            let s0 = x as f64 + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt()
     }
 
     #[test]
@@ -643,6 +739,126 @@ mod tests {
             (synth.beat_pos - 0.5).abs() < 1e-6,
             "grid should align to the player's beat phase (0.5) on lock, got {}",
             synth.beat_pos
+        );
+    }
+
+    // ── Pad (slice 3b) ───────────────────────────────────────────────────────
+
+    #[test]
+    fn pad_chord_is_root_third_fifth_in_key() {
+        // Pin the pad's triad to **hardcoded** expected pitch classes per key
+        // (NOT re-derived from the production formula, which would be tautological).
+        // Includes Locrian, whose diatonic tonic is a diminished triad (♭5) — an
+        // edge the perfect-fifth assumption would get wrong.
+        let cases: [(u8, Mode, [u8; 3]); 3] = [
+            (7, Mode::Mixolydian, [7, 11, 2]), // G  B  D  (G major triad)
+            (2, Mode::Aeolian, [2, 5, 9]),     // D  F  A  (D minor triad)
+            (11, Mode::Locrian, [11, 2, 5]),   // B  D  F  (B diminished triad)
+        ];
+        for (tonic, mode, expected) in cases {
+            let mut synth = AccompanimentSynth::new(SR);
+            synth.set_key(tonic, mode);
+            let pcs: Vec<u8> = synth.pad_chord().iter().map(|n| n % 12).collect();
+            assert_eq!(
+                pcs,
+                expected.to_vec(),
+                "pad triad for ({tonic},{mode:?}) should be {expected:?}"
+            );
+            // Distinct, and every tone in the scale.
+            assert_eq!(
+                expected
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                3,
+                "pad chord must be three distinct tones"
+            );
+            let allowed = scale_pcs(tonic, mode);
+            for pc in &pcs {
+                assert!(allowed.contains(pc), "pad pc {pc} not in {allowed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn pad_renders_its_triad_frequencies() {
+        // Solo the pad and confirm the RENDERED audio carries energy at all three
+        // chord tones, far above an out-of-chord tone. The probe frequencies are
+        // computed INDEPENDENTLY from the key here (not read back from
+        // `pad_chord()`), so a degenerate chord (e.g. root tripled) — which would
+        // have no energy at the third/fifth — fails this test. Two keys (major &
+        // minor third) guard against a mode-specific render bug.
+        for (tonic, mode) in [(7u8, Mode::Mixolydian), (2u8, Mode::Aeolian)] {
+            let mut synth = AccompanimentSynth::new(SR);
+            synth.set_key(tonic, mode);
+            synth.set_clock(locked_clock(120.0));
+            solo_pad(&mut synth);
+
+            let mut buf = vec![0.0f32; SR as usize / 2]; // 0.5 s
+            synth.render(&mut buf);
+
+            let intervals = mode.intervals();
+            let expected = [
+                PAD_MIDI_BASE + tonic,
+                PAD_MIDI_BASE + tonic + intervals[2],
+                PAD_MIDI_BASE + tonic + intervals[4],
+            ];
+            // Out-of-chord reference: a semitone above the root.
+            let off_mag = goertzel(&buf, SR, midi_to_hz(PAD_MIDI_BASE + tonic + 1));
+            for m in expected {
+                let mag = goertzel(&buf, SR, midi_to_hz(m));
+                assert!(
+                    mag > off_mag * 5.0,
+                    "({tonic},{mode:?}) pad tone MIDI {m} ({mag:.1}) should dominate off-tone ({off_mag:.1})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pad_revoices_on_key_change_in_rendered_audio() {
+        // Render-level: changing the key must move the pad's energy to the new
+        // key's tones. C major (C/E/G) → F# major (F#/A#/C#) are fully disjoint,
+        // so a `set_key` that forgot to re-voice the pad would leave C-major
+        // energy in the second buffer and fail.
+        let render_pad = |tonic: u8| {
+            let mut synth = AccompanimentSynth::new(SR);
+            synth.set_key(tonic, Mode::Ionian);
+            synth.set_clock(locked_clock(120.0));
+            solo_pad(&mut synth);
+            let mut buf = vec![0.0f32; SR as usize / 2];
+            synth.render(&mut buf);
+            buf
+        };
+        let third = |tonic: u8| midi_to_hz(PAD_MIDI_BASE + tonic + Mode::Ionian.intervals()[2]);
+
+        let c = render_pad(0); // C major → third = E
+        let fs = render_pad(6); // F# major → third = A#
+
+        // C-major render has its third (E) loud and the F#-major third (A#) quiet,
+        // and vice-versa — proving the render path tracked the key change.
+        assert!(
+            goertzel(&c, SR, third(0)) > goertzel(&c, SR, third(6)) * 5.0,
+            "C-major pad should voice E, not A#"
+        );
+        assert!(
+            goertzel(&fs, SR, third(6)) > goertzel(&fs, SR, third(0)) * 5.0,
+            "F#-major pad should voice A#, not E (key change must re-voice the pad)"
+        );
+    }
+
+    #[test]
+    fn pad_is_silent_when_unlocked() {
+        // The pad sustains continuously, so it must still respect the lock gate
+        // (a regression that rendered the pad outside the gate would leak audio).
+        let mut synth = AccompanimentSynth::new(SR);
+        synth.set_key(7, Mode::Mixolydian);
+        solo_pad(&mut synth); // pad only — if it leaks, this buffer is non-zero
+        let mut buf = vec![9.9f32; 4096];
+        synth.render(&mut buf); // no clock → unlocked
+        assert!(
+            buf.iter().all(|s| *s == 0.0),
+            "pad must be silent until the clock locks"
         );
     }
 }
