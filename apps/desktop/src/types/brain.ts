@@ -355,6 +355,11 @@ export interface SessionStatusPayload {
   status: "starting" | "listening" | "ending";
 }
 
+/** Payload of the `accompaniment-status` Tauri event ("Play with me"). */
+export interface AccompanimentStatus {
+  playing: boolean;
+}
+
 /** Payload of the `segment-changed` Tauri event. */
 export interface SegmentChangedPayload {
   segment_id: string;

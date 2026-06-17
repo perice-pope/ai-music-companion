@@ -126,8 +126,12 @@ Disclosed via a `ToggleRow` in `ConnectionsPrivacy.tsx`, added to
    backing in the detected key that tracks tempo and swing changes; `stop_accompaniment` silences
    it and releases the output device. (Behavior tested at the command/handle layer; audibility is
    the manual-verify step.)
-10. **`accompaniment-status` reflects state.** Starting emits `{ playing: true, tempo_bpm, key_name }`;
-    stopping emits `{ playing: false }`.
+10. **`accompaniment-status` reflects state.** Starting emits `{ playing: true }`;
+    stopping emits `{ playing: false }`; the UI toggle + chip reflect it.
+    **Deferred (follow-up slice S4c):** the live `tempo_bpm` / `key_name` in the payload and the
+    richer "🎵 Band locked — G Mixolydian · 92 BPM" chip. That needs the pipeline worker to emit
+    throttled status updates carrying the current `ClockState` + key — a backend change beyond the
+    play/stop wiring shipped in 4a/4b. The play/stop state round-trip (this AC's core) is done.
 11. **Offline-first holds.** With the cloud bed toggle **off** (default), no outbound network call
     is reachable from the accompaniment path; `check_network_disclosure.sh` passes. (Slice 5 adds
     the gated online path + disclosure; until then the path has no egress at all.)

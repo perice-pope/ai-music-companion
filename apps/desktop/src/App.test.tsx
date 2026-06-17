@@ -37,9 +37,12 @@ describe("App", () => {
   it("sets up the audio-event and phrase-detected listeners on mount", async () => {
     render(<App />);
     await vi.waitFor(() => {
-      expect(mockListen).toHaveBeenCalledTimes(3);
+      expect(mockListen).toHaveBeenCalledTimes(4);
     });
-    expect(mockListen).toHaveBeenCalledWith("audio-event", expect.any(Function));
+    expect(mockListen).toHaveBeenCalledWith(
+      "audio-event",
+      expect.any(Function),
+    );
     expect(mockListen).toHaveBeenCalledWith(
       "phrase-detected",
       expect.any(Function),
@@ -48,6 +51,36 @@ describe("App", () => {
       "score-position-updated",
       expect.any(Function),
     );
+    expect(mockListen).toHaveBeenCalledWith(
+      "accompaniment-status",
+      expect.any(Function),
+    );
+  });
+
+  it("reflects the backend's accompaniment-status event in the store", async () => {
+    // The band's playing state is authoritative from the backend (it can stop
+    // on its own at session end), so the event must drive the store flag.
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(
+      async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      },
+    );
+
+    const { usePracticeStore } = await import("./stores/practiceStore");
+    usePracticeStore.getState().setAccompanimentPlaying(false);
+
+    render(<App />);
+    await vi.waitFor(() =>
+      expect(handlers["accompaniment-status"]).toBeDefined(),
+    );
+
+    handlers["accompaniment-status"]({ payload: { playing: true } });
+    expect(usePracticeStore.getState().accompanimentPlaying).toBe(true);
+
+    handlers["accompaniment-status"]({ payload: { playing: false } });
+    expect(usePracticeStore.getState().accompanimentPlaying).toBe(false);
   });
 
   it("advances the cursor on a score-position-updated tick", async () => {

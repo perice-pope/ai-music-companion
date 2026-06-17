@@ -1329,8 +1329,12 @@ fn emit_score_position_updated<R: Runtime>(app: &tauri::AppHandle<R>, position: 
     let _ = app.emit("score-position-updated", position);
 }
 
-/// Payload for `accompaniment-status`. Slice 4a reports only whether the band is
-/// playing; the live tempo/key chip is added with the UI in 4b.
+/// Payload for `accompaniment-status`. Reports whether the band is playing.
+///
+/// The richer "Band locked — G Mixolydian · 92 BPM" chip from the spec (live
+/// tempo + key) is a tracked follow-up: it needs the worker to emit throttled
+/// status updates carrying the current `ClockState` + key, a backend change
+/// beyond the play/stop wiring. See the spec's AC10 deferral note.
 #[derive(Clone, Serialize)]
 struct AccompanimentStatusPayload {
     playing: bool,
