@@ -1,3 +1,9 @@
+## [2.4.0](https://github.com/perice-pope/ai-music-companion/compare/v2.3.0...v2.4.0) (2026-06-17)
+
+### Features
+
+* **brain:** harmony pad for the accompaniment synth ([#212](https://github.com/perice-pope/ai-music-companion/issues/212)) ([#236](https://github.com/perice-pope/ai-music-companion/issues/236)) ([cb62861](https://github.com/perice-pope/ai-music-companion/commit/cb62861e7de6bfbaea5336b58a57d75492eb7fa1))
+
 ## [2.3.0](https://github.com/perice-pope/ai-music-companion/compare/v2.2.0...v2.3.0) (2026-06-17)
 
 ### Features
