@@ -12,7 +12,8 @@ pub mod commands;
 pub mod runtime;
 
 pub use commands::{
-    end_practice_session, list_instruments, start_practice_session, switch_instrument, AppState,
-    CommandError, InstrumentInfo, MockCoachingService, MockRecapGenerator, SegmentChangedPayload,
-    SessionPhase, SessionStatusPayload,
+    end_practice_session, list_instruments, start_accompaniment, start_practice_session,
+    stop_accompaniment, switch_instrument, AppState, CommandError, InstrumentInfo,
+    MockCoachingService, MockRecapGenerator, SegmentChangedPayload, SessionPhase,
+    SessionStatusPayload,
 };

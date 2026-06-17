@@ -21,8 +21,8 @@
 use std::f64::consts::TAU;
 
 use ears::output_engine::RenderSource;
-use groove::ClockState;
-use theory::Mode;
+use groove::{ClockState, LiveClock};
+use theory::{KeyEstimate, Mode};
 
 /// MIDI octave offset for the bass: pitch-class `tonic` is voiced at
 /// `BASS_MIDI_BASE + tonic`, putting the root around the low-bass register
@@ -371,6 +371,141 @@ impl RenderSource for AccompanimentSynth {
             // The pad sustains continuously under the groove (not retriggered).
             let mixed = self.bass.next() + self.kick.next() + self.hat.next() + self.pad.next();
             *slot = (mixed * MASTER_GAIN).clamp(-1.0, 1.0);
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Control channel — processing thread → render-thread synth
+// ──────────────────────────────────────────────────────────────────────────────
+
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
+
+/// A control update for the accompaniment, sent from the processing thread (the
+/// audio pipeline worker) to the render thread that owns the synth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AccompanimentControl {
+    /// Change the key the band plays in.
+    SetKey { tonic: u8, mode: Mode },
+    /// Update the live clock (tempo / beat phase / lock).
+    SetClock(ClockState),
+}
+
+/// Producer side of the control channel, held by the processing thread.
+///
+/// Pushes are **non-blocking and lock-free**; if the inbox is momentarily full
+/// the update is dropped (the next tick carries a fresher one). Never call this
+/// from the realtime audio callback (the processing thread is fine).
+pub struct AccompanimentSender(HeapProd<AccompanimentControl>);
+
+impl AccompanimentSender {
+    /// Tell the band to play in `tonic` (pitch class 0–11) / `mode`.
+    pub fn set_key(&mut self, tonic: u8, mode: Mode) {
+        let _ = self
+            .0
+            .try_push(AccompanimentControl::SetKey { tonic, mode });
+    }
+
+    /// Push the latest live clock to the band.
+    pub fn set_clock(&mut self, clock: ClockState) {
+        let _ = self.0.try_push(AccompanimentControl::SetClock(clock));
+    }
+}
+
+/// Consumer side of the control channel — moved into the render-thread source.
+pub struct AccompanimentReceiver(HeapCons<AccompanimentControl>);
+
+/// Create a lock-free SPSC control channel buffering up to `capacity` messages.
+pub fn accompaniment_control_channel(
+    capacity: usize,
+) -> (AccompanimentSender, AccompanimentReceiver) {
+    let (prod, cons) = HeapRb::<AccompanimentControl>::new(capacity).split();
+    (AccompanimentSender(prod), AccompanimentReceiver(cons))
+}
+
+/// The render-thread audio source: an [`AccompanimentSynth`] plus its control
+/// inbox. Before each render block it drains pending control messages (key /
+/// clock updates) and applies them to the synth, then renders. **No allocation,
+/// no locks** — safe to drive from the output engine's render thread.
+pub struct AccompanimentSynthSource {
+    synth: AccompanimentSynth,
+    rx: HeapCons<AccompanimentControl>,
+}
+
+impl AccompanimentSynthSource {
+    /// Build a source from a synth and a control receiver. Typically constructed
+    /// inside `AudioOutput::start`'s closure, where the device sample rate is
+    /// known: `AccompanimentSynthSource::new(AccompanimentSynth::new(sr), rx)`.
+    pub fn new(synth: AccompanimentSynth, rx: AccompanimentReceiver) -> Self {
+        Self { synth, rx: rx.0 }
+    }
+
+    /// Apply all pending control messages. Lock-free, allocation-free.
+    fn drain_controls(&mut self) {
+        while let Some(msg) = self.rx.try_pop() {
+            match msg {
+                AccompanimentControl::SetKey { tonic, mode } => self.synth.set_key(tonic, mode),
+                AccompanimentControl::SetClock(clock) => self.synth.set_clock(clock),
+            }
+        }
+    }
+}
+
+impl RenderSource for AccompanimentSynthSource {
+    fn render(&mut self, out: &mut [f32]) {
+        self.drain_controls();
+        self.synth.render(out);
+    }
+}
+
+/// Drives the accompaniment from the analysis stream on the **processing
+/// thread**: it owns the [`LiveClock`] and the control [`AccompanimentSender`],
+/// turning per-event onset timing into live [`ClockState`] updates and confident
+/// key estimates into key changes. Keeping this in `brain` lets the app feed it
+/// plain `(is_onset, timestamp)` + a phrase's key without depending on `groove`
+/// or `theory`, and makes the follow logic unit-testable without a device.
+pub struct AccompanimentDriver {
+    clock: LiveClock,
+    sender: AccompanimentSender,
+    last_key: Option<(u8, Mode)>,
+    min_key_confidence: f32,
+}
+
+impl AccompanimentDriver {
+    /// Minimum key-estimate confidence before the band will retune — avoids
+    /// chasing a shaky early read.
+    const DEFAULT_MIN_KEY_CONFIDENCE: f32 = 0.5;
+
+    pub fn new(sender: AccompanimentSender) -> Self {
+        Self {
+            clock: LiveClock::new(),
+            sender,
+            last_key: None,
+            min_key_confidence: Self::DEFAULT_MIN_KEY_CONFIDENCE,
+        }
+    }
+
+    /// Feed one analysis event: advance the clock (recording the onset, if any)
+    /// and push the resulting live clock state to the synth.
+    pub fn observe_event(&mut self, is_onset: bool, timestamp_secs: f64) {
+        if is_onset {
+            self.clock.observe_onset(timestamp_secs);
+        }
+        let state = self.clock.tick(timestamp_secs);
+        self.sender.set_clock(state);
+    }
+
+    /// Update the band's key from a phrase's key estimate. Ignored when the
+    /// estimate is low-confidence or unchanged, so the band doesn't lurch keys.
+    pub fn observe_key(&mut self, key: &KeyEstimate) {
+        if key.confidence < self.min_key_confidence {
+            return;
+        }
+        let kv = (key.tonic % 12, key.mode);
+        if self.last_key != Some(kv) {
+            self.last_key = Some(kv);
+            self.sender.set_key(kv.0, kv.1);
         }
     }
 }
@@ -859,6 +994,192 @@ mod tests {
         assert!(
             buf.iter().all(|s| *s == 0.0),
             "pad must be silent until the clock locks"
+        );
+    }
+
+    // ── Control channel (slice 4a) ───────────────────────────────────────────
+
+    #[test]
+    fn control_channel_delivers_key_and_clock_on_render() {
+        // A render must drain pending control messages and apply them to the
+        // synth: a SetKey/SetClock pushed before render takes effect.
+        let (mut tx, rx) = accompaniment_control_channel(16);
+        let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(SR), rx);
+        // Default state before any control.
+        assert_eq!(source.synth.tonic, 0);
+        assert!(!source.synth.is_playing());
+
+        tx.set_key(7, Mode::Mixolydian);
+        tx.set_clock(locked_clock(120.0));
+
+        let mut buf = vec![0.0f32; 512];
+        source.render(&mut buf);
+
+        assert_eq!(source.synth.tonic, 7, "SetKey should reach the synth");
+        assert_eq!(source.synth.mode, Mode::Mixolydian);
+        assert!(
+            source.synth.is_playing(),
+            "SetClock(locked) should lock the synth"
+        );
+    }
+
+    #[test]
+    fn control_messages_not_applied_until_render() {
+        // Messages sit in the inbox until the render thread drains them.
+        let (mut tx, rx) = accompaniment_control_channel(16);
+        let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(SR), rx);
+        tx.set_key(5, Mode::Dorian);
+        // Not yet rendered → not yet applied.
+        assert_eq!(source.synth.tonic, 0);
+        let mut buf = vec![0.0f32; 64];
+        source.render(&mut buf);
+        assert_eq!(source.synth.tonic, 5, "drain happens on render");
+    }
+
+    #[test]
+    fn source_is_silent_until_clock_locks_then_silent_again() {
+        let (mut tx, rx) = accompaniment_control_channel(16);
+        let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(SR), rx);
+        tx.set_key(7, Mode::Mixolydian);
+
+        // No clock yet → silent.
+        let mut buf = vec![0.0f32; SR as usize / 4];
+        source.render(&mut buf);
+        assert!(
+            buf.iter().all(|s| *s == 0.0),
+            "silent before a locked clock"
+        );
+
+        // Locked clock → audible.
+        tx.set_clock(locked_clock(120.0));
+        let mut buf = vec![0.0f32; SR as usize];
+        source.render(&mut buf);
+        assert!(buf.iter().any(|s| s.abs() > 0.01), "audible once locked");
+
+        // Lose lock → silent again.
+        tx.set_clock(ClockState::SILENT);
+        let mut buf = vec![9.9f32; 2048];
+        source.render(&mut buf);
+        assert!(buf.iter().all(|s| *s == 0.0), "silent after losing lock");
+    }
+
+    #[test]
+    fn sender_does_not_panic_when_inbox_full() {
+        // Over-filling the channel drops messages rather than panicking/blocking.
+        let (mut tx, _rx) = accompaniment_control_channel(4);
+        for _ in 0..100 {
+            tx.set_clock(locked_clock(120.0));
+            tx.set_key(7, Mode::Mixolydian);
+        }
+        // Reaching here without panic is the assertion.
+    }
+
+    // ── Driver (processing-thread follow logic) ──────────────────────────────
+
+    fn key_est(tonic: u8, confidence: f32) -> KeyEstimate {
+        KeyEstimate {
+            tonic,
+            mode: Mode::Mixolydian,
+            confidence,
+            margin: 0.1,
+        }
+    }
+
+    #[test]
+    fn driver_pushes_clock_and_locks_on_steady_onsets() {
+        // Steady onsets fed through the driver must drive the clock to lock and
+        // push the locked ClockState down the channel.
+        let (tx, mut rx) = accompaniment_control_channel(256);
+        let mut driver = AccompanimentDriver::new(tx);
+        for i in 0..8 {
+            driver.observe_event(true, i as f64 * 0.5); // 120 BPM
+        }
+        let mut last_clock = None;
+        while let Some(msg) = rx.0.try_pop() {
+            if let AccompanimentControl::SetClock(c) = msg {
+                last_clock = Some(c);
+            }
+        }
+        let c = last_clock.expect("driver should push clock states");
+        assert!(
+            c.is_locked(),
+            "steady onsets should drive the clock to lock"
+        );
+        assert!((c.tempo_bpm.unwrap() - 120.0).abs() < 5.0);
+    }
+
+    #[test]
+    fn driver_retunes_only_on_confident_key_change() {
+        let (tx, mut rx) = accompaniment_control_channel(64);
+        let mut driver = AccompanimentDriver::new(tx);
+        driver.observe_key(&key_est(7, 0.2)); // low confidence → ignored
+        driver.observe_key(&key_est(7, 0.9)); // confident → SetKey(7)
+        driver.observe_key(&key_est(7, 0.9)); // unchanged → no new SetKey
+        driver.observe_key(&key_est(0, 0.9)); // changed → SetKey(0)
+
+        let mut keys = Vec::new();
+        while let Some(msg) = rx.0.try_pop() {
+            if let AccompanimentControl::SetKey { tonic, .. } = msg {
+                keys.push(tonic);
+            }
+        }
+        assert_eq!(
+            keys,
+            vec![7, 0],
+            "only confident, changed key estimates should retune the band"
+        );
+    }
+
+    #[test]
+    fn follow_chain_drives_synth_through_one_channel() {
+        // End-to-end wiring: a single channel's sender feeds the driver and its
+        // receiver feeds the source — exactly how `start_accompaniment` pairs
+        // them. Steady onsets + a confident key must reach the synth (lock + key).
+        // A sender/receiver mispairing (two different channels) would leave the
+        // synth untouched and fail here — the bug no unit test in isolation catches.
+        let (sender, receiver) = accompaniment_control_channel(256);
+        let mut driver = AccompanimentDriver::new(sender);
+        let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(SR), receiver);
+
+        driver.observe_key(&key_est(7, 0.9)); // G
+        for i in 0..8 {
+            driver.observe_event(true, i as f64 * 0.5); // 120 BPM
+        }
+
+        let mut buf = vec![0.0f32; 512];
+        source.render(&mut buf);
+
+        assert_eq!(source.synth.tonic, 7, "key must flow driver→channel→synth");
+        assert!(
+            source.synth.is_playing(),
+            "steady onsets must lock the synth through the channel"
+        );
+    }
+
+    #[test]
+    fn driver_unlocks_when_onsets_stop() {
+        // After the player stops, continued ticks (no onsets) must eventually
+        // push a non-locked ClockState so the band winds down — the "stopped
+        // playing" path of the driver→channel contract.
+        let (tx, mut rx) = accompaniment_control_channel(1024);
+        let mut driver = AccompanimentDriver::new(tx);
+        for i in 0..8 {
+            driver.observe_event(true, i as f64 * 0.5); // lock at 120 BPM
+        }
+        let last_onset = 7.0 * 0.5;
+        // Silence: keep ticking with no onsets, well past the clock's stale age.
+        for k in 1..=10 {
+            driver.observe_event(false, last_onset + k as f64);
+        }
+        let mut last = None;
+        while let Some(msg) = rx.0.try_pop() {
+            if let AccompanimentControl::SetClock(c) = msg {
+                last = Some(c);
+            }
+        }
+        assert!(
+            !last.expect("clock states were pushed").is_locked(),
+            "band must unlock once onsets stop"
         );
     }
 }

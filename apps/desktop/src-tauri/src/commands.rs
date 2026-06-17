@@ -15,6 +15,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use brain::accompaniment::{
+    accompaniment_control_channel, AccompanimentDriver, AccompanimentSynth,
+    AccompanimentSynthSource,
+};
 use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
@@ -34,6 +38,7 @@ use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
 
 use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError, SharedIdiomBuffer};
+use ears::output_engine::AudioOutput;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, Runtime, State};
 use thiserror::Error;
@@ -577,7 +582,37 @@ pub struct AppState {
     /// empty and **every** recap was the "you didn't play" empty state — the
     /// real root cause behind #185 (the confidence gate was only half of it).
     phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
+    /// Follow-me accompaniment ("Play with me"). `Some` while the band is
+    /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
+    /// worker thread's emit closures feed its driver synchronously on every
+    /// event/phrase; the start/stop commands also touch it but never across an
+    /// `.await`. Shared (`Arc`) so the worker closures get their own handle
+    /// without holding the whole `AppState`. The render-thread synth is driven
+    /// entirely off-device via the lock-free control channel inside the driver —
+    /// no network, no realtime-callback locking.
+    accompaniment: Arc<std::sync::Mutex<Option<Accompaniment>>>,
+    /// Serializes the `start`/`stop` accompaniment commands (and session-end
+    /// teardown) so two overlapping Tauri command tasks can't race the audio
+    /// device handoff — without it, an interleaved start could drop-join an
+    /// `AudioOutput` while the per-frame worker holds the accompaniment lock.
+    accompaniment_cmd_lock: Mutex<()>,
 }
+
+/// A running follow-me accompaniment.
+struct Accompaniment {
+    /// The audio output engine playing the synth. Kept alive here; tearing it
+    /// down ([`AppState::teardown_accompaniment`]) stops playback and releases
+    /// the output device.
+    output: AudioOutput,
+    /// Processing-thread driver fed by the audio worker: turns onset timing into
+    /// live clock updates and phrase keys into key changes, pushing both to the
+    /// render-thread synth over the lock-free control channel.
+    driver: AccompanimentDriver,
+}
+
+/// Control-channel depth (messages). Comfortably more than the render thread can
+/// fall behind between drains; excess is dropped (the next tick is fresher).
+const ACCOMPANIMENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Open the on-disk session + score stores, degrading to in-memory if the
 /// on-disk database can't be opened (corrupt data dir, sandbox, full disk).
@@ -668,6 +703,8 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            accompaniment: Arc::new(std::sync::Mutex::new(None)),
+            accompaniment_cmd_lock: Mutex::new(()),
         }
     }
 
@@ -692,6 +729,8 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            accompaniment: Arc::new(std::sync::Mutex::new(None)),
+            accompaniment_cmd_lock: Mutex::new(()),
         }
     }
 
@@ -794,6 +833,22 @@ impl AppState {
         let mut guard = self.audio_pipeline.lock().await;
         if let Some(pipeline) = guard.take() {
             pipeline.stop();
+        }
+    }
+
+    /// Stop the follow-me accompaniment, if running: release the output device
+    /// and join its threads. No-op when nothing is playing, and safe to call
+    /// repeatedly (e.g. from both `stop_accompaniment` and session end). The
+    /// handle is taken out from under the lock *before* joining so the lock isn't
+    /// held across the thread join.
+    pub(crate) fn teardown_accompaniment(&self) {
+        let taken = self
+            .accompaniment
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(accompaniment) = taken {
+            accompaniment.output.stop();
         }
     }
 
@@ -1274,6 +1329,21 @@ fn emit_score_position_updated<R: Runtime>(app: &tauri::AppHandle<R>, position: 
     let _ = app.emit("score-position-updated", position);
 }
 
+/// Payload for `accompaniment-status`. Slice 4a reports only whether the band is
+/// playing; the live tempo/key chip is added with the UI in 4b.
+#[derive(Clone, Serialize)]
+struct AccompanimentStatusPayload {
+    playing: bool,
+}
+
+/// Tell the UI whether the follow-me band is playing. Non-fatal on error.
+fn emit_accompaniment_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool) {
+    let _ = app.emit(
+        "accompaniment-status",
+        AccompanimentStatusPayload { playing },
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers — pure (testable) implementations
 // ---------------------------------------------------------------------------
@@ -1684,11 +1754,27 @@ pub async fn start_practice_session<R: Runtime>(
                     buf.clear();
                 }
                 let phrase_buffer = state.phrase_buffer.clone();
+                // Hand the worker closures their own handles to the (maybe-absent)
+                // accompaniment so they can drive the follow-me band live. When
+                // no band is playing these locks see `None` and do nothing.
+                let accomp_for_event = state.accompaniment.clone();
+                let accomp_for_phrase = state.accompaniment.clone();
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
                     Some(idiom_buffer),
                     move |event| {
+                        // Feed the accompaniment's clock from onset timing before
+                        // the event is moved into the emit. Lock is uncontended
+                        // (processing thread only) and never touches the realtime
+                        // callback.
+                        if let Ok(mut guard) = accomp_for_event.lock() {
+                            if let Some(accompaniment) = guard.as_mut() {
+                                accompaniment
+                                    .driver
+                                    .observe_event(event.is_onset, event.timestamp_secs);
+                            }
+                        }
                         let _ = app_for_emit.emit("audio-event", event);
                     },
                     move |phrase| {
@@ -1696,6 +1782,14 @@ pub async fn start_practice_session<R: Runtime>(
                         // at session end), then emit to the UI for live display.
                         if let Ok(mut buf) = phrase_buffer.lock() {
                             buf.push(phrase.clone());
+                        }
+                        // Retune the band when this phrase carries a confident key.
+                        if let Some(key) = phrase.key.as_ref() {
+                            if let Ok(mut guard) = accomp_for_phrase.lock() {
+                                if let Some(accompaniment) = guard.as_mut() {
+                                    accompaniment.driver.observe_key(key);
+                                }
+                            }
                         }
                         emit_phrase_detected(&app_for_phrase, phrase);
                     },
@@ -1795,10 +1889,72 @@ pub async fn end_practice_session<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<SessionRecap, String> {
     emit_session_status(&app, SessionPhase::Ending);
+    // Stop the band first so it doesn't keep playing once analysis stops. Hold
+    // the command lock so this can't interleave with a concurrent start/stop.
+    {
+        let _cmd = state.accompaniment_cmd_lock.lock().await;
+        state.teardown_accompaniment();
+    }
+    emit_accompaniment_status(&app, false);
     state.stop_audio_pipeline().await;
     end_practice_session_impl(state.inner())
         .await
         .map_err(|e| e.to_frontend())
+}
+
+/// Start the follow-me accompaniment ("Play with me"): open the audio output
+/// engine, build the synth on the render thread, and install the driver the
+/// audio worker feeds. The band stays silent until the live clock locks onto
+/// the player's pulse, so it's safe to call before or during play. Fully
+/// offline — no network.
+#[tauri::command]
+pub async fn start_accompaniment<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Serialize start/stop/teardown so two overlapping commands can't race the
+    // device handoff (Tauri runs each command as its own task).
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+
+    // Tear the previous band down FIRST — fully (device released + threads
+    // joined) and off the accompaniment lock — so we never (a) open a second
+    // output device while the old one is still live, nor (b) drop-join an
+    // `AudioOutput` while holding the std mutex the audio worker locks per frame.
+    state.teardown_accompaniment();
+
+    // The receiver moves into the render-thread source; the sender lives in the
+    // driver on the processing thread.
+    let (sender, receiver) = accompaniment_control_channel(ACCOMPANIMENT_CHANNEL_CAPACITY);
+    let output = AudioOutput::start(move |sample_rate| {
+        AccompanimentSynthSource::new(AccompanimentSynth::new(sample_rate), receiver)
+    })
+    .map_err(|e| format!("could not start accompaniment audio output: {e}"))?;
+
+    let accompaniment = Accompaniment {
+        output,
+        driver: AccompanimentDriver::new(sender),
+    };
+    // The slot is guaranteed empty (we just tore down under the cmd lock), so
+    // this assignment never drops a live `AudioOutput` while holding the lock.
+    *state
+        .accompaniment
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(accompaniment);
+
+    emit_accompaniment_status(&app, true);
+    Ok(())
+}
+
+/// Stop the follow-me accompaniment. No-op if it isn't playing.
+#[tauri::command]
+pub async fn stop_accompaniment<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+    state.teardown_accompaniment();
+    emit_accompaniment_status(&app, false);
+    Ok(())
 }
 
 /// Request a real-time coaching tip for a phrase. Called between phrases
@@ -3027,6 +3183,72 @@ mod tests {
         let s = state();
         s.stop_audio_pipeline().await;
         s.stop_audio_pipeline().await; // Double-stop, still fine.
+    }
+
+    #[test]
+    fn teardown_accompaniment_without_running_is_a_noop_and_idempotent() {
+        // The band may be torn down by both `stop_accompaniment` and session
+        // end, possibly when nothing is playing — it must never panic, and a
+        // double teardown is safe. (Starting a real band needs an output device,
+        // so the start path is exercised by the manual audible test, not here.)
+        let s = state();
+        assert!(
+            s.accompaniment.lock().unwrap().is_none(),
+            "no band should be running on a fresh state"
+        );
+        s.teardown_accompaniment();
+        s.teardown_accompaniment(); // idempotent
+        assert!(s.accompaniment.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn accompaniment_status_payload_serializes_to_playing_flag() {
+        // The frontend reads `{ "playing": bool }`. Pin the field name + boolean
+        // so a rename or flipped value fails here (AC10).
+        assert_eq!(
+            serde_json::to_string(&AccompanimentStatusPayload { playing: true }).unwrap(),
+            r#"{"playing":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&AccompanimentStatusPayload { playing: false }).unwrap(),
+            r#"{"playing":false}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_accompaniment_emits_status_playing_false() {
+        // Drive the real command through Tauri's mock runtime and capture the
+        // emitted event — proves stop reports `playing: false` (AC10), not just
+        // that the payload type serializes. (start emits true but needs a real
+        // output device, so it's covered by the manual audible test.)
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("accompaniment-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        stop_accompaniment(handle, state)
+            .await
+            .expect("stop_accompaniment should succeed on a fresh state");
+
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("an accompaniment-status event should have been emitted");
+        assert!(
+            payload.contains("\"playing\":false"),
+            "stop should report playing=false, got: {payload}"
+        );
     }
 
     // ── MIDI import (Story: Phase 2 Smart Import — PR 1) ───────────────
