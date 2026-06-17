@@ -1,3 +1,9 @@
+## [2.5.0](https://github.com/perice-pope/ai-music-companion/compare/v2.4.0...v2.5.0) (2026-06-17)
+
+### Features
+
+* **app:** follow-me accompaniment backend — clock→synth wiring + commands ([#212](https://github.com/perice-pope/ai-music-companion/issues/212)) ([#238](https://github.com/perice-pope/ai-music-companion/issues/238)) ([ddd15ed](https://github.com/perice-pope/ai-music-companion/commit/ddd15edf7d16830e214098a3be92261bf9d00617))
+
 ## [2.4.0](https://github.com/perice-pope/ai-music-companion/compare/v2.3.0...v2.4.0) (2026-06-17)
 
 ### Features
