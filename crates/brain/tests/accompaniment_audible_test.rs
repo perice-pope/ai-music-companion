@@ -7,8 +7,8 @@
 //! ```
 //!
 //! Expected: ~5 seconds of a steady ~100 BPM groove in G Mixolydian — a kick on
-//! each beat, a hi-hat on the eighths, and a bass alternating G (root) and D
-//! (fifth) — then silence.
+//! each beat, a hi-hat on the eighths, a bass alternating G (root) and D (fifth),
+//! and a sustained pad voicing the G triad (G/B/D) underneath — then silence.
 
 use std::thread;
 use std::time::Duration;
