@@ -115,6 +115,15 @@ export interface PracticeState {
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
 
+  // Follow-me accompaniment ("Play with me") ------------------------------
+  /**
+   * Whether the backing band is currently playing. Authoritative source is
+   * the backend's `accompaniment-status` event (the band may stop on its own,
+   * e.g. at session end), so the toggle reflects this rather than optimistic
+   * local state. Per-session, not a saved pref.
+   */
+  accompanimentPlaying: boolean;
+
   // UI prefs (persisted) --------------------------------------------------
   coachingEnabled: boolean;
   /**
@@ -182,6 +191,18 @@ export interface PracticeState {
   ) => Promise<void>;
   pushPhrase: (phrase: PhraseSummary) => void;
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
+  /**
+   * Start the follow-me accompaniment ("Play with me"). Fires
+   * `start_accompaniment`; the band stays silent until it locks onto the
+   * player's pulse. Authoritative playing state arrives via the
+   * `accompaniment-status` event, so this doesn't set `accompanimentPlaying`
+   * optimistically — it surfaces an error if the command fails.
+   */
+  startAccompaniment: () => Promise<void>;
+  /** Stop the follow-me accompaniment. Fires `stop_accompaniment`. */
+  stopAccompaniment: () => Promise<void>;
+  /** Reflect the backend's `accompaniment-status` event. */
+  setAccompanimentPlaying: (playing: boolean) => void;
   /**
    * Live coaching loop: ask the backend for a tip on a just-completed phrase,
    * surface it in the tip panel, and persist it in the session recorder.
@@ -289,6 +310,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   activeScoreXml: null,
   scoreLibrary: [],
   cursorPosition: null,
+  accompanimentPlaying: false,
   coachingEnabled: loadCoachingPref(),
   practiceMode: loadPracticeModePref(),
 
@@ -526,7 +548,25 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         sessionId: null,
       });
     }
+    // The backend tears the band down on session end and emits
+    // `accompaniment-status { playing: false }`, but flip it here too so the
+    // toggle resets immediately even if that event is missed.
+    set({ accompanimentPlaying: false });
   },
+
+  startAccompaniment: async () => {
+    // Authoritative `playing` comes from the `accompaniment-status` event, so we
+    // don't optimistically flip it here — just fire the command and let the
+    // event drive the chip. Errors are surfaced to the caller (the toggle shows
+    // them); the live session must never break because the band failed to start.
+    await invoke("start_accompaniment");
+  },
+
+  stopAccompaniment: async () => {
+    await invoke("stop_accompaniment");
+  },
+
+  setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
 
   switchInstrument: async (name: string, vibratoToleranceCents = 15.0) => {
     const { status } = get();
@@ -623,6 +663,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       activeScore: null,
       activeScoreXml: null,
       cursorPosition: null,
+      accompanimentPlaying: false,
     }),
 
   setCoachingEnabled: (on) => {

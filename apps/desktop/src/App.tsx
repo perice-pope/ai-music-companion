@@ -4,7 +4,11 @@ import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
-import type { PhraseSummary, ScorePosition } from "./types/brain";
+import type {
+  AccompanimentStatus,
+  PhraseSummary,
+  ScorePosition,
+} from "./types/brain";
 
 /**
  * App entry. Subscribes to the backend's live event streams for the whole
@@ -33,6 +37,9 @@ function App() {
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
   const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
+  const setAccompanimentPlaying = usePracticeStore(
+    (s) => s.setAccompanimentPlaying,
+  );
   const [storageDegraded, setStorageDegraded] = useState(false);
 
   useEffect(() => {
@@ -100,12 +107,33 @@ function App() {
       } catch (err: unknown) {
         console.error("Failed to subscribe to score-position-updated:", err);
       }
+
+      try {
+        unsubs.push(
+          // Follow-me band on/off. The backend is authoritative — it may stop
+          // the band on its own (session end), so the toggle reflects this.
+          await listen<AccompanimentStatus>(
+            "accompaniment-status",
+            ({ payload }) => {
+              setAccompanimentPlaying(payload.playing);
+            },
+          ),
+        );
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to accompaniment-status:", err);
+      }
     })();
 
     return () => {
       for (const u of unsubs) u();
     };
-  }, [setEvent, pushPhrase, requestCoachingTip, setCursorPosition]);
+  }, [
+    setEvent,
+    pushPhrase,
+    requestCoachingTip,
+    setCursorPosition,
+    setAccompanimentPlaying,
+  ]);
 
   return (
     <>

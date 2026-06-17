@@ -529,3 +529,75 @@ describe("practiceStore — score loading", () => {
     expect(s.activeScoreXml).toBeNull();
   });
 });
+
+describe("practiceStore — follow-me accompaniment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  it("startAccompaniment fires the start_accompaniment command", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().startAccompaniment();
+    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment");
+  });
+
+  it("startAccompaniment does not optimistically flip playing (event is authoritative)", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().startAccompaniment();
+    // The chip only turns on when the backend confirms via the event.
+    expect(useStore.getState().accompanimentPlaying).toBe(false);
+  });
+
+  it("startAccompaniment propagates a command failure to the caller", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockRejectedValueOnce(new Error("no output device"));
+    await expect(useStore.getState().startAccompaniment()).rejects.toThrow(
+      /no output device/,
+    );
+  });
+
+  it("stopAccompaniment fires the stop_accompaniment command", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().stopAccompaniment();
+    expect(mockInvoke).toHaveBeenCalledWith("stop_accompaniment");
+  });
+
+  it("setAccompanimentPlaying reflects the backend event", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setAccompanimentPlaying(true);
+    expect(useStore.getState().accompanimentPlaying).toBe(true);
+    useStore.getState().setAccompanimentPlaying(false);
+    expect(useStore.getState().accompanimentPlaying).toBe(false);
+  });
+
+  it("ending a session resets the band to not-playing", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid"); // start_practice_session
+    await useStore.getState().startSession("Trumpet");
+    useStore.getState().setAccompanimentPlaying(true);
+
+    const recap: SessionRecap = {
+      overall_assessment: "ok",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 10,
+      phrase_count: 1,
+      instrument: "Trumpet",
+    };
+    mockInvoke.mockResolvedValueOnce(recap);
+    await useStore.getState().endSession();
+    expect(useStore.getState().accompanimentPlaying).toBe(false);
+  });
+
+  it("returnToSelector clears the band playing flag", async () => {
+    const useStore = await freshStore();
+    useStore.getState().setAccompanimentPlaying(true);
+    useStore.getState().returnToSelector();
+    expect(useStore.getState().accompanimentPlaying).toBe(false);
+  });
+});

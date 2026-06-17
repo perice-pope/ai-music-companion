@@ -6,6 +6,7 @@ import { PRACTICE_MODES, type PracticeMode } from "../types/brain";
 import PitchDisplay from "./PitchDisplay";
 import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
+import AccompanimentToggle from "./AccompanimentToggle";
 import CoachingTipPanel from "./CoachingTipPanel";
 import ScoreView from "./ScoreView";
 
@@ -183,6 +184,7 @@ export default function PracticeSession() {
 
         <div className="flex items-center gap-4">
           <SessionTimer />
+          <AccompanimentToggle />
           <EndSessionButton />
         </div>
       </header>
@@ -191,7 +193,10 @@ export default function PracticeSession() {
         // Score mode: sheet music leads, pitch + tips sit alongside.
         <div className="flex flex-1 flex-col gap-4 p-4 lg:flex-row">
           <div className="min-h-0 flex-1" data-testid="session-score-pane">
-            <ScoreView musicXml={activeScoreXml} cursorPosition={cursorPosition} />
+            <ScoreView
+              musicXml={activeScoreXml}
+              cursorPosition={cursorPosition}
+            />
           </div>
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
