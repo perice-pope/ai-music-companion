@@ -360,6 +360,16 @@ export interface AccompanimentStatus {
   playing: boolean;
 }
 
+/** A pickable key — display name plus what's needed to pin the band to it. Mirrors `brain::perception::KeyOption`. */
+export interface KeyOption {
+  /** Tonic pitch class, 0–11 (C = 0). */
+  tonic: number;
+  /** Minor (Aeolian) vs. major (Ionian). */
+  minor: boolean;
+  /** Full name, e.g. "E minor". */
+  name: string;
+}
+
 /** The detected key, with its honest relative alternative. Mirrors `brain::perception::KeySnapshot`. */
 export interface KeySnapshot {
   /** Tonic pitch class, 0–11 (C = 0). */
@@ -371,7 +381,7 @@ export interface KeySnapshot {
   /** Best-fit confidence, 0–1. */
   confidence: number;
   /** Relative-key reading the player might mean, e.g. "E minor" for "G major". */
-  alternative: string | null;
+  alternative: KeyOption | null;
 }
 
 /** Payload of the `perception` Tauri event — what the app hears live. Mirrors `brain::perception::PerceptionSnapshot`. */

@@ -612,11 +612,88 @@ describe("practiceStore — follow-me accompaniment", () => {
         mode: "major",
         name: "G major",
         confidence: 0.6,
-        alternative: "E minor",
+        alternative: { tonic: 4, minor: true, name: "E minor" },
       },
     });
     expect(useStore.getState().perception?.tempo_bpm).toBe(96);
     useStore.getState().returnToSelector();
     expect(useStore.getState().perception).toBeNull();
+  });
+
+  it("setAccompanimentKey pins the key (with a display name) and fires the command", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().setAccompanimentKey(4, true);
+    expect(mockInvoke).toHaveBeenCalledWith("set_accompaniment_key", {
+      tonic: 4,
+      minor: true,
+    });
+    expect(useStore.getState().keyPinned).toBe(true);
+    // The pinned key carries a display name so the panel shows what's playing.
+    expect(useStore.getState().pinnedKey).toEqual({
+      tonic: 4,
+      minor: true,
+      name: "E minor",
+    });
+  });
+
+  it("setAccompanimentKey rolls back the optimistic pin if the command fails", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockRejectedValueOnce(new Error("ipc down"));
+    await useStore.getState().setAccompanimentKey(4, true);
+    // The UI must not claim a pin that didn't take.
+    expect(useStore.getState().keyPinned).toBe(false);
+    expect(useStore.getState().pinnedKey).toBeNull();
+  });
+
+  it("lockAccompanimentKey pins the currently-perceived key; clear resumes auto", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValue(undefined);
+    // Lock derives from the live perception — pin whatever is shown.
+    useStore.getState().setPerception({
+      tempo_bpm: 100,
+      swing_ratio: null,
+      locked: true,
+      key: {
+        tonic: 7,
+        mode: "major",
+        name: "G major",
+        confidence: 0.7,
+        alternative: { tonic: 4, minor: true, name: "E minor" },
+      },
+    });
+    await useStore.getState().lockAccompanimentKey();
+    expect(mockInvoke).toHaveBeenCalledWith("set_accompaniment_key", {
+      tonic: 7,
+      minor: false,
+    });
+    expect(useStore.getState().keyPinned).toBe(true);
+    expect(useStore.getState().pinnedKey?.name).toBe("G major");
+
+    await useStore.getState().clearAccompanimentKey();
+    expect(mockInvoke).toHaveBeenCalledWith("clear_accompaniment_key");
+    expect(useStore.getState().keyPinned).toBe(false);
+  });
+
+  it("ending a session resets the key pin", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().setAccompanimentKey(4, true);
+    expect(useStore.getState().keyPinned).toBe(true);
+
+    const recap: SessionRecap = {
+      overall_assessment: "ok",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 5,
+      phrase_count: 0,
+      instrument: "Trumpet",
+    };
+    mockInvoke.mockResolvedValueOnce(recap);
+    await useStore.getState().endSession();
+    expect(useStore.getState().keyPinned).toBe(false);
   });
 });

@@ -597,6 +597,13 @@ pub struct AppState {
     /// device handoff — without it, an interleaved start could drop-join an
     /// `AudioOutput` while the per-frame worker holds the accompaniment lock.
     accompaniment_cmd_lock: Mutex<()>,
+    /// The user's key override for the band, if any. Persists across band
+    /// The user's pinned key for the band as `(tonic, minor)`, if any. Persists
+    /// across band start/stop within a session (applied when a band starts) and
+    /// is reset on session end. `None` = follow the auto-detected key. "Lock" and
+    /// "use the alternative" are both just a concrete pinned key, so the UI can
+    /// always show exactly what the band is playing.
+    key_override: std::sync::Mutex<Option<(u8, bool)>>,
 }
 
 /// A running follow-me accompaniment.
@@ -710,6 +717,7 @@ impl AppState {
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
+            key_override: std::sync::Mutex::new(None),
         }
     }
 
@@ -736,6 +744,7 @@ impl AppState {
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
+            key_override: std::sync::Mutex::new(None),
         }
     }
 
@@ -855,6 +864,41 @@ impl AppState {
         if let Some(accompaniment) = taken {
             accompaniment.output.stop();
         }
+    }
+
+    /// Apply a key override to the live band (if any). Shared by the override
+    /// commands and `start_accompaniment` (so a pre-set override takes effect
+    /// when a new band starts).
+    fn apply_key_override_to_live_band(&self, ov: Option<(u8, bool)>) {
+        if let Some(band) = self
+            .accompaniment
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+        {
+            match ov {
+                Some((tonic, minor)) => band.driver.set_key_override(tonic, minor),
+                None => band.driver.clear_key_override(),
+            }
+        }
+    }
+
+    /// Pin the band to a specific key (the user correcting the auto-read, or
+    /// "locking" the currently-shown key — both are a concrete key).
+    pub(crate) fn set_key_override(&self, tonic: u8, minor: bool) {
+        *self.key_override.lock().unwrap_or_else(|p| p.into_inner()) = Some((tonic, minor));
+        self.apply_key_override_to_live_band(Some((tonic, minor)));
+    }
+
+    /// Resume automatic key-following; also reset on session end.
+    pub(crate) fn clear_key_override(&self) {
+        *self.key_override.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.apply_key_override_to_live_band(None);
+    }
+
+    /// The current key override, applied when a new band starts.
+    fn current_key_override(&self) -> Option<(u8, bool)> {
+        *self.key_override.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Build a [`ScoreFollower`] for the given score id by loading its
@@ -1920,6 +1964,9 @@ pub async fn end_practice_session<R: Runtime>(
         let _cmd = state.accompaniment_cmd_lock.lock().await;
         state.teardown_accompaniment();
     }
+    // The key override is session-scoped — reset it so the next session
+    // auto-detects fresh.
+    state.clear_key_override();
     emit_accompaniment_status(&app, false);
     state.stop_audio_pipeline().await;
     end_practice_session_impl(state.inner())
@@ -1955,10 +2002,15 @@ pub async fn start_accompaniment<R: Runtime>(
     })
     .map_err(|e| format!("could not start accompaniment audio output: {e}"))?;
 
-    let accompaniment = Accompaniment {
+    let mut accompaniment = Accompaniment {
         output,
         driver: AccompanimentDriver::new(sender),
     };
+    // Carry over a key the user pinned earlier this session so the band starts
+    // in it rather than re-running auto-detection.
+    if let Some((tonic, minor)) = state.current_key_override() {
+        accompaniment.driver.set_key_override(tonic, minor);
+    }
     // The slot is guaranteed empty (we just tore down under the cmd lock), so
     // this assignment never drops a live `AudioOutput` while holding the lock.
     *state
@@ -1979,6 +2031,30 @@ pub async fn stop_accompaniment<R: Runtime>(
     let _cmd = state.accompaniment_cmd_lock.lock().await;
     state.teardown_accompaniment();
     emit_accompaniment_status(&app, false);
+    Ok(())
+}
+
+/// Pin the band to a specific key — the user correcting the auto-read (e.g.
+/// "it's E minor, not G major"). `minor` selects Aeolian vs. Ionian. Takes effect
+/// immediately on a playing band and on the next band start this session.
+#[tauri::command]
+pub async fn set_accompaniment_key(
+    state: State<'_, AppState>,
+    tonic: u8,
+    minor: bool,
+) -> Result<(), String> {
+    // Serialize with start/stop so a pin during a band's device-init window
+    // isn't dropped (it would otherwise see no band yet, then be overwritten).
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+    state.set_key_override(tonic, minor);
+    Ok(())
+}
+
+/// Resume automatic key-following (undo a pin).
+#[tauri::command]
+pub async fn clear_accompaniment_key(state: State<'_, AppState>) -> Result<(), String> {
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+    state.clear_key_override();
     Ok(())
 }
 
@@ -3224,6 +3300,26 @@ mod tests {
         s.teardown_accompaniment();
         s.teardown_accompaniment(); // idempotent
         assert!(s.accompaniment.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn key_override_persists_and_clears_without_a_running_band() {
+        // The override is stored in AppState (applied when a band starts), so the
+        // commands must work and persist even with no band playing, and never
+        // panic. (Applying to a live band needs a device → covered by the driver
+        // unit tests + manual verify.)
+        let s = state();
+        assert!(s.current_key_override().is_none());
+
+        s.set_key_override(4, true); // E minor
+        assert_eq!(s.current_key_override(), Some((4, true)));
+
+        // Re-pin to a different key (e.g. the user picks again).
+        s.set_key_override(7, false); // G major
+        assert_eq!(s.current_key_override(), Some((7, false)));
+
+        s.clear_key_override();
+        assert!(s.current_key_override().is_none());
     }
 
     #[test]

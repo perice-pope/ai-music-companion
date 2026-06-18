@@ -110,6 +110,8 @@ fn main() {
             ai_music_companion::commands::end_practice_session,
             ai_music_companion::commands::start_accompaniment,
             ai_music_companion::commands::stop_accompaniment,
+            ai_music_companion::commands::set_accompaniment_key,
+            ai_music_companion::commands::clear_accompaniment_key,
             ai_music_companion::commands::list_instruments,
             ai_music_companion::commands::get_app_capabilities,
             ai_music_companion::commands::get_coaching_tip,
