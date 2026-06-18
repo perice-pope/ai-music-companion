@@ -1,3 +1,11 @@
+## [2.6.0](https://github.com/perice-pope/ai-music-companion/compare/v2.5.0...v2.6.0) (2026-06-18)
+
+### Features
+
+* **perception:** interactive key override + smoothed tempo ([#240](https://github.com/perice-pope/ai-music-companion/issues/240)) ([#242](https://github.com/perice-pope/ai-music-companion/issues/242)) ([838434f](https://github.com/perice-pope/ai-music-companion/commit/838434f325e45cfbae4c4fcba489bed998375548))
+* **perception:** live "what I hear" panel + honest key ambiguity ([#240](https://github.com/perice-pope/ai-music-companion/issues/240)) ([#241](https://github.com/perice-pope/ai-music-companion/issues/241)) ([7db09a5](https://github.com/perice-pope/ai-music-companion/commit/7db09a5059251709522c2f780365771c08f6152f))
+* **ui:** "Play with me" accompaniment toggle + status chip ([#212](https://github.com/perice-pope/ai-music-companion/issues/212)) ([#239](https://github.com/perice-pope/ai-music-companion/issues/239)) ([ffddb32](https://github.com/perice-pope/ai-music-companion/commit/ffddb32f11d9c72407efc8fe86f48c0a9033f330))
+
 ## [2.5.0](https://github.com/perice-pope/ai-music-companion/compare/v2.4.0...v2.5.0) (2026-06-17)
 
 ### Features
