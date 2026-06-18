@@ -17,6 +17,13 @@ const KEY_CONFIDENCE_THRESHOLD = 0.55;
 export default function PerceptionPanel() {
   const status = usePracticeStore((s) => s.status);
   const perception = usePracticeStore((s) => s.perception);
+  const keyPinned = usePracticeStore((s) => s.keyPinned);
+  const pinnedKey = usePracticeStore((s) => s.pinnedKey);
+  const setAccompanimentKey = usePracticeStore((s) => s.setAccompanimentKey);
+  const lockAccompanimentKey = usePracticeStore((s) => s.lockAccompanimentKey);
+  const clearAccompanimentKey = usePracticeStore(
+    (s) => s.clearAccompanimentKey,
+  );
 
   // Only meaningful while a session is actually listening.
   if (status !== "listening") return null;
@@ -55,12 +62,57 @@ export default function PerceptionPanel() {
           {key && (
             <span
               data-testid="perception-key"
+              className="flex items-center gap-1.5"
               title={`key confidence ${Math.round(key.confidence * 100)}%`}
             >
-              🎵 {key.confidence < KEY_CONFIDENCE_THRESHOLD ? "maybe " : ""}
-              {key.name}
-              {key.alternative && (
-                <span className="text-gray-500"> — or {key.alternative}?</span>
+              🎵{" "}
+              {!keyPinned && key.confidence < KEY_CONFIDENCE_THRESHOLD
+                ? "maybe "
+                : ""}
+              {/* When pinned, show the pinned key (what the band actually plays),
+                  not the still-changing auto-detected reading. */}
+              {keyPinned && pinnedKey ? pinnedKey.name : key.name}
+              {keyPinned ? (
+                <>
+                  <span className="text-emerald-400" aria-hidden="true">
+                    🔒
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="key-auto"
+                    onClick={() => void clearAccompanimentKey()}
+                    className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 hover:bg-gray-800"
+                  >
+                    auto
+                  </button>
+                </>
+              ) : (
+                <>
+                  {key.alternative && (
+                    <button
+                      type="button"
+                      data-testid="key-use-alternative"
+                      onClick={() =>
+                        void setAccompanimentKey(
+                          key.alternative!.tonic,
+                          key.alternative!.minor,
+                        )
+                      }
+                      className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                    >
+                      or {key.alternative.name}?
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="key-lock"
+                    title="Lock the band to this key"
+                    onClick={() => void lockAccompanimentKey()}
+                    className="rounded border border-gray-700 px-1 py-0.5 text-[10px] text-gray-500 hover:bg-gray-800 hover:text-gray-300"
+                  >
+                    🔒
+                  </button>
+                </>
               )}
             </span>
           )}

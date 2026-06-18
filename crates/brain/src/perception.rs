@@ -19,6 +19,17 @@ use theory::{KeyEstimate, KeyTracker, Mode};
 /// keeps breath noise and squeaks from skewing the key.
 const MIN_PITCH_CONFIDENCE: f64 = 0.5;
 
+/// A pickable key — enough for the UI to both display it and pin the band to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyOption {
+    /// Tonic pitch class, 0–11 (C = 0).
+    pub tonic: u8,
+    /// Whether this option is minor (Aeolian) vs. major (Ionian).
+    pub minor: bool,
+    /// Full name, e.g. "E minor".
+    pub name: String,
+}
+
 /// The detected key, named honestly with its relative alternative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeySnapshot {
@@ -30,9 +41,9 @@ pub struct KeySnapshot {
     pub name: String,
     /// Best-fit confidence, 0–1.
     pub confidence: f32,
-    /// The relative-key reading the player might actually mean, e.g. "E minor"
-    /// for a "G major" call. `None` only if it can't be formed.
-    pub alternative: Option<String>,
+    /// The relative-key reading the player might actually mean (e.g. "E minor"
+    /// for a "G major" call) — structured so the UI can switch the band to it.
+    pub alternative: Option<KeyOption>,
 }
 
 /// A live snapshot of what the app perceives.
@@ -63,7 +74,15 @@ impl PerceptionSnapshot {
 pub struct PerceptionTracker {
     clock: LiveClock,
     key: KeyTracker,
+    /// EMA-smoothed tempo for *display*, so the readout doesn't jump as the
+    /// median IOI steps when onsets enter/leave the window. Does not affect the
+    /// band (which runs its own clock).
+    smoothed_tempo: Option<f32>,
 }
+
+/// EMA weight for the displayed tempo. Low enough to settle the jitter, high
+/// enough to still track a real tempo change within a second or two.
+const TEMPO_SMOOTHING: f32 = 0.25;
 
 impl PerceptionTracker {
     pub fn new() -> Self {
@@ -86,8 +105,21 @@ impl PerceptionTracker {
     /// Snapshot what's perceived as of `now_secs`.
     pub fn snapshot(&mut self, now_secs: f64) -> PerceptionSnapshot {
         let clock = self.clock.tick(now_secs);
+        // Smooth the displayed tempo (EMA); drop the smoother when the pulse is
+        // lost so a fresh start doesn't drift up from a stale value.
+        let tempo_bpm = match clock.tempo_bpm {
+            Some(raw) => {
+                let next = ema(self.smoothed_tempo, raw, TEMPO_SMOOTHING);
+                self.smoothed_tempo = Some(next);
+                Some(next)
+            }
+            None => {
+                self.smoothed_tempo = None;
+                None
+            }
+        };
         PerceptionSnapshot {
-            tempo_bpm: clock.tempo_bpm,
+            tempo_bpm,
             swing_ratio: clock.swing_ratio,
             locked: clock.is_locked(),
             key: self.key.current().map(key_snapshot),
@@ -98,19 +130,33 @@ impl PerceptionTracker {
     pub fn reset(&mut self) {
         self.clock.reset();
         self.key.reset();
+        self.smoothed_tempo = None;
+    }
+}
+
+/// Exponential moving average: ease `prev` toward `raw` by `alpha`. With no
+/// prior, start at `raw`.
+fn ema(prev: Option<f32>, raw: f32, alpha: f32) -> f32 {
+    match prev {
+        Some(p) => p + alpha * (raw - p),
+        None => raw,
     }
 }
 
 /// Build a [`KeySnapshot`] (name + relative alternative) from an estimate.
 fn key_snapshot(est: KeyEstimate) -> KeySnapshot {
     let (alt_tonic, alt_mode) = relative_key(est.tonic, est.mode);
-    let alternative = KeyEstimate {
+    let alternative = KeyOption {
         tonic: alt_tonic,
-        mode: alt_mode,
-        confidence: 0.0,
-        margin: 0.0,
-    }
-    .name();
+        minor: alt_mode == Mode::Aeolian,
+        name: KeyEstimate {
+            tonic: alt_tonic,
+            mode: alt_mode,
+            confidence: 0.0,
+            margin: 0.0,
+        }
+        .name(),
+    };
     KeySnapshot {
         tonic: est.tonic,
         mode: est.mode.label().to_string(),
@@ -223,8 +269,50 @@ mod tests {
             .alternative
             .expect("a relative alternative should be offered");
         assert_ne!(
-            alt, key.name,
+            alt.name, key.name,
             "the alternative must differ from the main reading"
+        );
+    }
+
+    #[test]
+    fn displayed_tempo_is_smoothed() {
+        // EMA eases toward the raw reading instead of snapping, so the readout
+        // doesn't jump as the median IOI steps.
+        assert!(
+            (ema(None, 120.0, 0.25) - 120.0).abs() < 1e-3,
+            "no prior → raw"
+        );
+        // From 120 toward 160 by 25% of the 40 BPM gap → 130, not 160.
+        assert!((ema(Some(120.0), 160.0, 0.25) - 130.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn snapshot_routes_tempo_through_smoother_and_resets_on_silence() {
+        // Integration: lock at 120, go silent (tempo → None, smoother reset),
+        // then a fresh 90 BPM start must read ~90 — NOT an EMA blend of the stale
+        // 120 (which would land ~112 and fail), catching a missing reset.
+        let mut p = PerceptionTracker::new();
+        let mut t = 0.0;
+        for _ in 0..8 {
+            p.observe(&onset(t));
+            t += 0.5; // 120 BPM
+        }
+        let locked = p.snapshot(t).tempo_bpm.expect("locked tempo");
+        assert!((locked - 120.0).abs() / 120.0 <= 0.05);
+
+        // Long silence ages the window out → no tempo, smoother cleared.
+        assert_eq!(p.snapshot(t + 10.0).tempo_bpm, None);
+
+        // Fresh 90 BPM start.
+        let mut t2 = t + 20.0;
+        for _ in 0..8 {
+            p.observe(&onset(t2));
+            t2 += 60.0 / 90.0;
+        }
+        let fresh = p.snapshot(t2).tempo_bpm.expect("fresh tempo");
+        assert!(
+            (fresh - 90.0).abs() / 90.0 <= 0.05,
+            "fresh start must read ~90, not drift from stale 120; got {fresh}"
         );
     }
 
@@ -252,7 +340,10 @@ mod tests {
             margin: 0.2,
         });
         assert_eq!(s.name, "G major");
-        assert_eq!(s.alternative.as_deref(), Some("E minor"));
+        let alt = s.alternative.expect("alternative");
+        assert_eq!(alt.name, "E minor");
+        assert_eq!(alt.tonic, 4);
+        assert!(alt.minor);
     }
 
     #[test]
@@ -264,7 +355,10 @@ mod tests {
             margin: 0.2,
         });
         assert_eq!(s.name, "A minor");
-        assert_eq!(s.alternative.as_deref(), Some("C major"));
+        let alt = s.alternative.expect("alternative");
+        assert_eq!(alt.name, "C major");
+        assert_eq!(alt.tonic, 0);
+        assert!(!alt.minor);
     }
 
     #[test]

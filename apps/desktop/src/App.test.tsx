@@ -83,7 +83,7 @@ describe("App", () => {
           mode: "major",
           name: "G major",
           confidence: 0.7,
-          alternative: "E minor",
+          alternative: { tonic: 4, minor: true, name: "E minor" },
         },
       },
     });

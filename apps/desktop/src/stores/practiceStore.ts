@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CoachingTip,
+  KeyOption,
   PerceptionSnapshot,
   PhraseSummary,
   PracticeMode,
@@ -130,6 +131,18 @@ export interface PracticeState {
    * before anything is heard. Per-session, not persisted.
    */
   perception: PerceptionSnapshot | null;
+  /**
+   * Whether the user has pinned the band's key (overriding auto-detection).
+   * Optimistic UI mirror of the backend override — set on the override actions,
+   * cleared on auto / session end. Per-session, not persisted.
+   */
+  keyPinned: boolean;
+  /**
+   * The key the band is pinned to while `keyPinned` (so the panel shows what the
+   * band actually plays, not the still-changing auto-detected key). `null` when
+   * not pinned. Always a concrete major/minor key.
+   */
+  pinnedKey: KeyOption | null;
 
   // UI prefs (persisted) --------------------------------------------------
   coachingEnabled: boolean;
@@ -212,6 +225,12 @@ export interface PracticeState {
   setAccompanimentPlaying: (playing: boolean) => void;
   /** Reflect the backend's live `perception` event (what the app hears). */
   setPerception: (perception: PerceptionSnapshot | null) => void;
+  /** Pin the band to a specific key (correcting the auto-read). */
+  setAccompanimentKey: (tonic: number, minor: boolean) => Promise<void>;
+  /** Freeze the band on its current auto-detected key. */
+  lockAccompanimentKey: () => Promise<void>;
+  /** Resume automatic key-following. */
+  clearAccompanimentKey: () => Promise<void>;
   /**
    * Live coaching loop: ask the backend for a tip on a just-completed phrase,
    * surface it in the tip panel, and persist it in the session recorder.
@@ -239,6 +258,28 @@ export interface PracticeState {
   goToHistory: () => void;
   /** Open the Connections & Privacy panel (networked-feature disclosure). */
   goToConnections: () => void;
+}
+
+/** Pitch-class names (sharps), index 0 = C. */
+const PITCH_CLASS_NAMES = [
+  "C",
+  "C#",
+  "D",
+  "D#",
+  "E",
+  "F",
+  "F#",
+  "G",
+  "G#",
+  "A",
+  "A#",
+  "B",
+];
+
+/** Build a displayable major/minor key option from a tonic + minor flag. */
+function keyOptionFor(tonic: number, minor: boolean): KeyOption {
+  const pc = PITCH_CLASS_NAMES[((tonic % 12) + 12) % 12];
+  return { tonic, minor, name: `${pc} ${minor ? "minor" : "major"}` };
 }
 
 /** localStorage key for the coaching-on/off preference. */
@@ -321,6 +362,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   cursorPosition: null,
   accompanimentPlaying: false,
   perception: null,
+  keyPinned: false,
+  pinnedKey: null,
   coachingEnabled: loadCoachingPref(),
   practiceMode: loadPracticeModePref(),
 
@@ -562,7 +605,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // `accompaniment-status { playing: false }`, but flip it here too so the
     // toggle resets immediately even if that event is missed. Perception also
     // stops once the session ends.
-    set({ accompanimentPlaying: false, perception: null });
+    set({ accompanimentPlaying: false, perception: null, keyPinned: false, pinnedKey: null });
   },
 
   startAccompaniment: async () => {
@@ -580,6 +623,39 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
 
   setPerception: (perception) => set({ perception }),
+
+  setAccompanimentKey: async (tonic, minor) => {
+    const prev = { keyPinned: get().keyPinned, pinnedKey: get().pinnedKey };
+    // Optimistic: the chip reflects the pin (and shows the pinned key, not the
+    // still-changing auto-read) immediately; the backend applies it to the live
+    // band (or stores it for the next band start).
+    set({ keyPinned: true, pinnedKey: keyOptionFor(tonic, minor) });
+    try {
+      await invoke("set_accompaniment_key", { tonic, minor });
+    } catch (err) {
+      console.error("set_accompaniment_key failed:", err);
+      set(prev); // roll back so the UI doesn't lie about a pin that didn't take
+    }
+  },
+
+  // "Lock" simply pins whatever key is currently shown — a concrete key, so it
+  // survives a band restart and the panel can display it honestly.
+  lockAccompanimentKey: async () => {
+    const key = get().perception?.key;
+    if (!key) return;
+    await get().setAccompanimentKey(key.tonic, key.mode === "minor");
+  },
+
+  clearAccompanimentKey: async () => {
+    const prev = { keyPinned: get().keyPinned, pinnedKey: get().pinnedKey };
+    set({ keyPinned: false, pinnedKey: null });
+    try {
+      await invoke("clear_accompaniment_key");
+    } catch (err) {
+      console.error("clear_accompaniment_key failed:", err);
+      set(prev);
+    }
+  },
 
   switchInstrument: async (name: string, vibratoToleranceCents = 15.0) => {
     const { status } = get();
@@ -678,6 +754,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       cursorPosition: null,
       accompanimentPlaying: false,
       perception: null,
+      keyPinned: false,
+      pinnedKey: null,
     }),
 
   setCoachingEnabled: (on) => {

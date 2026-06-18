@@ -470,6 +470,9 @@ pub struct AccompanimentDriver {
     sender: AccompanimentSender,
     last_key: Option<(u8, Mode)>,
     min_key_confidence: f32,
+    /// When true the user has pinned the key — auto key-detection from phrases is
+    /// suspended so the band stays where they put it.
+    pinned: bool,
 }
 
 impl AccompanimentDriver {
@@ -483,6 +486,7 @@ impl AccompanimentDriver {
             sender,
             last_key: None,
             min_key_confidence: Self::DEFAULT_MIN_KEY_CONFIDENCE,
+            pinned: false,
         }
     }
 
@@ -496,10 +500,10 @@ impl AccompanimentDriver {
         self.sender.set_clock(state);
     }
 
-    /// Update the band's key from a phrase's key estimate. Ignored when the
-    /// estimate is low-confidence or unchanged, so the band doesn't lurch keys.
+    /// Update the band's key from a phrase's key estimate. Ignored when the key
+    /// is pinned by the user, or the estimate is low-confidence/unchanged.
     pub fn observe_key(&mut self, key: &KeyEstimate) {
-        if key.confidence < self.min_key_confidence {
+        if self.pinned || key.confidence < self.min_key_confidence {
             return;
         }
         let kv = (key.tonic % 12, key.mode);
@@ -507,6 +511,26 @@ impl AccompanimentDriver {
             self.last_key = Some(kv);
             self.sender.set_key(kv.0, kv.1);
         }
+    }
+
+    /// Pin the band to a specific key (the user overriding the auto-read, e.g.
+    /// "it's E minor, not G major"). Suspends auto key-detection until cleared.
+    pub fn set_key_override(&mut self, tonic: u8, minor: bool) {
+        let mode = if minor { Mode::Aeolian } else { Mode::Ionian };
+        let kv = (tonic % 12, mode);
+        self.pinned = true;
+        self.last_key = Some(kv);
+        self.sender.set_key(kv.0, kv.1);
+    }
+
+    /// Resume automatic key-following from the analysis stream.
+    pub fn clear_key_override(&mut self) {
+        self.pinned = false;
+    }
+
+    /// Whether the key is currently pinned by the user.
+    pub fn is_key_pinned(&self) -> bool {
+        self.pinned
     }
 }
 
@@ -1127,6 +1151,36 @@ mod tests {
             keys,
             vec![7, 0],
             "only confident, changed key estimates should retune the band"
+        );
+    }
+
+    #[test]
+    fn key_override_pins_the_key_and_suspends_auto_detect() {
+        let (tx, mut rx) = accompaniment_control_channel(64);
+        let mut driver = AccompanimentDriver::new(tx);
+
+        // User pins E minor (the "it's not G major" correction).
+        driver.set_key_override(4, true);
+        assert!(driver.is_key_pinned());
+        // A confident, different auto-read must be ignored while pinned.
+        driver.observe_key(&key_est(7, 0.95)); // would be G major
+                                               // Clearing resumes auto-detect → the next confident read retunes.
+        driver.clear_key_override();
+        assert!(!driver.is_key_pinned());
+        driver.observe_key(&key_est(0, 0.95)); // C major
+
+        let mut keys = Vec::new();
+        while let Some(msg) = rx.0.try_pop() {
+            if let AccompanimentControl::SetKey { tonic, mode } = msg {
+                keys.push((tonic, mode));
+            }
+        }
+        // Override sends Aeolian (minor=true); the auto-read uses `key_est`'s
+        // Mixolydian. The pinned G-major read in between is correctly absent.
+        assert_eq!(
+            keys,
+            vec![(4, Mode::Aeolian), (0, Mode::Mixolydian)],
+            "pinned override is sent; auto-read while pinned is ignored; clearing resumes"
         );
     }
 
