@@ -40,6 +40,9 @@ require_base(){
 }
 
 update_repo(){
+  # The bootstrap shim (amc.sh) already pulled the latest repo before exec'ing
+  # this script, so skip the redundant reset when launched that way.
+  [ "${AMC_BOOTSTRAPPED:-}" = "1" ] && return 0
   mkdir -p "$AMC_HOME"
   if [ ! -d "$REPO_DIR/.git" ]; then
     log "Downloading the app for the first time..."
@@ -85,6 +88,29 @@ ensure_tauri_cli(){
       || { err "Could not install the desktop builder."; exit 10; }
   fi
 }
+# ONNX Runtime for audio-file transcription. Stored outside the repo (survives
+# the repo reset) and exposed via ORT_DYLIB_PATH, which the app honors as a
+# fallback loader path. Best effort: if it fails, audio-file import is simply
+# unavailable; everything else (incl. MusicXML/MIDI import) still works.
+ensure_audio_engine(){
+  local dir="$AMC_HOME/onnxruntime" lib
+  lib="$dir/libonnxruntime.dylib"
+  if [ ! -f "$lib" ]; then
+    log "Fetching the audio engine (one time, ~50 MB)..."
+    local ver="1.24.2" pkg tmp
+    pkg="onnxruntime-osx-universal2-${ver}"
+    tmp="$(mktemp -d)"
+    mkdir -p "$dir"
+    if curl -fsSL -o "$tmp/ort.tgz" \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${ver}/${pkg}.tgz" \
+       && tar xzf "$tmp/ort.tgz" -C "$tmp"; then
+      cp "$tmp/${pkg}/lib/libonnxruntime.dylib"* "$dir/" 2>/dev/null \
+        || cp "$tmp/${pkg}/lib/libonnxruntime.dylib" "$dir/" 2>/dev/null || true
+    fi
+    rm -rf "$tmp"
+  fi
+  [ -f "$lib" ] && export ORT_DYLIB_PATH="$lib" || log "(Audio-file import may be unavailable — that's OK.)"
+}
 
 web_alive(){  [ -f "$WEB_PIDFILE" ]  && kill -0 "$(cat "$WEB_PIDFILE")"  2>/dev/null; }
 desk_alive(){ [ -f "$DESK_PIDFILE" ] && kill -0 "$(cat "$DESK_PIDFILE")" 2>/dev/null; }
@@ -125,6 +151,14 @@ cmd_start_desktop(){
   ensure_path; require_base
   ensure_clt; ensure_rust; ensure_tauri_cli
   update_repo; install_deps
+  ensure_audio_engine   # ONNX runtime for audio-file transcription (best effort)
+
+  # Optional: real AI coaching tips + recap narration need an LLM key. The
+  # on-device analysis (pitch, tone, intonation, groove) works without it.
+  local LLM_KEY_FILE="${AMC_LLM_KEY_FILE:-$HOME/.config/amc/llm_key}"
+  if [ -s "$LLM_KEY_FILE" ]; then
+    export MUSIC_COMPANION_LLM_API_KEY="$(tr -d '[:space:]' < "$LLM_KEY_FILE")"
+  fi
 
   if desk_alive && pgrep -f "$DESK_BIN" >/dev/null 2>&1; then
     ok "Desktop app is already running."

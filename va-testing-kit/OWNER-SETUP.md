@@ -1,67 +1,66 @@
 # Owner setup (you, once)
 
-Goal: your VA types **one thing** (`/test-app`) and it sets up the latest app, walks her
-through testing, and files her feedback as a GitHub issue on `perice-pope/ai-music-companion`.
-She does **not** need a GitHub account — feedback is filed using a narrow token you create.
+Goal: your VA types **one thing** (`/test-app`) and it sets up the latest app, walks her through
+testing, and files her feedback as a GitHub issue. She needs **no GitHub account** — feedback is
+filed with a narrow token you create. And it's **self-updating**: as you change the app *or* the
+testing checklist, her next run is automatically current — no re-install.
 
-## 1. Create the feedback token (2 minutes)
+## How it stays up to date
 
-This token lets the skill open issues on **only** this one repo, nothing else. Revocable anytime.
+The kit lives in the repo at `va-testing-kit/`. The skill installed on her Mac is a thin
+bootstrapper: every `/test-app` run it pulls the latest `main` (app **and** kit), then follows the
+live checklist at `va-testing-kit/PLAYBOOK.md`. So:
 
-1. Go to **https://github.com/settings/personal-access-tokens/new** (Fine-grained token).
-2. **Token name:** `amc-va-feedback`
-3. **Expiration:** 90 days (or your preference).
-4. **Resource owner:** `perice-pope`
-5. **Repository access:** *Only select repositories* → choose **ai-music-companion**.
-6. **Permissions → Repository permissions → Issues:** set to **Read and write**.
-   (Leave everything else as *No access*.)
-7. Click **Generate token** and copy it. It looks like `github_pat_XXXX…`.
+- Change the **app** → she tests the newest build next run.
+- Change **`va-testing-kit/PLAYBOOK.md`** (the questions she's asked) or the **samples** → she gets
+  the new flow next run. **Edit the playbook to change what she tests.**
+- She only re-runs the installer if the tiny bootstrap itself changes (rare).
 
-> All issues filed by the VA will appear authored by **you** (the token owner), titled
-> `[VA Test] <date> — <commit>`. You'll get the normal GitHub notification.
+## 1. Create the feedback token (2 min)
 
-## 2. Get the kit + token onto her Mac
+Lets the skill open issues on **only** this repo. Revocable anytime.
 
-Pick whichever is easier:
+1. https://github.com/settings/personal-access-tokens/new (fine-grained)
+2. Name `amc-va-feedback`; Expiration 90 days; Resource owner `perice-pope`
+3. Repository access → **Only select repositories** → **ai-music-companion**
+4. Permissions → Repository → **Issues: Read and write** (everything else: No access)
+5. Generate, copy the `github_pat_…` string.
 
-**Option A — Send the folder.** Zip `amc-va-testing-kit/` and AirDrop/email it to her.
-Tell her to unzip it, then (per `VA-README.md`) open Terminal and run `bash install.sh`
-from inside the folder. During install it asks her to paste the **feedback token** — send
-her the token separately (text/email).
+Issues appear authored by you, titled `[VA Test] <date> — <mode> — <commit>`.
 
-**Option B — One-liner (if you commit the kit to the repo).** Put this `amc-va-testing-kit/`
-folder in the repo at `va-testing-kit/`, push it, then she pastes this in Terminal:
+## 2. Get her set up
 
-```
-curl -fsSL https://raw.githubusercontent.com/perice-pope/ai-music-companion/main/va-testing-kit/install.sh | bash
-```
+She has no GitHub account, so cloning (public) is fine and only the token is sensitive — it's typed
+once during install and stored locally on her Mac (`~/.config/amc/feedback_token`), never in the repo.
 
-…but with Option B she still needs the token, so the installer will prompt her for it.
-(The token is **never** stored in the repo — only on her machine, in `~/.config/amc/feedback_token`.)
+- **One-liner (simplest):** send her this for Terminal, plus the token separately:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/perice-pope/ai-music-companion/main/va-testing-kit/install.sh | bash
+  ```
+- **Or the seed zip** (`VA-README.md` inside it): if the curl line is awkward, send the small seed
+  zip; her `install.sh` does the same thing.
 
-## 3. That's it
+Either way, after install she just types `/test-app`.
 
-From then on, every time she opens Claude Code and types `/test-app`, the skill:
-1. pulls the latest `main`,
-2. runs the web UI in Chrome (`pnpm dev` → http://localhost:1420),
-3. walks her through a friendly 6-point checklist,
-4. files her answers as a GitHub issue you can read in the repo's **Issues** tab.
+## 3. The two modes
 
-### Two modes
+- **`/test-app`** — fast web preview in Chrome. Sample data, **no mic, no file import**. Only good
+  for judging look / wording / screen flow.
+- **`/test-app desktop`** — the **real** app: live mic, music-file upload, and AI critique. **This is
+  the only mode that can test the two priority features** (upload-and-practice, and the AI hearing &
+  critiquing). First run installs Rust + the Tauri builder + the audio engine and compiles for
+  10–30+ min; later runs are faster. She'll be asked to play/hum a few notes.
 
-- **`/test-app`** (default) — fast **web preview** in Chrome. Sample data, **no real microphone**
-  (the audio engine is Rust-only and isn't running). Perfect for look/flow/usability feedback.
-- **`/test-app desktop`** — the **real native app** with live mic and pitch coaching. The **first**
-  desktop run installs Rust + the Tauri builder on her Mac and **compiles for 10–30+ minutes**, and
-  macOS will prompt for the microphone. Later runs are faster. Use this when you want a real-audio pass.
-  (The web installer does **not** pre-install the desktop toolchain — it's fetched on demand the first
-  time she runs desktop, so the simple path stays fast.)
+## 4. Optional — turn on real AI coaching during tests
+
+The on-device analysis (pitch, tone, intonation, groove) works with no key. The **conversational
+coaching tips and recap narration** need an Anthropic API key. To enable on her Mac, put your key in
+`~/.config/amc/llm_key` (the desktop runner reads it and sets `MUSIC_COMPANION_LLM_API_KEY`). Costs
+apply per your Anthropic account, so only do this when you want to test the worded feedback.
 
 ## Maintenance
-- **Rotate/revoke the token:** GitHub → Settings → Developer settings → Fine-grained tokens.
-  Re-run her installer (or have her re-run it) to paste a new one.
-- **Add AI coaching during tests (optional):** set `MUSIC_COMPANION_LLM_API_KEY` in her
-  environment. Without it the app runs fine in offline mode (no live coaching tips).
-- **Try it yourself first:** on your machine the skill is already installed. Open Claude Code
-  here and type `/test-app`. Your machine has no token file, so feedback falls back to filing
-  via your `gh` login automatically.
+- **Change what she tests:** edit `va-testing-kit/PLAYBOOK.md` and push. No re-install.
+- **Rotate/revoke token:** GitHub → Developer settings → Fine-grained tokens; have her re-run the
+  installer to paste a new one.
+- **Try it yourself:** the skill is installed on your machine — type `/test-app`. With no token file,
+  feedback falls back to filing via your `gh` login.

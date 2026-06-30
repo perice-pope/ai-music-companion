@@ -5,143 +5,51 @@ description: Set up and test the latest AI Music Companion app, walk the tester 
 
 # Test the AI Music Companion app
 
-You are guiding a **non-technical tester** (a virtual assistant). Be warm, plain-spoken,
-and patient. Never show raw errors or jargon. One step at a time. Do the technical work
-for her with the scripts below — she only ever reads your messages and types short answers.
+You are guiding a **non-technical tester** (a virtual assistant). Be warm, plain-spoken, and
+patient. Never show raw errors, jargon, port numbers, or git output. Do the technical work for
+her with the scripts — she only reads your messages and types short answers.
 
-The scripts live next to this file in `scripts/`. Always call them by their absolute path:
-`"$CLAUDE_SKILL_DIR/scripts/run.sh"` and `"$CLAUDE_SKILL_DIR/scripts/feedback.sh"`.
-(If `$CLAUDE_SKILL_DIR` is not set, use the directory this SKILL.md is in.)
+This skill is intentionally thin and **self-updating**: it pulls the latest app *and* the latest
+testing instructions from the repo every run, then follows the live playbook. Do not hard-code the
+checklist here — always read it fresh from the playbook below.
 
-## Step 0 — Pick the mode
+## Step 1 — Pick the mode
 
-There are two modes. Choose based on how the user invoked the skill:
+- **Web (default):** fast preview in Chrome. Sample data, **no microphone, no file import**. Good
+  only for judging look / wording / screen flow.
+- **Desktop:** the real native app with **live mic, file upload, and AI critique**. Use this when
+  the user's request contains the word **"desktop"** (e.g. `/test-app desktop`). First run compiles
+  for 10–30+ min.
 
-- **Web (default)** — fast preview in Chrome with **sample data, no real microphone**. Use this
-  for look/flow/usability feedback. This is the mode unless the word **"desktop"** appears in
-  the user's request.
-- **Desktop** — the real native app with **live microphone and real pitch coaching**. Use this
-  only when the invocation includes **"desktop"** (e.g. `/test-app desktop`). The **first** run
-  compiles for **10–30+ minutes** and may trigger macOS popups (developer tools, microphone).
+Pick `web` unless "desktop" was requested.
 
-Set `MODE` to `web` or `desktop` and follow the matching path below.
+## Step 2 — Update + launch (this also self-updates the testing kit)
 
-## Step 1 — Launch the app
-
-**Web:** say "Getting the latest version and opening it in Chrome for you — one moment. ☕" then run:
+Run the bootstrap, which pulls the latest app + kit and launches the chosen mode:
 
 ```
-bash "<skill_dir>/scripts/run.sh" start web
+bash "$HOME/.claude/skills/test-app/scripts/amc.sh" start <web|desktop>
 ```
 
-When it succeeds, tell her the app is open in **Google Chrome** and ask her to switch to it.
+Capture the `COMMIT=...` and `MODE=...` lines from the output. While desktop builds, it prints
+`Still compiling... (N min)` — reassure her every so often ("still going, all normal").
 
-**Desktop:** warn her first — "I'm going to build the real app so you can actually hear yourself.
-The **first** time this takes 10–30 minutes — totally normal. Please leave it running; the app
-window will pop open when it's ready. If a popup asks for the microphone, click **Allow**." Then run:
+If it fails or prints "Setup is incomplete": reassure her and tell her to send her manager
+"The testing app didn't finish setting up." Don't show her the error text.
 
-```
-bash "<skill_dir>/scripts/run.sh" start desktop
-```
+## Step 3 — Follow the live playbook
 
-This streams `Still compiling... (N min elapsed)` lines while it builds — reassure her with a
-short "still going, all normal" every so often. When it prints `MODE=desktop` and that the window
-is open, continue.
-
-For both: capture the `COMMIT=...` value from the output for the feedback report.
-
-- If it fails (non-zero exit / "Setup is incomplete" / build failed): reassure her, and tell her to
-  send her manager this message: "The testing app didn't finish setting up." Then stop. Do **not**
-  dump the error log to her. (If desktop asked her to finish an Apple "developer tools" popup, tell
-  her to complete it and then run `/test-app desktop` again.)
-
-## Step 2 — Walk her through testing
-
-Go through the questions **one at a time**. Ask, wait for her reply, acknowledge warmly, move on.
-Keep her answers for the report. Don't lecture; if she says something broke, just note it and continue.
-If she gets stuck on any step, offer to skip it ("No worries — we can skip that one").
-
-### If MODE = web
-
-**Set expectations first** (one friendly sentence): this is the **preview** — it shows the real
-screens and flow but plays **sample practice data** and does **not** use a microphone, so **no mic
-prompt will appear** and that's normal. Her job is how it **looks, reads, and flows**.
-
-1. **It loads** — "Do you see the AI Music Companion screen in Chrome? Does it look polished or rough?"
-2. **Click around** — "Click through the main buttons and menus. Does everything respond, or did anything look blank, dead, or broken?"
-3. **Practice session flow** — "Start a practice session and follow it end to end. (It plays a sample session — it won't hear *you* — that's expected.) Did the steps make sense?"
-4. **Look & layout** — "Is anything overlapping, cut off, misaligned, or hard to read on your screen?"
-5. **Wording** — "Did any text, label, or button name confuse you or seem off?"
-6. **Overall** — "1 to 5 overall? And if you could change one thing, what would it be?"
-
-### If MODE = desktop
-
-This is the **real app**: it can hear her and show live pitch. A native window titled **AI Music
-Companion** should be open (not Chrome).
-
-1. **It opens** — "Do you see the AI Music Companion window open on its own? How does it look?"
-2. **Click around** — "Click through the main buttons and menus. Anything blank, dead, or broken?"
-3. **Microphone** — "Start a practice session. If macOS asks to use the microphone, click **Allow**. Did it start listening?"
-4. **Play/sing something** — "Play or sing a few notes. Does the live pitch/feedback react to you, and does it feel about right or laggy/off?"
-5. **Look & layout** — "Is anything overlapping, cut off, misaligned, or hard to read?"
-6. **Overall** — "1 to 5 overall? And if you could change one thing, what would it be?"
-
-If the mic never prompts or nothing reacts, just note it — don't try to troubleshoot with her.
-
-## Step 3 — File her feedback
-
-Compose a clean Markdown report and write it to a temp file (e.g. `/tmp/amc_feedback_body.md`).
-Use this shape, filling in her actual words:
-
-```
-**Tester:** (her name if she gave one, else "VA")
-**Date:** <today>
-**App version (commit):** <COMMIT from step 1>
-**Run mode:** <web → "Web UI preview (Chrome — sample data, no live audio)" | desktop → "Desktop app (Tauri — live microphone)">
-
-### Checklist
-1. <Loads / first impression>: <answer>
-2. <Click around>: <answer>
-3. <Practice session flow | Microphone>: <answer>
-4. <Look & layout | Live pitch reaction>: <answer>
-5. <Wording | Look & layout>: <answer>
-
-### Overall
-Rating: <1-5>
-Would change: <answer>
-
-### Notes
-<anything else she said>
-```
-
-Title: `[VA Test] <today's date> — <COMMIT>`
-
-Then file it:
-
-```
-bash "<skill_dir>/scripts/feedback.sh" "<title>" /tmp/amc_feedback_body.md
-```
-
-- On `ISSUE_URL=...`: tell her **"All done — your feedback has been sent to your manager. Thank you! 🎉"**
-  (You don't need to show her the URL unless she asks.)
-- On `NO_AUTH`: the feedback code isn't set up yet. Save the report somewhere safe
-  (`~/amc/last_feedback.md`), and tell her: "I've saved your feedback. Please send your manager
-  this note so they can finish setup: 'The feedback code isn't installed yet.'"
-- On any `ERROR_...`: reassure her, save the report to `~/amc/last_feedback.md`, and tell her to
-  let her manager know it couldn't send. Don't show the error text.
+Read the file `$HOME/amc/ai-music-companion/va-testing-kit/PLAYBOOK.md` and **follow it exactly**
+for the matching mode. It is the source of truth for the walkthrough, the feedback report, and how
+to file it — and it is always current because Step 2 just updated it. Ask its questions one at a
+time, keep her answers, and let her skip anything she gets stuck on.
 
 ## Step 4 — Clean up
 
-Shut everything down so nothing keeps running in the background (this stops both web and desktop):
+When done, stop the app so nothing runs in the background:
 
 ```
-bash "<skill_dir>/scripts/run.sh" stop
+bash "$HOME/.claude/skills/test-app/scripts/amc.sh" stop
 ```
 
-Then thank her. For web, she can close the Chrome tab; for desktop, the app window will close.
-You're done.
-
-## Notes for you (the assistant)
-- Resolve `<skill_dir>` to the real absolute path of this skill's folder before running anything.
-- Run the scripts with the Bash tool. They are safe and idempotent.
-- Keep every message short and kind. She should never see a stack trace, a port number, or git output.
+Then thank her.
