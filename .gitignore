@@ -51,11 +51,10 @@ apps/desktop/src-tauri/icons/*
 # from tauri.conf.json, so checking these in would just create merge
 # noise on every config tweak.
 apps/desktop/src-tauri/gen/
-# Tauri subcrate Cargo.lock. The top-level workspace's Cargo.lock is
-# committed; the Tauri subcrate runs as its own workspace (own giant
-# dep graph) and re-locks on every build, so committing it adds ~6k
-# lines of churn to every PR touching src-tauri.
-apps/desktop/src-tauri/Cargo.lock
+# NOTE: apps/desktop/src-tauri/Cargo.lock IS committed (see top-of-file rule:
+# this is a binary). Leaving it unlocked let transitive deps drift and broke a
+# clean build (cookie 0.18.1 vs time 0.3.52). The lock pins the graph; CI runs
+# the Tauri job with --locked. Re-lock intentionally via `cargo update`.
 
 # Build artifacts
 *.dmg

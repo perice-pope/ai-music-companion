@@ -167,7 +167,7 @@ jobs:
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
       # The audio-import command transcribes via ONNX Runtime (the `transcribe`
       # crate). Vendor the official runtime so the end-to-end import test runs
@@ -183,7 +183,7 @@ jobs:
           echo "TRANSCRIBE_REQUIRE_ORT=1" >> "$GITHUB_ENV"
 
       - name: Tests
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
 
   bench:
     name: Latency benchmark
