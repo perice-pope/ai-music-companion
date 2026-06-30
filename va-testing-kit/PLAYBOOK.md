@@ -1,0 +1,132 @@
+# AMC Tester Playbook (live — pulled fresh every run)
+
+This is the source of truth for the `/test-app` walkthrough. The skill reads it after updating, so
+edits here reach the tester on her next run with no re-install. Keep it warm and non-technical.
+
+Paths (on her machine):
+- Feedback script: `$HOME/amc/ai-music-companion/va-testing-kit/skills/test-app/scripts/feedback.sh`
+- Sample files: `$HOME/amc/ai-music-companion/va-testing-kit/samples/`
+  - `sample-score-c-major-scale.musicxml` (sheet-music file)
+  - `sample-recording-c-major-scale.wav` (audio recording)
+
+Ask one question at a time. Acknowledge warmly. Keep her answers for the report. Offer to skip
+anything she gets stuck on. Never show errors/jargon.
+
+---
+
+## WEB walkthrough (MODE = web)
+
+Say first, in one friendly sentence: *"This is the quick preview — it shows the real screens but
+plays sample data. It won't use your microphone and file upload is turned off here, so we're just
+judging how it looks and reads. The real sound testing happens in a separate mode."*
+
+1. **Instruments** — "Do you see a grid of instruments (trumpet, voice, violin, piano…) each with
+   an emoji and a family label like Brass or Strings? Pick one — does selecting it feel clear?"
+2. **Practice modes** — "Below the instruments there are three modes: **Warm-up**, **Practice**,
+   **Run-through**. Read the little description under each. Do they make sense to you?"
+3. **Start a session** — "Click **Start Practice**. Up top you should see a timer counting, the
+   mode name, a **Play with me** button, and **End Session**. Does that bar look right? (The note
+   area will say 'Listening…' and won't move — that's expected in the preview.)"
+4. **Score screen** — "Go back and click **Practice with Score**. You'll see a drop area that says
+   'Drag a score or recording here.' Read it — is it clear what you could add? (If you try to drop a
+   file it'll show an error — that's expected here; just judge the screen and wording.)"
+5. **Recap** — "End the session. You should land on a recap titled 'Nice session' with **Strengths**
+   listed before **Areas to work on**, and **Practice again** / **Done** buttons. Look right?"
+6. **Look & wording** — "Anything overlapping, cut off, or hard to read? Any text or button name
+   that confused you?"
+7. **Overall** — "1 to 5 overall, and one thing you'd change?"
+
+Note for the report: web mode can't test mic, upload, or AI critique.
+
+---
+
+## DESKTOP walkthrough (MODE = desktop) — the real test
+
+A native window titled **AI Music Companion** is open. This mode tests the two things that matter
+most: **what the user sees in the practice modes**, and **uploading music + the AI critiquing your
+playing**. She'll need to make sound — humming or singing a few notes is totally fine.
+
+### A. Practice modes & what she sees
+1. **Open it** — "Pick an instrument (or **Voice** if you'll hum/sing). Choose the **Practice** mode
+   for full coaching. Start a session — if macOS asks for the **microphone**, click **Allow**."
+2. **It hears you** — "Hum or play a few steady notes. Does the big note + the pitch meter move and
+   roughly match what you're singing? Does it feel quick or laggy?"
+3. **'I hear' strip** — "Look for an 'I hear' line. Does it show a tempo (like '120 BPM') and a key
+   (like 'G major') while you play?"
+4. **Coaching tips** — "Do small tip cards slide in while you play? Read one to me — does it sound
+   like helpful, sensible feedback?"
+5. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
+   tips). Does it?"
+
+### B. Upload music & practice with it
+Open the samples folder for her so she can drag a file:
+`open "$HOME/amc/ai-music-companion/va-testing-kit/samples"`
+
+6. **Upload a score** — "Go back, click **Practice with Score**, and drag
+   **sample-score-c-major-scale.musicxml** from the folder I just opened onto the drop area. Does
+   sheet music appear? (If it asks which part, pick the only one.)"
+7. **Practice with it** — "Click **Start Practice with This Score**. You should see the sheet music
+   with a moving cursor. Play or hum along — does the cursor follow you down the line?"
+8. **Upload a recording (bonus)** — "Back at the drop area, drag in
+   **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
+   score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
+
+### C. The AI critique
+9. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
+   things like tone, how in-tune you were (a % or 'in tune'), tempo, plus **Strengths**, **Areas to
+   work on**, and **Next time, try**? Is it specific and useful, or generic?"
+10. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful, specific
+    feedback on the music**? What was missing or wrong?"
+11. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
+
+If the mic never reacts, or upload/critique errors out, just note it plainly in the report — don't
+troubleshoot with her.
+
+---
+
+## Filing her feedback (both modes)
+
+Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
+
+```
+**Tester:** <name or "VA">
+**Date:** <today>
+**App version (commit):** <COMMIT from launch>
+**Run mode:** <web → "Web preview (look/wording only)" | desktop → "Desktop (live mic, upload, critique)">
+
+### Practice modes & what the user sees
+<her answers about instruments, the 3 modes, the session view, pitch/'I hear'/tips>
+
+### Upload music & practice with it   (desktop only)
+- Score (.musicxml) import & render: <answer>
+- Cursor follows while playing: <answer>
+- Audio (.wav) import & transcription: <answer>
+
+### AI critique / recap   (desktop only)
+- Did the recap reflect her actual playing: <answer>
+- Helpful & specific vs generic: <answer>
+
+### Look, layout & wording
+<answer>
+
+### Overall
+Rating: <1-5>
+One thing to change: <answer>
+
+### Notes
+<anything else>
+```
+
+Title: `[VA Test] <today> — <mode> — <COMMIT>`
+
+Then file it:
+
+```
+bash "$HOME/amc/ai-music-companion/va-testing-kit/skills/test-app/scripts/feedback.sh" "<title>" /tmp/amc_feedback_body.md
+```
+
+- `ISSUE_URL=...` → "All done — your feedback went straight to your manager. Thank you! 🎉"
+- `NO_AUTH` → save report to `~/amc/last_feedback.md`; tell her to send her manager: "The feedback
+  code isn't installed yet."
+- `ERROR_...` → save report to `~/amc/last_feedback.md`; tell her it couldn't send and to let her
+  manager know. Don't show the error text.
