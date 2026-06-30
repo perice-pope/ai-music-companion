@@ -1,3 +1,9 @@
+## [2.6.1](https://github.com/perice-pope/ai-music-companion/compare/v2.6.0...v2.6.1) (2026-06-30)
+
+### Bug Fixes
+
+* **desktop:** commit pinned src-tauri Cargo.lock to stop dependency drift ([#249](https://github.com/perice-pope/ai-music-companion/issues/249)) ([7197ecf](https://github.com/perice-pope/ai-music-companion/commit/7197ecf0ffdc8e7703d88f960999e37295c58010))
+
 ## [2.6.0](https://github.com/perice-pope/ai-music-companion/compare/v2.5.0...v2.6.0) (2026-06-18)
 
 ### Features
