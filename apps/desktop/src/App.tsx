@@ -37,6 +37,7 @@ function App() {
   const setEvent = useAudioStore((s) => s.setEvent);
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
   const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
+  const requestReveal = usePracticeStore((s) => s.requestReveal);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
   const setAccompanimentPlaying = usePracticeStore(
     (s) => s.setAccompanimentPlaying,
@@ -84,6 +85,10 @@ function App() {
             // fires no IPC at all. Fire-and-forget; the live session must never
             // block on (or break from) a coaching round-trip.
             void requestCoachingTip(payload);
+            // Ambient reveal loop: surface a real-world music connection for the
+            // current key/mode (curated + offline). Self-gated to a live session
+            // with a detected key; fire-and-forget, like coaching.
+            void requestReveal(payload);
             // Only score-following phrases carry a position; in free play
             // it's absent and the cursor stays put.
             if (payload.score_position) {
@@ -144,6 +149,7 @@ function App() {
     setEvent,
     pushPhrase,
     requestCoachingTip,
+    requestReveal,
     setCursorPosition,
     setAccompanimentPlaying,
     setPerception,

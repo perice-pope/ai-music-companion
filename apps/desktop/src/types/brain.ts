@@ -91,6 +91,28 @@ export interface DynamicsStats {
 }
 
 /**
+ * Where a reveal's wording came from. Mirrors
+ * `brain::connections::RevealSource` (`#[serde(rename_all = "snake_case")]`).
+ * Slice 1 only ever emits `"grounded"`.
+ */
+export type RevealSource = "grounded" | "llm_grounded";
+
+/**
+ * A real-world music connection for what the player is doing right now.
+ * Mirrors `brain::connections::Reveal`. Returned by the `get_reveal` command.
+ */
+export interface Reveal {
+  /** The musical concept detected, e.g. "G Dorian". */
+  concept: string;
+  /** The grounded real-world connection, e.g. `Miles Davis — "So What"`. */
+  connection: string;
+  /** One short line on why. */
+  why: string;
+  /** Provenance of the wording. */
+  source: RevealSource;
+}
+
+/**
  * Summary of a completed musical phrase. Matches
  * `brain::phrase::PhraseSummary`.
  *
