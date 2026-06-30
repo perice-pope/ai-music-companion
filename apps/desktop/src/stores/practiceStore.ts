@@ -751,13 +751,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       tipQueue: state.tipQueue.filter((q) => q.id !== id),
     })),
 
+  // Replace rather than append: the card shows one reveal at a time and a new
+  // reveal *supersedes* the old (#253 AC7 "replaces, does not stack"). Appending
+  // would let a still-queued older reveal resurface once the newer one's
+  // dismiss timer fires — so we keep the queue at a single, latest entry.
   pushReveal: (reveal, phraseIndex) =>
-    set((state) => ({
-      revealQueue: [
-        ...state.revealQueue,
-        { id: newId(), reveal, receivedAt: Date.now(), phraseIndex },
-      ],
-    })),
+    set({
+      revealQueue: [{ id: newId(), reveal, receivedAt: Date.now(), phraseIndex }],
+    }),
 
   requestReveal: async (phrase) => {
     const { status, perception } = get();

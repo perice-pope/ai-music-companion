@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import RevealCard from "./RevealCard";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { Reveal } from "../types/brain";
@@ -49,13 +49,13 @@ describe("RevealCard", () => {
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
-    expect(screen.getByText(/In the wild · G Dorian/)).toBeInTheDocument();
+    // Assert the concept shows; don't pin the decorative "In the wild ·" prefix.
+    expect(screen.getByText(/G Dorian/)).toBeInTheDocument();
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.getByText("A cool, jazzy minor.")).toBeInTheDocument();
   });
 
-  // AC7: a second reveal replaces the first (the card never stacks). Fails if
-  // an old reveal stays on screen alongside a new one.
+  // AC7 (render contract): with multiple in the queue only the latest renders.
   it("shows only the most recent reveal, never stacking", () => {
     usePracticeStore.setState({
       revealQueue: [
@@ -67,6 +67,36 @@ describe("RevealCard", () => {
     expect(screen.getAllByTestId(/^reveal-r/)).toHaveLength(1);
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.queryByText("Santana — Oye Como Va")).not.toBeInTheDocument();
+  });
+
+  // AC7 (the real push→supersede→dismiss flow): a reveal that arrives while an
+  // earlier one is still showing replaces it, and after the newer one's linger
+  // the card is empty — the older reveal must NOT resurface. This fails under an
+  // appending `pushReveal` (the stale r1 would slide back on and the queue would
+  // not be empty).
+  it("a newer reveal replaces the older one — the old never resurfaces", () => {
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.getState().pushReveal(reveal("Santana — Oye Como Va"), 0);
+    });
+    expect(screen.getByText("Santana — Oye Como Va")).toBeInTheDocument();
+
+    // r2 supersedes r1 partway through r1's linger window.
+    act(() => {
+      vi.advanceTimersByTime(4000);
+      usePracticeStore.getState().pushReveal(reveal('Miles Davis — "So What"'), 1);
+    });
+    expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
+    expect(screen.queryByText("Santana — Oye Como Va")).not.toBeInTheDocument();
+
+    // After the newer reveal's full linger + fade, the queue is empty and
+    // nothing slides back on.
+    act(() => {
+      vi.advanceTimersByTime(12000);
+      vi.advanceTimersByTime(300);
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
   });
 
   // The card auto-dismisses after its linger window, clearing the queue. Fails

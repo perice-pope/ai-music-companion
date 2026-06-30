@@ -169,6 +169,10 @@ fn curated_for(mode_normalized: &str) -> Option<(&'static str, &'static [Exempla
                 why: "Rare and unstable — Locrian's flat-5th never quite rests.",
             }],
         )),
+        // Forward-looking: perception (`theory::Mode`) currently only emits the
+        // seven church modes (+ major/minor), so the arms below don't fire on
+        // the live path yet. They're kept ready for a richer scale detector and
+        // exercised directly by `reveal_for` unit tests.
         "harmonic minor" => Some((
             "Harmonic Minor",
             &[Exemplar {
@@ -207,7 +211,10 @@ fn curated_for(mode_normalized: &str) -> Option<(&'static str, &'static [Exempla
 /// curated match (it never fabricates). For a given `(ctx, seed)` it always
 /// returns the same exemplar, so it's trivially testable.
 pub fn reveal_for(ctx: &MusicalContext, seed: u64) -> Option<Reveal> {
-    if ctx.confidence < REVEAL_MIN_CONFIDENCE {
+    // Stay silent below the confidence threshold — and treat a NaN reading as
+    // "not confident" rather than letting `NaN < threshold == false` slip
+    // through the gate.
+    if ctx.confidence.is_nan() || ctx.confidence < REVEAL_MIN_CONFIDENCE {
         return None;
     }
     let mode_key = ctx.mode.trim().to_lowercase();
@@ -276,6 +283,21 @@ mod tests {
         assert!(reveal_for(&ctx(7, "Dorian", REVEAL_MIN_CONFIDENCE - 0.01), 0).is_none());
     }
 
+    /// AC2 boundary: exactly at the threshold is "confident enough" — pins the
+    /// gate to `>=`. Fails on a `<`→`<=` mutation that would mute a valid reveal
+    /// (or an `>` that would let `< threshold` through).
+    #[test]
+    fn confidence_at_threshold_reveals() {
+        assert!(reveal_for(&ctx(7, "dorian", REVEAL_MIN_CONFIDENCE), 0).is_some());
+    }
+
+    /// A NaN confidence is treated as "not confident" (no reveal), not slipped
+    /// through by `NaN < threshold == false`.
+    #[test]
+    fn nan_confidence_returns_none() {
+        assert!(reveal_for(&ctx(7, "dorian", f32::NAN), 0).is_none());
+    }
+
     /// AC3: an unknown/unmapped mode yields nothing — never a fabricated match.
     /// Fails if the table ever falls through to a default connection.
     #[test]
@@ -298,11 +320,14 @@ mod tests {
         );
     }
 
-    /// AC5: slice-1 reveals are produced with no network/LLM in scope — the
-    /// source is always `Grounded`. Fails if an LLM/network path is ever wired
-    /// into S1 (the source would become `LlmGrounded`), flagging the scope creep.
+    /// AC5 scope tripwire (not a network test): slice 1 has no LLM/network
+    /// client to spy on — offline-safety holds by construction because
+    /// `reveal_for` is a pure function with no I/O. This guards that property by
+    /// asserting the source stays `Grounded`; if S2 ever wires an LLM path into
+    /// S1 the source would flip to `LlmGrounded` and this fails, flagging the
+    /// scope creep. The real "client never invoked" test arrives with S2's client.
     #[test]
-    fn slice1_reveals_are_grounded_offline() {
+    fn slice1_reveals_are_grounded_no_llm_path() {
         let r = reveal_for(&ctx(0, "major", 0.9), 0).unwrap();
         assert_eq!(r.source, RevealSource::Grounded);
     }

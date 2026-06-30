@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { CoachingTip, PhraseSummary, SessionRecap } from "../types/brain";
+import type {
+  CoachingTip,
+  PhraseSummary,
+  Reveal,
+  SessionRecap,
+} from "../types/brain";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -367,6 +372,123 @@ describe("practiceStore — requestCoachingTip (live loop)", () => {
       useStore.getState().requestCoachingTip(samplePhrase()),
     ).resolves.toBeUndefined();
     expect(useStore.getState().tipQueue).toHaveLength(0);
+  });
+});
+
+describe("practiceStore — requestReveal (#253)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  function samplePhrase(phraseIndex = 0): PhraseSummary {
+    return {
+      phrase_index: phraseIndex,
+      start_time: 0,
+      end_time: 1,
+      duration_secs: 1,
+      note_count: 6,
+      pitch_stats: {
+        mean_hz: 440,
+        min_hz: 430,
+        max_hz: 450,
+        range_cents: 80,
+        pitches: [440],
+      },
+      dynamics: {
+        mean_amplitude: 0.5,
+        min_amplitude: 0.3,
+        max_amplitude: 0.8,
+        dynamic_range: 0.5,
+      },
+      stability: 0.8,
+    };
+  }
+
+  const gDorianKey = {
+    tonic: 7,
+    mode: "dorian",
+    name: "G Dorian",
+    confidence: 0.9,
+    alternative: null,
+  };
+  const perceptionWith = (key: typeof gDorianKey | null) => ({
+    tempo_bpm: null,
+    swing_ratio: null,
+    locked: false,
+    key,
+  });
+  const sampleReveal: Reveal = {
+    concept: "G Dorian",
+    connection: 'Miles Davis — "So What"',
+    why: "Modal jazz.",
+    source: "grounded",
+  };
+
+  async function listeningStoreWithKey() {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid"); // start_practice_session
+    await useStore.getState().startSession("Trumpet");
+    useStore.setState({ perception: perceptionWith(gDorianKey) });
+    mockInvoke.mockClear();
+    return useStore;
+  }
+
+  // §6: only during a live session. A no-op when idle must fire NO IPC —
+  // deleting the `status !== "listening"` guard would call get_reveal here.
+  it("fires no IPC when no session is listening", async () => {
+    const useStore = await freshStore();
+    useStore.setState({ perception: perceptionWith(gDorianKey) });
+    await useStore.getState().requestReveal(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // §6 "silence → no reveal": without a detected key there's nothing to reveal,
+  // so no IPC fires. Deleting the `!perception?.key` guard breaks this.
+  it("fires no IPC when perception has no key", async () => {
+    const useStore = await listeningStoreWithKey();
+    useStore.setState({ perception: perceptionWith(null) });
+    await useStore.getState().requestReveal(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // The live key/mode/confidence are passed to the backend, and a returned
+  // reveal is surfaced. Catches wrong arg wiring or a dropped pushReveal.
+  it("asks the backend with the live key and surfaces a returned reveal", async () => {
+    const useStore = await listeningStoreWithKey();
+    mockInvoke.mockResolvedValueOnce(sampleReveal);
+    await useStore.getState().requestReveal(samplePhrase(2));
+    expect(mockInvoke).toHaveBeenCalledWith("get_reveal", {
+      tonic: 7,
+      mode: "dorian",
+      confidence: 0.9,
+      phraseIndex: 2,
+    });
+    const q = useStore.getState().revealQueue;
+    expect(q).toHaveLength(1);
+    expect(q[0].reveal.connection).toBe(sampleReveal.connection);
+  });
+
+  // AC: a `null` reply is the honest "nothing to reveal" — surface nothing.
+  // Catches a regression that pushes on null.
+  it("honors a null reply: surfaces nothing", async () => {
+    const useStore = await listeningStoreWithKey();
+    mockInvoke.mockResolvedValueOnce(null);
+    await useStore.getState().requestReveal(samplePhrase());
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // Best-effort: a failed request must never throw or disrupt the session.
+  it("a failed reveal request never throws and leaves the queue empty", async () => {
+    const useStore = await listeningStoreWithKey();
+    mockInvoke.mockRejectedValueOnce(new Error("boom"));
+    await expect(
+      useStore.getState().requestReveal(samplePhrase()),
+    ).resolves.toBeUndefined();
+    expect(useStore.getState().revealQueue).toHaveLength(0);
   });
 });
 
