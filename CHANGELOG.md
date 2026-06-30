@@ -1,3 +1,9 @@
+## [2.7.0](https://github.com/perice-pope/ai-music-companion/compare/v2.6.1...v2.7.0) (2026-06-30)
+
+### Features
+
+* **va-kit:** self-updating skill + feature-tailored testing playbook ([#251](https://github.com/perice-pope/ai-music-companion/issues/251)) ([208b283](https://github.com/perice-pope/ai-music-companion/commit/208b283de2db0d94106b11680aa9ad2f025ee833))
+
 ## [2.6.1](https://github.com/perice-pope/ai-music-companion/compare/v2.6.0...v2.6.1) (2026-06-30)
 
 ### Bug Fixes
