@@ -9,6 +9,7 @@ import EndSessionButton from "./EndSessionButton";
 import AccompanimentToggle from "./AccompanimentToggle";
 import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
+import RevealCard from "./RevealCard";
 import ScoreView from "./ScoreView";
 
 /**
@@ -203,8 +204,9 @@ export default function PracticeSession() {
           </div>
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
-            <div className="hidden lg:block">
+            <div className="hidden lg:flex lg:flex-col lg:gap-4">
               <CoachingTipPanel />
+              <RevealCard />
             </div>
           </div>
         </div>
@@ -212,8 +214,9 @@ export default function PracticeSession() {
         // Free play: the pitch meter is the centerpiece.
         <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
           <PitchDisplay />
-          <div className="hidden lg:block">
+          <div className="hidden lg:flex lg:flex-col lg:gap-4">
             <CoachingTipPanel />
+            <RevealCard />
           </div>
         </div>
       )}

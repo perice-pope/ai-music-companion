@@ -23,6 +23,7 @@ use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
 };
+use brain::connections::{reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE};
 use brain::follower::ScorePosition;
 use brain::perception::PerceptionTracker;
 use brain::phrase::PhraseSummary;
@@ -2102,6 +2103,27 @@ pub async fn record_coaching_tip(
         .record_coaching_tip(phrase_index, &tip)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Offer a real-world music "reveal" for a just-completed phrase, from the live
+/// perception reading (key + mode + confidence). Slice 1 is curated + grounded +
+/// offline: it makes no network call, never fabricates a connection, and returns
+/// `None` when confidence is low, the mode has no curated match, or the phrase
+/// isn't on the reveal cadence. The selection logic lives in `brain::connections`
+/// (Rust core); this command is a thin pass-through. See #253.
+#[tauri::command]
+pub async fn get_reveal(
+    tonic: u8,
+    mode: String,
+    confidence: f32,
+    phrase_index: usize,
+) -> Result<Option<Reveal>, String> {
+    let ctx = MusicalContext {
+        tonic,
+        mode,
+        confidence,
+    };
+    Ok(reveal_on_phrase(&ctx, phrase_index, DEFAULT_REVEAL_CADENCE))
 }
 
 /// Return the instrument catalog for the selector grid.

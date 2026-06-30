@@ -6,6 +6,7 @@ import type {
   PerceptionSnapshot,
   PhraseSummary,
   PracticeMode,
+  Reveal,
   SessionRecap,
   ScoreLibraryEntry,
   ScorePosition,
@@ -45,6 +46,17 @@ export type SessionStatus =
 export interface QueuedTip {
   id: string;
   tip: CoachingTip;
+  receivedAt: number;
+  phraseIndex: number;
+}
+
+/**
+ * A real-world music "reveal" queued for the card. Mirrors {@link QueuedTip};
+ * UUID keys keep React's reconciler stable as reveals rotate through.
+ */
+export interface QueuedReveal {
+  id: string;
+  reveal: Reveal;
   receivedAt: number;
   phraseIndex: number;
 }
@@ -100,6 +112,8 @@ export interface PracticeState {
   // Live session data -----------------------------------------------------
   phrases: PhraseSummary[];
   tipQueue: QueuedTip[];
+  /** Real-world music reveals queued for the reveal card (most recent shown). */
+  revealQueue: QueuedReveal[];
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -243,6 +257,17 @@ export interface PracticeState {
    */
   requestCoachingTip: (phrase: PhraseSummary) => Promise<void>;
   dismissTip: (id: string) => void;
+  /** Push a reveal onto the queue (most-recent is shown). */
+  pushReveal: (reveal: Reveal, phraseIndex: number) => void;
+  /**
+   * Ambient reveal loop: on a just-completed phrase, ask the backend whether a
+   * real-world music "reveal" is due for the current key/mode. Curated +
+   * offline (slice 1), so unlike coaching it needs no opt-in — but it only runs
+   * during a live session and only when perception has a key. A `null` reply is
+   * the honest "nothing to reveal right now".
+   */
+  requestReveal: (phrase: PhraseSummary) => Promise<void>;
+  dismissReveal: (id: string) => void;
   setCursorPosition: (pos: ScorePosition | null) => void;
   tick: () => void;
   returnToSelector: () => void;
@@ -354,6 +379,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   elapsedSecs: 0,
   phrases: [],
   tipQueue: [],
+  revealQueue: [],
   recap: null,
   recapError: null,
   activeScore: null,
@@ -547,6 +573,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         elapsedSecs: 0,
         phrases: [],
         tipQueue: [],
+        revealQueue: [],
         cursorPosition: null,
       });
       useAudioStore.getState().setInstrument(instrument, vibratoToleranceCents);
@@ -722,6 +749,51 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   dismissTip: (id) =>
     set((state) => ({
       tipQueue: state.tipQueue.filter((q) => q.id !== id),
+    })),
+
+  // Replace rather than append: the card shows one reveal at a time and a new
+  // reveal *supersedes* the old (#253 AC7 "replaces, does not stack"). Appending
+  // would let a still-queued older reveal resurface once the newer one's
+  // dismiss timer fires — so we keep the queue at a single, latest entry.
+  pushReveal: (reveal, phraseIndex) =>
+    set({
+      revealQueue: [{ id: newId(), reveal, receivedAt: Date.now(), phraseIndex }],
+    }),
+
+  requestReveal: async (phrase) => {
+    const { status, perception } = get();
+    // Only during a live session, and only when we actually hear a key — the
+    // reveal is about the music the player is in right now.
+    if (status !== "listening") {
+      return;
+    }
+    const key = perception?.key;
+    if (!key) {
+      return;
+    }
+    try {
+      // Curated + offline in slice 1: the backend makes no network call and
+      // returns `null` when confidence is low, the mode is uncurated, or this
+      // phrase isn't on the reveal cadence. Honor the silence.
+      const reveal = await invoke<Reveal | null>("get_reveal", {
+        tonic: key.tonic,
+        mode: key.mode,
+        confidence: key.confidence,
+        phraseIndex: phrase.phrase_index,
+      });
+      if (!reveal) {
+        return;
+      }
+      get().pushReveal(reveal, phrase.phrase_index);
+    } catch (err) {
+      // Best-effort: a failed reveal must never disrupt the session.
+      console.error("Failed to fetch reveal:", err);
+    }
+  },
+
+  dismissReveal: (id) =>
+    set((state) => ({
+      revealQueue: state.revealQueue.filter((q) => q.id !== id),
     })),
 
   setCursorPosition: (pos) => set({ cursorPosition: pos }),

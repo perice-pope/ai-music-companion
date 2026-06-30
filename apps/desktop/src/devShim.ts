@@ -109,6 +109,11 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       throw new Error(
         "Reading sheet-music PDFs needs the desktop app — run `pnpm tauri dev`.",
       );
+    case "get_reveal":
+      // Reveals key off the real `perception` reading, which the browser
+      // preview mocks as `null` — so this isn't reached in practice. Mock a
+      // calm "nothing to reveal" so the command is never unhandled.
+      return null;
     // Tauri v2 event subsystem rides over invoke.
     case "plugin:event|listen":
       return Math.floor(Math.random() * 1_000_000);

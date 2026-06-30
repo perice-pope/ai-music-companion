@@ -9,6 +9,7 @@
 
 pub mod accompaniment;
 pub mod coaching;
+pub mod connections;
 pub mod fingerprint;
 pub mod follower;
 pub mod idiom_recap;
