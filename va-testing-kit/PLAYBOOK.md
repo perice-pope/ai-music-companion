@@ -55,7 +55,14 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    (like 'G major') while you play?"
 4. **Coaching tips** — "Do small tip cards slide in while you play? Read one to me — does it sound
    like helpful, sensible feedback?"
-5. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
+5. **Reveals 🎵 (the new feature)** — "Keep playing in one clear key for a little while — a steady
+   tune, nothing random. A small **'In the wild'** card should pop up naming real music that uses
+   that sound (like *G Dorian → Miles Davis – 'So What'*). When one appears, tell me:
+   **(a)** does it feel **accurate and cool**?  **(b)** when a new one comes, does it **replace** the
+   old (never two cards stacked)?  **(c)** is it **occasional** — about once every few phrases, not
+   spammy? Then noodle vaguely / atonally and confirm **no** card pops up (that's expected)." (If a
+   card never appears even on a steady, clearly-pitched passage, note that.)
+6. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
    tips). Does it?"
 
 ### B. Upload music & practice with it
@@ -96,6 +103,13 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 
 ### Practice modes & what the user sees
 <her answers about instruments, the 3 modes, the session view, pitch/'I hear'/tips>
+
+### Reveals 🎵 (desktop only — new feature)
+- A card appeared on a steady, clearly-pitched passage: <yes/no>
+- Felt accurate / cool: <answer>
+- A new reveal replaced the old (never stacked two): <answer>
+- Frequency felt right (occasional, ~1 per few phrases, not spammy): <answer>
+- No card on vague/atonal playing (expected): <answer>
 
 ### Upload music & practice with it   (desktop only)
 - Score (.musicxml) import & render: <answer>
