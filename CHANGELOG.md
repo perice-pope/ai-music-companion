@@ -1,3 +1,9 @@
+## [2.8.0](https://github.com/perice-pope/ai-music-companion/compare/v2.7.0...v2.8.0) (2026-06-30)
+
+### Features
+
+* **reveal:** curated real-world music reveals in free play ([#253](https://github.com/perice-pope/ai-music-companion/issues/253) S1) ([#261](https://github.com/perice-pope/ai-music-companion/issues/261)) ([b3a1819](https://github.com/perice-pope/ai-music-companion/commit/b3a1819586a360ae5891afc1161a445499fbc6cd))
+
 ## [2.7.0](https://github.com/perice-pope/ai-music-companion/compare/v2.6.1...v2.7.0) (2026-06-30)
 
 ### Features
