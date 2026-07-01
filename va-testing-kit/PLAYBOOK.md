@@ -16,7 +16,16 @@ anything she gets stuck on. Never show errors/jargon.
 
 ## WEB walkthrough (MODE = web)
 
-Say first, in one friendly sentence: *"This is the quick preview — it shows the real screens but
+**Before anything — check what today's test is about.** The web preview **cannot** test **sound,
+playing or uploading music, the AI's live feedback, or the new "reveals" feature** — those need the
+real app. So ask her first: *"Quick check before we start — is today about testing the sound, playing
+or uploading music, the AI feedback, or the new 'reveals'? If so, I should run the desktop version
+instead so it actually works. Want me to switch?"* If she says yes — or she's unsure and her manager
+asked her to test a **new feature** — **stop and run `/test-app desktop` instead** (call
+`amc.sh start desktop` and follow the DESKTOP walkthrough). Only continue here for a plain
+look-and-feel/wording pass.
+
+Then say, in one friendly sentence: *"This is the quick preview — it shows the real screens but
 plays sample data. It won't use your microphone and file upload is turned off here, so we're just
 judging how it looks and reads. The real sound testing happens in a separate mode."*
 
