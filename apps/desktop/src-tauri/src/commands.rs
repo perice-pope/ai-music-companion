@@ -1059,8 +1059,29 @@ impl AppState {
         bytes: Vec<u8>,
         extension: Option<&str>,
     ) -> Result<(ScoreLibraryEntry, transcribe::TranscriptionQuality), String> {
-        let (midi, quality) = transcribe::transcribe_audio_bytes_with_quality(bytes, extension)
-            .map_err(|e| e.to_string())?;
+        self.import_audio_with(source_filename, || {
+            transcribe::transcribe_audio_bytes_with_quality(bytes, extension)
+        })
+    }
+
+    /// Transcribe → import_midi, with `transcribe_fn` as a **seam** so the panic
+    /// guard can be tested without a real ONNX failure: [`import_audio`] passes
+    /// the real (native, panic-capable) transcription; a test can pass a
+    /// panicking one and assert this returns a calm error instead of crashing
+    /// the app (#267). The native call runs behind [`guard_transcription`], so a
+    /// panic in it never unwinds past the (synchronous) import command.
+    fn import_audio_with<F>(
+        &self,
+        source_filename: String,
+        transcribe_fn: F,
+    ) -> Result<(ScoreLibraryEntry, transcribe::TranscriptionQuality), String>
+    where
+        F: FnOnce() -> Result<
+            (Vec<u8>, transcribe::TranscriptionQuality),
+            transcribe::TranscribeError,
+        >,
+    {
+        let (midi, quality) = guard_transcription(|| transcribe_fn().map_err(|e| e.to_string()))?;
         let entry = self.import_midi(source_filename, midi)?;
         Ok((entry, quality))
     }
@@ -2396,6 +2417,29 @@ impl ImportedAudioDto {
     }
 }
 
+/// The calm, non-fatal message shown when audio transcription can't run (the
+/// ONNX Runtime is missing/unloadable, or it panicked). Score import (MusicXML /
+/// MIDI) needs no engine, so we point there.
+const AUDIO_ENGINE_UNAVAILABLE: &str =
+    "Audio import isn't available right now — the audio engine couldn't start. You can still \
+     practice with a MusicXML or MIDI score.";
+
+/// Run the native transcription behind a panic guard so a failure in ONNX
+/// Runtime or the audio decoder degrades to a calm error instead of unwinding
+/// past the (synchronous) import command and crashing the whole app (#267). A
+/// normal `Err` passes through unchanged; only an actual **panic** is converted
+/// to [`AUDIO_ENGINE_UNAVAILABLE`]. (A hard C-level `abort()` can't be caught —
+/// the real defense there is provisioning a compatible runtime.)
+///
+/// Relies on the workspace's default `panic = "unwind"`; a future `panic =
+/// "abort"` would silently neuter this guard.
+fn guard_transcription<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(inner) => inner,
+        Err(_) => Err(AUDIO_ENGINE_UNAVAILABLE.to_string()),
+    }
+}
+
 /// Import an audio recording: transcribe → MIDI → MusicXML → library.
 ///
 /// Heavier than MIDI/MusicXML import, so it emits `import-progress` events
@@ -2549,6 +2593,55 @@ mod tests {
 
     fn state() -> AppState {
         AppState::with_mocks()
+    }
+
+    /// #267 AC1: a panic inside transcription (e.g. ONNX Runtime aborting a Rust
+    /// panic, or a decoder unwrap) is converted to the calm, non-fatal message
+    /// instead of unwinding into the command and crashing the app — while a
+    /// normal `Ok`/`Err` passes through untouched. Fails if the guard ever
+    /// re-panics, swallows a real error, or mangles a success.
+    #[test]
+    fn guard_transcription_converts_panic_and_passes_results_through() {
+        let panicked: Result<(), String> = guard_transcription(|| panic!("onnxruntime blew up"));
+        assert!(panicked.is_err());
+        assert!(
+            panicked
+                .unwrap_err()
+                .contains("Audio import isn't available"),
+            "a panic must map to the friendly unavailable message"
+        );
+
+        assert_eq!(guard_transcription(|| Ok::<_, String>(7)).unwrap(), 7);
+
+        let inner_err =
+            guard_transcription(|| Err::<(), _>("could not decode audio: bad header".to_string()))
+                .unwrap_err();
+        assert_eq!(
+            inner_err, "could not decode audio: bad header",
+            "a real error must pass through unchanged, not be replaced by the panic message"
+        );
+    }
+
+    /// #267 AC2: the guard is actually *wired into* the import path. A panic in
+    /// the (injected) transcription surfaces as the friendly error from
+    /// `import_audio_with` — not a crash. Fails if the guard is ever removed from
+    /// the import wiring (the panic would unwind through the test body).
+    #[test]
+    fn import_audio_panic_degrades_to_error_not_crash() {
+        let s = state();
+        let result = s.import_audio_with(
+            "recording.wav".to_string(),
+            || -> Result<(Vec<u8>, transcribe::TranscriptionQuality), transcribe::TranscribeError> {
+                panic!("onnxruntime aborted")
+            },
+        );
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("Audio import isn't available")),
+            "a transcription panic must degrade to the friendly error, got {result:?}"
+        );
     }
 
     #[test]
