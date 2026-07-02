@@ -1,3 +1,9 @@
+## [2.8.1](https://github.com/perice-pope/ai-music-companion/compare/v2.8.0...v2.8.1) (2026-07-02)
+
+### Bug Fixes
+
+* **reveal:** card key matches the live "I hear" header ([#266](https://github.com/perice-pope/ai-music-companion/issues/266)) ([#268](https://github.com/perice-pope/ai-music-companion/issues/268)) ([8404508](https://github.com/perice-pope/ai-music-companion/commit/840450809259824c8c174fb86fb934ef9a97d3d4))
+
 ## [2.8.0](https://github.com/perice-pope/ai-music-companion/compare/v2.7.0...v2.8.0) (2026-06-30)
 
 ### Features
