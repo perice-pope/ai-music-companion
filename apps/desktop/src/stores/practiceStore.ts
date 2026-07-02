@@ -2,7 +2,11 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CoachingTip,
+  DrillDto,
+  DrillScoreDto,
   KeyOption,
+  LessonRecapDto,
+  LessonStepDto,
   PerceptionSnapshot,
   PhraseSummary,
   PracticeMode,
@@ -119,6 +123,14 @@ export interface PracticeState {
    * last reported by `record_reveal`. `null` until the first unlock this run.
    */
   collectionCount: number | null;
+
+  // Guided lesson (#254) --------------------------------------------------
+  /** The drill currently on screen, or null when no lesson is running. */
+  lessonDrill: DrillDto | null;
+  /** Grade of the drill just submitted (shown between drills / at the end). */
+  lessonScore: DrillScoreDto | null;
+  /** Final recap once the lesson completes. */
+  lessonRecap: LessonRecapDto | null;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -273,6 +285,18 @@ export interface PracticeState {
    */
   requestReveal: (phrase: PhraseSummary) => Promise<void>;
   dismissReveal: (id: string) => void;
+  /**
+   * Start a guided lesson (#254): the backend builds an adaptive RV routine
+   * from the Learner Model and returns drill 0. Requires a live session (the
+   * mic must be running for the drills to be graded).
+   */
+  startLesson: () => Promise<void>;
+  /** Grade the just-played drill and step to the next one (or the recap). */
+  submitDrill: () => Promise<void>;
+  /** Abandon the lesson (nothing persisted). */
+  endLesson: () => Promise<void>;
+  /** Clear the recap view after the lesson. */
+  clearLessonRecap: () => void;
   setCursorPosition: (pos: ScorePosition | null) => void;
   tick: () => void;
   returnToSelector: () => void;
@@ -386,6 +410,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   tipQueue: [],
   revealQueue: [],
   collectionCount: null,
+  lessonDrill: null,
+  lessonScore: null,
+  lessonRecap: null,
   recap: null,
   recapError: null,
   activeScore: null,
@@ -814,6 +841,47 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     set((state) => ({
       revealQueue: state.revealQueue.filter((q) => q.id !== id),
     })),
+
+  startLesson: async () => {
+    if (get().status !== "listening") {
+      throw new Error("start a practice session before starting a lesson");
+    }
+    const step = await invoke<LessonStepDto>("start_lesson", {});
+    set({
+      lessonDrill: step.drill,
+      lessonScore: null,
+      lessonRecap: null,
+    });
+  },
+
+  submitDrill: async () => {
+    if (!get().lessonDrill) {
+      return;
+    }
+    try {
+      const step = await invoke<LessonStepDto>("submit_drill", {});
+      set({
+        lessonDrill: step.drill,
+        lessonScore: step.score,
+        lessonRecap: step.recap,
+      });
+    } catch (err) {
+      // Grading is best-effort at the UI layer: keep the drill on screen so
+      // the player can try submitting again.
+      console.error("submit_drill failed:", err);
+    }
+  },
+
+  endLesson: async () => {
+    set({ lessonDrill: null, lessonScore: null, lessonRecap: null });
+    try {
+      await invoke("end_lesson", {});
+    } catch (err) {
+      console.error("end_lesson failed:", err);
+    }
+  },
+
+  clearLessonRecap: () => set({ lessonRecap: null, lessonScore: null }),
 
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
 

@@ -90,6 +90,47 @@ export interface DynamicsStats {
   dynamic_range: number;
 }
 
+/** One guided-lesson drill as rendered by the UI. Mirrors `commands::DrillDto`. */
+export interface DrillDto {
+  index: number;
+  drill_count: number;
+  kind: string;
+  label: string;
+  tempo_bpm: number;
+  difficulty: number;
+  music_xml: string;
+  target_len: number;
+}
+
+/** Trimmed drill grade. Mirrors `commands::DrillScoreDto`. */
+export interface DrillScoreDto {
+  accuracy: number;
+  pitch_accuracy: number;
+  timing_accuracy: number;
+  correct: number;
+  total: number;
+}
+
+/** Lesson recap. Mirrors `brain::coach::LessonRecap`. */
+export interface LessonRecapDto {
+  drill_labels: string[];
+  drill_accuracies: number[];
+  start_difficulty: number;
+  end_difficulty: number;
+}
+
+/**
+ * One step of the lesson state machine. Mirrors `commands::LessonStepDto`:
+ * `score` grades what was just played (absent on start); then either the next
+ * `drill` or the final `recap`.
+ */
+export interface LessonStepDto {
+  seed: number;
+  score: DrillScoreDto | null;
+  drill: DrillDto | null;
+  recap: LessonRecapDto | null;
+}
+
 /**
  * Where a reveal's wording came from. Mirrors
  * `brain::connections::RevealSource` (`#[serde(rename_all = "snake_case")]`).

@@ -19,6 +19,10 @@ use brain::accompaniment::{
     accompaniment_control_channel, AccompanimentDriver, AccompanimentSynth,
     AccompanimentSynthSource,
 };
+use brain::coach::{
+    advance, build_first, finish_lesson, played_notes_from_pitch_track, score_drill,
+    sequence_to_score_model, Drill, DrillScore, LessonRecap, LessonSpec,
+};
 use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
@@ -629,6 +633,10 @@ pub struct AppState {
     /// "use the alternative" are both just a concrete pinned key, so the UI can
     /// always show exactly what the band is playing.
     key_override: std::sync::Mutex<Option<(u8, bool)>>,
+    /// The in-flight guided lesson (#254), if any. `std::sync::Mutex` — every
+    /// access is a short synchronous read-modify-write, never held across an
+    /// `.await`.
+    active_lesson: std::sync::Mutex<Option<ActiveLesson>>,
 }
 
 /// A running follow-me accompaniment.
@@ -743,6 +751,7 @@ impl AppState {
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
+            active_lesson: std::sync::Mutex::new(None),
         }
     }
 
@@ -770,6 +779,7 @@ impl AppState {
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
+            active_lesson: std::sync::Mutex::new(None),
         }
     }
 
@@ -2224,6 +2234,237 @@ pub fn record_reveal(
     record_reveal_impl(&state, &concept, &connection, now).map_err(|e| e.to_frontend())
 }
 
+// ---------------------------------------------------------------------------
+// Guided lesson (#254): start → play → submit per drill → recap.
+// ---------------------------------------------------------------------------
+
+/// The in-flight lesson state held on [`AppState`].
+struct ActiveLesson {
+    spec: LessonSpec,
+    current: Drill,
+    completed: Vec<(Drill, DrillScore)>,
+    /// Index into the session phrase buffer where the current drill started —
+    /// everything after it is "what the player played for this drill".
+    phrase_mark: usize,
+}
+
+/// One drill as the frontend renders it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrillDto {
+    pub index: u8,
+    pub drill_count: u8,
+    pub kind: String,
+    pub label: String,
+    pub tempo_bpm: f64,
+    pub difficulty: u8,
+    /// MusicXML for ScoreView (adapted from the generated sequence).
+    pub music_xml: String,
+    pub target_len: usize,
+}
+
+/// The grade of a just-submitted drill, trimmed for the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrillScoreDto {
+    pub accuracy: f32,
+    pub pitch_accuracy: f32,
+    pub timing_accuracy: f32,
+    pub correct: usize,
+    pub total: usize,
+}
+
+impl From<&DrillScore> for DrillScoreDto {
+    fn from(s: &DrillScore) -> Self {
+        Self {
+            accuracy: s.accuracy,
+            pitch_accuracy: s.pitch_accuracy,
+            timing_accuracy: s.timing_accuracy,
+            correct: s.per_note.iter().filter(|g| g.correct).count(),
+            total: s.per_note.len(),
+        }
+    }
+}
+
+/// One step of the lesson state machine: the score for what was just played
+/// (absent on start), then either the next drill or the final recap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LessonStepDto {
+    pub seed: u64,
+    pub score: Option<DrillScoreDto>,
+    pub drill: Option<DrillDto>,
+    pub recap: Option<LessonRecap>,
+}
+
+fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
+    let model = sequence_to_score_model(&drill.sequence, &drill.sequence.label);
+    DrillDto {
+        index: drill.index,
+        drill_count,
+        kind: format!("{:?}", drill.kind),
+        label: drill.sequence.label.clone(),
+        tempo_bpm: drill.sequence.tempo_bpm,
+        difficulty: drill.difficulty,
+        music_xml: brain::score::emit::score_model_to_musicxml(&model),
+        target_len: drill.sequence.target_midi.len(),
+    }
+}
+
+/// Minimum consecutive pitch samples (~100 Hz stream) for the drill grader to
+/// count a note — rejects single-sample flicker without eating fast notes.
+const DRILL_MIN_PITCH_RUN: usize = 3;
+
+/// Start a guided lesson: read the Learner Model for the starting difficulty,
+/// build drill 0, and mark the phrase buffer. Pure logic lives in
+/// `brain::coach`; this wires state + persistence.
+pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, CommandError> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    let spec = LessonSpec {
+        seed,
+        drill_count: 4,
+        start_difficulty: model.difficulty.min(brain::learner::MAX_DIFFICULTY),
+    };
+    let first = build_first(&spec, &model);
+    let dto = drill_dto(&first, spec.drill_count);
+    let phrase_mark = state
+        .phrase_buffer
+        .lock()
+        .expect("phrase buffer mutex poisoned")
+        .len();
+    *state
+        .active_lesson
+        .lock()
+        .expect("active lesson mutex poisoned") = Some(ActiveLesson {
+        spec,
+        current: first,
+        completed: Vec::new(),
+        phrase_mark,
+    });
+    Ok(LessonStepDto {
+        seed,
+        score: None,
+        drill: Some(dto),
+        recap: None,
+    })
+}
+
+/// Grade the drill the player just performed (everything in the phrase buffer
+/// since the drill started) and step the lesson: next drill, or finish +
+/// persist the Learner Model and return the recap.
+pub fn submit_drill_impl(
+    state: &AppState,
+    now_epoch_secs: i64,
+) -> Result<LessonStepDto, CommandError> {
+    let mut lesson_guard = state
+        .active_lesson
+        .lock()
+        .expect("active lesson mutex poisoned");
+    let lesson = lesson_guard.as_mut().ok_or(CommandError::NotActive)?;
+
+    // What was played for this drill: the pitch track + onset count across the
+    // phrases completed since the drill began.
+    let (pitches, onsets) = {
+        let buf = state
+            .phrase_buffer
+            .lock()
+            .expect("phrase buffer mutex poisoned");
+        let slice = &buf[lesson.phrase_mark.min(buf.len())..];
+        let pitches: Vec<f64> = slice
+            .iter()
+            .flat_map(|p| p.pitch_stats.pitches.iter().copied())
+            .collect();
+        let onsets: usize = slice.iter().map(|p| p.onsets_secs.len()).sum();
+        (pitches, onsets)
+    };
+    let played = played_notes_from_pitch_track(&pitches, DRILL_MIN_PITCH_RUN);
+    let score = score_drill(&lesson.current.sequence.target_midi, &played, onsets);
+    let score_dto = DrillScoreDto::from(&score);
+    let seed = lesson.spec.seed;
+
+    match advance(&lesson.current, &score, &lesson.spec) {
+        Some(next) => {
+            let dto = drill_dto(&next, lesson.spec.drill_count.clamp(3, 4));
+            let completed = std::mem::replace(&mut lesson.current, next);
+            lesson.completed.push((completed, score));
+            lesson.phrase_mark = state
+                .phrase_buffer
+                .lock()
+                .expect("phrase buffer mutex poisoned")
+                .len();
+            Ok(LessonStepDto {
+                seed,
+                score: Some(score_dto),
+                drill: Some(dto),
+                recap: None,
+            })
+        }
+        None => {
+            let mut drills = std::mem::take(&mut lesson.completed);
+            drills.push((lesson.current.clone(), score));
+            *lesson_guard = None;
+            let store = state
+                .session_store
+                .lock()
+                .expect("session store mutex poisoned");
+            let model = store
+                .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+                .unwrap_or_default();
+            let (next_model, recap) = finish_lesson(&model, &drills, now_epoch_secs);
+            store.upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &next_model)?;
+            Ok(LessonStepDto {
+                seed,
+                score: Some(score_dto),
+                drill: None,
+                recap: Some(recap),
+            })
+        }
+    }
+}
+
+/// Abandon the in-flight lesson (nothing is persisted).
+pub fn end_lesson_impl(state: &AppState) {
+    *state
+        .active_lesson
+        .lock()
+        .expect("active lesson mutex poisoned") = None;
+}
+
+/// Start a guided lesson. `seed` optional — absent, one is derived from the
+/// clock and echoed back so any lesson can be replayed exactly.
+#[tauri::command]
+pub fn start_lesson(
+    state: State<'_, AppState>,
+    seed: Option<u64>,
+) -> Result<LessonStepDto, String> {
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(1)
+    });
+    start_lesson_impl(&state, seed).map_err(|e| e.to_frontend())
+}
+
+/// Grade the just-played drill and step the lesson.
+#[tauri::command]
+pub fn submit_drill(state: State<'_, AppState>) -> Result<LessonStepDto, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    submit_drill_impl(&state, now).map_err(|e| e.to_frontend())
+}
+
+/// Abandon the in-flight lesson.
+#[tauri::command]
+pub fn end_lesson(state: State<'_, AppState>) -> Result<(), String> {
+    end_lesson_impl(&state);
+    Ok(())
+}
+
 /// Return the instrument catalog for the selector grid.
 #[tauri::command]
 pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo>, String> {
@@ -2789,6 +3030,96 @@ mod tests {
             key: None,
             onsets_secs: Vec::new(),
         }
+    }
+
+    /// #254 end-to-end at the command layer: start a lesson, play each drill
+    /// perfectly (synthetic phrases matching the target), submit through all
+    /// four drills, and confirm the recap + the persisted Learner Model
+    /// (mastery recorded, difficulty ramped, next lesson starts harder). Fails
+    /// if the state machine, grading wiring, or persistence hop breaks.
+    #[test]
+    fn lesson_lifecycle_grades_ramps_and_persists() {
+        let s = state();
+        let step0 = start_lesson_impl(&s, 42).expect("lesson starts");
+        let drill0 = step0.drill.as_ref().expect("drill 0 present");
+        assert_eq!(drill0.index, 0);
+        assert!(drill0.music_xml.contains("<score-partwise"));
+        assert!(step0.score.is_none() && step0.recap.is_none());
+
+        // Perform each drill perfectly: synthesize a phrase whose pitch track
+        // walks the exact target (each note held for several samples).
+        let mut steps = 0;
+        let mut last = step0;
+        while let Some(drill_index) = last.drill.as_ref().map(|d| d.index) {
+            // Rebuild the target's pitch track from the lesson state.
+            let target: Vec<u8> = {
+                let guard = s.active_lesson.lock().unwrap();
+                guard.as_ref().unwrap().current.sequence.target_midi.clone()
+            };
+            let mut phrase = sample_phrase();
+            phrase.pitch_stats.pitches = target
+                .iter()
+                .flat_map(|&m| {
+                    let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                    std::iter::repeat(hz).take(5)
+                })
+                .collect();
+            phrase.onsets_secs = vec![0.0; target.len()];
+            s.phrase_buffer.lock().unwrap().push(phrase);
+
+            last = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+            let score = last.score.as_ref().expect("every submit carries a score");
+            assert!(
+                score.accuracy > 0.99,
+                "perfect performance must grade ~1.0, got {} (drill {drill_index})",
+                score.accuracy
+            );
+            steps += 1;
+            assert!(steps <= 4, "routine must terminate");
+        }
+
+        let recap = last.recap.expect("lesson ends in a recap");
+        assert_eq!(recap.drill_accuracies.len(), 4);
+        assert_eq!(recap.start_difficulty, 0);
+        assert!(recap.end_difficulty > 0, "perfect lesson ramps up");
+
+        // Persisted: mastery written and the next lesson starts harder.
+        let model = s
+            .session_store
+            .lock()
+            .unwrap()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .expect("model persisted");
+        assert!(!model.key_mastery.is_empty());
+        assert_eq!(model.difficulty, recap.end_difficulty);
+        let again = start_lesson_impl(&s, 43).unwrap();
+        assert_eq!(
+            again.drill.unwrap().difficulty,
+            recap.end_difficulty,
+            "next lesson starts where the last one ended"
+        );
+    }
+
+    /// Submitting with no active lesson is a calm error, and ending a lesson
+    /// clears it (nothing persisted for an abandoned lesson).
+    #[test]
+    fn submit_without_lesson_errs_and_end_abandons() {
+        let s = state();
+        assert!(submit_drill_impl(&s, 0).is_err());
+        start_lesson_impl(&s, 1).unwrap();
+        end_lesson_impl(&s);
+        assert!(
+            submit_drill_impl(&s, 0).is_err(),
+            "abandoned lesson is gone"
+        );
+        assert!(s
+            .session_store
+            .lock()
+            .unwrap()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

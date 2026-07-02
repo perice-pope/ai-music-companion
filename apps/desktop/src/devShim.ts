@@ -114,6 +114,16 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       // preview mocks as `null` — so this isn't reached in practice. Mock a
       // calm "nothing to reveal" so the command is never unhandled.
       return null;
+    case "start_lesson":
+    case "submit_drill":
+      // Lessons need the real ears (drills are graded from the mic); the
+      // preview can't run one. Match the backend's calm error instead of an
+      // unmocked-command throw.
+      throw new Error(
+        "Guided lessons need the desktop app — run `pnpm tauri dev`.",
+      );
+    case "end_lesson":
+      return undefined;
     case "record_reveal":
       // No reveals fire in the preview (see above), but keep the command
       // handled: report an unchanged, empty collection.

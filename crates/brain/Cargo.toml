@@ -9,6 +9,7 @@ license.workspace = true
 ears = { path = "../ears" }
 tone = { path = "../tone" }
 theory = { path = "../theory" }
+variations = { path = "../variations" }
 groove = { path = "../groove" }
 idiom = { path = "../idiom" }
 ringbuf = "0.4"
