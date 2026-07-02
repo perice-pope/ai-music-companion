@@ -40,13 +40,23 @@ pub struct VariationSpec {
     pub transpose: Transposing,            // C/Bb/A/G/F/Eb instrument view
 }
 
+pub struct GeneratedNote { pub midi: u8, pub start_beat: f64, pub duration_beats: f64 }
 pub struct GeneratedSequence {
-    pub ticks: Vec<StaffTick>,   // SAME shape ScoreView + score-follow already consume
-    pub target_notes: Vec<Pitch>,// the exact grading target (what the user should play)
-    pub label: String,           // human label e.g. "G melodic minor · random keys · 80bpm"
+    pub notes: Vec<GeneratedNote>, // renderer-agnostic beat grid; brain::coach adapts to
+                                   // ScoreModel → MusicXML (the shape ScoreView consumes)
+    pub target_midi: Vec<u8>,      // the exact grading target (what the user should play)
+    pub label: String,             // human label e.g. "G Dorian · up-down · 12 roots · 80 BPM"
+    pub tempo_bpm: f64,
+    pub beats_per_measure: u8,
 }
 
 pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence; // deterministic
+
+// Shipped-contract notes (F1 slice, documented drift from the sketch above):
+// instrument `transpose` (C/Bb/A/G/F/Eb) is DEFERRED to the #254 notation
+// adapter, where spelling/transposition belong; `stacked` chord/interval
+// rendering is deferred (needs chord rendering in the score path); random
+// direction is per-ROOT (the RV behavior the coach wants), not per-note.
 ```
 Catalog data (`scales`, `chords`, `enclosures`) is ported from RV's `src/data/*.json` into the crate.
 Theory uses an existing Rust crate (e.g. an established music-theory lib) or a thin port of the

@@ -122,7 +122,9 @@ pub struct RhythmSpec {
     /// Tempo the drill is meant to be played at.
     pub tempo_bpm: f64,
     /// Silent beats inserted between one root's figure and the next (thinking
-    /// time — RV's "rests").
+    /// time — RV's "rests"). Treated as a **minimum**: the next figure always
+    /// starts on a whole beat, so the actual gap is rounded up to beat
+    /// alignment (a 0.5-beat request after a triplet figure becomes ≥1 beat).
     pub rest_beats_between_roots: f64,
 }
 
@@ -139,8 +141,16 @@ impl Default for RhythmSpec {
 /// A full variation request: roots × modifiers × randomization.
 ///
 /// Exactly one of `scale` / `chord` / `interval` is normally set (the figure);
-/// with none set the figure is the bare root. `enclosure` composes with any of
-/// them, approaching each figure's first note chromatically.
+/// with none set the figure is the bare root. If more than one is set, the
+/// precedence is **scale > chord > interval** (the rest are ignored).
+/// `enclosure` composes with any of them, approaching each figure's first note
+/// chromatically.
+///
+/// Deferred from the epic-spec sketch (documented drift, #252 §4): instrument
+/// `transpose` (C/Bb/A/G/F/Eb views — lands with the notation adapter in #254,
+/// where spelling/transposition belong), `stacked` chord/interval rendering
+/// (needs chord rendering in the score path), and per-*note* random direction
+/// (per-root is the RV behavior the coach wants).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariationSpec {
     /// Root notes as MIDI numbers (e.g. the 12 chromatic roots from C4).
@@ -183,8 +193,13 @@ struct Xorshift64(u64);
 
 impl Xorshift64 {
     fn new(seed: u64) -> Self {
-        // A zero state would lock xorshift at zero forever.
-        Self(seed.max(1))
+        // Scramble the seed through one splitmix64 step so adjacent seeds
+        // (0/1/2…) start from decorrelated states, and so seed 0 is distinct
+        // from seed 1 (a bare xorshift locks at zero forever).
+        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Self((z ^ (z >> 31)).max(1))
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -469,31 +484,56 @@ mod tests {
         );
     }
 
+    /// Extract the root each figure starts on (base-spec scale figures are 8
+    /// notes long, so figure starts are every 8th target note).
+    fn figure_roots(seq: &GeneratedSequence, figure_len: usize) -> Vec<u8> {
+        seq.target_midi.chunks(figure_len).map(|c| c[0]).collect()
+    }
+
     /// RV's signature rule: the shuffle keeps the FIRST root fixed and permutes
-    /// only the rest (same multiset). Fails if index 0 ever moves or a root is
-    /// lost/duplicated.
+    /// only the rest — same multiset, nothing lost or duplicated. Fails if
+    /// index 0 ever moves, if a swap bug drops/duplicates a root, or if the
+    /// shuffle stops reordering at all.
     #[test]
     fn shuffle_keeps_first_root_and_permutes_the_rest() {
         let mut spec = base_spec();
         spec.roots = chromatic_roots();
         spec.randomize_roots = true;
 
-        for seed in 0..20 {
+        let mut any_reordered = false;
+        for seed in 0..40 {
             let seq = generate(&spec, seed);
-            // First figure starts on the first root (C major up from C4).
+            let roots = figure_roots(&seq, 8);
+            assert_eq!(roots[0], 60, "first root must stay fixed (seed {seed})");
+            // Multiset preserved: sorted roots equal the sorted input.
+            let mut sorted = roots.clone();
+            sorted.sort_unstable();
             assert_eq!(
-                seq.notes[0].midi, 60,
-                "first root must stay fixed (seed {seed})"
+                sorted,
+                chromatic_roots(),
+                "shuffle must permute, not lose/duplicate (seed {seed})"
             );
+            if roots != chromatic_roots() {
+                any_reordered = true;
+            }
         }
-        // Some seed must actually permute the tail (i.e. the shuffle is real).
-        let baseline = {
-            let mut s = base_spec();
-            s.roots = chromatic_roots();
-            generate(&s, 7).target_midi
-        };
-        let shuffled_differs = (0..20).any(|seed| generate(&spec, seed).target_midi != baseline);
-        assert!(shuffled_differs, "randomize_roots must actually reorder");
+        assert!(any_reordered, "randomize_roots must actually reorder");
+    }
+
+    /// The tail shuffle is a real permutation generator: with 3 movable roots
+    /// over many seeds every tail arrangement occurs. A Sattolo-style
+    /// off-by-one (never self-swapping) makes some arrangements impossible and
+    /// fails this.
+    #[test]
+    fn shuffle_reaches_every_tail_permutation() {
+        let mut spec = base_spec();
+        spec.roots = vec![60, 62, 64, 65]; // 1 fixed + 3 movable → 6 arrangements
+        spec.randomize_roots = true;
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..200 {
+            seen.insert(figure_roots(&generate(&spec, seed), 8));
+        }
+        assert_eq!(seen.len(), 6, "all 3! tail permutations must be reachable");
     }
 
     /// Scale expansion correctness: C major up from C4 is exactly
@@ -652,5 +692,220 @@ mod tests {
             seq.target_midi,
             seq.notes.iter().map(|n| n.midi).collect::<Vec<_>>()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Catalog pins — the tables are product data a musician kid plays from;
+    // a wrong semitone anywhere is a real bug. Pin the hard cases through
+    // `generate` so a table edit can't slip past.
+    // -----------------------------------------------------------------------
+
+    fn scale_up(scale: ScaleType) -> Vec<u8> {
+        let mut spec = base_spec();
+        spec.scale = Some(ScaleModifier {
+            scale,
+            pattern: ScalePattern::Up,
+        });
+        generate(&spec, 0).target_midi
+    }
+
+    /// Pins the tricky scale tables from C4. Fails on any wrong semitone.
+    #[test]
+    fn scale_tables_are_pinned() {
+        assert_eq!(
+            scale_up(ScaleType::Dorian),
+            vec![60, 62, 63, 65, 67, 69, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::MelodicMinor),
+            vec![60, 62, 63, 65, 67, 69, 71, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::HarmonicMinor),
+            vec![60, 62, 63, 65, 67, 68, 71, 72]
+        );
+        assert_eq!(scale_up(ScaleType::Blues), vec![60, 63, 65, 66, 67, 70, 72]);
+        assert_eq!(
+            scale_up(ScaleType::Phrygian),
+            vec![60, 61, 63, 65, 67, 68, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::Lydian),
+            vec![60, 62, 64, 66, 67, 69, 71, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::Mixolydian),
+            vec![60, 62, 64, 65, 67, 69, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::Locrian),
+            vec![60, 61, 63, 65, 66, 68, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::MinorPentatonic),
+            vec![60, 63, 65, 67, 70, 72]
+        );
+    }
+
+    /// Pins the seventh-chord tables from C4. Fails on any wrong chord tone.
+    #[test]
+    fn chord_tables_are_pinned() {
+        let arp = |chord: ChordType| {
+            let mut spec = base_spec();
+            spec.scale = None;
+            spec.chord = Some(ChordModifier {
+                chord,
+                pattern: ArpeggioPattern::Ascending,
+                inversion: 0,
+            });
+            generate(&spec, 0).target_midi
+        };
+        assert_eq!(arp(ChordType::Dominant7), vec![60, 64, 67, 70]);
+        assert_eq!(arp(ChordType::HalfDiminished7), vec![60, 63, 66, 70]);
+        assert_eq!(arp(ChordType::Major7), vec![60, 64, 67, 71]);
+        assert_eq!(arp(ChordType::Minor7), vec![60, 63, 67, 70]);
+        assert_eq!(arp(ChordType::DiminishedTriad), vec![60, 63, 66]);
+        assert_eq!(arp(ChordType::AugmentedTriad), vec![60, 64, 68]);
+        assert_eq!(arp(ChordType::Sus4Triad), vec![60, 65, 67]);
+    }
+
+    /// Pins the remaining enclosure patterns (the approach notes precede the
+    /// target, in table order).
+    #[test]
+    fn enclosure_tables_are_pinned() {
+        let enc = |e: Enclosure| {
+            let mut spec = base_spec();
+            spec.scale = None; // bare root: figure is just C4
+            spec.enclosure = Some(e);
+            generate(&spec, 0).target_midi
+        };
+        assert_eq!(enc(Enclosure::OneUp), vec![61, 60]);
+        assert_eq!(enc(Enclosure::TwoUp), vec![62, 61, 60]);
+        assert_eq!(enc(Enclosure::TwoDown), vec![58, 59, 60]);
+        assert_eq!(enc(Enclosure::OneUpOneDown), vec![61, 59, 60]);
+    }
+
+    /// Structural invariant over every scale table: starts at 0, strictly
+    /// increasing, all offsets within the octave. Catches a disordered or
+    /// out-of-range edit to any future table.
+    #[test]
+    fn all_scale_tables_are_well_formed() {
+        let all = [
+            ScaleType::Major,
+            ScaleType::NaturalMinor,
+            ScaleType::MajorPentatonic,
+            ScaleType::MinorPentatonic,
+            ScaleType::Blues,
+            ScaleType::Dorian,
+            ScaleType::Mixolydian,
+            ScaleType::Lydian,
+            ScaleType::Phrygian,
+            ScaleType::HarmonicMinor,
+            ScaleType::MelodicMinor,
+            ScaleType::Locrian,
+            ScaleType::Chromatic,
+        ];
+        for scale in all {
+            let t = scale.semitones();
+            assert_eq!(t[0], 0, "{scale:?} must start on the root");
+            assert!(
+                t.windows(2).all(|w| w[0] < w[1]),
+                "{scale:?} must be strictly increasing"
+            );
+            assert!(
+                t.iter().all(|&s| s < 12),
+                "{scale:?} must stay in the octave"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases & the IPC contract
+    // -----------------------------------------------------------------------
+
+    /// Empty roots → an empty (but well-formed) sequence, never a panic.
+    #[test]
+    fn empty_roots_yield_an_empty_sequence() {
+        let mut spec = base_spec();
+        spec.roots = vec![];
+        spec.randomize_roots = true;
+        let seq = generate(&spec, 1);
+        assert!(seq.notes.is_empty());
+        assert!(seq.target_midi.is_empty());
+    }
+
+    /// notes_per_beat = 0 is guarded (treated as 1), not a division by zero.
+    #[test]
+    fn zero_notes_per_beat_is_guarded() {
+        let mut spec = base_spec();
+        spec.rhythm.notes_per_beat = 0;
+        let seq = generate(&spec, 0);
+        assert!(seq.notes[1].start_beat.is_finite());
+        assert_eq!(seq.notes[1].start_beat, 1.0);
+    }
+
+    /// An inversion ≥ the chord size wraps (mod) instead of panicking or
+    /// mis-shifting: inv 3 of a triad is root position again (an octave up
+    /// is NOT applied to all three).
+    #[test]
+    fn oversized_inversion_wraps() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.chord = Some(ChordModifier {
+            chord: ChordType::MajorTriad,
+            pattern: ArpeggioPattern::Ascending,
+            inversion: 3,
+        });
+        assert_eq!(generate(&spec, 0).target_midi, vec![60, 64, 67]);
+    }
+
+    /// A negative rest is clamped to zero: the grid stays monotonic.
+    #[test]
+    fn negative_rest_keeps_the_grid_monotonic() {
+        let mut spec = base_spec();
+        spec.roots = vec![60, 62];
+        spec.rhythm.rest_beats_between_roots = -3.0;
+        let seq = generate(&spec, 0);
+        for w in seq.notes.windows(2) {
+            assert!(w[1].start_beat > w[0].start_beat);
+        }
+    }
+
+    /// With two roots, "shuffle all but the first" is a no-op — stable order,
+    /// no degenerate RNG path.
+    #[test]
+    fn two_roots_with_randomize_keep_their_order() {
+        let mut spec = base_spec();
+        spec.roots = vec![60, 67];
+        spec.randomize_roots = true;
+        for seed in 0..10 {
+            assert_eq!(figure_roots(&generate(&spec, seed), 8), vec![60, 67]);
+        }
+    }
+
+    /// The IPC contract: spec + sequence roundtrip through JSON with the
+    /// snake_case enum encoding intact. Fails on any serde rename/derive drift
+    /// that would break the Tauri boundary in #254.
+    #[test]
+    fn spec_and_sequence_roundtrip_through_json() {
+        let mut spec = base_spec();
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        spec.enclosure = Some(Enclosure::OneDownOneUp);
+
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        assert!(
+            spec_json.contains("\"random_per_root\""),
+            "enum must serialize snake_case, got: {spec_json}"
+        );
+        assert!(spec_json.contains("\"one_down_one_up\""));
+        let spec_back: VariationSpec = serde_json::from_str(&spec_json).unwrap();
+        assert_eq!(spec_back, spec);
+
+        let seq = generate(&spec, 5);
+        let seq_back: GeneratedSequence =
+            serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
+        assert_eq!(seq_back, seq);
     }
 }
