@@ -81,6 +81,7 @@ function RevealCardItem({
 export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
+  const collectionCount = usePracticeStore((s) => s.collectionCount);
   // Subscribe to the live key's primitives (not the object), so this only
   // re-runs when the detected tonic/mode actually change — not on every ~8 Hz
   // perception tick.
@@ -128,6 +129,14 @@ export default function RevealCard() {
         why={current.reveal.why}
         onDismiss={dismissReveal}
       />
+      {collectionCount !== null && (
+        <p
+          className="mt-1 text-right text-xs text-amber-300/60"
+          data-testid="reveal-collection-count"
+        >
+          {collectionCount} in your collection
+        </p>
+      )}
     </div>
   );
 }

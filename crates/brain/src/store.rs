@@ -305,6 +305,11 @@ CREATE TABLE IF NOT EXISTS taste_profile (
     profile_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS learner_model (
+    user_id TEXT PRIMARY KEY,
+    model_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_phrases (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     phrase_index INTEGER NOT NULL,
@@ -758,6 +763,46 @@ impl SessionStore {
             "INSERT OR REPLACE INTO taste_profile (user_id, profile_json, updated_at) \
              VALUES (?1, ?2, ?3)",
             params![user_id, profile_json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Load the learner model for `user_id` (#252 F2).
+    ///
+    /// `Ok(None)` on cold start — every feature treats that as
+    /// [`LearnerModel::default`]. Same single-row-JSON strategy as the taste
+    /// profile: the blob is versioned and forward-compatible, so schema growth
+    /// needs no DB migration.
+    pub fn get_learner_model(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<crate::learner::LearnerModel>, StoreError> {
+        let row: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT model_json FROM learner_model WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        match row {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or replace the learner model for `user_id` (#252 F2). One row per
+    /// user; every pure transition writes back through this same path.
+    pub fn upsert_learner_model(
+        &self,
+        user_id: &str,
+        model: &crate::learner::LearnerModel,
+    ) -> Result<(), StoreError> {
+        let model_json = serde_json::to_string(model)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO learner_model (user_id, model_json, updated_at) \
+             VALUES (?1, ?2, ?3)",
+            params![user_id, model_json, Utc::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -1765,6 +1810,49 @@ mod tests {
             experience: ExperienceLevel::Intermediate,
             is_under_13: false,
         }
+    }
+
+    /// #252 F2: the learner model persists — cold start is `None`, an upsert
+    /// roundtrips the full blob (collection entries included), and a second
+    /// upsert overwrites in place. Fails if the table/serde plumbing drops data.
+    #[test]
+    fn learner_model_roundtrips_and_overwrites_in_place() {
+        let store = SessionStore::in_memory().unwrap();
+        assert!(
+            store
+                .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+                .unwrap()
+                .is_none(),
+            "cold start must report no learner model"
+        );
+
+        let m1 = crate::learner::apply_reveal(
+            &crate::learner::LearnerModel::default(),
+            "G Dorian",
+            "Miles Davis — \"So What\"",
+            100,
+        );
+        store
+            .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &m1)
+            .unwrap();
+        let got = store
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .expect("model exists after upsert");
+        assert_eq!(got, m1);
+        assert_eq!(got.collection_size(), 1);
+
+        // Overwrite in place — one row per user, no duplicates.
+        let m2 = crate::learner::apply_reveal(&m1, "C Major", "Beethoven — \"Ode to Joy\"", 200);
+        store
+            .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &m2)
+            .unwrap();
+        let got2 = store
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got2.collection_size(), 2);
+        assert_eq!(got2, m2);
     }
 
     #[test]

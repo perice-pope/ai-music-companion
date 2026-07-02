@@ -456,11 +456,15 @@ describe("practiceStore — requestReveal (#253)", () => {
     expect(useStore.getState().revealQueue).toHaveLength(0);
   });
 
-  // The live key/mode/confidence are passed to the backend, and a returned
-  // reveal is surfaced. Catches wrong arg wiring or a dropped pushReveal.
-  it("asks the backend with the live key and surfaces a returned reveal", async () => {
+  // The live key/mode/confidence are passed to the backend, a returned reveal
+  // is surfaced, and the unlock is persisted (#253 S3): record_reveal fires
+  // with the concept+connection and the returned distinct count lands in
+  // `collectionCount`. Catches wrong arg wiring, a dropped pushReveal, or a
+  // dropped persistence hop.
+  it("asks the backend with the live key, surfaces and records the reveal", async () => {
     const useStore = await listeningStoreWithKey();
-    mockInvoke.mockResolvedValueOnce(sampleReveal);
+    mockInvoke.mockResolvedValueOnce(sampleReveal); // get_reveal
+    mockInvoke.mockResolvedValueOnce(3); // record_reveal → new count
     await useStore.getState().requestReveal(samplePhrase(2));
     expect(mockInvoke).toHaveBeenCalledWith("get_reveal", {
       tonic: 7,
@@ -471,6 +475,24 @@ describe("practiceStore — requestReveal (#253)", () => {
     const q = useStore.getState().revealQueue;
     expect(q).toHaveLength(1);
     expect(q[0].reveal.connection).toBe(sampleReveal.connection);
+    expect(mockInvoke).toHaveBeenCalledWith("record_reveal", {
+      concept: sampleReveal.concept,
+      connection: sampleReveal.connection,
+    });
+    expect(useStore.getState().collectionCount).toBe(3);
+  });
+
+  // A record_reveal failure is swallowed: the reveal still shows, the count
+  // just stays unknown. Fails if persistence errors ever break the live loop.
+  it("a failed record_reveal keeps the reveal and leaves the count unknown", async () => {
+    const useStore = await listeningStoreWithKey();
+    mockInvoke.mockResolvedValueOnce(sampleReveal); // get_reveal
+    mockInvoke.mockRejectedValueOnce(new Error("db down")); // record_reveal
+    await expect(
+      useStore.getState().requestReveal(samplePhrase()),
+    ).resolves.toBeUndefined();
+    expect(useStore.getState().revealQueue).toHaveLength(1);
+    expect(useStore.getState().collectionCount).toBeNull();
   });
 
   // AC: a `null` reply is the honest "nothing to reveal" — surface nothing.

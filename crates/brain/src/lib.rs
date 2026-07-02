@@ -13,6 +13,7 @@ pub mod connections;
 pub mod fingerprint;
 pub mod follower;
 pub mod idiom_recap;
+pub mod learner;
 pub mod perception;
 pub mod phrase;
 pub mod score;

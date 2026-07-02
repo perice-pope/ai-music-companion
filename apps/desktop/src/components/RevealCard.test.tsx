@@ -38,7 +38,11 @@ describe("RevealCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
-    usePracticeStore.setState({ revealQueue: [], perception: null });
+    usePracticeStore.setState({
+      revealQueue: [],
+      perception: null,
+      collectionCount: null,
+    });
   });
 
   afterEach(() => {
@@ -169,6 +173,25 @@ describe("RevealCard", () => {
       usePracticeStore.setState({ perception: perceptionWithKey(5, "dorian") });
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #253 S3: the little collection counter renders once a count is known, and
+  // stays hidden before the first unlock. Fails if the count wiring is dropped.
+  it("shows the collection count once known", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+    });
+    render(<RevealCard />);
+    expect(
+      screen.queryByTestId("reveal-collection-count"),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      usePracticeStore.setState({ collectionCount: 4 });
+    });
+    expect(screen.getByTestId("reveal-collection-count")).toHaveTextContent(
+      "4 in your collection",
+    );
   });
 
   // #266 AC4: the card is NOT dismissed while the live key still matches (even
