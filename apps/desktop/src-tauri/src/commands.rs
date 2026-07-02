@@ -23,7 +23,9 @@ use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
 };
-use brain::connections::{reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE};
+use brain::connections::{
+    apply_enriched_why, reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE,
+};
 use brain::follower::ScorePosition;
 use brain::perception::PerceptionTracker;
 use brain::phrase::PhraseSummary;
@@ -219,6 +221,13 @@ pub trait CoachingService: Send + Sync {
     /// no-op (mocks never touch the network). The real LLM service overrides it
     /// so that `Offline` makes an outbound tip request structurally impossible.
     async fn set_network_policy(&self, _policy: NetworkPolicy) {}
+
+    /// Enrich a grounded reveal's `why` via the LLM when online (#253 S2);
+    /// otherwise return it unchanged. Never alters `concept`/`connection`. The
+    /// default impl is the identity — mocks and preview stay fully offline.
+    async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        reveal
+    }
 }
 
 /// Real coaching service backed by the Claude API.
@@ -286,6 +295,21 @@ impl CoachingService for LlmCoachingService {
         if let Some(engine_arc) = &self.engine {
             engine_arc.lock().await.set_network_policy(policy);
         }
+    }
+
+    async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        let Some(engine_arc) = &self.engine else {
+            return reveal;
+        };
+        // The engine's airplane switch makes this a no-op (no call) when the
+        // coaching opt-in is off; a failed/blank rewrite keeps the curated line.
+        let enriched = {
+            let mut engine = engine_arc.lock().await;
+            engine
+                .enrich_reveal_why(&reveal.concept, &reveal.connection, &reveal.why)
+                .await
+        };
+        apply_enriched_why(reveal, enriched)
     }
 }
 
@@ -1189,6 +1213,13 @@ impl AppState {
         context: &SessionContext,
     ) -> Result<Option<CoachingTip>, CommandError> {
         Ok(self.coaching_service.get_tip(phrase, context).await)
+    }
+
+    /// Enrich a grounded reveal's `why` via the coaching service (#253 S2). When
+    /// the coaching opt-in is off, this returns the reveal unchanged with no
+    /// network call.
+    pub async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        self.coaching_service.enrich_reveal(reveal).await
     }
 
     /// The texts of the most recent `limit` coaching tips recorded in the
@@ -2127,13 +2158,15 @@ pub async fn record_coaching_tip(
 }
 
 /// Offer a real-world music "reveal" for a just-completed phrase, from the live
-/// perception reading (key + mode + confidence). Slice 1 is curated + grounded +
-/// offline: it makes no network call, never fabricates a connection, and returns
+/// perception reading (key + mode + confidence). Selection is curated + grounded
+/// (`brain::connections`, Rust core): it never fabricates a connection and returns
 /// `None` when confidence is low, the mode has no curated match, or the phrase
-/// isn't on the reveal cadence. The selection logic lives in `brain::connections`
-/// (Rust core); this command is a thin pass-through. See #253.
+/// isn't on the reveal cadence. When the coaching opt-in is on (#253 S2), the
+/// `why` line is reworded by the LLM (grounded — the artist/piece is unchanged);
+/// offline it stays the curated line. See #253.
 #[tauri::command]
 pub async fn get_reveal(
+    state: State<'_, AppState>,
     tonic: u8,
     mode: String,
     confidence: f32,
@@ -2144,7 +2177,10 @@ pub async fn get_reveal(
         mode,
         confidence,
     };
-    Ok(reveal_on_phrase(&ctx, phrase_index, DEFAULT_REVEAL_CADENCE))
+    match reveal_on_phrase(&ctx, phrase_index, DEFAULT_REVEAL_CADENCE) {
+        Some(reveal) => Ok(Some(state.enrich_reveal(reveal).await)),
+        None => Ok(None),
+    }
 }
 
 /// Return the instrument catalog for the selector grid.
@@ -2642,6 +2678,24 @@ mod tests {
                 .is_some_and(|e| e.contains("Audio import isn't available")),
             "a transcription panic must degrade to the friendly error, got {result:?}"
         );
+    }
+
+    /// #253 S2 AC5: the mock coaching service (and the default impl) enrich a
+    /// reveal to itself — no network, no change — so tests and the web preview
+    /// stay fully offline. Fails if the default `enrich_reveal` ever mutated the
+    /// reveal.
+    #[tokio::test]
+    async fn mock_service_enrich_reveal_is_identity() {
+        let svc = MockCoachingService::new();
+        let reveal = Reveal {
+            concept: "G Dorian".to_owned(),
+            connection: "Miles Davis — \"So What\"".to_owned(),
+            why: "curated line".to_owned(),
+            source: brain::connections::RevealSource::Grounded,
+            tonic: 7,
+            mode: "dorian".to_owned(),
+        };
+        assert_eq!(svc.enrich_reveal(reveal.clone()).await, reveal);
     }
 
     #[test]
