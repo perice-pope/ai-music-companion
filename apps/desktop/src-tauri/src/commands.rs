@@ -1782,6 +1782,29 @@ pub fn set_taste_profile_impl(state: &AppState, profile: TasteProfile) -> Result
     Ok(())
 }
 
+/// Fold a surfaced reveal into the Learner Model's collection (#253 S3) and
+/// return the new **distinct** collection size. Load-or-default → the pure
+/// `learner::apply_reveal` transition → write back; the whole read-modify-write
+/// runs under the store lock so two rapid reveals can't lose an update. A
+/// repeat of the same (concept, connection) leaves the size unchanged.
+pub fn record_reveal_impl(
+    state: &AppState,
+    concept: &str,
+    connection: &str,
+    now_epoch_secs: i64,
+) -> Result<usize, CommandError> {
+    let store = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned");
+    let current = store
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    let next = brain::learner::apply_reveal(&current, concept, connection, now_epoch_secs);
+    store.upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &next)?;
+    Ok(next.collection_size())
+}
+
 /// Pure implementation of `get_practice_stats`.
 pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, CommandError> {
     let all_sessions = state
@@ -2181,6 +2204,24 @@ pub async fn get_reveal(
         Some(reveal) => Ok(Some(state.enrich_reveal(reveal).await)),
         None => Ok(None),
     }
+}
+
+/// Record a surfaced reveal into the Learner Model's collection (#253 S3) and
+/// return the new distinct-collection size for the UI's count. Called by the
+/// frontend right after a reveal is shown, mirroring `record_coaching_tip`.
+/// Dedup lives in the pure `learner::apply_reveal` transition: a repeat of the
+/// same (concept, connection) bumps its count but not the size.
+#[tauri::command]
+pub fn record_reveal(
+    state: State<'_, AppState>,
+    concept: String,
+    connection: String,
+) -> Result<usize, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    record_reveal_impl(&state, &concept, &connection, now).map_err(|e| e.to_frontend())
 }
 
 /// Return the instrument catalog for the selector grid.
@@ -4035,6 +4076,31 @@ mod tests {
         let svc = LlmCoachingService::with_engine(engine);
         let base = grounded_reveal();
         assert_eq!(svc.enrich_reveal(base.clone()).await, base);
+    }
+
+    /// #253 S3: recording reveals through the command layer persists to the
+    /// Learner Model with dedup — a novel reveal grows the distinct count by
+    /// exactly 1, an exact repeat by 0, and the model survives (is re-read from)
+    /// the store between calls. Fails if the load→apply→write path drops state
+    /// or dedup regresses.
+    #[test]
+    fn record_reveal_impl_dedups_and_persists_across_calls() {
+        let s = state();
+        assert_eq!(
+            record_reveal_impl(&s, "G Dorian", "Miles Davis — \"So What\"", 100).unwrap(),
+            1,
+            "first reveal unlocks one entry"
+        );
+        assert_eq!(
+            record_reveal_impl(&s, "G Dorian", "Miles Davis — \"So What\"", 200).unwrap(),
+            1,
+            "an exact repeat must not grow the collection"
+        );
+        assert_eq!(
+            record_reveal_impl(&s, "G Dorian", "Santana — \"Oye Como Va\"", 300).unwrap(),
+            2,
+            "a different connection is a new unlock"
+        );
     }
 
     /// #253 S2 M2 (command wiring): `AppState::enrich_reveal` actually delegates

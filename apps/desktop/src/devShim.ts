@@ -114,6 +114,10 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       // preview mocks as `null` — so this isn't reached in practice. Mock a
       // calm "nothing to reveal" so the command is never unhandled.
       return null;
+    case "record_reveal":
+      // No reveals fire in the preview (see above), but keep the command
+      // handled: report an unchanged, empty collection.
+      return 0;
     // Tauri v2 event subsystem rides over invoke.
     case "plugin:event|listen":
       return Math.floor(Math.random() * 1_000_000);

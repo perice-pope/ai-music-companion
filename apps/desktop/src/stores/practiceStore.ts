@@ -114,6 +114,11 @@ export interface PracticeState {
   tipQueue: QueuedTip[];
   /** Real-world music reveals queued for the reveal card (most recent shown). */
   revealQueue: QueuedReveal[];
+  /**
+   * Distinct reveals unlocked in the Learner Model collection (#253 S3), as
+   * last reported by `record_reveal`. `null` until the first unlock this run.
+   */
+  collectionCount: number | null;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -380,6 +385,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   phrases: [],
   tipQueue: [],
   revealQueue: [],
+  collectionCount: null,
   recap: null,
   recapError: null,
   activeScore: null,
@@ -785,6 +791,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         return;
       }
       get().pushReveal(reveal, phrase.phrase_index);
+      // Persist the unlock into the Learner Model collection (#253 S3). The
+      // backend dedups (a repeat doesn't grow the count) and returns the new
+      // distinct-collection size for the card's little counter. A failure here
+      // must never break the live loop — log and move on.
+      try {
+        const count = await invoke<number>("record_reveal", {
+          concept: reveal.concept,
+          connection: reveal.connection,
+        });
+        set({ collectionCount: count });
+      } catch (err) {
+        console.error("Failed to record reveal:", err);
+      }
     } catch (err) {
       // Best-effort: a failed reveal must never disrupt the session.
       console.error("Failed to fetch reveal:", err);
