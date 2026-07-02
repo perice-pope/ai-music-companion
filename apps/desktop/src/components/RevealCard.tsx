@@ -81,9 +81,23 @@ function RevealCardItem({
 export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
+  const liveKey = usePracticeStore((s) => s.perception?.key ?? null);
 
   const current =
     revealQueue.length > 0 ? revealQueue[revealQueue.length - 1] : null;
+
+  // Never let a lingering card contradict the live "I hear" header (#266): once
+  // the detected key moves to a different (tonic, mode) than this reveal names,
+  // dismiss it. A null key (silence) doesn't contradict — keep showing it.
+  useEffect(() => {
+    if (!current || !liveKey) return;
+    const movedOff =
+      liveKey.tonic !== current.reveal.tonic ||
+      liveKey.mode.toLowerCase() !== current.reveal.mode;
+    if (movedOff) {
+      dismissReveal(current.id);
+    }
+  }, [current, liveKey, dismissReveal]);
 
   if (!current) {
     return (

@@ -19,8 +19,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Minimum perception confidence before we offer a reveal. Below this we stay
-/// silent rather than guess.
-pub const REVEAL_MIN_CONFIDENCE: f32 = 0.6;
+/// silent rather than guess. Raised from 0.6 to 0.72 (#266) so reveals fire on
+/// more-settled readings and don't name a key the live header has already left.
+pub const REVEAL_MIN_CONFIDENCE: f32 = 0.72;
 
 /// How often a reveal may surface, in completed phrases (at most one per N).
 pub const DEFAULT_REVEAL_CADENCE: usize = 3;
@@ -52,6 +53,14 @@ pub struct Reveal {
     pub why: String,
     /// Where the wording came from.
     pub source: RevealSource,
+    /// The tonic pitch class (0&ndash;11) this reveal was generated for. The UI
+    /// compares it against the live perception key and dismisses the card once
+    /// the detected key moves off it, so a lingering card can't contradict the
+    /// "I hear" header (#266).
+    pub tonic: u8,
+    /// The normalized (lowercased) mode this reveal was generated for, e.g.
+    /// `"dorian"`. Paired with `tonic` for the same live-key comparison.
+    pub mode: String,
 }
 
 /// What the app currently hears, distilled to what a reveal needs. Built from
@@ -222,13 +231,16 @@ pub fn reveal_for(ctx: &MusicalContext, seed: u64) -> Option<Reveal> {
     if exemplars.is_empty() {
         return None;
     }
-    let note = NOTE_NAMES[(ctx.tonic % 12) as usize];
+    let tonic = ctx.tonic % 12;
+    let note = NOTE_NAMES[tonic as usize];
     let pick = &exemplars[(seed as usize) % exemplars.len()];
     Some(Reveal {
         concept: format!("{note} {display_mode}"),
         connection: pick.connection.to_string(),
         why: pick.why.to_string(),
         source: RevealSource::Grounded,
+        tonic,
+        mode: mode_key,
     })
 }
 
@@ -274,6 +286,17 @@ mod tests {
             r.connection
         );
         assert_eq!(r.source, RevealSource::Grounded);
+    }
+
+    /// #266 AC1: the reveal carries the key it was generated for — `tonic` and
+    /// the *normalized* mode — so the UI can dismiss it when the live key moves
+    /// off it. Fails if the fields aren't populated or the mode isn't normalized
+    /// (here input "Dorian" must be stored as "dorian").
+    #[test]
+    fn reveal_reports_generating_key() {
+        let r = reveal_for(&ctx(7, "Dorian", 0.9), 0).unwrap();
+        assert_eq!(r.tonic, 7);
+        assert_eq!(r.mode, "dorian");
     }
 
     /// AC2: below the confidence threshold we stay silent rather than guess.

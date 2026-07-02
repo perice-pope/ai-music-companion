@@ -110,6 +110,10 @@ export interface Reveal {
   why: string;
   /** Provenance of the wording. */
   source: RevealSource;
+  /** Tonic pitch class (0-11) this reveal was generated for (#266). */
+  tonic: number;
+  /** Normalized (lowercased) mode this reveal was generated for, e.g. "dorian". */
+  mode: string;
 }
 
 /**
