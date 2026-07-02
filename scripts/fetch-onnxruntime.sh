@@ -23,7 +23,14 @@ case "$uname_s" in
       *) echo "unsupported arch: $uname_m" >&2; exit 1 ;;
     esac ;;
   Darwin)
-    pkg="onnxruntime-osx-universal2-${ORT_VERSION}"; lib="libonnxruntime.dylib" ;;
+    # macOS ships arch-specific builds (osx-arm64 / osx-x64); there is no
+    # osx-universal2 for recent versions (1.24.2 → 404). Pick by arch (#267).
+    case "$uname_m" in
+      arm64)  pkg="onnxruntime-osx-arm64-${ORT_VERSION}" ;;
+      x86_64) pkg="onnxruntime-osx-x64-${ORT_VERSION}" ;;
+      *) echo "unsupported macOS arch: $uname_m" >&2; exit 1 ;;
+    esac
+    lib="libonnxruntime.dylib" ;;
   *)
     echo "Unsupported OS: $uname_s." >&2
     echo "On Windows, download onnxruntime-win-x64-${ORT_VERSION}.zip from the" >&2

@@ -97,8 +97,15 @@ ensure_audio_engine(){
   lib="$dir/libonnxruntime.dylib"
   if [ ! -f "$lib" ]; then
     log "Fetching the audio engine (one time, ~50 MB)..."
-    local ver="1.24.2" pkg tmp
-    pkg="onnxruntime-osx-universal2-${ver}"
+    # 1.24.2 ships macOS as arch-specific builds (osx-arm64 / osx-x64), NOT
+    # osx-universal2 (that name 404s — #267). Pick by CPU.
+    local ver="1.24.2" arch pkg tmp
+    case "$(uname -m)" in
+      arm64) arch="arm64" ;;
+      x86_64) arch="x64" ;;
+      *) arch="arm64" ;;
+    esac
+    pkg="onnxruntime-osx-${arch}-${ver}"
     tmp="$(mktemp -d)"
     mkdir -p "$dir"
     if curl -fsSL -o "$tmp/ort.tgz" \
