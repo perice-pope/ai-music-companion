@@ -1,3 +1,9 @@
+## [2.10.0](https://github.com/perice-pope/ai-music-companion/compare/v2.9.0...v2.10.0) (2026-07-02)
+
+### Features
+
+* **learner:** Learner Model collection + persist reveals ([#253](https://github.com/perice-pope/ai-music-companion/issues/253) S3, [#252](https://github.com/perice-pope/ai-music-companion/issues/252) F2) ([#272](https://github.com/perice-pope/ai-music-companion/issues/272)) ([a632eaf](https://github.com/perice-pope/ai-music-companion/commit/a632eaf089429c8a7e443febd030a966b673ea46))
+
 ## [2.9.0](https://github.com/perice-pope/ai-music-companion/compare/v2.8.3...v2.9.0) (2026-07-02)
 
 ### Features
