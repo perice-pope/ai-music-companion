@@ -1,3 +1,9 @@
+## [2.12.0](https://github.com/perice-pope/ai-music-companion/compare/v2.11.0...v2.12.0) (2026-07-02)
+
+### Features
+
+* **coach:** the guided lesson — adaptive RV routine + grading + ramp ([#254](https://github.com/perice-pope/ai-music-companion/issues/254)) ([#275](https://github.com/perice-pope/ai-music-companion/issues/275)) ([2bbbb49](https://github.com/perice-pope/ai-music-companion/commit/2bbbb49bd145608a40774c7ecf1d67e2c331e078))
+
 ## [2.11.0](https://github.com/perice-pope/ai-music-companion/compare/v2.10.0...v2.11.0) (2026-07-02)
 
 ### Features
