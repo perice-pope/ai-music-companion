@@ -423,6 +423,8 @@ describe("practiceStore — requestReveal (#253)", () => {
     connection: 'Miles Davis — "So What"',
     why: "Modal jazz.",
     source: "grounded",
+    tonic: 7,
+    mode: "dorian",
   };
 
   async function listeningStoreWithKey() {

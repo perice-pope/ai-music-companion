@@ -10,6 +10,18 @@ function reveal(connection: string): Reveal {
     connection,
     why: "A cool, jazzy minor.",
     source: "grounded",
+    tonic: 7,
+    mode: "dorian",
+  };
+}
+
+// A perception snapshot carrying just the key the card compares against.
+function perceptionWithKey(tonic: number, mode: string) {
+  return {
+    tempo_bpm: null,
+    swing_ratio: null,
+    locked: false,
+    key: { tonic, mode, name: `${tonic} ${mode}`, confidence: 0.9, alternative: null },
   };
 }
 
@@ -26,7 +38,7 @@ describe("RevealCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
-    usePracticeStore.setState({ revealQueue: [] });
+    usePracticeStore.setState({ revealQueue: [], perception: null });
   });
 
   afterEach(() => {
@@ -112,5 +124,74 @@ describe("RevealCard", () => {
     vi.advanceTimersByTime(300); // fade-out
 
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #266 AC3: once the live detected key moves off the reveal's (tonic, mode),
+  // the card is dismissed so it can't contradict the "I hear" header. Fails if a
+  // stale card lingers after the key changes.
+  it("dismisses the card when the live key moves off it", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
+
+    // Live detection wanders to a different key/mode.
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
+    });
+
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
+  });
+
+  // #266 AC3 (isolate the OR): only the MODE moves (same tonic) → dismiss. Fails
+  // if the dismiss condition were `&&` instead of `||`.
+  it("dismisses when only the mode moves off (same tonic)", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #266 AC3 (isolate the OR): only the TONIC moves (same mode) → dismiss. The
+  // other half of the `||`.
+  it("dismisses when only the tonic moves off (same mode)", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "dorian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #266 AC4: the card is NOT dismissed while the live key still matches (even
+  // with different casing) or is momentarily null (silence). Fails if a benign
+  // update wrongly clears the card.
+  it("keeps the card when the live key is unchanged or silent", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+
+    // Same key, different casing → not a change.
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(7, "Dorian") });
+    });
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
+
+    // Player pauses → key goes null → don't punish silence.
+    act(() => {
+      usePracticeStore.setState({
+        perception: { tempo_bpm: null, swing_ratio: null, locked: false, key: null },
+      });
+    });
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
   });
 });
