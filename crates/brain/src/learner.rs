@@ -19,6 +19,21 @@ use serde::{Deserialize, Serialize};
 /// Current schema version of the [`LearnerModel`] blob.
 pub const LEARNER_MODEL_VERSION: u8 = 1;
 
+/// The top of the adaptive difficulty ladder (steps are `0..=MAX_DIFFICULTY`).
+/// The guided coach (#254) moves at most one bounded step per drill.
+pub const MAX_DIFFICULTY: u8 = 9;
+
+/// EWMA smoothing for per-key accuracy: high enough to adapt within a few
+/// drills, low enough that one bad run doesn't erase a history of good ones.
+pub const MASTERY_EWMA_ALPHA: f32 = 0.3;
+
+/// A key/scale is **owned** at or above this smoothed accuracy…
+pub const OWNED_ACCURACY_THRESHOLD: f32 = 0.85;
+
+/// …provided it has been attempted at least this many times (one lucky run
+/// can't claim ownership).
+pub const OWNED_MIN_ATTEMPTS: u32 = 3;
+
 /// One unlocked reveal: a musical concept tied to a real-world connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Collected {
@@ -37,6 +52,35 @@ pub struct Collected {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Per-key/scale mastery, updated by [`apply_drill_result`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mastery {
+    /// Drills attempted for this key/scale.
+    pub attempts: u32,
+    /// Smoothed accuracy (0..1), EWMA with [`MASTERY_EWMA_ALPHA`].
+    pub accuracy_ewma: f32,
+    /// `true` while the smoothed accuracy holds [`OWNED_ACCURACY_THRESHOLD`]
+    /// over ≥ [`OWNED_MIN_ATTEMPTS`] attempts. **Not sticky** — slipping back
+    /// under the bar honestly loses the key (the wheel dims), it doesn't stay
+    /// lit on past glory.
+    pub owned: bool,
+    /// Last attempt time (Unix seconds, injected).
+    pub last_epoch_secs: i64,
+    /// Forward-compatibility, same contract as [`LearnerModel::extra`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One drill's outcome, as the coach reports it (#254): which key/scale it
+/// trained and the 0..1 accuracy achieved against the drill's exact target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrillResult {
+    /// [`mastery_key`]-formatted key, e.g. `"7:dorian"`.
+    pub key_scale: String,
+    /// 0..1 — correct notes / target notes.
+    pub accuracy: f32,
+}
+
 /// The per-user learner model. Stored as one JSON blob (SQLite locally, a
 /// nullable JSONB column in Supabase later) — additive and versioned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +90,16 @@ pub struct LearnerModel {
     /// Unlocked reveals, keyed by [`collection_key`] for stable dedup.
     #[serde(default)]
     pub collection: BTreeMap<String, Collected>,
+    /// Current adaptive difficulty step, `0..=MAX_DIFFICULTY`. Written by the
+    /// guided coach at lesson end; read to start the next lesson where the
+    /// player left off. Additive: blobs written before this field existed load
+    /// as step 0 (gentlest).
+    #[serde(default)]
+    pub difficulty: u8,
+    /// Per-key/scale mastery, keyed by [`mastery_key`]. Additive like
+    /// `difficulty`.
+    #[serde(default)]
+    pub key_mastery: BTreeMap<String, Mastery>,
     /// Last transition time (Unix seconds, injected).
     pub updated_at_epoch_secs: i64,
     /// Forward-compatibility: top-level fields this build doesn't know yet
@@ -60,6 +114,8 @@ impl Default for LearnerModel {
         Self {
             version: LEARNER_MODEL_VERSION,
             collection: BTreeMap::new(),
+            difficulty: 0,
+            key_mastery: BTreeMap::new(),
             updated_at_epoch_secs: 0,
             extra: serde_json::Map::new(),
         }
@@ -77,6 +133,65 @@ impl LearnerModel {
 /// the same entry, regardless of how its `why` line was worded that day.
 pub fn collection_key(concept: &str, connection: &str) -> String {
     format!("{}\u{1f}{}", concept.trim(), connection.trim())
+}
+
+/// Stable mastery key for a key/scale, e.g. tonic 7 + `"Dorian"` → `"7:dorian"`.
+/// Tonic is the pitch class (0–11); the mode is normalized to lowercase so
+/// perception's capitalized labels and the coach's specs can't split one key
+/// into two entries.
+pub fn mastery_key(tonic: u8, mode: &str) -> String {
+    format!("{}:{}", tonic % 12, mode.trim().to_lowercase())
+}
+
+/// Pure transition: fold one drill result into per-key mastery (#252 F2, #254).
+///
+/// `attempts` increments; `accuracy_ewma` moves by [`MASTERY_EWMA_ALPHA`]
+/// toward the new accuracy (a first attempt seeds the EWMA directly);
+/// `owned` is recomputed from the smoothed value — it flips on at
+/// [`OWNED_ACCURACY_THRESHOLD`] over ≥ [`OWNED_MIN_ATTEMPTS`] attempts and
+/// honestly flips back off if the player slips. Deterministic; accuracy is
+/// clamped to 0..=1 (a NaN is treated as 0).
+pub fn apply_drill_result(
+    model: &LearnerModel,
+    result: &DrillResult,
+    now_epoch_secs: i64,
+) -> LearnerModel {
+    let mut next = model.clone();
+    let accuracy = if result.accuracy.is_nan() {
+        0.0
+    } else {
+        result.accuracy.clamp(0.0, 1.0)
+    };
+    let entry = next
+        .key_mastery
+        .entry(result.key_scale.clone())
+        .or_insert_with(|| Mastery {
+            attempts: 0,
+            accuracy_ewma: 0.0,
+            owned: false,
+            last_epoch_secs: now_epoch_secs,
+            extra: serde_json::Map::new(),
+        });
+    entry.accuracy_ewma = if entry.attempts == 0 {
+        accuracy
+    } else {
+        entry.accuracy_ewma + MASTERY_EWMA_ALPHA * (accuracy - entry.accuracy_ewma)
+    };
+    entry.attempts = entry.attempts.saturating_add(1);
+    entry.last_epoch_secs = now_epoch_secs;
+    entry.owned =
+        entry.attempts >= OWNED_MIN_ATTEMPTS && entry.accuracy_ewma >= OWNED_ACCURACY_THRESHOLD;
+    next.updated_at_epoch_secs = now_epoch_secs;
+    next
+}
+
+/// Pure transition: set the adaptive difficulty (clamped to `0..=MAX_DIFFICULTY`).
+/// Written by the coach at lesson end (#254).
+pub fn apply_difficulty(model: &LearnerModel, difficulty: u8, now_epoch_secs: i64) -> LearnerModel {
+    let mut next = model.clone();
+    next.difficulty = difficulty.min(MAX_DIFFICULTY);
+    next.updated_at_epoch_secs = now_epoch_secs;
+    next
 }
 
 /// Pure transition: fold one surfaced reveal into the model (#253 S3).
@@ -180,7 +295,7 @@ mod tests {
                 }
             },
             "updated_at_epoch_secs": 5,
-            "key_mastery": { "G:dorian": { "attempts": 3 } },
+            "sound_profile": { "mode_lean": "minor" },
             "streak": { "count": 7 }
         }"#;
         let model: LearnerModel = serde_json::from_str(json).expect("newer blob parses");
@@ -188,7 +303,7 @@ mod tests {
         let after = apply_reveal(&model, "G Dorian", "Miles Davis", 6);
         let out = serde_json::to_value(&after).expect("serializes");
         // Top-level unknown fields preserved.
-        assert_eq!(out["key_mastery"]["G:dorian"]["attempts"], 3);
+        assert_eq!(out["sound_profile"]["mode_lean"], "minor");
         assert_eq!(out["streak"]["count"], 7);
         // Per-entry unknown fields preserved too — including through the
         // count-bump path of an existing entry.
@@ -209,5 +324,118 @@ mod tests {
             collection_key("G Dorian", "Miles Davis"),
             collection_key("G", "Dorian Miles Davis"),
         );
+    }
+
+    /// #254/F2: `owned` flips on only at the threshold over enough attempts —
+    /// two perfect drills aren't ownership (min attempts), three are; and the
+    /// EWMA means one bad run after that dents the average but the flag flips
+    /// back off only when the *smoothed* value slips under the bar (honest,
+    /// non-sticky). Fails if the flip rule or EWMA math regresses.
+    #[test]
+    fn owned_flips_at_threshold_over_min_attempts_and_is_not_sticky() {
+        let key = mastery_key(7, "Dorian");
+        let r = |a: f32| DrillResult {
+            key_scale: key.clone(),
+            accuracy: a,
+        };
+        let m0 = LearnerModel::default();
+        let m1 = apply_drill_result(&m0, &r(1.0), 1);
+        let m2 = apply_drill_result(&m1, &r(1.0), 2);
+        assert!(
+            !m2.key_mastery[&key].owned,
+            "2 attempts must not own (min is {OWNED_MIN_ATTEMPTS})"
+        );
+        let m3 = apply_drill_result(&m2, &r(1.0), 3);
+        assert!(m3.key_mastery[&key].owned, "3 perfect drills own the key");
+
+        // Slip hard: repeated zeros drag the EWMA under the bar → honestly lost.
+        let mut m = m3;
+        for t in 4..12 {
+            m = apply_drill_result(&m, &r(0.0), t);
+        }
+        assert!(
+            !m.key_mastery[&key].owned,
+            "sustained failure must un-own (ewma {})",
+            m.key_mastery[&key].accuracy_ewma
+        );
+    }
+
+    /// EWMA math: a first attempt seeds directly; later attempts move by alpha.
+    /// Fails on an off-by-one in the seeding or a wrong smoothing direction.
+    #[test]
+    fn ewma_seeds_then_smooths() {
+        let key = mastery_key(0, "major");
+        let m0 = LearnerModel::default();
+        let m1 = apply_drill_result(
+            &m0,
+            &DrillResult {
+                key_scale: key.clone(),
+                accuracy: 0.6,
+            },
+            1,
+        );
+        assert!((m1.key_mastery[&key].accuracy_ewma - 0.6).abs() < 1e-6);
+        let m2 = apply_drill_result(
+            &m1,
+            &DrillResult {
+                key_scale: key.clone(),
+                accuracy: 1.0,
+            },
+            2,
+        );
+        // 0.6 + 0.3 * (1.0 - 0.6) = 0.72
+        assert!((m2.key_mastery[&key].accuracy_ewma - 0.72).abs() < 1e-6);
+        assert_eq!(m2.key_mastery[&key].attempts, 2);
+    }
+
+    /// Garbage accuracy can't corrupt the model: NaN counts as 0, out-of-range
+    /// values clamp.
+    #[test]
+    fn accuracy_is_sanitized() {
+        let key = mastery_key(2, "minor");
+        let m0 = LearnerModel::default();
+        let m1 = apply_drill_result(
+            &m0,
+            &DrillResult {
+                key_scale: key.clone(),
+                accuracy: f32::NAN,
+            },
+            1,
+        );
+        assert_eq!(m1.key_mastery[&key].accuracy_ewma, 0.0);
+        let m2 = apply_drill_result(
+            &m1,
+            &DrillResult {
+                key_scale: key.clone(),
+                accuracy: 7.0,
+            },
+            2,
+        );
+        assert!(m2.key_mastery[&key].accuracy_ewma <= 1.0);
+    }
+
+    /// `mastery_key` normalizes: perception's "Dorian" and the coach's "dorian"
+    /// are one key; tonic wraps into a pitch class.
+    #[test]
+    fn mastery_key_normalizes_mode_and_tonic() {
+        assert_eq!(mastery_key(7, "Dorian"), mastery_key(19, " dorian "));
+    }
+
+    /// Difficulty transition clamps to the ladder and stamps the time.
+    #[test]
+    fn apply_difficulty_clamps_to_the_ladder() {
+        let m = apply_difficulty(&LearnerModel::default(), MAX_DIFFICULTY + 5, 9);
+        assert_eq!(m.difficulty, MAX_DIFFICULTY);
+        assert_eq!(m.updated_at_epoch_secs, 9);
+    }
+
+    /// A pre-mastery blob (no difficulty/key_mastery fields at all) still loads,
+    /// defaulting to step 0 and an empty map — the additive-schema contract.
+    #[test]
+    fn old_blob_without_mastery_fields_loads_with_defaults() {
+        let json = r#"{ "version": 1, "collection": {}, "updated_at_epoch_secs": 4 }"#;
+        let model: LearnerModel = serde_json::from_str(json).expect("old blob parses");
+        assert_eq!(model.difficulty, 0);
+        assert!(model.key_mastery.is_empty());
     }
 }
