@@ -81,7 +81,11 @@ function RevealCardItem({
 export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
-  const liveKey = usePracticeStore((s) => s.perception?.key ?? null);
+  // Subscribe to the live key's primitives (not the object), so this only
+  // re-runs when the detected tonic/mode actually change — not on every ~8 Hz
+  // perception tick.
+  const liveTonic = usePracticeStore((s) => s.perception?.key?.tonic ?? null);
+  const liveMode = usePracticeStore((s) => s.perception?.key?.mode ?? null);
 
   const current =
     revealQueue.length > 0 ? revealQueue[revealQueue.length - 1] : null;
@@ -90,14 +94,14 @@ export default function RevealCard() {
   // the detected key moves to a different (tonic, mode) than this reveal names,
   // dismiss it. A null key (silence) doesn't contradict — keep showing it.
   useEffect(() => {
-    if (!current || !liveKey) return;
+    if (!current || liveTonic === null || liveMode === null) return;
     const movedOff =
-      liveKey.tonic !== current.reveal.tonic ||
-      liveKey.mode.toLowerCase() !== current.reveal.mode;
+      liveTonic !== current.reveal.tonic ||
+      liveMode.toLowerCase() !== current.reveal.mode;
     if (movedOff) {
       dismissReveal(current.id);
     }
-  }, [current, liveKey, dismissReveal]);
+  }, [current, liveTonic, liveMode, dismissReveal]);
 
   if (!current) {
     return (

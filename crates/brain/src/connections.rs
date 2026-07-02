@@ -321,6 +321,15 @@ mod tests {
         assert!(reveal_for(&ctx(7, "dorian", f32::NAN), 0).is_none());
     }
 
+    /// #266 AC2: the gate is 0.72, not the old 0.6 — a reading in the (0.6, 0.72)
+    /// band must stay silent. Pins the *value* of the raise (the boundary tests
+    /// above only pin the direction relative to the constant): reverting
+    /// REVEAL_MIN_CONFIDENCE toward 0.6 turns this red.
+    #[test]
+    fn gate_is_raised_above_point_six() {
+        assert!(reveal_for(&ctx(7, "dorian", 0.70), 0).is_none());
+    }
+
     /// AC3: an unknown/unmapped mode yields nothing — never a fabricated match.
     /// Fails if the table ever falls through to a default connection.
     #[test]

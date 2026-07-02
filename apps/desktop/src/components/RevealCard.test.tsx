@@ -145,6 +145,32 @@ describe("RevealCard", () => {
     expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
   });
 
+  // #266 AC3 (isolate the OR): only the MODE moves (same tonic) → dismiss. Fails
+  // if the dismiss condition were `&&` instead of `||`.
+  it("dismisses when only the mode moves off (same tonic)", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #266 AC3 (isolate the OR): only the TONIC moves (same mode) → dismiss. The
+  // other half of the `||`.
+  it("dismisses when only the tonic moves off (same mode)", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+    });
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "dorian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
   // #266 AC4: the card is NOT dismissed while the live key still matches (even
   // with different casing) or is momentarily null (silence). Fails if a benign
   // update wrongly clears the card.
