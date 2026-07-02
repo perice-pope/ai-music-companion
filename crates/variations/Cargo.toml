@@ -1,0 +1,19 @@
+[package]
+name = "variations"
+version.workspace = true
+edition.workspace = true
+
+# The Random Variations (RV) practice-pattern generator — foundation F1 of the
+# practice-coach epic (#252). A pure leaf crate: no I/O, no wall clock, no
+# process randomness (an explicit seed drives an internal PRNG), so every
+# output is reproducible and unit-testable. Depends only on `theory` + serde.
+
+[dependencies]
+serde = { workspace = true }
+theory = { path = "../theory" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
