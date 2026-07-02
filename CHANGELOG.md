@@ -1,3 +1,10 @@
+## [2.11.0](https://github.com/perice-pope/ai-music-companion/compare/v2.10.0...v2.11.0) (2026-07-02)
+
+### Features
+
+* **learner:** per-key mastery + adaptive difficulty ([#252](https://github.com/perice-pope/ai-music-companion/issues/252) F2) ([#274](https://github.com/perice-pope/ai-music-companion/issues/274)) ([9e91a64](https://github.com/perice-pope/ai-music-companion/commit/9e91a6411f300daa4168967edc3bc63b41967764)), closes [#254](https://github.com/perice-pope/ai-music-companion/issues/254)
+* **variations:** RV practice-pattern generator engine ([#252](https://github.com/perice-pope/ai-music-companion/issues/252) F1) ([#273](https://github.com/perice-pope/ai-music-companion/issues/273)) ([61e301d](https://github.com/perice-pope/ai-music-companion/commit/61e301de921544333f52847cdae71d5654c4e82e)), closes [#254](https://github.com/perice-pope/ai-music-companion/issues/254) [#254](https://github.com/perice-pope/ai-music-companion/issues/254)
+
 ## [2.10.0](https://github.com/perice-pope/ai-music-companion/compare/v2.9.0...v2.10.0) (2026-07-02)
 
 ### Features
