@@ -35,19 +35,47 @@ impl SidecarOmrEngine {
     }
 }
 
+/// `true` if `e` is `ETXTBSY` ("text file busy", errno 26): the kernel still
+/// sees a recent writer on the executable. A freshly written/installed engine
+/// binary can hit this transiently on `exec`; it clears in milliseconds.
+fn is_text_file_busy(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(26)
+}
+
+/// Spawn `command`, retrying briefly on `ETXTBSY`. A just-written binary (a
+/// freshly installed engine, or a test's shell stand-in) can return "text file
+/// busy" on `exec` for a few ms after its last writer closed; a bounded retry
+/// avoids failing a whole recognition (and a flaky test) over a transient race.
+fn spawn_with_etxtbsy_retry(
+    command: &mut Command,
+    binary: &std::path::Path,
+) -> Result<std::process::Child, OmrError> {
+    const MAX_ATTEMPTS: u32 = 6;
+    for attempt in 0..MAX_ATTEMPTS {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) if is_text_file_busy(&e) && attempt + 1 < MAX_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => {
+                return Err(OmrError::EngineUnavailable(format!(
+                    "could not launch {}: {e}",
+                    binary.display()
+                )))
+            }
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
 impl OmrEngine for SidecarOmrEngine {
     fn recognize_pdf(&self, pdf: &[u8]) -> Result<String, OmrError> {
-        let mut child = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                OmrError::EngineUnavailable(format!(
-                    "could not launch {}: {e}",
-                    self.binary.display()
-                ))
-            })?;
+            .stderr(Stdio::piped());
+        let mut child = spawn_with_etxtbsy_retry(&mut command, &self.binary)?;
 
         // Stream the PDF to the child's stdin on its own thread, then let it
         // close (EOF) — concurrent with reading stdout to avoid a pipe-buffer
@@ -169,5 +197,17 @@ mod tests {
         let xml = engine.recognize_pdf(&big).expect("no deadlock");
         assert!(xml.contains("<score-partwise>"));
         let _ = fs::remove_file(&bin);
+    }
+
+    /// The retry only kicks in for ETXTBSY (errno 26) — not for other launch
+    /// failures like ENOENT, which must still surface immediately. Fails if the
+    /// classifier ever matched the wrong errno (which would either not retry the
+    /// real race, or spin uselessly on a genuinely-missing binary).
+    #[test]
+    fn classifies_only_text_file_busy_as_retryable() {
+        use std::io::Error;
+        assert!(is_text_file_busy(&Error::from_raw_os_error(26)));
+        assert!(!is_text_file_busy(&Error::from_raw_os_error(2))); // ENOENT
+        assert!(!is_text_file_busy(&Error::other("some other failure")));
     }
 }
