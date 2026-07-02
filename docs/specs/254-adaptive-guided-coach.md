@@ -27,7 +27,7 @@ honest signal here (see §8, §10).
 - No new pitch/onset detection or audio-thread work — consume existing `AudioEvent`/perception output.
 - No LLM call required for the loop; routine assembly, scoring, ramp, and persistence are fully local
   and offline. (LLM narration of the recap, if any, reuses the existing opt-in path — out of scope here.)
-- No new instruments, no MusicXML authoring beyond what F1's `GeneratedSequence.ticks` already emits.
+- No new instruments, no MusicXML authoring beyond the coach's thin `GeneratedSequence.notes` → `ScoreModel` adapter (the emitter already exists).
 - No multi-session lesson planning / spaced repetition scheduling (later epic slice).
 - Difficulty model is a single scalar step (F2's `difficulty: u8`); no per-dimension difficulty vector.
 
@@ -55,7 +55,7 @@ pub struct Drill {
     pub difficulty: u8,                 // bounded 0..=MAX_DIFFICULTY
     pub key_scale: KeyScale,            // F2 mastery key this drill trains
     pub spec: VariationSpec,            // F1 input
-    pub sequence: GeneratedSequence,    // F1 generate(&spec, drill_seed): ticks + target_notes + label
+    pub sequence: GeneratedSequence,    // F1 generate(&spec, drill_seed): notes + target_midi + label
 }
 
 /// The assembled lesson. Drill N+1 is built from drill N's score (adaptive), so the
@@ -112,7 +112,7 @@ pub fn finish_lesson(model: &LearnerModel, drills: &[(Drill, DrillScore)]) -> (L
 
 ### IPC (Tauri commands/events, thin JSON)
 - `start_lesson(seed?: u64) -> DrillDto` — begins a lesson, returns drill 0 (label, tempo, target,
-  `music_xml` from `sequence.ticks`). Seed optional; absent → time-seeded but echoed back for replay.
+  `music_xml` adapted from `sequence.notes`). Seed optional; absent → time-seeded but echoed back for replay.
 - `submit_drill(played: PlayedNoteDto[]) -> DrillStepDto` — scores the just-played drill, returns its
   `DrillScore` + the next `DrillDto` (or `recap` when done).
 - `lesson-progress` event — `{ drill_index, drill_count, difficulty }` for the header.
@@ -204,7 +204,7 @@ honest signal — but it is scoped to lesson mode only and does not resurrect pe
 play. The grader and ramp are pure (no I/O, no allocation on the audio thread — grading runs at drill
 end, off the hot path).
 
-Frontend reuses `ScoreView` unchanged (`musicXml` from `sequence.ticks` → MusicXML via the existing
+Frontend reuses `ScoreView` unchanged (`musicXml` from `sequence.notes` → `ScoreModel` → MusicXML via the existing
 `score::musicxml` emitter, `cursorPosition` from the live follower). `GuidedCoach` is a thin
 read-model + command caller; the Explore→Coach dial in `PracticeSession` swaps the score pane for it.
 Offline-first: no network anywhere in the loop, so nothing to disclose in `ConnectionsPrivacy.tsx`.
@@ -243,6 +243,6 @@ Suggested waves: S1 alone → {S2, S3} parallel (disjoint files) → S4 → S5 �
   `apps/desktop/src/components/PracticeSession.tsx` (dial host),
   `crates/brain/src/follower.rs` (`ScorePosition.expected_note`, alignment),
   `crates/brain/src/scoring.rs` (deprecated per-note verdicts — the "coach, don't judge" context),
-  `crates/brain/src/score/musicxml.rs` (ticks→MusicXML for ScoreView),
+  `crates/brain/src/score/emit.rs` (`score_model_to_musicxml` for ScoreView),
   `apps/desktop/src/types/brain.ts` (`ScorePosition`, DTO drift rule).
 - GitHub issue #254.

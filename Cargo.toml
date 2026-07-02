@@ -6,6 +6,7 @@ members = [
     "crates/transcribe",
     "crates/tone",
     "crates/theory",
+    "crates/variations",
     "crates/groove",
     "crates/idiom",
     "crates/omr",
