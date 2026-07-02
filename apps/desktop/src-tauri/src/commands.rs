@@ -3061,7 +3061,7 @@ mod tests {
                 .iter()
                 .flat_map(|&m| {
                     let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
-                    std::iter::repeat(hz).take(5)
+                    std::iter::repeat_n(hz, 5)
                 })
                 .collect();
             phrase.onsets_secs = vec![0.0; target.len()];
