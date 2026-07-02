@@ -69,10 +69,29 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    that sound (like *G Dorian → Miles Davis – 'So What'*). When one appears, tell me:
    **(a)** does it feel **accurate and cool**?  **(b)** when a new one comes, does it **replace** the
    old (never two cards stacked)?  **(c)** is it **occasional** — about once every few phrases, not
-   spammy? Then noodle vaguely / atonally and confirm **no** card pops up (that's expected)." (If a
-   card never appears even on a steady, clearly-pitched passage, note that.)
+   spammy? **(d)** under the card, is there a little counter like **'2 in your collection'** that
+   grows only when a *new* reveal appears (a repeat shouldn't grow it)? Then noodle vaguely /
+   atonally and confirm **no** card pops up (that's expected)." (If a card never appears even on a
+   steady, clearly-pitched passage, note that.)
 6. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
    tips). Does it?"
+
+### A2. The Guided Lesson 🎓 (the BIG new feature — "a private teacher")
+While the session is running:
+1. **Start it** — "Up top there's a **'Give me a lesson'** button — tap it. Sheet music should
+   appear with a header like *'Lesson · drill 1 of 4 · step 0'* and a description of what to play
+   (something easy, like one major scale, slow)."
+2. **Play a drill** — "Hum or play the line as best you can, then tap **'I played it — grade me'**.
+   You should get a percentage and the next drill appears. Does the grade feel roughly fair for how
+   you did?"
+3. **It adapts** — "On one drill, deliberately do *badly* (or stay silent) before grading. The next
+   drill should get **easier** (fewer keys / slower). On drills you nail, later drills should get
+   **harder**. Did you notice it adapting?"
+4. **The recap** — "After 4 drills you get a **'Lesson complete'** card listing each drill's
+   percentage and a line like *'Difficulty: step 0 → step 1'*. Tap Done, then start a **second
+   lesson** — it should begin at the step the first one ended on (it remembered you!)."
+5. **Escape hatch** — "Start one more lesson and tap **'End lesson'** mid-way — it should calmly
+   return you to free play."
 
 ### B. Upload music & practice with it
 Open the samples folder for her so she can drag a file:
@@ -124,6 +143,14 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Score (.musicxml) import & render: <answer>
 - Cursor follows while playing: <answer>
 - Audio (.wav) import & transcription: <answer>
+
+### Guided Lesson 🎓 (desktop only — new feature)
+- Lesson started; sheet music + drill header shown: <answer>
+- Grades felt roughly fair for how she played: <answer>
+- Difficulty adapted (easier after a bad drill, harder after nailed ones): <answer>
+- Recap listed all drills + difficulty movement; 2nd lesson started at the new step: <answer>
+- "End lesson" exits calmly: <answer>
+- Reveal collection counter grows on new reveals only: <answer>
 
 ### AI critique / recap   (desktop only)
 - Did the recap reflect her actual playing: <answer>
