@@ -44,6 +44,7 @@ describe("LessonPanel", () => {
       lessonDrill: null,
       lessonScore: null,
       lessonRecap: null,
+      lessonSubmitting: false,
     });
   });
 
@@ -87,6 +88,15 @@ describe("LessonPanel", () => {
     render(<LessonPanel />);
     fireEvent.click(screen.getByTestId("lesson-submit"));
     expect(mockInvoke).toHaveBeenCalledWith("submit_drill", {});
+  });
+
+  // #254 review M2: while a submit is in flight the button is disabled, so a
+  // double-tap can't grade the next drill against an empty take.
+  it("disables the grade button while submitting", () => {
+    usePracticeStore.setState({ lessonDrill: drill(), lessonSubmitting: true });
+    render(<LessonPanel />);
+    expect(screen.getByTestId("lesson-submit")).toBeDisabled();
+    expect(screen.getByTestId("lesson-submit")).toHaveTextContent("Grading…");
   });
 
   // #254: the recap lists every drill's accuracy and the difficulty movement,

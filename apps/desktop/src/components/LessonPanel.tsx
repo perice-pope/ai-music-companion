@@ -17,6 +17,7 @@ export default function LessonPanel() {
   const score = usePracticeStore((s) => s.lessonScore);
   const recap = usePracticeStore((s) => s.lessonRecap);
   const submitDrill = usePracticeStore((s) => s.submitDrill);
+  const submitting = usePracticeStore((s) => s.lessonSubmitting);
   const endLesson = usePracticeStore((s) => s.endLesson);
   const clearLessonRecap = usePracticeStore((s) => s.clearLessonRecap);
 
@@ -87,10 +88,11 @@ export default function LessonPanel() {
           <button
             type="button"
             onClick={() => void submitDrill()}
+            disabled={submitting}
             data-testid="lesson-submit"
-            className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+            className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            I played it — grade me
+            {submitting ? "Grading…" : "I played it — grade me"}
           </button>
           <button
             type="button"

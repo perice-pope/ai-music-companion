@@ -222,6 +222,18 @@ Offline-first: no network anywhere in the loop, so nothing to disclose in `Conne
 
 Suggested waves: S1 alone → {S2, S3} parallel (disjoint files) → S4 → S5 → S6 → S7.
 
+## 10a. Shipped-slice deferrals (per DoD, with reasons)
+- **Following cursor in lesson drills**: the drill renders as static sheet music; the live
+  follower is owned by the session's audio pipeline and swapping it mid-session is its own
+  slice. Lands with the follower-swap work; the drill's ScoreModel is already follower-ready.
+- **Entry point**: a "Give me a lesson" button in the session header instead of the sketched
+  Explore→Coach dial — one obvious affordance beats a new global control; the dial remains an
+  epic-level UX idea.
+- **`lesson-progress` event**: drill index/count/difficulty ride the `LessonStepDto` instead
+  (thin IPC, no extra event stream).
+- **Per-note timing grades**: `timing_accuracy` is an onset-count proxy until the extraction
+  provides aligned per-note onsets.
+
 ## 10. Risks / open questions
 - **Per-note vs "coach, don't judge"**: grading drills per-note is a deliberate, scoped exception
   (explicit accepted target). Confirm with the product owner that it stays lesson-only and never leaks

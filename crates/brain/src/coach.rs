@@ -712,13 +712,68 @@ mod tests {
         assert_eq!(next_difficulty(3, f32::NAN, &t), 2, "NaN ramps down");
     }
 
-    /// The ladder is monotonic where it must be: higher difficulty never means
-    /// fewer roots or a slower tempo.
+    /// The ladder is monotonic where it must be: tempo strictly rises with
+    /// every step, roots never decrease and grow overall — a constant table
+    /// (a "difficulty" that changes nothing) fails this.
     #[test]
     fn ladder_is_monotonic_in_roots_and_tempo() {
         for d in 0..MAX_DIFFICULTY {
             assert!(ROOTS_BY_DIFFICULTY[d as usize] <= ROOTS_BY_DIFFICULTY[d as usize + 1]);
-            assert!(tempo_for(d) < tempo_for(d + 1) + 1e-9);
+            assert!(
+                tempo_for(d) + 1e-9 < tempo_for(d + 1),
+                "tempo must STRICTLY increase at step {d}"
+            );
+        }
+        assert!(
+            ROOTS_BY_DIFFICULTY[0] < ROOTS_BY_DIFFICULTY[MAX_DIFFICULTY as usize],
+            "roots must grow across the ladder overall"
+        );
+    }
+
+    /// #254 AC6: a difficulty change alters the generated content — a
+    /// down-ramp after a failed drill produces a spec with a slower tempo and
+    /// no more roots than the harder step would have used. Fails if the ramp
+    /// stops feeding the ladder.
+    #[test]
+    fn ramp_changes_generated_content() {
+        let spec = LessonSpec {
+            seed: 8,
+            drill_count: 4,
+            start_difficulty: 3,
+        };
+        let model = LearnerModel::default();
+        let d0 = build_first(&spec, &model);
+        assert_eq!(d0.difficulty, 3);
+        // Bomb the drill → next is one step easier with easier knobs.
+        let zero = score_drill(&d0.sequence.target_midi, &[], 0);
+        let d1 = advance(&d0, &zero, &spec).unwrap();
+        assert_eq!(d1.difficulty, 2);
+        assert!(
+            d1.spec.rhythm.tempo_bpm < d0.spec.rhythm.tempo_bpm,
+            "easier drill must be slower"
+        );
+        assert!(d1.spec.roots.len() <= d0.spec.roots.len());
+    }
+
+    /// drill_count is clamped to 3..=4 — degenerate requests still produce a
+    /// complete, terminating routine.
+    #[test]
+    fn drill_count_is_clamped() {
+        let model = LearnerModel::default();
+        for (requested, expected_drills) in [(0u8, 3usize), (1, 3), (9, 4)] {
+            let spec = LessonSpec {
+                seed: 1,
+                drill_count: requested,
+                start_difficulty: 0,
+            };
+            let mut n = 1;
+            let mut drill = build_first(&spec, &model);
+            while let Some(next) = advance(&drill, &perfect_score(&drill), &spec) {
+                drill = next;
+                n += 1;
+                assert!(n <= 4, "must terminate");
+            }
+            assert_eq!(n, expected_drills, "requested {requested}");
         }
     }
 

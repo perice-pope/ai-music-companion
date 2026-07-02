@@ -131,6 +131,8 @@ export interface PracticeState {
   lessonScore: DrillScoreDto | null;
   /** Final recap once the lesson completes. */
   lessonRecap: LessonRecapDto | null;
+  /** A drill submit is in flight — guards the double-tap (#254 review M2). */
+  lessonSubmitting: boolean;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -413,6 +415,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   lessonDrill: null,
   lessonScore: null,
   lessonRecap: null,
+  lessonSubmitting: false,
   recap: null,
   recapError: null,
   activeScore: null,
@@ -665,7 +668,18 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // `accompaniment-status { playing: false }`, but flip it here too so the
     // toggle resets immediately even if that event is missed. Perception also
     // stops once the session ends.
-    set({ accompanimentPlaying: false, perception: null, keyPinned: false, pinnedKey: null });
+    set({
+      accompanimentPlaying: false,
+      perception: null,
+      keyPinned: false,
+      pinnedKey: null,
+      // The backend finalizes a surviving lesson at session end; mirror that
+      // here so a stale drill can't re-mount in the next session (#254 M1).
+      lessonDrill: null,
+      lessonScore: null,
+      lessonRecap: null,
+      lessonSubmitting: false,
+    });
   },
 
   startAccompaniment: async () => {
@@ -855,9 +869,12 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   submitDrill: async () => {
-    if (!get().lessonDrill) {
+    // Double-tap guard: a second submit while one is in flight would grade the
+    // NEXT drill against an empty take and silently skip it (#254 review M2).
+    if (!get().lessonDrill || get().lessonSubmitting) {
       return;
     }
+    set({ lessonSubmitting: true });
     try {
       const step = await invoke<LessonStepDto>("submit_drill", {});
       set({
@@ -869,6 +886,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // Grading is best-effort at the UI layer: keep the drill on screen so
       // the player can try submitting again.
       console.error("submit_drill failed:", err);
+    } finally {
+      set({ lessonSubmitting: false });
     }
   },
 
@@ -908,6 +927,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       elapsedSecs: 0,
       phrases: [],
       tipQueue: [],
+      revealQueue: [],
+      lessonDrill: null,
+      lessonScore: null,
+      lessonRecap: null,
+      lessonSubmitting: false,
       activeScore: null,
       activeScoreXml: null,
       cursorPosition: null,
