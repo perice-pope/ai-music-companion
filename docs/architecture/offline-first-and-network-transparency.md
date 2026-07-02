@@ -81,7 +81,7 @@ This is the complete enumeration. If a feature is not in this table, it does not
 
 | Feature | What leaves the device | To whom | Opt-in? | Default | Where it lives |
 |---|---|---|---|---|---|
-| **AI coaching narration** | Per-phrase analysis numbers and session summary stats (instrument, durations, pitch/tone/intonation/groove figures, prior tips). **No raw audio.** | The configured LLM provider (Anthropic / OpenAI) | Yes | **OFF** (opt-in; see note¹) | `crates/brain/src/coaching.rs` |
+| **AI coaching narration** | Per-phrase analysis numbers and session summary stats (instrument, durations, pitch/tone/intonation/groove figures, prior tips). **No raw audio.** Also the **reveal "why" enrichment** (#253 S2): the detected key/mode and the *fixed curated* artist/piece + curated line, so the model only rewords the "why". **No raw audio.** | The configured LLM provider (Anthropic / OpenAI) | Yes | **OFF** (opt-in; see note¹) | `crates/brain/src/coaching.rs` |
 | **Cloud sync (sessions)** | Completed-session recaps: instrument, timestamps, duration, phrase count, overall assessment text, and the session tone aggregate. **No raw audio, no per-phrase rows.** | Supabase project (our hosted Postgres) | Yes | **OFF** (requires sign-in) | `apps/desktop/src/stores/syncStore.ts` |
 | **Cloud sync (taste profile)** | Stated personalization preferences (genres, artists, goals, experience). **No raw audio.** Its own switch, independent of session sync. | Supabase project | Yes | **OFF** (separate opt-in) | `apps/desktop/src/stores/syncStore.ts` (`syncTasteProfile`) |
 | **Account sign-in / auth** | Email + password (for account creation / login) | Supabase Auth | Yes | **OFF** (no account needed to practice) | `apps/desktop/src/stores/authStore.ts` |

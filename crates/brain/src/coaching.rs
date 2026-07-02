@@ -426,6 +426,76 @@ impl CoachingEngine {
         }
     }
 
+    /// Reword the `why` line for a grounded reveal (#253 S2). Mirrors
+    /// [`get_tip`](Self::get_tip)'s airplane switch: returns `None` (→ the caller
+    /// keeps the curated `why`) when offline or on any failure, and there is **no
+    /// code path from `Offline` to an outbound call**. The model is given the
+    /// concept and the FIXED real-world `connection` and asked only for one short
+    /// "why" sentence — it never picks or changes the artist/piece.
+    pub async fn enrich_reveal_why(
+        &mut self,
+        concept: &str,
+        connection: &str,
+        curated_why: &str,
+    ) -> Option<String> {
+        if !self.policy.allows_network() {
+            return None;
+        }
+        let system_prompt = "\
+You reword one short line for a music-practice app that just told a young player \
+what real-world music lives in the scale they are playing. You are given the \
+CONCEPT (a key + scale/mode) and the CONNECTION (a real, already-verified artist \
+or piece). Write ONE warm, engaging sentence (max ~140 characters) about why that \
+music lives in that sound, for a curious beginner. Do NOT change, question, or add \
+any artist or piece — the connection is fixed and correct. No hype, no emojis. \
+Respond with valid JSON in this exact form: { \"why\": \"...\" }";
+        let user_prompt =
+            format!("CONCEPT: {concept}\nCONNECTION: {connection}\nCurrent line: {curated_why}");
+        let request_body = self.build_request_body(system_prompt, &user_prompt);
+        let url = self.api_url();
+        let headers = self.api_headers();
+        let header_refs: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let body = self
+            .http_client
+            .post_json(&url, &request_body, &header_refs)
+            .await
+            .ok()?;
+        let text = Self::extract_content_text(&body)?;
+        let why = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()?
+            .get("why")
+            .and_then(|w| w.as_str())
+            .map(|s| s.trim().to_owned())?;
+        // An empty rewrite is a failure — keep the curated line.
+        (!why.is_empty()).then_some(why)
+    }
+
+    /// Pull the model's text content out of an Anthropic- or OpenAI-shaped
+    /// response body. `None` if the shape isn't recognized.
+    fn extract_content_text(response_body: &str) -> Option<String> {
+        let v = serde_json::from_str::<serde_json::Value>(response_body).ok()?;
+        if let Some(text) = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+        {
+            return Some(text.to_owned());
+        }
+        v.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|ch| ch.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|t| t.as_str())
+            .map(str::to_owned)
+    }
+
     // -----------------------------------------------------------------------
     // Prompt construction
     // -----------------------------------------------------------------------
@@ -2563,6 +2633,72 @@ mod tests {
             result.unwrap().is_none(),
             "API failure must yield no tip, not a fabricated one"
         );
+    }
+
+    /// An Anthropic-shaped response whose text is `{"why": <why>}` (what the S2
+    /// reveal-enrichment prompt asks the model to return).
+    fn reveal_response(why: &str) -> String {
+        let inner = serde_json::json!({ "why": why }).to_string();
+        serde_json::json!({ "content": [{ "type": "text", "text": inner }] }).to_string()
+    }
+
+    // #253 S2 AC2: online, a valid `{"why": ...}` yields that rewritten line.
+    #[tokio::test]
+    async fn enrich_reveal_why_online_returns_why() {
+        let mock = MockHttpClient::succeeding(&reveal_response(
+            "It is the cool, modal-jazz minor Miles made famous.",
+        ));
+        let mut engine = make_engine(mock);
+        engine.set_network_policy(NetworkPolicy::Online);
+        let why = engine
+            .enrich_reveal_why("G Dorian", "Miles Davis — \"So What\"", "curated line")
+            .await;
+        assert_eq!(
+            why.as_deref(),
+            Some("It is the cool, modal-jazz minor Miles made famous.")
+        );
+    }
+
+    // #253 S2 AC1: offline makes NO outbound call (airplane switch) → None.
+    #[tokio::test]
+    async fn enrich_reveal_why_offline_makes_no_call() {
+        let mock = MockHttpClient::succeeding(&reveal_response("should never be seen"));
+        let call_count = Arc::clone(&mock.call_count);
+        let mut engine = make_engine(mock);
+        engine.set_network_policy(NetworkPolicy::Offline);
+        let why = engine
+            .enrich_reveal_why("G Dorian", "Miles Davis", "curated")
+            .await;
+        assert!(why.is_none(), "offline must not enrich");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "offline must make no outbound call"
+        );
+    }
+
+    // #253 S2 AC3: an API error (or unparseable body) falls back to None.
+    #[tokio::test]
+    async fn enrich_reveal_why_api_error_returns_none() {
+        let mock = MockHttpClient::failing("connection refused");
+        let mut engine = make_engine(mock);
+        engine.set_network_policy(NetworkPolicy::Online);
+        assert!(engine
+            .enrich_reveal_why("G Dorian", "Miles Davis", "curated")
+            .await
+            .is_none());
+    }
+
+    // An empty rewrite is treated as failure — keep the curated line.
+    #[tokio::test]
+    async fn enrich_reveal_why_empty_rewrite_returns_none() {
+        let mock = MockHttpClient::succeeding(&reveal_response("   "));
+        let mut engine = make_engine(mock);
+        engine.set_network_policy(NetworkPolicy::Online);
+        assert!(engine
+            .enrich_reveal_why("G Dorian", "Miles Davis", "curated")
+            .await
+            .is_none());
     }
 
     #[tokio::test]

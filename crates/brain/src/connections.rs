@@ -261,6 +261,22 @@ pub fn reveal_on_phrase(
     reveal_for(ctx, phrase_index as u64)
 }
 
+/// Fold an optional LLM-enriched `why` into a grounded reveal (#253 S2). A
+/// non-empty rewrite replaces `why` and marks the source [`RevealSource::LlmGrounded`];
+/// anything else (`None` / blank) keeps the curated reveal unchanged. `concept`
+/// and `connection` are **never** touched — the model only ever rewords `why`,
+/// so a reveal can't drift off its grounded artist/piece.
+pub fn apply_enriched_why(reveal: Reveal, enriched_why: Option<String>) -> Reveal {
+    match enriched_why {
+        Some(why) if !why.trim().is_empty() => Reveal {
+            why,
+            source: RevealSource::LlmGrounded,
+            ..reveal
+        },
+        _ => reveal,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +406,28 @@ mod tests {
     #[test]
     fn zero_cadence_never_reveals() {
         assert!(reveal_on_phrase(&ctx(7, "dorian", 0.9), 2, 0).is_none());
+    }
+
+    /// #253 S2 AC4: a non-empty enriched `why` replaces the line and flips the
+    /// source to LlmGrounded, but never touches `concept`/`connection`; a `None`
+    /// or blank rewrite keeps the curated reveal (source stays Grounded).
+    #[test]
+    fn apply_enriched_why_swaps_why_and_source_but_keeps_connection() {
+        let base = reveal_for(&ctx(7, "dorian", 0.9), 0).unwrap();
+        let enriched = apply_enriched_why(base.clone(), Some("A cooler, warmer line.".to_string()));
+        assert_eq!(enriched.why, "A cooler, warmer line.");
+        assert_eq!(enriched.source, RevealSource::LlmGrounded);
+        assert_eq!(
+            enriched.connection, base.connection,
+            "connection must not change"
+        );
+        assert_eq!(enriched.concept, base.concept, "concept must not change");
+
+        // None and blank both keep the curated reveal untouched.
+        assert_eq!(apply_enriched_why(base.clone(), None), base);
+        assert_eq!(
+            apply_enriched_why(base.clone(), Some("   ".to_string())),
+            base
+        );
     }
 }

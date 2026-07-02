@@ -23,7 +23,9 @@ use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
     CoachingTip, NetworkPolicy, ReqwestClient, SessionContext,
 };
-use brain::connections::{reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE};
+use brain::connections::{
+    apply_enriched_why, reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE,
+};
 use brain::follower::ScorePosition;
 use brain::perception::PerceptionTracker;
 use brain::phrase::PhraseSummary;
@@ -219,6 +221,13 @@ pub trait CoachingService: Send + Sync {
     /// no-op (mocks never touch the network). The real LLM service overrides it
     /// so that `Offline` makes an outbound tip request structurally impossible.
     async fn set_network_policy(&self, _policy: NetworkPolicy) {}
+
+    /// Enrich a grounded reveal's `why` via the LLM when online (#253 S2);
+    /// otherwise return it unchanged. Never alters `concept`/`connection`. The
+    /// default impl is the identity — mocks and preview stay fully offline.
+    async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        reveal
+    }
 }
 
 /// Real coaching service backed by the Claude API.
@@ -286,6 +295,21 @@ impl CoachingService for LlmCoachingService {
         if let Some(engine_arc) = &self.engine {
             engine_arc.lock().await.set_network_policy(policy);
         }
+    }
+
+    async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        let Some(engine_arc) = &self.engine else {
+            return reveal;
+        };
+        // The engine's airplane switch makes this a no-op (no call) when the
+        // coaching opt-in is off; a failed/blank rewrite keeps the curated line.
+        let enriched = {
+            let mut engine = engine_arc.lock().await;
+            engine
+                .enrich_reveal_why(&reveal.concept, &reveal.connection, &reveal.why)
+                .await
+        };
+        apply_enriched_why(reveal, enriched)
     }
 }
 
@@ -1189,6 +1213,13 @@ impl AppState {
         context: &SessionContext,
     ) -> Result<Option<CoachingTip>, CommandError> {
         Ok(self.coaching_service.get_tip(phrase, context).await)
+    }
+
+    /// Enrich a grounded reveal's `why` via the coaching service (#253 S2). When
+    /// the coaching opt-in is off, this returns the reveal unchanged with no
+    /// network call.
+    pub async fn enrich_reveal(&self, reveal: Reveal) -> Reveal {
+        self.coaching_service.enrich_reveal(reveal).await
     }
 
     /// The texts of the most recent `limit` coaching tips recorded in the
@@ -2127,13 +2158,15 @@ pub async fn record_coaching_tip(
 }
 
 /// Offer a real-world music "reveal" for a just-completed phrase, from the live
-/// perception reading (key + mode + confidence). Slice 1 is curated + grounded +
-/// offline: it makes no network call, never fabricates a connection, and returns
+/// perception reading (key + mode + confidence). Selection is curated + grounded
+/// (`brain::connections`, Rust core): it never fabricates a connection and returns
 /// `None` when confidence is low, the mode has no curated match, or the phrase
-/// isn't on the reveal cadence. The selection logic lives in `brain::connections`
-/// (Rust core); this command is a thin pass-through. See #253.
+/// isn't on the reveal cadence. When the coaching opt-in is on (#253 S2), the
+/// `why` line is reworded by the LLM (grounded — the artist/piece is unchanged);
+/// offline it stays the curated line. See #253.
 #[tauri::command]
 pub async fn get_reveal(
+    state: State<'_, AppState>,
     tonic: u8,
     mode: String,
     confidence: f32,
@@ -2144,7 +2177,10 @@ pub async fn get_reveal(
         mode,
         confidence,
     };
-    Ok(reveal_on_phrase(&ctx, phrase_index, DEFAULT_REVEAL_CADENCE))
+    match reveal_on_phrase(&ctx, phrase_index, DEFAULT_REVEAL_CADENCE) {
+        Some(reveal) => Ok(Some(state.enrich_reveal(reveal).await)),
+        None => Ok(None),
+    }
 }
 
 /// Return the instrument catalog for the selector grid.
@@ -2642,6 +2678,24 @@ mod tests {
                 .is_some_and(|e| e.contains("Audio import isn't available")),
             "a transcription panic must degrade to the friendly error, got {result:?}"
         );
+    }
+
+    /// #253 S2 AC5: the mock coaching service (and the default impl) enrich a
+    /// reveal to itself — no network, no change — so tests and the web preview
+    /// stay fully offline. Fails if the default `enrich_reveal` ever mutated the
+    /// reveal.
+    #[tokio::test]
+    async fn mock_service_enrich_reveal_is_identity() {
+        let svc = MockCoachingService::new();
+        let reveal = Reveal {
+            concept: "G Dorian".to_owned(),
+            connection: "Miles Davis — \"So What\"".to_owned(),
+            why: "curated line".to_owned(),
+            source: brain::connections::RevealSource::Grounded,
+            tonic: 7,
+            mode: "dorian".to_owned(),
+        };
+        assert_eq!(svc.enrich_reveal(reveal.clone()).await, reveal);
     }
 
     #[test]
@@ -3905,6 +3959,97 @@ mod tests {
         // is what prevents the call.
         engine.set_network_policy(NetworkPolicy::Online);
         engine
+    }
+
+    /// An HTTP client that always returns one canned response body.
+    struct CannedHttpClient(String);
+
+    #[async_trait]
+    impl brain::coaching::HttpClient for CannedHttpClient {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _body: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<String, brain::coaching::CoachingError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// An Online engine whose LLM always answers with `{ "why": <why> }` in an
+    /// Anthropic-shaped envelope — what the reveal-enrichment prompt requests.
+    fn online_engine_answering_why(why: &str) -> CoachingEngine {
+        let inner = serde_json::json!({ "why": why }).to_string();
+        let body =
+            serde_json::json!({ "content": [{ "type": "text", "text": inner }] }).to_string();
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test-key".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(CannedHttpClient(body)),
+        )
+        .expect("engine builds with an explicit api key");
+        engine.set_network_policy(NetworkPolicy::Online);
+        engine
+    }
+
+    fn grounded_reveal() -> Reveal {
+        Reveal {
+            concept: "G Dorian".to_owned(),
+            connection: "Miles Davis — \"So What\"".to_owned(),
+            why: "curated line".to_owned(),
+            source: brain::connections::RevealSource::Grounded,
+            tonic: 7,
+            mode: "dorian".to_owned(),
+        }
+    }
+
+    /// #253 S2 AC4 (service seam): online, the real service swaps in the LLM's
+    /// `why` and flips the source — while `concept`/`connection` stay exactly
+    /// the curated values. Fails if the override stops calling the engine or
+    /// stops folding through `apply_enriched_why`.
+    #[tokio::test]
+    async fn enrich_reveal_online_replaces_why_keeps_connection() {
+        let svc =
+            LlmCoachingService::with_engine(online_engine_answering_why("A cooler, warmer line."));
+        let base = grounded_reveal();
+        let out = svc.enrich_reveal(base.clone()).await;
+        assert_eq!(out.why, "A cooler, warmer line.");
+        assert_eq!(out.source, brain::connections::RevealSource::LlmGrounded);
+        assert_eq!(
+            out.connection, base.connection,
+            "connection must not change"
+        );
+        assert_eq!(out.concept, base.concept, "concept must not change");
+    }
+
+    /// #253 S2 AC4 (offline counterpart): with the coaching opt-in off, the real
+    /// service returns the reveal unchanged and never touches the HTTP client
+    /// (the client here panics on any call). Fails if the offline gate is lost.
+    #[tokio::test]
+    async fn enrich_reveal_offline_is_identity_and_makes_no_call() {
+        let mut engine = online_engine_with_panicking_client();
+        engine.set_network_policy(NetworkPolicy::Offline);
+        let svc = LlmCoachingService::with_engine(engine);
+        let base = grounded_reveal();
+        assert_eq!(svc.enrich_reveal(base.clone()).await, base);
+    }
+
+    /// #253 S2 M2 (command wiring): `AppState::enrich_reveal` actually delegates
+    /// to the coaching service — an online LLM-backed state returns the enriched
+    /// reveal. Fails if `get_reveal`'s enrichment hop is bypassed at the state
+    /// layer.
+    #[tokio::test]
+    async fn app_state_enrich_reveal_delegates_to_the_service() {
+        let mut s = AppState::with_mocks();
+        s.coaching_service = Arc::new(LlmCoachingService::with_engine(
+            online_engine_answering_why("Enriched by the wire test."),
+        ));
+        let out = s.enrich_reveal(grounded_reveal()).await;
+        assert_eq!(out.why, "Enriched by the wire test.");
+        assert_eq!(out.source, brain::connections::RevealSource::LlmGrounded);
     }
 
     fn sample_context() -> SessionContext {
