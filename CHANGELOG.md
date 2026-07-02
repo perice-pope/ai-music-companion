@@ -1,3 +1,9 @@
+## [2.8.3](https://github.com/perice-pope/ai-music-companion/compare/v2.8.2...v2.8.3) (2026-07-02)
+
+### Bug Fixes
+
+* **omr:** retry sidecar launch on ETXTBSY to de-flake the tests ([#270](https://github.com/perice-pope/ai-music-companion/issues/270)) ([de824ac](https://github.com/perice-pope/ai-music-companion/commit/de824ac98318243b92cf4cb9d30986968b9d0c2d)), closes [#269](https://github.com/perice-pope/ai-music-companion/issues/269)
+
 ## [2.8.2](https://github.com/perice-pope/ai-music-companion/compare/v2.8.1...v2.8.2) (2026-07-02)
 
 ### Bug Fixes
