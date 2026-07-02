@@ -3961,6 +3961,97 @@ mod tests {
         engine
     }
 
+    /// An HTTP client that always returns one canned response body.
+    struct CannedHttpClient(String);
+
+    #[async_trait]
+    impl brain::coaching::HttpClient for CannedHttpClient {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _body: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<String, brain::coaching::CoachingError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// An Online engine whose LLM always answers with `{ "why": <why> }` in an
+    /// Anthropic-shaped envelope — what the reveal-enrichment prompt requests.
+    fn online_engine_answering_why(why: &str) -> CoachingEngine {
+        let inner = serde_json::json!({ "why": why }).to_string();
+        let body =
+            serde_json::json!({ "content": [{ "type": "text", "text": inner }] }).to_string();
+        let mut engine = CoachingEngine::new(
+            CoachingConfig {
+                api_key: "test-key".to_owned(),
+                model: "claude-3-5-sonnet".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(CannedHttpClient(body)),
+        )
+        .expect("engine builds with an explicit api key");
+        engine.set_network_policy(NetworkPolicy::Online);
+        engine
+    }
+
+    fn grounded_reveal() -> Reveal {
+        Reveal {
+            concept: "G Dorian".to_owned(),
+            connection: "Miles Davis — \"So What\"".to_owned(),
+            why: "curated line".to_owned(),
+            source: brain::connections::RevealSource::Grounded,
+            tonic: 7,
+            mode: "dorian".to_owned(),
+        }
+    }
+
+    /// #253 S2 AC4 (service seam): online, the real service swaps in the LLM's
+    /// `why` and flips the source — while `concept`/`connection` stay exactly
+    /// the curated values. Fails if the override stops calling the engine or
+    /// stops folding through `apply_enriched_why`.
+    #[tokio::test]
+    async fn enrich_reveal_online_replaces_why_keeps_connection() {
+        let svc =
+            LlmCoachingService::with_engine(online_engine_answering_why("A cooler, warmer line."));
+        let base = grounded_reveal();
+        let out = svc.enrich_reveal(base.clone()).await;
+        assert_eq!(out.why, "A cooler, warmer line.");
+        assert_eq!(out.source, brain::connections::RevealSource::LlmGrounded);
+        assert_eq!(
+            out.connection, base.connection,
+            "connection must not change"
+        );
+        assert_eq!(out.concept, base.concept, "concept must not change");
+    }
+
+    /// #253 S2 AC4 (offline counterpart): with the coaching opt-in off, the real
+    /// service returns the reveal unchanged and never touches the HTTP client
+    /// (the client here panics on any call). Fails if the offline gate is lost.
+    #[tokio::test]
+    async fn enrich_reveal_offline_is_identity_and_makes_no_call() {
+        let mut engine = online_engine_with_panicking_client();
+        engine.set_network_policy(NetworkPolicy::Offline);
+        let svc = LlmCoachingService::with_engine(engine);
+        let base = grounded_reveal();
+        assert_eq!(svc.enrich_reveal(base.clone()).await, base);
+    }
+
+    /// #253 S2 M2 (command wiring): `AppState::enrich_reveal` actually delegates
+    /// to the coaching service — an online LLM-backed state returns the enriched
+    /// reveal. Fails if `get_reveal`'s enrichment hop is bypassed at the state
+    /// layer.
+    #[tokio::test]
+    async fn app_state_enrich_reveal_delegates_to_the_service() {
+        let mut s = AppState::with_mocks();
+        s.coaching_service = Arc::new(LlmCoachingService::with_engine(
+            online_engine_answering_why("Enriched by the wire test."),
+        ));
+        let out = s.enrich_reveal(grounded_reveal()).await;
+        assert_eq!(out.why, "Enriched by the wire test.");
+        assert_eq!(out.source, brain::connections::RevealSource::LlmGrounded);
+    }
+
     fn sample_context() -> SessionContext {
         SessionContext {
             instrument: "Trumpet".to_owned(),
