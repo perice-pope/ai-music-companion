@@ -27,7 +27,9 @@ case "$uname_s" in
     # osx-universal2 for recent versions (1.24.2 → 404). Pick by arch (#267).
     case "$uname_m" in
       arm64)  pkg="onnxruntime-osx-arm64-${ORT_VERSION}" ;;
-      x86_64) pkg="onnxruntime-osx-x64-${ORT_VERSION}" ;;
+      x86_64)
+        pkg="onnxruntime-osx-x64-${ORT_VERSION}"
+        echo "note: not every ONNX Runtime version ships a macOS x64 build (e.g. ${ORT_VERSION} is arm64-only); the fetch below will fail if so." >&2 ;;
       *) echo "unsupported macOS arch: $uname_m" >&2; exit 1 ;;
     esac
     lib="libonnxruntime.dylib" ;;
