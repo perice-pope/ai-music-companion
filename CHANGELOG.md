@@ -1,3 +1,9 @@
+## [2.9.0](https://github.com/perice-pope/ai-music-companion/compare/v2.8.3...v2.9.0) (2026-07-02)
+
+### Features
+
+* **reveal:** LLM-enriched "why" — grounded + opt-in ([#253](https://github.com/perice-pope/ai-music-companion/issues/253) S2) ([#271](https://github.com/perice-pope/ai-music-companion/issues/271)) ([1f2f3c6](https://github.com/perice-pope/ai-music-companion/commit/1f2f3c635abf02f5b136251426422f0dc191d8b7))
+
 ## [2.8.3](https://github.com/perice-pope/ai-music-companion/compare/v2.8.2...v2.8.3) (2026-07-02)
 
 ### Bug Fixes
