@@ -6,10 +6,11 @@
 //! no wall clock — time is injected), so every rule is unit-testable and a
 //! given input always produces the same model.
 //!
-//! This first slice carries only the **collection** (real-world music reveals
-//! the player has unlocked, #253 S3). Key mastery, difficulty, streaks, and the
-//! sound profile land in later slices — the blob is forward-compatible by
-//! construction (`version` field + unknown top-level fields are preserved on a
+//! Today the blob carries the **collection** (unlocked reveals, #253 S3),
+//! **per-key mastery** and the **adaptive difficulty step** (both for the
+//! guided coach, #254). Streaks and the sound profile land in later slices —
+//! the blob is forward-compatible by construction (`version` field + unknown
+//! fields at both the top level and inside entries are preserved on a
 //! read→write roundtrip), so those additions need no migration of stored rows.
 
 use std::collections::BTreeMap;
@@ -73,10 +74,16 @@ pub struct Mastery {
 
 /// One drill's outcome, as the coach reports it (#254): which key/scale it
 /// trained and the 0..1 accuracy achieved against the drill's exact target.
+///
+/// Carries the raw `(tonic, mode)` rather than a pre-formatted key so the
+/// transition itself normalizes via [`mastery_key`] — a caller can't split one
+/// key into two entries with `"Dorian"` vs `"dorian"` or tonic 19 vs 7.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillResult {
-    /// [`mastery_key`]-formatted key, e.g. `"7:dorian"`.
-    pub key_scale: String,
+    /// Tonic pitch class (any octave; wrapped mod 12).
+    pub tonic: u8,
+    /// Mode/scale label (any casing; normalized).
+    pub mode: String,
     /// 0..1 — correct notes / target notes.
     pub accuracy: f32,
 }
@@ -164,7 +171,7 @@ pub fn apply_drill_result(
     };
     let entry = next
         .key_mastery
-        .entry(result.key_scale.clone())
+        .entry(mastery_key(result.tonic, &result.mode))
         .or_insert_with(|| Mastery {
             attempts: 0,
             accuracy_ewma: 0.0,
@@ -172,6 +179,12 @@ pub fn apply_drill_result(
             last_epoch_secs: now_epoch_secs,
             extra: serde_json::Map::new(),
         });
+    // Self-heal a poisoned EWMA (e.g. a NaN smuggled in via a synced blob):
+    // NaN would otherwise propagate forever and make the key un-ownable.
+    if entry.accuracy_ewma.is_nan() {
+        entry.accuracy_ewma = 0.0;
+        entry.attempts = 0;
+    }
     entry.accuracy_ewma = if entry.attempts == 0 {
         accuracy
     } else {
@@ -294,6 +307,15 @@ mod tests {
                     "mastery_note": "from-v2"
                 }
             },
+            "key_mastery": {
+                "7:dorian": {
+                    "attempts": 2,
+                    "accuracy_ewma": 0.8,
+                    "owned": false,
+                    "last_epoch_secs": 3,
+                    "streak_in_key": 5
+                }
+            },
             "updated_at_epoch_secs": 5,
             "sound_profile": { "mode_lean": "minor" },
             "streak": { "count": 7 }
@@ -301,6 +323,17 @@ mod tests {
         let model: LearnerModel = serde_json::from_str(json).expect("newer blob parses");
         assert_eq!(model.version, 2);
         let after = apply_reveal(&model, "G Dorian", "Miles Davis", 6);
+        // Drill the SAME mastery key so the per-Mastery unknown field survives
+        // the entry-update path, not just an untouched clone.
+        let after = apply_drill_result(
+            &after,
+            &DrillResult {
+                tonic: 7,
+                mode: "Dorian".to_owned(),
+                accuracy: 1.0,
+            },
+            7,
+        );
         let out = serde_json::to_value(&after).expect("serializes");
         // Top-level unknown fields preserved.
         assert_eq!(out["sound_profile"]["mode_lean"], "minor");
@@ -311,6 +344,9 @@ mod tests {
             out["collection"]["C Major\u{1f}Beethoven"]["mastery_note"],
             "from-v2"
         );
+        // Per-Mastery unknown fields preserved through apply_drill_result.
+        assert_eq!(out["key_mastery"]["7:dorian"]["streak_in_key"], 5);
+        assert_eq!(after.key_mastery["7:dorian"].attempts, 3);
         assert_eq!(after.collection_size(), 2);
     }
 
@@ -335,7 +371,8 @@ mod tests {
     fn owned_flips_at_threshold_over_min_attempts_and_is_not_sticky() {
         let key = mastery_key(7, "Dorian");
         let r = |a: f32| DrillResult {
-            key_scale: key.clone(),
+            tonic: 7,
+            mode: "Dorian".to_owned(),
             accuracy: a,
         };
         let m0 = LearnerModel::default();
@@ -369,7 +406,8 @@ mod tests {
         let m1 = apply_drill_result(
             &m0,
             &DrillResult {
-                key_scale: key.clone(),
+                tonic: 0,
+                mode: "major".to_owned(),
                 accuracy: 0.6,
             },
             1,
@@ -378,7 +416,8 @@ mod tests {
         let m2 = apply_drill_result(
             &m1,
             &DrillResult {
-                key_scale: key.clone(),
+                tonic: 0,
+                mode: "major".to_owned(),
                 accuracy: 1.0,
             },
             2,
@@ -397,7 +436,8 @@ mod tests {
         let m1 = apply_drill_result(
             &m0,
             &DrillResult {
-                key_scale: key.clone(),
+                tonic: 2,
+                mode: "minor".to_owned(),
                 accuracy: f32::NAN,
             },
             1,
@@ -406,7 +446,8 @@ mod tests {
         let m2 = apply_drill_result(
             &m1,
             &DrillResult {
-                key_scale: key.clone(),
+                tonic: 2,
+                mode: "minor".to_owned(),
                 accuracy: 7.0,
             },
             2,
@@ -419,6 +460,62 @@ mod tests {
     #[test]
     fn mastery_key_normalizes_mode_and_tonic() {
         assert_eq!(mastery_key(7, "Dorian"), mastery_key(19, " dorian "));
+    }
+
+    /// Normalization is structural, not opt-in: two results naming the same key
+    /// differently (case, whitespace, octave-offset tonic) land in ONE entry.
+    /// Fails if apply_drill_result stops routing through mastery_key — split
+    /// entries would corrupt attempts/EWMA and double-count on the wheel.
+    #[test]
+    fn equivalent_drill_results_share_one_entry() {
+        let m0 = LearnerModel::default();
+        let m1 = apply_drill_result(
+            &m0,
+            &DrillResult {
+                tonic: 7,
+                mode: "Dorian".to_owned(),
+                accuracy: 1.0,
+            },
+            1,
+        );
+        let m2 = apply_drill_result(
+            &m1,
+            &DrillResult {
+                tonic: 19,
+                mode: " dorian ".to_owned(),
+                accuracy: 1.0,
+            },
+            2,
+        );
+        assert_eq!(m2.key_mastery.len(), 1, "equivalent keys must not split");
+        assert_eq!(m2.key_mastery[&mastery_key(7, "dorian")].attempts, 2);
+    }
+
+    /// Drilling one key leaves every other key's mastery untouched.
+    #[test]
+    fn drilling_one_key_does_not_touch_another() {
+        let m0 = LearnerModel::default();
+        let m1 = apply_drill_result(
+            &m0,
+            &DrillResult {
+                tonic: 0,
+                mode: "major".to_owned(),
+                accuracy: 0.9,
+            },
+            1,
+        );
+        let before = m1.key_mastery[&mastery_key(0, "major")].clone();
+        let m2 = apply_drill_result(
+            &m1,
+            &DrillResult {
+                tonic: 7,
+                mode: "dorian".to_owned(),
+                accuracy: 0.2,
+            },
+            2,
+        );
+        assert_eq!(m2.key_mastery[&mastery_key(0, "major")], before);
+        assert_eq!(m2.key_mastery.len(), 2);
     }
 
     /// Difficulty transition clamps to the ladder and stamps the time.
