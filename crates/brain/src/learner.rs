@@ -30,6 +30,11 @@ pub struct Collected {
     pub first_seen_epoch_secs: i64,
     /// How many times this exact reveal has surfaced (1 on first unlock).
     pub count: u32,
+    /// Forward-compatibility, same contract as [`LearnerModel::extra`]: per-entry
+    /// fields added by a newer build survive an older build's read→write
+    /// roundtrip instead of being silently stripped.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The per-user learner model. Stored as one JSON blob (SQLite locally, a
@@ -96,6 +101,7 @@ pub fn apply_reveal(
             connection: connection.trim().to_owned(),
             first_seen_epoch_secs: now_epoch_secs,
             count: 1,
+            extra: serde_json::Map::new(),
         });
     next.updated_at_epoch_secs = now_epoch_secs;
     next
@@ -155,15 +161,24 @@ mod tests {
         );
     }
 
-    /// Forward-compatibility: unknown top-level fields written by a newer build
-    /// survive a read → transition → write roundtrip instead of being dropped.
-    /// Fails if the flatten/extra plumbing is removed — a newer build's data
-    /// would then be silently destroyed by an older one.
+    /// Forward-compatibility: unknown fields written by a newer build — both
+    /// **top-level** and **per-collection-entry** — survive a read → transition
+    /// → write roundtrip instead of being dropped. Fails if either flatten is
+    /// removed: a newer build's data would then be silently destroyed by an
+    /// older one.
     #[test]
     fn roundtrip_preserves_unknown_fields() {
         let json = r#"{
             "version": 2,
-            "collection": {},
+            "collection": {
+                "C Major\u001FBeethoven": {
+                    "concept": "C Major",
+                    "connection": "Beethoven",
+                    "first_seen_epoch_secs": 1,
+                    "count": 2,
+                    "mastery_note": "from-v2"
+                }
+            },
             "updated_at_epoch_secs": 5,
             "key_mastery": { "G:dorian": { "attempts": 3 } },
             "streak": { "count": 7 }
@@ -172,8 +187,27 @@ mod tests {
         assert_eq!(model.version, 2);
         let after = apply_reveal(&model, "G Dorian", "Miles Davis", 6);
         let out = serde_json::to_value(&after).expect("serializes");
+        // Top-level unknown fields preserved.
         assert_eq!(out["key_mastery"]["G:dorian"]["attempts"], 3);
         assert_eq!(out["streak"]["count"], 7);
-        assert_eq!(after.collection_size(), 1);
+        // Per-entry unknown fields preserved too — including through the
+        // count-bump path of an existing entry.
+        assert_eq!(
+            out["collection"]["C Major\u{1f}Beethoven"]["mastery_note"],
+            "from-v2"
+        );
+        assert_eq!(after.collection_size(), 2);
+    }
+
+    /// The dedup separator (`\u{1f}`) is an internal contract: concepts and
+    /// connections come from the curated reveal path and never contain it, so
+    /// distinct pairs can't alias. This pins that two pairs sharing characters
+    /// around the separator still produce distinct keys in practice.
+    #[test]
+    fn collection_keys_do_not_alias_for_real_inputs() {
+        assert_ne!(
+            collection_key("G Dorian", "Miles Davis"),
+            collection_key("G", "Dorian Miles Davis"),
+        );
     }
 }
