@@ -32,8 +32,23 @@ function seedListeningSession() {
     recap: null,
     recapError: null,
     practiceMode: "practice",
+    lessonDrill: null,
+    lessonScore: null,
+    lessonRecap: null,
+    lessonSubmitting: false,
   });
 }
+
+const LESSON_DRILL = {
+  index: 0,
+  drill_count: 4,
+  kind: "warmup_scale",
+  label: "C Major · up · 1 roots · 60 BPM",
+  tempo_bpm: 60,
+  difficulty: 0,
+  music_xml: "<score-partwise/>",
+  target_len: 8,
+};
 
 describe("PracticeSession", () => {
   beforeEach(() => {
@@ -194,5 +209,30 @@ describe("PracticeSession", () => {
     await vi.waitFor(() => {
       expect(screen.getByText("Keep steady breathing")).toBeDefined();
     });
+  });
+
+  // #254: the "Give me a lesson" button starts a lesson, and while a lesson is
+  // active it takes the stage — even over score mode — and the button hides.
+  it("lesson takes precedence over score mode and hides the start button", () => {
+    usePracticeStore.setState({
+      lessonDrill: LESSON_DRILL,
+      activeScoreXml: "<score-partwise/>",
+    });
+    render(<PracticeSession />);
+    expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-score-pane")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("start-lesson")).not.toBeInTheDocument();
+  });
+
+  it("the start-lesson button fires start_lesson", () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_lesson")
+        return Promise.resolve({ seed: 1, score: null, drill: LESSON_DRILL, recap: null });
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
   });
 });

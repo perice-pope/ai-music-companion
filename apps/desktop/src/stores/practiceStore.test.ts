@@ -516,6 +516,87 @@ describe("practiceStore — requestReveal (#253)", () => {
   });
 });
 
+describe("practiceStore — guided lesson (#254)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  const drillDto = {
+    index: 0,
+    drill_count: 4,
+    kind: "WarmupScale",
+    label: "C Major",
+    tempo_bpm: 60,
+    difficulty: 0,
+    music_xml: "<score-partwise/>",
+    target_len: 8,
+  };
+
+  async function listeningStore() {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    mockInvoke.mockClear();
+    return useStore;
+  }
+
+  // A lesson needs the mic running: refuse to start outside a live session.
+  it("startLesson throws when no session is listening", async () => {
+    const useStore = await freshStore();
+    await expect(useStore.getState().startLesson()).rejects.toThrow();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  // #254: starting surfaces drill 0; submitting steps to the next drill with
+  // its score; the final submit lands the recap and clears the drill.
+  it("start → submit → recap walks the state machine", async () => {
+    const useStore = await listeningStore();
+    mockInvoke.mockResolvedValueOnce({ seed: 7, score: null, drill: drillDto, recap: null });
+    await useStore.getState().startLesson();
+    expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
+    expect(useStore.getState().lessonDrill?.index).toBe(0);
+
+    const score = { accuracy: 0.9, pitch_accuracy: 0.9, timing_accuracy: 0.8, correct: 7, total: 8 };
+    mockInvoke.mockResolvedValueOnce({
+      seed: 7,
+      score,
+      drill: { ...drillDto, index: 1 },
+      recap: null,
+    });
+    await useStore.getState().submitDrill();
+    expect(useStore.getState().lessonDrill?.index).toBe(1);
+    expect(useStore.getState().lessonScore?.accuracy).toBe(0.9);
+
+    const recap = { drill_labels: ["a"], drill_accuracies: [0.9], start_difficulty: 0, end_difficulty: 1 };
+    mockInvoke.mockResolvedValueOnce({ seed: 7, score, drill: null, recap });
+    await useStore.getState().submitDrill();
+    expect(useStore.getState().lessonDrill).toBeNull();
+    expect(useStore.getState().lessonRecap?.end_difficulty).toBe(1);
+  });
+
+  // A failed submit keeps the drill on screen (retryable), never throws.
+  it("a failed submit keeps the current drill", async () => {
+    const useStore = await listeningStore();
+    mockInvoke.mockResolvedValueOnce({ seed: 1, score: null, drill: drillDto, recap: null });
+    await useStore.getState().startLesson();
+    mockInvoke.mockRejectedValueOnce(new Error("ears offline"));
+    await expect(useStore.getState().submitDrill()).resolves.toBeUndefined();
+    expect(useStore.getState().lessonDrill?.index).toBe(0);
+  });
+
+  // Ending abandons: state clears and the backend is told.
+  it("endLesson clears state and notifies the backend", async () => {
+    const useStore = await listeningStore();
+    mockInvoke.mockResolvedValueOnce({ seed: 1, score: null, drill: drillDto, recap: null });
+    await useStore.getState().startLesson();
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await useStore.getState().endLesson();
+    expect(useStore.getState().lessonDrill).toBeNull();
+    expect(mockInvoke).toHaveBeenCalledWith("end_lesson", {});
+  });
+});
+
 describe("practiceStore — coachingEnabled persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();

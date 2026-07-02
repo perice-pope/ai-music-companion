@@ -10,6 +10,7 @@ import AccompanimentToggle from "./AccompanimentToggle";
 import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
 import RevealCard from "./RevealCard";
+import LessonPanel from "./LessonPanel";
 import ScoreView from "./ScoreView";
 
 /**
@@ -26,6 +27,10 @@ export default function PracticeSession() {
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const activeScoreXml = usePracticeStore((s) => s.activeScoreXml);
   const cursorPosition = usePracticeStore((s) => s.cursorPosition);
+  const lessonDrill = usePracticeStore((s) => s.lessonDrill);
+  const lessonRecap = usePracticeStore((s) => s.lessonRecap);
+  const startLesson = usePracticeStore((s) => s.startLesson);
+  const lessonActive = lessonDrill !== null || lessonRecap !== null;
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -186,6 +191,16 @@ export default function PracticeSession() {
 
         <div className="flex items-center gap-4">
           <SessionTimer />
+          {!lessonActive && (
+            <button
+              type="button"
+              onClick={() => void startLesson().catch(console.error)}
+              data-testid="start-lesson"
+              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+            >
+              Give me a lesson
+            </button>
+          )}
           <AccompanimentToggle />
           <EndSessionButton />
         </div>
@@ -193,7 +208,15 @@ export default function PracticeSession() {
 
       <PerceptionPanel />
 
-      {activeScoreXml ? (
+      {lessonActive ? (
+        // Guided lesson (#254): the drill's sheet music takes the stage.
+        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+          <LessonPanel />
+          <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
+            <PitchDisplay />
+          </div>
+        </div>
+      ) : activeScoreXml ? (
         // Score mode: sheet music leads, pitch + tips sit alongside.
         <div className="flex flex-1 flex-col gap-4 p-4 lg:flex-row">
           <div className="min-h-0 flex-1" data-testid="session-score-pane">
