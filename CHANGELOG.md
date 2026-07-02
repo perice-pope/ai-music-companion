@@ -1,3 +1,9 @@
+## [2.8.2](https://github.com/perice-pope/ai-music-companion/compare/v2.8.1...v2.8.2) (2026-07-02)
+
+### Bug Fixes
+
+* **audio:** .wav import degrades gracefully; fetch a real macOS ONNX ([#267](https://github.com/perice-pope/ai-music-companion/issues/267)) ([#269](https://github.com/perice-pope/ai-music-companion/issues/269)) ([4a65444](https://github.com/perice-pope/ai-music-companion/commit/4a654442ea9f2a3c514209b1f69163decbc14f6c)), closes [#265](https://github.com/perice-pope/ai-music-companion/issues/265)
+
 ## [2.8.1](https://github.com/perice-pope/ai-music-companion/compare/v2.8.0...v2.8.1) (2026-07-02)
 
 ### Bug Fixes
