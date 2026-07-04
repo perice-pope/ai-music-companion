@@ -1,3 +1,9 @@
+## [2.12.1](https://github.com/perice-pope/ai-music-companion/compare/v2.12.0...v2.12.1) (2026-07-04)
+
+### Bug Fixes
+
+* recap trust, readable reveals, drill key signatures ([#277](https://github.com/perice-pope/ai-music-companion/issues/277)) ([#280](https://github.com/perice-pope/ai-music-companion/issues/280)) ([d392002](https://github.com/perice-pope/ai-music-companion/commit/d392002a7ec2ce29524ac5cc6b0e4b0867afa4ae)), closes [#266](https://github.com/perice-pope/ai-music-companion/issues/266) [#279](https://github.com/perice-pope/ai-music-companion/issues/279)
+
 ## [2.12.0](https://github.com/perice-pope/ai-music-companion/compare/v2.11.0...v2.12.0) (2026-07-02)
 
 ### Features
