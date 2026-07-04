@@ -2593,14 +2593,17 @@ pub fn submit_drill_impl(
         let onsets: usize = slice.iter().map(|p| p.onsets_secs.len()).sum();
         (pitches, onsets)
     };
+    let played = played_notes_from_pitch_track(&pitches, DRILL_MIN_PITCH_RUN);
     // Eager-tap guard: phrases only close after a beat of silence, so a tap
-    // the instant the last note ends can see an EMPTY window. Grading that as
-    // 0% would be a lie about the player — return a calm "not yet" instead.
-    // (Deliberately failing a drill still works: play wrong notes.)
-    if pitches.is_empty() && onsets == 0 {
+    // the instant the last note ends can see an empty window — and a take of
+    // sub-threshold pitch flickers collapses to zero NOTES even with samples
+    // present. Grading either as 0% would be a lie about the player — return
+    // a calm "not yet" instead. (Deliberately failing a drill still works:
+    // play wrong notes. Unpitched noise WITH onsets still grades — the app
+    // heard something, it just wasn't the material.)
+    if played.is_empty() && onsets == 0 {
         return Err(CommandError::DrillNotHeard);
     }
-    let played = played_notes_from_pitch_track(&pitches, DRILL_MIN_PITCH_RUN);
     let score = score_drill(&lesson.current.sequence.target_midi, &played, onsets);
     let score_dto = DrillScoreDto::from(&score);
     let seed = lesson.spec.seed;

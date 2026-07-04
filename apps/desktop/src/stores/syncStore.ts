@@ -176,7 +176,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     }
     try {
       const blob = await invoke<Json | null>("get_learner_model_blob");
-      if (blob === null) {
+      if (blob == null) {
         return; // cold start — nothing to push yet
       }
       const { error } = await supabase.from("learner_model").upsert(

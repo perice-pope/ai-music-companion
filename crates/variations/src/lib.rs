@@ -989,11 +989,19 @@ mod tests {
         spec.randomize_roots = true;
         spec.direction = DirectionMode::RandomPerRoot;
         spec.enclosure = Some(Enclosure::OneDownOneUp);
+        // Carry a real cell so the IPC boundary for #285 is actually pinned —
+        // a serde regression that drops `cell` must fail here, not ship a
+        // silent degrade to catalog material.
+        spec.cell = Some(vec![0, 4, -3]);
 
         let spec_json = serde_json::to_string(&spec).unwrap();
         assert!(
             spec_json.contains("\"random_per_root\""),
             "enum must serialize snake_case, got: {spec_json}"
+        );
+        assert!(
+            spec_json.contains("\"cell\":[0,4,-3]"),
+            "the cell must cross the wire, got: {spec_json}"
         );
         assert!(spec_json.contains("\"one_down_one_up\""));
         let spec_back: VariationSpec = serde_json::from_str(&spec_json).unwrap();

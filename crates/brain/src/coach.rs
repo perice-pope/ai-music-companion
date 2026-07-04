@@ -90,7 +90,8 @@ pub struct NoteGrade {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillScore {
     pub per_note: Vec<NoteGrade>,
-    /// 0..1 — correct notes / target length. The signal the ramp runs on.
+    /// 0..1 — the graded signal the ramp runs on: recall (correct/target)
+    /// scaled down when far more was played than asked (anti-noodling).
     pub accuracy: f32,
     /// Pure recall (correct / target) before the extras penalty — `accuracy`
     /// additionally scales down when far more was played than asked (anti-

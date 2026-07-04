@@ -141,7 +141,12 @@ impl KeyTracker {
                     //    modulation does.
                     let same_tonic = candidate.tonic == held.tonic;
                     let (margin, dwell) = if same_tonic {
-                        (self.config.switch_margin * 0.2, 2)
+                        // Dwell 3, not 2: real vocabulary alternates in PAIRS
+                        // (b7/natural-7 blues licks read as Mixolydian/Ionian
+                        // pairs), and a dwell of 2 demonstrably flapped on
+                        // them. Pairs never sustain 3 consecutive wins; a
+                        // genuine refinement does.
+                        (self.config.switch_margin * 0.2, 3)
                     } else {
                         (self.config.switch_margin, self.config.switch_dwell)
                     };
@@ -260,6 +265,54 @@ mod tests {
         // …while a genuinely sustained new key still takes over.
         feed_scale(&mut t, 6, Mode::Ionian, 12);
         assert_eq!(t.current().unwrap().tonic, 6);
+    }
+
+    /// #277 follow-up (review probe): alternating b7/natural-7 PAIRS — normal
+    /// blues/mixolydian vocabulary over one tonic — must not flap the held
+    /// mode. With a same-tonic dwell of 2 this flipped 5 times in 10
+    /// observations; pairs can never sustain a 3-streak. Fails if the
+    /// same-tonic dwell drops below 3.
+    #[test]
+    fn alternating_seventh_pairs_do_not_flap_the_mode() {
+        let mut t = KeyTracker::new();
+        feed_scale(&mut t, 0, Mode::Ionian, 8);
+        let start = t.current().unwrap();
+        let mut flips = 0;
+        let mut last = (start.tonic, start.mode);
+        for _ in 0..5 {
+            for pc in [10u8, 10, 11, 11] {
+                t.observe_pc(pc, 2.0);
+                let cur = t.current().unwrap();
+                if (cur.tonic, cur.mode) != last {
+                    flips += 1;
+                    last = (cur.tonic, cur.mode);
+                }
+            }
+        }
+        assert!(flips <= 1, "seventh-pair vocabulary flapped {flips} times");
+    }
+
+    /// Same-tonic refinement stays cheap: material that first reads C
+    /// Mixolydian sharpens into C major once the leading tone lands — inside
+    /// the theory crate, so the rule isn't guarded only by a brain-crate test.
+    #[test]
+    fn same_tonic_mode_refinement_is_fast() {
+        let mut t = KeyTracker::new();
+        // Mixolydian-ish start: C scale with b7 emphasized.
+        for _ in 0..4 {
+            for &pc in &[0u8, 0, 0, 2, 4, 5, 7, 7, 9, 10] {
+                t.observe_pc(pc, 1.0);
+            }
+        }
+        // Now sustained leading-tone (B natural) major material.
+        for _ in 0..6 {
+            for &pc in &[0u8, 0, 0, 2, 4, 5, 7, 7, 9, 11, 11] {
+                t.observe_pc(pc, 1.0);
+            }
+        }
+        let est = t.current().unwrap();
+        assert_eq!(est.tonic, 0);
+        assert_eq!(est.mode, Mode::Ionian, "got {}", est.name());
     }
 
     #[test]

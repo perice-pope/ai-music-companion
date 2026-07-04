@@ -135,6 +135,12 @@ export interface PracticeState {
   lessonRecap: LessonRecapDto | null;
   /** A drill submit is in flight — guards the double-tap (#254 review M2). */
   lessonSubmitting: boolean;
+  /**
+   * A calm, human notice from the lesson backend (e.g. "I didn't catch that
+   * yet…" on an eager grade-tap). Shown under the drill header; cleared on
+   * the next successful step.
+   */
+  lessonNotice: string | null;
 
   // Free-play exploration (#255) ------------------------------------------
   /** The variation on the free-play surface, or null when just listening. */
@@ -428,6 +434,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   lessonScore: null,
   lessonRecap: null,
   lessonSubmitting: false,
+  lessonNotice: null,
   explore: null,
   recap: null,
   recapError: null,
@@ -692,6 +699,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonScore: null,
       lessonRecap: null,
       lessonSubmitting: false,
+      lessonNotice: null,
       explore: null,
     });
   },
@@ -879,6 +887,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonDrill: step.drill,
       lessonScore: null,
       lessonRecap: null,
+      lessonNotice: null,
     });
   },
 
@@ -895,18 +904,26 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         lessonDrill: step.drill,
         lessonScore: step.score,
         lessonRecap: step.recap,
+        lessonNotice: null,
       });
     } catch (err) {
-      // Grading is best-effort at the UI layer: keep the drill on screen so
-      // the player can try submitting again.
+      // Keep the drill on screen for a retry, and SHOW the backend's calm
+      // message (e.g. the eager-tap "I didn't catch that yet…") — a silent
+      // blink is worse UX than the old dishonest 0%.
       console.error("submit_drill failed:", err);
+      set({ lessonNotice: String(err) });
     } finally {
       set({ lessonSubmitting: false });
     }
   },
 
   endLesson: async () => {
-    set({ lessonDrill: null, lessonScore: null, lessonRecap: null });
+    set({
+      lessonDrill: null,
+      lessonScore: null,
+      lessonRecap: null,
+      lessonNotice: null,
+    });
     try {
       await invoke("end_lesson", {});
     } catch (err) {
@@ -983,6 +1000,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonScore: null,
       lessonRecap: null,
       lessonSubmitting: false,
+      lessonNotice: null,
       explore: null,
       activeScore: null,
       activeScoreXml: null,
