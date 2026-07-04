@@ -1,3 +1,9 @@
+## [2.14.0](https://github.com/perice-pope/ai-music-companion/compare/v2.13.0...v2.14.0) (2026-07-04)
+
+### Features
+
+* **explore:** "one more variation" — reveals become playable RV material ([#255](https://github.com/perice-pope/ai-music-companion/issues/255)) ([#283](https://github.com/perice-pope/ai-music-companion/issues/283)) ([49fcf72](https://github.com/perice-pope/ai-music-companion/commit/49fcf72fda3fedaa4aa19fa25e311f4bb5e75280))
+
 ## [2.13.0](https://github.com/perice-pope/ai-music-companion/compare/v2.12.1...v2.13.0) (2026-07-04)
 
 ### Features
