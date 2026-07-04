@@ -1440,6 +1440,10 @@ fn emit_phrase_detected<R: Runtime>(app: &tauri::AppHandle<R>, phrase: PhraseSum
 /// between phrase boundaries. Only fires in score mode. Non-fatal on
 /// error: a dropped tick just means one skipped frame of cursor motion.
 fn emit_score_position_updated<R: Runtime>(app: &tauri::AppHandle<R>, position: ScorePosition) {
+    // One breadcrumb per process on the first cursor tick (#277 diagnostics):
+    // separates "follower never aligned" from "events not reaching the UI".
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    FIRST.call_once(|| tracing::info!(?position, "first score-position emitted"));
     let _ = app.emit("score-position-updated", position);
 }
 
@@ -1869,6 +1873,15 @@ pub async fn start_practice_session<R: Runtime>(
     // than failing the start. `None` when no score, or when the lookup or
     // MusicXML parse failed — `build_follower` logs the reason.
     let follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    // Cursor diagnostics (#277: "no cursor" reports were undebuggable): log
+    // plainly whether this session has a follower at all.
+    match (&score_id, follower.is_some()) {
+        (Some(id), true) => tracing::info!(score_id = %id, "score follower installed"),
+        (Some(id), false) => {
+            tracing::warn!(score_id = %id, "score session started WITHOUT a follower")
+        }
+        (None, _) => {}
+    }
     // Look up the score's title (cheap metadata read) so the recap can name
     // the piece. Independent of follower success: a score that parsed for
     // metadata but failed to build a follower still names itself in the recap.
@@ -2308,7 +2321,11 @@ pub struct LessonStepDto {
 }
 
 fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
-    let model = sequence_to_score_model(&drill.sequence, &drill.sequence.label);
+    let model = sequence_to_score_model(
+        &drill.sequence,
+        &drill.sequence.label,
+        brain::coach::key_signature_for(drill.tonic, &drill.mode),
+    );
     DrillDto {
         index: drill.index,
         drill_count,

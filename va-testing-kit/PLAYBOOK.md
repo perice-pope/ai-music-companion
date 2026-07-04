@@ -62,8 +62,12 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    roughly match what you're singing? Does it feel quick or laggy?"
 3. **'I hear' strip** — "Look for an 'I hear' line. Does it show a tempo (like '120 BPM') and a key
    (like 'G major') while you play?"
-4. **Coaching tips** — "Do small tip cards slide in while you play? Read one to me — does it sound
-   like helpful, sensible feedback?"
+4. **Coaching tips** — first check the switch: "Open **Connections & Privacy** and tell me whether
+   **'AI coaching narration'** is ON." If it's OFF, tip cards are **expected to be absent** (that's
+   the offline mode, not a bug) — note the toggle state and move on. If it's ON: "Do small tip cards
+   slide in while you play? Read one to me — does it sound like helpful, sensible feedback?"
+   *(Heads-up: the amber **'In the wild'** cards are music **reveals**, not coaching tips — report
+   them in the Reveals section, not here.)*
 5. **Reveals 🎵 (the new feature)** — "Keep playing in one clear key for a little while — a steady
    tune, nothing random. A small **'In the wild'** card should pop up naming real music that uses
    that sound (like *G Dorian → Miles Davis – 'So What'*). When one appears, tell me:

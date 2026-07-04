@@ -556,12 +556,58 @@ fn midi_to_hz(midi: u8) -> f64 {
     440.0 * 2f64.powf((f64::from(midi) - 69.0) / 12.0)
 }
 
+/// Key signature for a drill: `fifths` on the circle plus major/minor family,
+/// derived from the tonic pitch class and the drill's material label (#277
+/// follow-up: drills used to render keyless — an A# figure showed a wall of
+/// accidentals over an implied C major).
+///
+/// Modes map to their conventional signatures relative to the tonic's major
+/// (Dorian −2, Mixolydian −1, Lydian +1, Phrygian −4, minor family −3,
+/// Locrian −5); chord/interval material uses the tonic's plain major or minor.
+/// The result is clamped into the engravable −7..=7.
+pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
+    /// fifths of the MAJOR key for each tonic pitch class, favoring the flat
+    /// spelling where conventional (Db over C#, Eb, Ab, Bb; F# kept for pc 6).
+    const MAJOR_FIFTHS: [i8; 12] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
+    let label = mode_label.trim().to_lowercase();
+    let (offset, minor_family) = if label.contains("dorian") {
+        (-2, true)
+    } else if label.contains("mixolydian") {
+        (-1, false)
+    } else if label.contains("lydian") {
+        (1, false)
+    } else if label.contains("phrygian") {
+        (-4, true)
+    } else if label.contains("locrian") {
+        (-5, true)
+    } else if label.contains("blues") || label.contains("minor") {
+        // Natural / harmonic / melodic minor, minor pentatonic, minor chords:
+        // engrave with the natural-minor (relative-major) signature.
+        (-3, true)
+    } else {
+        (0, false)
+    };
+    KeySignature {
+        fifths: (MAJOR_FIFTHS[usize::from(tonic % 12)] + offset).clamp(-7, 7),
+        mode: if minor_family {
+            KeyMode::Minor
+        } else {
+            KeyMode::Major
+        },
+    }
+}
+
 /// Adapt a generated drill to the app's `ScoreModel` so the existing
 /// MusicXML emitter, ScoreView, and follower consume it unchanged. Gaps on the
 /// beat grid become explicit rests; notes never cross barlines (a note is
 /// clipped at the measure boundary — drill figures are grid-aligned so this
-/// only trims the final sustain).
-pub fn sequence_to_score_model(seq: &GeneratedSequence, title: &str) -> ScoreModel {
+/// only trims the final sustain). `key` engraves the drill's key signature so
+/// the notation reads like real music instead of a wall of accidentals.
+pub fn sequence_to_score_model(
+    seq: &GeneratedSequence,
+    title: &str,
+    key: KeySignature,
+) -> ScoreModel {
     let bpm = f64::from(seq.beats_per_measure.max(1));
     let total_beats = seq
         .notes
@@ -596,10 +642,7 @@ pub fn sequence_to_score_model(seq: &GeneratedSequence, title: &str) -> ScoreMod
             beats: seq.beats_per_measure.max(1),
             beat_type: 4,
         },
-        key_signature: KeySignature {
-            fifths: 0,
-            mode: KeyMode::Major,
-        },
+        key_signature: key,
         tempo_bpm: seq.tempo_bpm,
         measures,
     }
@@ -921,8 +964,9 @@ mod tests {
             randomize_roots: false,
         };
         let seq = generate(&spec, 0);
-        let model = sequence_to_score_model(&seq, "Warmup");
+        let model = sequence_to_score_model(&seq, "Warmup", key_signature_for(0, "major"));
         assert_eq!(model.tempo_bpm, 90.0);
+        assert_eq!(model.key_signature.fifths, 0);
         assert!(!model.measures.is_empty());
         for measure in &model.measures {
             let total: f64 = measure.notes.iter().map(|n| n.duration_beats).sum();
