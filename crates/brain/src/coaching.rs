@@ -1333,6 +1333,11 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
         (None, Some(bpm)) => format!(" (~{bpm:.0} BPM)"),
         (None, None) => String::new(),
     };
+    // On a straight/absent-swing verdict, quoting a swing ratio reads oddly —
+    // carry only the tempo.
+    let pulse_no_swing = tempo
+        .map(|bpm| format!(" (~{bpm:.0} BPM)"))
+        .unwrap_or_default();
 
     match (swung, modal) {
         (Some(true), Some(true)) => Some(format!(
@@ -1345,7 +1350,7 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
         }
         // Trusted modal mode with a straight or absent swing read → modal colour.
         (Some(false), Some(true)) | (None, Some(true)) => Some(format!(
-            "a modal colour — {} shapes{pulse}",
+            "a modal colour — {} shapes{pulse_no_swing}",
             mode_name.unwrap_or_else(|| "modal".to_owned()),
         )),
         // Straight + diatonic, or no usable signal at all → silence > lies.
@@ -2145,6 +2150,80 @@ mod tests {
         a.pitch_stats.pitches = vec![261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
         let key = aggregate_key(std::slice::from_ref(&a)).expect("tracked key wins");
         assert_eq!(key.name(), "F# Phrygian", "got {}", key.name());
+    }
+
+    /// The vote is CONFIDENCE-weighted, not a head count: two 0.9 readings of
+    /// one key outvote three 0.5 readings of another. Fails if the weight
+    /// regresses to counting.
+    #[test]
+    fn aggregate_key_weights_by_confidence_not_count() {
+        let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian, 0.5),
+            tracked(0, theory::Mode::Ionian, 0.5),
+            tracked(0, theory::Mode::Ionian, 0.5), // 3 votes, weight 1.5
+            tracked(7, theory::Mode::Mixolydian, 0.9),
+            tracked(7, theory::Mode::Mixolydian, 0.9), // 2 votes, weight 1.8
+        ];
+        let key = aggregate_key(&phrases).unwrap();
+        assert_eq!(key.name(), "G Mixolydian", "got {}", key.name());
+    }
+
+    /// On an exact weight tie, the key the tracker saw LATER wins (it had more
+    /// evidence by then). Fails if the recency tiebreak is reversed or lost.
+    #[test]
+    fn aggregate_key_breaks_ties_by_recency() {
+        let tracked = |tonic: u8, mode: theory::Mode| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence: 0.7,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian),
+            tracked(9, theory::Mode::Aeolian), // same weight, seen later
+        ];
+        let key = aggregate_key(&phrases).unwrap();
+        assert_eq!(
+            key.name(),
+            "A minor",
+            "later key wins ties, got {}",
+            key.name()
+        );
+    }
+
+    /// A NaN-confidence tracked reading is discarded, never poisoning a vote.
+    #[test]
+    fn aggregate_key_ignores_nan_confidence() {
+        let mut good = sample_phrase();
+        good.key = Some(theory::KeyEstimate {
+            tonic: 0,
+            mode: theory::Mode::Ionian,
+            confidence: 0.7,
+            margin: 0.2,
+        });
+        let mut bad = sample_phrase();
+        bad.key = Some(theory::KeyEstimate {
+            tonic: 5,
+            mode: theory::Mode::Lydian,
+            confidence: f32::NAN,
+            margin: 0.2,
+        });
+        let key = aggregate_key(&[good, bad]).unwrap();
+        assert_eq!(key.name(), "C major", "got {}", key.name());
     }
 
     #[test]
@@ -3754,7 +3833,7 @@ mod tests {
         MusicalFingerprint {
             tone: None,
             key: mode_conf.map(|(mode, confidence)| theory::KeyEstimate {
-                tonic: 2, // D — arbitrary; tonic doesn't affect the flavour.
+                tonic: 2, // D — the tonic now names the mode in the line ("D Dorian").
                 mode,
                 confidence,
                 margin: 0.1,
@@ -3784,6 +3863,23 @@ mod tests {
         assert!(a.contains("Dorian"), "names the tracked mode, got: {a}");
         assert!(a.contains("1.8"), "carries the measured swing, got: {a}");
         assert!(a.contains("120"), "carries the measured tempo, got: {a}");
+
+        // The bebop (swung-diatonic) arm must carry the measured pulse too —
+        // otherwise every swung-diatonic session reads word-for-word the same,
+        // the exact #277 complaint.
+        let c = theory_flavour(&fp_with(None, Some(1.8))).expect("swung, no trusted mode");
+        let d = theory_flavour(&fp_with(None, Some(1.5))).expect("swung, no trusted mode");
+        assert_ne!(c, d, "bebop arm must vary with the measured swing");
+        assert!(c.contains("1.8"), "got: {c}");
+
+        // The straight modal-colour arm names tempo but never a swing ratio.
+        let e = theory_flavour(&fp_with(Some((theory::Mode::Lydian, 0.8)), Some(1.0)))
+            .expect("straight modal");
+        assert!(e.contains("120"), "modal colour carries tempo, got: {e}");
+        assert!(
+            !e.contains(":1"),
+            "no swing ratio on a straight verdict, got: {e}"
+        );
     }
 
     #[test]

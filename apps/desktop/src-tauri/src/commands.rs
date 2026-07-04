@@ -3268,6 +3268,44 @@ mod tests {
         );
     }
 
+    /// #277: the drill's MusicXML engraves the drill's real key signature —
+    /// a Bb-major drill carries <fifths>-2</fifths> (and thus flat spelling),
+    /// not the old hardcoded C major. Fails if drill_dto stops threading
+    /// key_signature_for.
+    #[test]
+    fn drill_dto_engraves_the_drill_key_signature() {
+        let drill = brain::coach::build_first(
+            &brain::coach::LessonSpec {
+                seed: 1,
+                drill_count: 4,
+                start_difficulty: 0,
+            },
+            &{
+                // Practice every tonic except Bb so the picker trains Bb (10).
+                let mut m = brain::learner::LearnerModel::default();
+                for t in (0..12u8).filter(|&t| t != 10) {
+                    m = brain::learner::apply_drill_result(
+                        &m,
+                        &brain::learner::DrillResult {
+                            tonic: t,
+                            mode: "major".to_owned(),
+                            accuracy: 1.0,
+                        },
+                        i64::from(t),
+                    );
+                }
+                m
+            },
+        );
+        assert_eq!(drill.tonic, 10, "picker should choose the unpracticed Bb");
+        let dto = drill_dto(&drill, 4);
+        assert!(
+            dto.music_xml.contains("<fifths>-2</fifths>"),
+            "Bb-major drill must engrave 2 flats, got fifths line: {:?}",
+            dto.music_xml.lines().find(|l| l.contains("<fifths>"))
+        );
+    }
+
     /// Starting a lesson while one is running is refused (a double-tap of the
     /// button must not silently discard the in-flight lesson).
     #[test]

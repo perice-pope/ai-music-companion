@@ -157,6 +157,30 @@ describe("RevealCard", () => {
     expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
   });
 
+  // #277: a confident contradiction arriving MID-dwell dismisses exactly when
+  // the readable dwell completes — not immediately, and not a full extra dwell
+  // later. Fails if the remaining-time math regresses to a fixed delay.
+  it("a mid-age contradiction dismisses when the dwell completes", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+    });
+    render(<RevealCard />);
+
+    // 2.5s into the card's life, a confident different key arrives.
+    act(() => {
+      vi.advanceTimersByTime(2500);
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
+
+    // 1.5s later the 4s dwell completes → dismissed (a fixed 4s timer would
+    // still be pending here).
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
   // #277: a LOW-CONFIDENCE wander is not a contradiction — the card survives
   // its full linger. Fails if wobbly detection can still evaporate cards.
   it("a low-confidence key wander never dismisses the card", () => {

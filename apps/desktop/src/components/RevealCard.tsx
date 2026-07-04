@@ -13,9 +13,11 @@ const MIN_READABLE_MS = 4000;
 /**
  * A key change only dismisses a card when the NEW reading is at least this
  * confident — early-session detection wanders, and a wobble is not a
- * contradiction.
+ * contradiction. Matches the "I hear" header's assert threshold (the point
+ * where it drops the "maybe" hedge), so an asserted header can never sit
+ * contradicting a lingering card.
  */
-const DISMISS_MIN_CONFIDENCE = 0.6;
+const DISMISS_MIN_CONFIDENCE = 0.55;
 
 /**
  * A single real-world music "reveal" with an auto-dismiss timer. Slides in from
