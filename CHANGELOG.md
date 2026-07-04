@@ -1,3 +1,9 @@
+## [2.13.0](https://github.com/perice-pope/ai-music-companion/compare/v2.12.1...v2.13.0) (2026-07-04)
+
+### Features
+
+* **ui:** RV brand — colored root cells + ambient lesson notation ([#278](https://github.com/perice-pope/ai-music-companion/issues/278)) ([#281](https://github.com/perice-pope/ai-music-companion/issues/281)) ([20cff47](https://github.com/perice-pope/ai-music-companion/commit/20cff478e6b0d4537053bba4d0e31fb3961d3fa6)), closes [#277](https://github.com/perice-pope/ai-music-companion/issues/277) [#277](https://github.com/perice-pope/ai-music-companion/issues/277) [#266](https://github.com/perice-pope/ai-music-companion/issues/266) [#279](https://github.com/perice-pope/ai-music-companion/issues/279) [#277](https://github.com/perice-pope/ai-music-companion/issues/277) [#D783FF](https://github.com/perice-pope/ai-music-companion/issues/D783FF) [#0096FF](https://github.com/perice-pope/ai-music-companion/issues/0096FF) [#8EFA00](https://github.com/perice-pope/ai-music-companion/issues/8EFA00) [#FFFB02](https://github.com/perice-pope/ai-music-companion/issues/FFFB02) [#FFD479](https://github.com/perice-pope/ai-music-companion/issues/FFD479) [#FF7E79](https://github.com/perice-pope/ai-music-companion/issues/FF7E79) [#FF5097](https://github.com/perice-pope/ai-music-companion/issues/FF5097)
+
 ## [2.12.1](https://github.com/perice-pope/ai-music-companion/compare/v2.12.0...v2.12.1) (2026-07-04)
 
 ### Bug Fixes
