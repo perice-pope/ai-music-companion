@@ -133,6 +133,29 @@ export interface LessonStepDto {
   recap: LessonRecapDto | null;
 }
 
+/** A concrete change a chip applies. Mirrors `brain::coach::VariationDelta`
+ * (serde tag = "kind", snake_case). The frontend never constructs these beyond
+ * echoing a chip's own delta back. */
+export type VariationDelta =
+  | { kind: "reshuffle_roots" }
+  | { kind: "bump_difficulty"; by: number }
+  | { kind: "different_scale" }
+  | { kind: "toggle_direction" };
+
+/** One tappable chip. Mirrors `brain::coach::ChipSpec`. */
+export interface ChipSpec {
+  label: string;
+  delta: VariationDelta;
+}
+
+/** One exploration rep. Mirrors `commands::ExploreDto`. */
+export interface ExploreDto {
+  label: string;
+  music_xml: string;
+  chips: ChipSpec[];
+  root_pitch_classes: number[];
+}
+
 /**
  * Where a reveal's wording came from. Mirrors
  * `brain::connections::RevealSource` (`#[serde(rename_all = "snake_case")]`).

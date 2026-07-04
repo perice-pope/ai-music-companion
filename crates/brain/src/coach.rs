@@ -693,6 +693,198 @@ fn push_span(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Free-play exploration (#255): the ambient suggester. A reveal names a sound;
+// these turn it into material — an RV variation seeded from the live key at
+// the learner's difficulty, mutated one tapped chip at a time.
+// ---------------------------------------------------------------------------
+
+/// A concrete, named change to the active variation. The frontend never
+/// constructs these — it echoes back the exact delta attached to a tapped chip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VariationDelta {
+    /// RV's signature: same material, new shuffled key order.
+    ReshuffleRoots,
+    /// `[Make it spicy]` = +1 / `[Simpler]` = −1, clamped to the ladder.
+    BumpDifficulty { by: i8 },
+    /// Swap to a different scale colour (seeded pick, never the current one).
+    DifferentScale,
+    /// Forward ↔ reversed figures.
+    ToggleDirection,
+}
+
+/// One tappable chip: a label and the exact change it applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChipSpec {
+    pub label: String,
+    pub delta: VariationDelta,
+}
+
+/// The in-flight exploration: the spec that produced the current rep plus the
+/// knobs deltas mutate. Seed advances every rep so "again" is always fresh.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreState {
+    pub spec: VariationSpec,
+    pub difficulty: u8,
+    pub tonic: u8,
+    pub seed: u64,
+}
+
+/// Map a live-detected mode label onto the generator's scale space; `None`
+/// when the label names no scale we generate (caller falls back to the
+/// difficulty ladder's scale).
+fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
+    let l = label.trim().to_lowercase();
+    Some(match l.as_str() {
+        "major" | "ionian" => ScaleType::Major,
+        "minor" | "aeolian" => ScaleType::NaturalMinor,
+        "dorian" => ScaleType::Dorian,
+        "mixolydian" => ScaleType::Mixolydian,
+        "lydian" => ScaleType::Lydian,
+        "phrygian" => ScaleType::Phrygian,
+        "locrian" => ScaleType::Locrian,
+        _ => return None,
+    })
+}
+
+/// Seed an exploration from the live key at the learner's difficulty and
+/// generate its first rep. Deterministic for a fixed `(tonic, mode, model,
+/// seed)`.
+pub fn start_explore(
+    tonic: u8,
+    mode: &str,
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let difficulty = model.difficulty.min(MAX_DIFFICULTY);
+    let (mut spec, _) = spec_for(DrillKind::WarmupScale, difficulty, tonic);
+    if let (Some(scale), Some(m)) = (scale_for_mode_label(mode), spec.scale.as_mut()) {
+        // Explore the sound the player is actually in, not the ladder default.
+        m.scale = scale;
+    }
+    let sequence = generate(&spec, seed);
+    (
+        ExploreState {
+            spec,
+            difficulty,
+            tonic,
+            seed,
+        },
+        sequence,
+    )
+}
+
+/// Struggling threshold for offering `[Simpler]` instead of `[Spicy]`.
+const STRUGGLING_EWMA: f32 = 0.6;
+
+/// The ≤3 chips for the current exploration — pure and stable-ordered:
+/// 1. `[New keys 🎲]` whenever there is more than one root to shuffle;
+/// 2. `[Simpler]` when the learner is struggling on this key (or at the top of
+///    the ladder), otherwise `[Make it spicy]` — never a raise at MAX, never a
+///    lower at 0;
+/// 3. `[Different scale]` always;
+/// 4. `[Reverse it]` fills the row only when fewer than 3 chips gathered.
+pub fn suggest_chips(state: &ExploreState, model: &LearnerModel) -> Vec<ChipSpec> {
+    let mut chips = Vec::new();
+    if state.spec.roots.len() > 1 {
+        chips.push(ChipSpec {
+            label: "New keys 🎲".to_owned(),
+            delta: VariationDelta::ReshuffleRoots,
+        });
+    }
+    let mastery = model
+        .key_mastery
+        .get(&crate::learner::mastery_key(state.tonic, "major"))
+        .or_else(|| model.key_mastery.values().next());
+    let struggling = mastery.is_some_and(|m| m.attempts > 0 && m.accuracy_ewma < STRUGGLING_EWMA);
+    if (struggling || state.difficulty >= MAX_DIFFICULTY) && state.difficulty > 0 {
+        chips.push(ChipSpec {
+            label: "Simpler".to_owned(),
+            delta: VariationDelta::BumpDifficulty { by: -1 },
+        });
+    } else if state.difficulty < MAX_DIFFICULTY {
+        chips.push(ChipSpec {
+            label: "Make it spicy".to_owned(),
+            delta: VariationDelta::BumpDifficulty { by: 1 },
+        });
+    }
+    chips.push(ChipSpec {
+        label: "Different scale".to_owned(),
+        delta: VariationDelta::DifferentScale,
+    });
+    if chips.len() < 3 {
+        chips.push(ChipSpec {
+            label: "Reverse it".to_owned(),
+            delta: VariationDelta::ToggleDirection,
+        });
+    }
+    chips.truncate(3);
+    chips
+}
+
+/// Scales the `[Different scale]` chip cycles through, easy → exotic.
+const EXPLORE_SCALES: [ScaleType; 6] = [
+    ScaleType::Major,
+    ScaleType::MajorPentatonic,
+    ScaleType::Mixolydian,
+    ScaleType::Dorian,
+    ScaleType::Blues,
+    ScaleType::HarmonicMinor,
+];
+
+/// Apply a tapped delta and generate the next rep. Pure; the seed always
+/// advances so every rep is fresh (that's what makes `ReshuffleRoots` — an
+/// otherwise spec-identical delta — actually reshuffle).
+pub fn apply_explore_delta(
+    state: &ExploreState,
+    delta: &VariationDelta,
+) -> (ExploreState, GeneratedSequence) {
+    let mut next = state.clone();
+    next.seed = next
+        .seed
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(1);
+    match delta {
+        VariationDelta::ReshuffleRoots => {
+            next.spec.randomize_roots = true;
+        }
+        VariationDelta::BumpDifficulty { by } => {
+            let d = i16::from(next.difficulty) + i16::from(*by);
+            next.difficulty = d.clamp(0, i16::from(MAX_DIFFICULTY)) as u8;
+            // Rebuild the knobs at the new step, preserving the explored scale.
+            let scale = next.spec.scale;
+            let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic);
+            next.spec = spec;
+            if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
+                m.scale = prev.scale;
+            }
+        }
+        VariationDelta::DifferentScale => {
+            if let Some(m) = next.spec.scale.as_mut() {
+                let current = m.scale;
+                let idx = (next.seed as usize) % EXPLORE_SCALES.len();
+                let pick = EXPLORE_SCALES
+                    .iter()
+                    .cycle()
+                    .skip(idx)
+                    .find(|&&sc| sc != current)
+                    .copied()
+                    .unwrap_or(ScaleType::Major);
+                m.scale = pick;
+            }
+        }
+        VariationDelta::ToggleDirection => {
+            next.spec.direction = match next.spec.direction {
+                DirectionMode::Reversed => DirectionMode::Forward,
+                _ => DirectionMode::Reversed,
+            };
+        }
+    }
+    let sequence = generate(&next.spec, next.seed);
+    (next, sequence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,5 +1243,113 @@ mod tests {
                 assert!((-6..=6).contains(&f), "{tonic} {label} -> {f}");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #255 — free-play exploration
+    // -----------------------------------------------------------------------
+
+    /// #255: chips are ≤3, stable-ordered, and carry concrete deltas; the
+    /// difficulty chip is gated — spicy below MAX, simpler at MAX or when
+    /// struggling, nothing below 0. Fails if the gating rules regress.
+    #[test]
+    fn suggest_chips_gates_by_difficulty_and_struggle() {
+        let model = LearnerModel::default(); // difficulty 0, no mastery
+        let (state, _) = start_explore(7, "dorian", &model, 1);
+        let chips = suggest_chips(&state, &model);
+        assert!(chips.len() <= 3);
+        assert!(
+            chips.iter().any(|c| c.label.contains("spicy")),
+            "fresh learner below MAX gets a spicy chip: {chips:?}"
+        );
+        assert!(
+            !chips
+                .iter()
+                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }),
+            "difficulty 0 must not offer Simpler"
+        );
+
+        // At the top of the ladder: never a raise, offer simpler instead.
+        let mut top = crate::learner::apply_difficulty(&model, MAX_DIFFICULTY, 1);
+        top.difficulty = MAX_DIFFICULTY;
+        let (state_top, _) = start_explore(7, "dorian", &top, 1);
+        let chips_top = suggest_chips(&state_top, &top);
+        assert!(
+            !chips_top
+                .iter()
+                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: 1 }),
+            "MAX difficulty must not offer a raise: {chips_top:?}"
+        );
+        assert!(chips_top
+            .iter()
+            .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }));
+
+        // Struggling on the key → Simpler replaces Spicy (needs difficulty > 0).
+        let mut struggling = crate::learner::apply_difficulty(&model, 3, 1);
+        for t in 0..3 {
+            struggling = crate::learner::apply_drill_result(
+                &struggling,
+                &crate::learner::DrillResult {
+                    tonic: 7,
+                    mode: "major".to_owned(),
+                    accuracy: 0.2,
+                },
+                t,
+            );
+        }
+        let (state_s, _) = start_explore(7, "dorian", &struggling, 1);
+        let chips_s = suggest_chips(&state_s, &struggling);
+        assert!(
+            chips_s
+                .iter()
+                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }),
+            "a struggling learner gets Simpler: {chips_s:?}"
+        );
+    }
+
+    /// #255: start_explore seeds the variation from the LIVE key — a Dorian
+    /// context explores Dorian, not the ladder default — and is deterministic.
+    #[test]
+    fn start_explore_uses_the_live_mode_and_is_deterministic() {
+        let model = LearnerModel::default();
+        let (state, seq) = start_explore(7, "Dorian", &model, 42);
+        assert_eq!(state.spec.scale.unwrap().scale, ScaleType::Dorian);
+        assert!(seq.label.contains("Dorian"), "got {}", seq.label);
+        assert_eq!(start_explore(7, "Dorian", &model, 42).1, seq);
+        // Unknown mode label falls back to the ladder scale, never panics.
+        let (fallback, _) = start_explore(7, "super-locrian bebop", &model, 42);
+        assert!(fallback.spec.scale.is_some());
+    }
+
+    /// #255: each delta changes exactly its mapped knobs.
+    #[test]
+    fn deltas_change_exactly_their_knobs() {
+        let model = crate::learner::apply_difficulty(&LearnerModel::default(), 3, 1);
+        let (state, first) = start_explore(0, "major", &model, 5);
+
+        // Spicy: one step harder → faster tempo (the ladder is strict there).
+        let (harder, _) = apply_explore_delta(&state, &VariationDelta::BumpDifficulty { by: 1 });
+        assert_eq!(harder.difficulty, 4);
+        assert!(harder.spec.rhythm.tempo_bpm > state.spec.rhythm.tempo_bpm);
+        assert_eq!(
+            harder.spec.scale.unwrap().scale,
+            ScaleType::Major,
+            "the explored scale survives a difficulty rebuild"
+        );
+
+        // Different scale: never the current one.
+        let (swapped, _) = apply_explore_delta(&state, &VariationDelta::DifferentScale);
+        assert_ne!(swapped.spec.scale.unwrap().scale, ScaleType::Major);
+
+        // Toggle: forward <-> reversed.
+        let (rev, _) = apply_explore_delta(&state, &VariationDelta::ToggleDirection);
+        assert_eq!(rev.spec.direction, DirectionMode::Reversed);
+        let (fwd, _) = apply_explore_delta(&rev, &VariationDelta::ToggleDirection);
+        assert_eq!(fwd.spec.direction, DirectionMode::Forward);
+
+        // Reshuffle: same material, fresh rep (seed advanced → new sequence).
+        let (reshuffled, again) = apply_explore_delta(&state, &VariationDelta::ReshuffleRoots);
+        assert!(reshuffled.spec.randomize_roots);
+        assert_ne!(again, first, "a reshuffle must produce a fresh rep");
     }
 }

@@ -97,6 +97,7 @@ export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
   const collectionCount = usePracticeStore((s) => s.collectionCount);
+  const startExplore = usePracticeStore((s) => s.startExplore);
   // Subscribe to the live key's primitives (not the object), so this only
   // re-runs when the detected tonic/mode/confidence band actually change — not
   // on every ~8 Hz perception tick.
@@ -162,6 +163,18 @@ export default function RevealCard() {
         why={current.reveal.why}
         onDismiss={dismissReveal}
       />
+      {/* #255: the reveal becomes actionable — one tap turns the named sound
+          into an RV variation on the free-play surface. */}
+      <button
+        type="button"
+        onClick={() =>
+          void startExplore(current.reveal.tonic, current.reveal.mode)
+        }
+        data-testid="reveal-practice-this"
+        className="mt-2 w-full rounded-md bg-amber-600/90 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-500"
+      >
+        🎲 Practice this sound
+      </button>
       {collectionCount !== null && (
         <p
           className="mt-1 text-right text-xs text-amber-300/60"
