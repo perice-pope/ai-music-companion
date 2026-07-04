@@ -18,6 +18,13 @@ pub struct KeyTrackerConfig {
     /// Minimum distinct pitch classes before we'll commit to a key at all —
     /// you can't name a key from one or two notes.
     pub min_pitch_classes: u8,
+    /// A challenging key must out-correlate the held key (by `switch_margin`)
+    /// for this many CONSECUTIVE observations before taking over. The margin
+    /// alone can't stop near-tie mode aliases (E Locrian / G# Locrian / D#
+    /// Phrygian read almost identically over wandering material) from
+    /// leapfrogging every few notes — the #277 header flapping. Time dwell
+    /// kills the flicker; a real modulation sustains dominance and still wins.
+    pub switch_dwell: u8,
 }
 
 impl Default for KeyTrackerConfig {
@@ -27,8 +34,11 @@ impl Default for KeyTrackerConfig {
             // enough context to be stable, short enough to follow a modulation.
             decay: 0.97,
             min_confidence: 0.4,
-            switch_margin: 0.05,
+            // Raised from 0.05 (#277): a challenger must clearly beat the
+            // incumbent, not nose ahead.
+            switch_margin: 0.1,
             min_pitch_classes: 4,
+            switch_dwell: 6,
         }
     }
 }
@@ -44,6 +54,9 @@ pub struct KeyTracker {
     config: KeyTrackerConfig,
     profile: PitchClassProfile,
     held: Option<KeyEstimate>,
+    /// The key currently out-correlating the held one, and for how many
+    /// consecutive observations — the dwell counter behind the anti-flap rule.
+    challenger: Option<(u8, crate::Mode, u8)>,
 }
 
 impl Default for KeyTracker {
@@ -64,6 +77,7 @@ impl KeyTracker {
             config,
             profile: PitchClassProfile::new(),
             held: None,
+            challenger: None,
         }
     }
 
@@ -90,6 +104,7 @@ impl KeyTracker {
     pub fn reset(&mut self) {
         self.profile = PitchClassProfile::new();
         self.held = None;
+        self.challenger = None;
     }
 
     /// Re-evaluate the held key against the current profile, applying the
@@ -110,14 +125,42 @@ impl KeyTracker {
             }
             Some(held) => {
                 if held.tonic == candidate.tonic && held.mode == candidate.mode {
-                    // Same key — refresh confidence/margin.
+                    // Same key — refresh confidence/margin, stand down any
+                    // challenger.
                     self.held = Some(candidate);
+                    self.challenger = None;
                 } else if committable {
-                    // Different key: only switch if it clearly beats the held
-                    // key on the *current* profile (anti-flicker hysteresis).
+                    // Two very different cases share this branch:
+                    //  - SAME tonic, different mode — the tracker *refining*
+                    //    its read as evidence sharpens (C Mixolydian → C major
+                    //    once the leading tone lands). Cheap to accept: small
+                    //    margin, short dwell.
+                    //  - DIFFERENT tonic — the #277 flapping risk. Must clearly
+                    //    beat the incumbent AND sustain it (full margin+dwell);
+                    //    near-tie aliases leapfrogging never sustain, a real
+                    //    modulation does.
+                    let same_tonic = candidate.tonic == held.tonic;
+                    let (margin, dwell) = if same_tonic {
+                        (self.config.switch_margin * 0.2, 2)
+                    } else {
+                        (self.config.switch_margin, self.config.switch_dwell)
+                    };
                     let held_r = correlation_for(&self.profile, held.tonic, held.mode);
-                    if candidate.confidence - held_r > self.config.switch_margin {
-                        self.held = Some(candidate);
+                    if candidate.confidence - held_r > margin {
+                        let streak = match self.challenger {
+                            Some((t, m, n)) if t == candidate.tonic && m == candidate.mode => {
+                                n.saturating_add(1)
+                            }
+                            _ => 1,
+                        };
+                        if streak >= dwell {
+                            self.held = Some(candidate);
+                            self.challenger = None;
+                        } else {
+                            self.challenger = Some((candidate.tonic, candidate.mode, streak));
+                        }
+                    } else {
+                        self.challenger = None;
                     }
                 }
             }
@@ -187,6 +230,36 @@ mod tests {
             (after.tonic, after.mode),
             "a single chromatic note must not flip the key"
         );
+    }
+
+    /// #277 anti-flap: a challenger that out-correlates the held key must
+    /// SUSTAIN that win for `switch_dwell` consecutive observations before the
+    /// display flips — a brief excursion (fewer than dwell) leaves the held
+    /// key alone, and an interrupted streak resets. Fails if the time-dwell
+    /// rule is dropped (margin-only would flip immediately).
+    #[test]
+    fn a_brief_challenger_does_not_flip_but_a_sustained_one_does() {
+        let mut t = KeyTracker::new();
+        feed_scale(&mut t, 0, Mode::Ionian, 8);
+        assert_eq!(t.current().unwrap().tonic, 0);
+
+        // A short, strong F#-major burst: challenger streak < dwell → no flip.
+        for _ in 0..3 {
+            t.observe_pc(6, 3.0);
+        }
+        assert_eq!(
+            t.current().unwrap().tonic,
+            0,
+            "a brief excursion must not flip the held key"
+        );
+
+        // Returning to C-major material stands the challenger down…
+        feed_scale(&mut t, 0, Mode::Ionian, 2);
+        assert_eq!(t.current().unwrap().tonic, 0);
+
+        // …while a genuinely sustained new key still takes over.
+        feed_scale(&mut t, 6, Mode::Ionian, 12);
+        assert_eq!(t.current().unwrap().tonic, 6);
     }
 
     #[test]

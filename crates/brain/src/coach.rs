@@ -92,7 +92,9 @@ pub struct DrillScore {
     pub per_note: Vec<NoteGrade>,
     /// 0..1 — correct notes / target length. The signal the ramp runs on.
     pub accuracy: f32,
-    /// Same basis as `accuracy` (pitch is the graded dimension in v1).
+    /// Pure recall (correct / target) before the extras penalty — `accuracy`
+    /// additionally scales down when far more was played than asked (anti-
+    /// noodling; see `score_drill`).
     pub pitch_accuracy: f32,
     /// 0..1 — steadiness proxy: how closely the detected onset count tracks
     /// the target count (a full per-note timing grade needs aligned onsets,
@@ -200,6 +202,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let scale = scale_for(d);
             let spec = VariationSpec {
                 roots,
+                cell: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: if d >= 3 {
@@ -221,6 +224,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let chord = chord_for(d);
             let spec = VariationSpec {
                 roots,
+                cell: None,
                 scale: None,
                 chord: Some(ChordModifier {
                     chord,
@@ -243,6 +247,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let semitones = interval_for(d);
             let spec = VariationSpec {
                 roots,
+                cell: None,
                 scale: None,
                 chord: None,
                 interval: Some(IntervalModifier {
@@ -262,6 +267,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let scale = scale_for(d);
             let spec = VariationSpec {
                 roots,
+                cell: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: ScalePattern::UpDown,
@@ -447,11 +453,23 @@ pub fn score_drill(target_midi: &[u8], played: &[PlayedNote], onset_count: usize
     }
 
     let correct = per_note.iter().filter(|g| g.correct).count();
-    let accuracy = if n == 0 {
+    // Recall alone is gameable: because the alignment skips extras for free, a
+    // slow chromatic walk contains every target as a subsequence and would
+    // grade 100%. Cap the free extras at PLAYED_SLACK× the target length and
+    // scale the grade down past it, so noodling collapses while a genuine take
+    // with a few flubs is untouched.
+    const PLAYED_SLACK: f32 = 1.5;
+    let recall = if n == 0 {
         0.0
     } else {
         correct as f32 / n as f32
     };
+    let precision_factor = if m == 0 || n == 0 {
+        1.0
+    } else {
+        ((n as f32 * PLAYED_SLACK) / m as f32).min(1.0)
+    };
+    let accuracy = recall * precision_factor;
     let timing_accuracy = if n == 0 {
         0.0
     } else {
@@ -460,7 +478,7 @@ pub fn score_drill(target_midi: &[u8], played: &[PlayedNote], onset_count: usize
     DrillScore {
         per_note,
         accuracy,
-        pitch_accuracy: accuracy,
+        pitch_accuracy: recall,
         timing_accuracy,
     }
 }
@@ -1056,7 +1074,43 @@ mod tests {
             .map(|&m| PlayedNote { hz: midi_to_hz(m) })
             .collect();
         let s3 = score_drill(&target, &played_extra, 5);
-        assert_eq!(s3.accuracy, 1.0, "alignment skips extras");
+        // Extras are skipped by the alignment (recall stays perfect) but past
+        // the 1.5× slack they start costing: 5 played vs 3 asked → ×0.9.
+        assert_eq!(s3.pitch_accuracy, 1.0, "alignment skips extras for recall");
+        assert!(
+            (s3.accuracy - 0.9).abs() < 1e-6,
+            "extras beyond slack cost, got {}",
+            s3.accuracy
+        );
+    }
+
+    /// Anti-gaming: a slow chromatic walk contains any target as a
+    /// subsequence — recall alone would grade it 100%. The extras penalty
+    /// collapses it, while a genuine take with a couple of stray notes is
+    /// untouched. Fails if the penalty is dropped (noodling grades ~1.0).
+    #[test]
+    fn chromatic_noodling_cannot_score_high() {
+        let target = [60u8, 64, 67, 72];
+        // 36 notes of chromatic wandering that necessarily embed the target.
+        let noodle: Vec<PlayedNote> = (48u8..84)
+            .map(|m| PlayedNote { hz: midi_to_hz(m) })
+            .collect();
+        let s = score_drill(&target, &noodle, noodle.len());
+        assert!(
+            s.accuracy < 0.5,
+            "a 36-note noodle against a 4-note target must collapse, got {}",
+            s.accuracy
+        );
+        assert!(s.pitch_accuracy > 0.9, "recall itself may stay high");
+
+        // A genuine take with two stray notes keeps its full grade (within
+        // the slack allowance).
+        let honest: Vec<PlayedNote> = [60u8, 61, 64, 67, 66, 72]
+            .iter()
+            .map(|&m| PlayedNote { hz: midi_to_hz(m) })
+            .collect();
+        let s2 = score_drill(&target, &honest, honest.len());
+        assert_eq!(s2.accuracy, 1.0, "a few flubs within slack cost nothing");
     }
 
     /// Octave-agnostic matching: a singer an octave below the written drill
@@ -1154,6 +1208,7 @@ mod tests {
     fn sequence_adapts_to_a_well_formed_score_model() {
         let spec = VariationSpec {
             roots: vec![60, 62],
+            cell: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,

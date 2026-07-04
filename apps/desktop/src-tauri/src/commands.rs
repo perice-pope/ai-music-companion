@@ -190,6 +190,10 @@ pub enum CommandError {
     AlreadyEnding,
     #[error("a lesson is already running — end it before starting a new one")]
     LessonActive,
+    #[error(
+        "I didn't catch that yet — give it a second after you finish playing, then grade again"
+    )]
+    DrillNotHeard,
     #[error("instrument name cannot be empty")]
     EmptyInstrument,
     #[error("unknown instrument: {0}")]
@@ -2390,6 +2394,27 @@ pub fn apply_variation_delta(
     apply_variation_delta_impl(&state, delta)
 }
 
+/// The Learner Model as a JSON blob for cloud sync (`null` on cold start).
+/// Read-only: sync pushes the local truth up; it never writes back down (the
+/// local model is authoritative — last-writer-wins upsert keyed on the user).
+#[tauri::command]
+pub fn get_learner_model_blob(
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?;
+    match model {
+        Some(m) => serde_json::to_value(&m)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
 /// Stop exploring (nothing persisted).
 #[tauri::command]
 pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
@@ -2568,6 +2593,13 @@ pub fn submit_drill_impl(
         let onsets: usize = slice.iter().map(|p| p.onsets_secs.len()).sum();
         (pitches, onsets)
     };
+    // Eager-tap guard: phrases only close after a beat of silence, so a tap
+    // the instant the last note ends can see an EMPTY window. Grading that as
+    // 0% would be a lie about the player — return a calm "not yet" instead.
+    // (Deliberately failing a drill still works: play wrong notes.)
+    if pitches.is_empty() && onsets == 0 {
+        return Err(CommandError::DrillNotHeard);
+    }
     let played = played_notes_from_pitch_track(&pitches, DRILL_MIN_PITCH_RUN);
     let score = score_drill(&lesson.current.sequence.target_midi, &played, onsets);
     let score_dto = DrillScoreDto::from(&score);
@@ -3403,13 +3435,34 @@ mod tests {
         let step1 = submit_drill_impl(&s, 100).unwrap();
         assert!(step1.score.unwrap().accuracy > 0.99);
 
-        // Nothing new played for drill 1.
+        // Drill 1: play only clearly WRONG material (a cluster far from any
+        // target class run). If drill 0's perfect notes leaked into this
+        // window (a dropped phrase_mark), the grade would be inflated.
+        let mut wrong = sample_phrase();
+        wrong.pitch_stats.pitches = std::iter::repeat_n(8_000.0, 40).collect();
+        wrong.onsets_secs = vec![0.0; 4];
+        s.phrase_buffer.lock().unwrap().push(wrong);
         let step2 = submit_drill_impl(&s, 200).unwrap();
-        assert_eq!(
-            step2.score.unwrap().accuracy,
-            0.0,
-            "an empty take must grade 0, not inherit the previous drill's notes"
+        assert!(
+            step2.score.unwrap().accuracy < 0.2,
+            "drill 1 must be graded ONLY on its own (wrong) take, not inherit drill 0's notes"
         );
+    }
+
+    /// #277 hardening: a tap before ANY phrase has closed for the drill is a
+    /// calm "not yet" error, never a lying 0% grade — the drill stays live for
+    /// a retry.
+    #[test]
+    fn eager_submit_before_any_phrase_is_a_calm_not_yet() {
+        let s = state();
+        start_lesson_impl(&s, 12).unwrap();
+        assert!(matches!(
+            submit_drill_impl(&s, 100),
+            Err(CommandError::DrillNotHeard)
+        ));
+        // Still live: playing and resubmitting works.
+        play_current_drill_perfectly(&s);
+        assert!(submit_drill_impl(&s, 200).unwrap().score.unwrap().accuracy > 0.99);
     }
 
     /// #255: the explore loop end-to-end at the command layer — start seeds a

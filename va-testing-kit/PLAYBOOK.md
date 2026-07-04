@@ -102,7 +102,8 @@ While the session is running:
 2. **Play a drill** — "Hum or play the line as best you can, then tap **'I played it — grade me'**.
    You should get a percentage and the next drill appears. Does the grade feel roughly fair for how
    you did?"
-3. **It adapts** — "On one drill, deliberately do *badly* (or stay silent) before grading. The next
+3. **It adapts** — "On one drill, deliberately play *wrong notes* before grading (don't just stay
+   silent — if it heard nothing it will say 'I didn't catch that yet' instead of grading). The next
    drill should get **easier** (fewer keys / slower). On drills you nail, later drills should get
    **harder**. Did you notice it adapting?"
 4. **The recap** — "After 4 drills you get a **'Lesson complete'** card listing each drill's
