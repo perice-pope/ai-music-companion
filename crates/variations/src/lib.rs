@@ -180,6 +180,9 @@ pub struct GeneratedSequence {
     pub notes: Vec<GeneratedNote>,
     /// The grading target: `notes` in order, as MIDI numbers.
     pub target_midi: Vec<u8>,
+    /// The roots in PLAY order (post-shuffle) — RV's signature randomized key
+    /// sequence, surfaced so the UI can render it as the brand's colored cells.
+    pub root_order: Vec<u8>,
     /// e.g. `"G Dorian · up-down · 12 roots, random order · 80 BPM"`.
     pub label: String,
     pub tempo_bpm: f64,
@@ -286,6 +289,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
     GeneratedSequence {
         notes,
         target_midi,
+        root_order: roots,
         label,
         tempo_bpm: spec.rhythm.tempo_bpm,
         beats_per_measure: 4,
@@ -505,6 +509,10 @@ mod tests {
             let seq = generate(&spec, seed);
             let roots = figure_roots(&seq, 8);
             assert_eq!(roots[0], 60, "first root must stay fixed (seed {seed})");
+            assert_eq!(
+                seq.root_order, roots,
+                "root_order must report the PLAYED order (seed {seed})"
+            );
             // Multiset preserved: sorted roots equal the sorted input.
             let mut sorted = roots.clone();
             sorted.sort_unstable();

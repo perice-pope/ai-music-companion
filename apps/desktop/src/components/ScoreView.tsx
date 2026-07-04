@@ -24,11 +24,13 @@ export interface OsmdLike {
 export type OsmdFactory = (container: HTMLElement) => OsmdLike;
 
 /**
- * Default factory: lazy-loads the (heavy) opensheetmusicdisplay bundle so
- * it isn't in the initial app chunk, then constructs a real instance.
- * OSMD ships as UMD, so the constructor hides under `.default`.
+ * Build the default factory: lazy-loads the (heavy) opensheetmusicdisplay
+ * bundle so it isn't in the initial app chunk, then constructs a real
+ * instance. OSMD ships as UMD, so the constructor hides under `.default`.
+ * `ambient` renders the notation in a light ink at a smaller zoom for the
+ * transparent, sits-in-the-background treatment (#278).
  */
-const defaultFactory: OsmdFactory = (container) => {
+const makeDefaultFactory = (ambient: boolean): OsmdFactory => (container) => {
   // The dynamic import is resolved lazily inside `load` on first use; we
   // return a thin async proxy so construction itself stays synchronous and
   // the effect can hold a stable handle.
@@ -51,7 +53,16 @@ const defaultFactory: OsmdFactory = (container) => {
           autoResize: true,
           backend: "svg",
           drawingParameters: "compact",
+          // Ambient (#278): light ink so the staff reads on the app's dark
+          // background — the SVG itself is transparent; the old white "page"
+          // was only ever the container's background.
+          ...(ambient ? { defaultColorMusic: "#E2E8F0" } : {}),
         });
+        if (ambient) {
+          // Smaller notation for the ambient treatment. OSMD exposes zoom as
+          // a property, applied at the next render().
+          (inner as unknown as { Zoom?: number }).Zoom = 0.75;
+        }
         return inner;
       });
     }
@@ -84,6 +95,10 @@ const defaultFactory: OsmdFactory = (container) => {
   };
 };
 
+/** Stable factory instances so effect deps don't churn between renders. */
+const pageFactory = makeDefaultFactory(false);
+const ambientFactory = makeDefaultFactory(true);
+
 export interface ScoreViewProps {
   /** Raw MusicXML to render. Nothing renders while this is null. */
   musicXml: string | null;
@@ -93,6 +108,12 @@ export interface ScoreViewProps {
    * the cursor at the start.
    */
   cursorPosition: ScorePosition | null;
+  /**
+   * Visual treatment (#278): `"page"` is the classic white sheet; `"ambient"`
+   * drops the page entirely — smaller, light-ink notation on a transparent
+   * background so the music sits IN the app instead of on a page over it.
+   */
+  variant?: "page" | "ambient";
   /** Test seam — defaults to the real lazy-loaded OSMD. */
   osmdFactory?: OsmdFactory;
 }
@@ -109,8 +130,11 @@ export interface ScoreViewProps {
 export default function ScoreView({
   musicXml,
   cursorPosition,
-  osmdFactory = defaultFactory,
+  variant = "page",
+  osmdFactory,
 }: ScoreViewProps) {
+  const factory =
+    osmdFactory ?? (variant === "ambient" ? ambientFactory : pageFactory);
   const containerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdLike | null>(null);
   const [ready, setReady] = useState(false);
@@ -130,7 +154,7 @@ export default function ScoreView({
       return;
     }
 
-    const osmd = osmdFactory(containerRef.current);
+    const osmd = factory(containerRef.current);
     osmdRef.current = osmd;
 
     (async () => {
@@ -153,7 +177,7 @@ export default function ScoreView({
     return () => {
       cancelled = true;
     };
-  }, [musicXml, osmdFactory]);
+  }, [musicXml, factory]);
 
   // Effect 2: advance the cursor to the live measure.
   useEffect(() => {
@@ -174,7 +198,11 @@ export default function ScoreView({
   return (
     <div
       data-testid="score-view"
-      className="h-full w-full overflow-auto rounded-lg bg-white p-4"
+      className={
+        variant === "ambient"
+          ? "h-full w-full overflow-auto p-1"
+          : "h-full w-full overflow-auto rounded-lg bg-white p-4"
+      }
     >
       {error && (
         <p data-testid="score-view-error" className="text-sm text-red-600">

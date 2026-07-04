@@ -67,6 +67,32 @@ function pos(measure: number): ScorePosition {
   return { measure_number: measure, beat: 0 };
 }
 
+describe("ScoreView — ambient variant (#278)", () => {
+  it("drops the white page in ambient; keeps it in page mode", async () => {
+    const fakeA = makeFakeOsmd(3);
+    const a = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        variant="ambient"
+        osmdFactory={fakeA.factory}
+      />,
+    );
+    expect(a.getByTestId("score-view").className).not.toContain("bg-white");
+    a.unmount();
+
+    const fakeB = makeFakeOsmd(3);
+    const b = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fakeB.factory}
+      />,
+    );
+    expect(b.getByTestId("score-view").className).toContain("bg-white");
+  });
+});
+
 describe("ScoreView — wiring with a fake OSMD", () => {
   it("loads, renders, and shows the cursor when given MusicXML", async () => {
     const fake = makeFakeOsmd(3);

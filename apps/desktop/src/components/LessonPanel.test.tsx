@@ -27,6 +27,7 @@ function drill(index = 0): DrillDto {
     difficulty: 0,
     music_xml: "<score-partwise/>",
     target_len: 8,
+    root_pitch_classes: [0, 7, 2],
   };
 }
 
@@ -88,6 +89,30 @@ describe("LessonPanel", () => {
     render(<LessonPanel />);
     fireEvent.click(screen.getByTestId("lesson-submit"));
     expect(mockInvoke).toHaveBeenCalledWith("submit_drill", {});
+  });
+
+  // #278: the drill's roots render as RV brand cells — right count, PLAY
+  // order, note names, and the exact brand colors. Fails if the cells strip
+  // is dropped or the palette mapping drifts.
+  it("renders the RV root cells in play order with brand colors", () => {
+    usePracticeStore.setState({ lessonDrill: drill() }); // roots [0, 7, 2]
+    render(<LessonPanel />);
+    const cells = screen.getByTestId("lesson-root-cells");
+    expect(cells).toBeInTheDocument();
+    expect(screen.getByTestId("root-cell-0")).toHaveTextContent("C");
+    expect(screen.getByTestId("root-cell-1")).toHaveTextContent("G");
+    expect(screen.getByTestId("root-cell-2")).toHaveTextContent("D");
+    // Exact RV brand colors (jsdom normalizes to rgb()).
+    expect(screen.getByTestId("root-cell-0")).toHaveStyle({
+      backgroundColor: "rgb(142, 250, 0)", // C #8EFA00
+    });
+    expect(screen.getByTestId("root-cell-1")).toHaveStyle({
+      backgroundColor: "rgb(255, 80, 151)", // G #FF5097
+    });
+    // The header accent carries the leading root's color.
+    expect(screen.getByTestId("lesson-header-accent")).toHaveStyle({
+      borderColor: "rgb(142, 250, 0)",
+    });
   });
 
   // #254 review M2: while a submit is in flight the button is disabled, so a
