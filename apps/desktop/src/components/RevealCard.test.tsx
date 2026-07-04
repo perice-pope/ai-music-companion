@@ -130,23 +130,82 @@ describe("RevealCard", () => {
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
   });
 
-  // #266 AC3: once the live detected key moves off the reveal's (tonic, mode),
-  // the card is dismissed so it can't contradict the "I hear" header. Fails if a
-  // stale card lingers after the key changes.
-  it("dismisses the card when the live key moves off it", () => {
+  // #266 AC3 + #277: once the live key CONFIDENTLY moves off the reveal's
+  // (tonic, mode), the card is dismissed — but never before its minimum
+  // readable dwell, so it can actually be read. Fails if a young card is
+  // killed instantly or a stale one lingers past the dwell.
+  it("dismisses the card when the live key moves off it — after the readable dwell", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
 
-    // Live detection wanders to a different key/mode.
+    // Live detection confidently moves to a different key/mode while the card
+    // is brand new → it must stay readable, not vanish (#277).
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
     });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
 
+    // After the readable dwell the contradiction wins.
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
     expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
+  });
+
+  // #277: a confident contradiction arriving MID-dwell dismisses exactly when
+  // the readable dwell completes — not immediately, and not a full extra dwell
+  // later. Fails if the remaining-time math regresses to a fixed delay.
+  it("a mid-age contradiction dismisses when the dwell completes", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+    });
+    render(<RevealCard />);
+
+    // 2.5s into the card's life, a confident different key arrives.
+    act(() => {
+      vi.advanceTimersByTime(2500);
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
+
+    // 1.5s later the 4s dwell completes → dismissed (a fixed 4s timer would
+    // still be pending here).
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #277: a LOW-CONFIDENCE wander is not a contradiction — the card survives
+  // its full linger. Fails if wobbly detection can still evaporate cards.
+  it("a low-confidence key wander never dismisses the card", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+    });
+    render(<RevealCard />);
+    act(() => {
+      usePracticeStore.setState({
+        perception: {
+          tempo_bpm: null,
+          swing_ratio: null,
+          locked: false,
+          key: {
+            tonic: 5,
+            mode: "phrygian",
+            name: "F Phrygian",
+            confidence: 0.4, // wobble, below the dismissal bar
+            alternative: null,
+          },
+        },
+      });
+      vi.advanceTimersByTime(5000);
+    });
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
   });
 
   // #266 AC3 (isolate the OR): only the MODE moves (same tonic) → dismiss. Fails
@@ -158,6 +217,7 @@ describe("RevealCard", () => {
     render(<RevealCard />);
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
+      vi.advanceTimersByTime(4000); // readable dwell
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
   });
@@ -171,6 +231,7 @@ describe("RevealCard", () => {
     render(<RevealCard />);
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(5, "dorian") });
+      vi.advanceTimersByTime(4000); // readable dwell
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
   });

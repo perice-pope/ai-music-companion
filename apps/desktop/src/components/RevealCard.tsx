@@ -5,6 +5,21 @@ import { usePracticeStore } from "../stores/practiceStore";
 const REVEAL_LINGER_MS = 12000;
 
 /**
+ * Minimum time a reveal stays readable even when the live key confidently
+ * moves off it (#277: cards were vanishing before they could be read).
+ */
+const MIN_READABLE_MS = 4000;
+
+/**
+ * A key change only dismisses a card when the NEW reading is at least this
+ * confident — early-session detection wanders, and a wobble is not a
+ * contradiction. Matches the "I hear" header's assert threshold (the point
+ * where it drops the "maybe" hedge), so an asserted header can never sit
+ * contradicting a lingering card.
+ */
+const DISMISS_MIN_CONFIDENCE = 0.55;
+
+/**
  * A single real-world music "reveal" with an auto-dismiss timer. Slides in from
  * the right and fades after {@link REVEAL_LINGER_MS}, or on explicit dismiss.
  * Mirrors the coaching `TipCard` so the two share a calm, consistent voice.
@@ -83,26 +98,44 @@ export default function RevealCard() {
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
   const collectionCount = usePracticeStore((s) => s.collectionCount);
   // Subscribe to the live key's primitives (not the object), so this only
-  // re-runs when the detected tonic/mode actually change — not on every ~8 Hz
-  // perception tick.
+  // re-runs when the detected tonic/mode/confidence band actually change — not
+  // on every ~8 Hz perception tick.
   const liveTonic = usePracticeStore((s) => s.perception?.key?.tonic ?? null);
   const liveMode = usePracticeStore((s) => s.perception?.key?.mode ?? null);
+  const liveKeyConfident = usePracticeStore(
+    (s) => (s.perception?.key?.confidence ?? 0) >= DISMISS_MIN_CONFIDENCE,
+  );
 
   const current =
     revealQueue.length > 0 ? revealQueue[revealQueue.length - 1] : null;
 
-  // Never let a lingering card contradict the live "I hear" header (#266): once
-  // the detected key moves to a different (tonic, mode) than this reveal names,
-  // dismiss it. A null key (silence) doesn't contradict — keep showing it.
+  // Never let a lingering card contradict the live "I hear" header (#266) —
+  // but never make it unreadable either (#277: early-session key detection
+  // wanders, and dismissing on every wobble made cards vanish before they
+  // could be read). So a card is dismissed for a key change only when the
+  // contradicting reading is CONFIDENT, and never before it has been on
+  // screen for a minimum readable dwell. A null/shaky key never dismisses.
   useEffect(() => {
     if (!current || liveTonic === null || liveMode === null) return;
+    if (!liveKeyConfident) return; // a wobble is not a contradiction
     const movedOff =
       liveTonic !== current.reveal.tonic ||
       liveMode.toLowerCase() !== current.reveal.mode;
-    if (movedOff) {
+    if (!movedOff) return;
+
+    const age = Date.now() - current.receivedAt;
+    if (age >= MIN_READABLE_MS) {
       dismissReveal(current.id);
+      return;
     }
-  }, [current, liveTonic, liveMode, dismissReveal]);
+    // Confident contradiction while the card is still young: let it finish its
+    // readable dwell, then dismiss.
+    const timer = setTimeout(
+      () => dismissReveal(current.id),
+      MIN_READABLE_MS - age,
+    );
+    return () => clearTimeout(timer);
+  }, [current, liveTonic, liveMode, liveKeyConfident, dismissReveal]);
 
   if (!current) {
     return (

@@ -1317,16 +1317,42 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
             )
         });
 
+    // The measured specifics that make the line visibly derived from THIS
+    // session (#277: a fixed string across sessions reads as hardcoded).
+    let mode_name = fp
+        .key
+        .as_ref()
+        .filter(|k| k.confidence >= KEY_MIN_CONFIDENCE)
+        .map(|k| k.name());
+    let swing_ratio = fp.groove.as_ref().and_then(|g| g.swing_ratio);
+    let tempo = fp.groove.as_ref().and_then(|g| g.tempo_bpm);
+
+    let pulse = match (swing_ratio, tempo) {
+        (Some(r), Some(bpm)) => format!(" (swing ~{r:.1}:1 at ~{bpm:.0} BPM)"),
+        (Some(r), None) => format!(" (swing ~{r:.1}:1)"),
+        (None, Some(bpm)) => format!(" (~{bpm:.0} BPM)"),
+        (None, None) => String::new(),
+    };
+    // On a straight/absent-swing verdict, quoting a swing ratio reads oddly —
+    // carry only the tempo.
+    let pulse_no_swing = tempo
+        .map(|bpm| format!(" (~{bpm:.0} BPM)"))
+        .unwrap_or_default();
+
     match (swung, modal) {
-        (Some(true), Some(true)) => Some(
-            "a modal-jazz feel — modal lines over a swung pulse (think Miles Davis)".to_owned(),
-        ),
+        (Some(true), Some(true)) => Some(format!(
+            "a modal-jazz feel — {} lines over a swung pulse{pulse} (think Miles Davis)",
+            mode_name.unwrap_or_else(|| "modal".to_owned()),
+        )),
         // Swung but the mode is diatonic or untrusted → jazz-leaning, no modal claim.
         (Some(true), Some(false)) | (Some(true), None) => {
-            Some("a swung, jazz-leaning feel (think bebop)".to_owned())
+            Some(format!("a swung, jazz-leaning feel{pulse} (think bebop)"))
         }
         // Trusted modal mode with a straight or absent swing read → modal colour.
-        (Some(false), Some(true)) | (None, Some(true)) => Some("a modal colour".to_owned()),
+        (Some(false), Some(true)) | (None, Some(true)) => Some(format!(
+            "a modal colour — {} shapes{pulse_no_swing}",
+            mode_name.unwrap_or_else(|| "modal".to_owned()),
+        )),
         // Straight + diatonic, or no usable signal at all → silence > lies.
         _ => None,
     }
@@ -1724,24 +1750,47 @@ fn fingerprint_for_recap(phrases: &[PhraseSummary]) -> Option<MusicalFingerprint
     (!fingerprint.is_empty()).then_some(fingerprint)
 }
 
-/// Session-level key/mode over every phrase's detected pitches. Returns `None`
-/// unless the fit is confident enough to state plainly — we'd rather show no key
-/// than a shaky one (a trained ear would catch a wrong call instantly, and the
-/// cultural-relevance layer must never build on an invented key).
+/// Session-level key/mode for the recap — derived from the **same live
+/// tracking the player watched during the session**, never a separate
+/// re-estimation.
+///
+/// Each phrase carries the session-long `theory::KeyTracker` reading at the
+/// moment it closed (`PhraseSummary::key`) — the same tracker family behind
+/// the live "I hear" header. The recap takes a confidence-weighted vote over
+/// those tracked readings (ties → the later call wins, since the tracker had
+/// more evidence by then). A pooled whole-session re-estimate was used before
+/// and could confidently name a key the header **never showed** (#277) — the
+/// recap must never contradict what the player watched, so it now votes only
+/// over keys that were actually tracked live, or stays silent.
 fn aggregate_key(phrases: &[PhraseSummary]) -> Option<theory::KeyEstimate> {
-    /// Don't surface a key below this correlation — hedge instead.
+    /// Don't count a tracked reading below this confidence — hedge instead.
     const MIN_CONFIDENCE: f32 = 0.5;
-    /// Or below this many distinct pitch classes — you can't name a key from a
-    /// note or two, however well a lone spike happens to correlate.
-    const MIN_DISTINCT: usize = 4;
-    let mut profile = theory::PitchClassProfile::new();
-    for p in phrases {
-        for &hz in &p.pitch_stats.pitches {
-            profile.add_hz(hz as f32, 1.0);
+    let mut votes: std::collections::BTreeMap<
+        (u8, &'static str),
+        (f32, usize, theory::KeyEstimate),
+    > = std::collections::BTreeMap::new();
+    for (idx, p) in phrases.iter().enumerate() {
+        let Some(key) = p.key else { continue };
+        if key.confidence < MIN_CONFIDENCE || key.confidence.is_nan() {
+            continue;
+        }
+        let entry = votes
+            .entry((key.tonic % 12, key.mode.label()))
+            .or_insert((0.0, idx, key));
+        entry.0 += key.confidence;
+        entry.1 = idx; // most recent phrase carrying this key
+        if key.confidence > entry.2.confidence {
+            entry.2 = key; // keep the most confident sighting as the exemplar
         }
     }
-    let est = theory::estimate_key(&profile)?;
-    (profile.distinct() >= MIN_DISTINCT && est.confidence >= MIN_CONFIDENCE).then_some(est)
+    votes
+        .into_values()
+        .max_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        })
+        .map(|(_, _, est)| est)
 }
 
 /// Session-level intonation over every phrase's detected pitches. Returns
@@ -2048,25 +2097,133 @@ mod tests {
         // No phrases → no key.
         assert!(aggregate_key(&[]).is_none());
 
-        // A phrase whose pitches spell a C-major scale with the tonic (C) and
-        // fifth (G) emphasised — as real playing does — → confident C major.
-        let mut p = sample_phrase();
-        p.pitch_stats.pitches = vec![
-            261.63, 261.63, 261.63, // C ×3 (tonic)
-            293.66, 329.63, 349.23, // D E F
-            392.0, 392.0, // G ×2 (fifth)
-            440.0, 493.88, // A B
+        let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+
+        // The recap votes over the LIVE-TRACKED per-phrase keys (#277): the
+        // confidence-weighted winner is what the player actually watched.
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian, 0.8),
+            tracked(0, theory::Mode::Ionian, 0.7),
+            tracked(7, theory::Mode::Mixolydian, 0.6), // brief wander
         ];
-        let key = aggregate_key(std::slice::from_ref(&p)).expect("a clear key");
+        let key = aggregate_key(&phrases).expect("a clear key");
         assert_eq!(key.name(), "C major", "got {}", key.name());
 
-        // A single repeated note is too thin → hedge to None.
-        let mut thin = sample_phrase();
-        thin.pitch_stats.pitches = vec![440.0; 6];
+        // Low-confidence tracked readings are hedged to silence — the recap
+        // must never assert a key the tracker never called confidently.
+        let shaky = vec![tracked(3, theory::Mode::Dorian, 0.3)];
+        assert!(aggregate_key(&shaky).is_none());
+
+        // Phrases with no tracked key at all (thin material) → None, never a
+        // fabricated re-estimate.
         assert!(
-            aggregate_key(std::slice::from_ref(&thin)).is_none(),
-            "a single pitch class must not yield a confident key"
+            aggregate_key(std::slice::from_ref(&sample_phrase())).is_none(),
+            "untracked phrases must not yield a key"
         );
+    }
+
+    /// #277: the recap can never name a key the live tracker never showed —
+    /// every candidate comes from `PhraseSummary::key` (the tracked stream),
+    /// so a pooled re-estimation naming an unseen key is structurally
+    /// impossible. This pins that the winner is always one of the tracked
+    /// readings.
+    #[test]
+    fn aggregate_key_only_names_live_tracked_keys() {
+        let mut a = sample_phrase();
+        a.key = Some(theory::KeyEstimate {
+            tonic: 6,
+            mode: theory::Mode::Phrygian,
+            confidence: 0.9,
+            margin: 0.3,
+        });
+        // Raw pitches that a pooled estimator would read as something else
+        // entirely (a C-major scale) — they must be ignored.
+        a.pitch_stats.pitches = vec![261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
+        let key = aggregate_key(std::slice::from_ref(&a)).expect("tracked key wins");
+        assert_eq!(key.name(), "F# Phrygian", "got {}", key.name());
+    }
+
+    /// The vote is CONFIDENCE-weighted, not a head count: two 0.9 readings of
+    /// one key outvote three 0.5 readings of another. Fails if the weight
+    /// regresses to counting.
+    #[test]
+    fn aggregate_key_weights_by_confidence_not_count() {
+        let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian, 0.5),
+            tracked(0, theory::Mode::Ionian, 0.5),
+            tracked(0, theory::Mode::Ionian, 0.5), // 3 votes, weight 1.5
+            tracked(7, theory::Mode::Mixolydian, 0.9),
+            tracked(7, theory::Mode::Mixolydian, 0.9), // 2 votes, weight 1.8
+        ];
+        let key = aggregate_key(&phrases).unwrap();
+        assert_eq!(key.name(), "G Mixolydian", "got {}", key.name());
+    }
+
+    /// On an exact weight tie, the key the tracker saw LATER wins (it had more
+    /// evidence by then). Fails if the recency tiebreak is reversed or lost.
+    #[test]
+    fn aggregate_key_breaks_ties_by_recency() {
+        let tracked = |tonic: u8, mode: theory::Mode| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence: 0.7,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian),
+            tracked(9, theory::Mode::Aeolian), // same weight, seen later
+        ];
+        let key = aggregate_key(&phrases).unwrap();
+        assert_eq!(
+            key.name(),
+            "A minor",
+            "later key wins ties, got {}",
+            key.name()
+        );
+    }
+
+    /// A NaN-confidence tracked reading is discarded, never poisoning a vote.
+    #[test]
+    fn aggregate_key_ignores_nan_confidence() {
+        let mut good = sample_phrase();
+        good.key = Some(theory::KeyEstimate {
+            tonic: 0,
+            mode: theory::Mode::Ionian,
+            confidence: 0.7,
+            margin: 0.2,
+        });
+        let mut bad = sample_phrase();
+        bad.key = Some(theory::KeyEstimate {
+            tonic: 5,
+            mode: theory::Mode::Lydian,
+            confidence: f32::NAN,
+            margin: 0.2,
+        });
+        let key = aggregate_key(&[good, bad]).unwrap();
+        assert_eq!(key.name(), "C major", "got {}", key.name());
     }
 
     #[test]
@@ -2127,6 +2284,13 @@ mod tests {
         // key, the summary should carry per-degree tendencies including the
         // sharp major 3rd.
         let mut p = sample_phrase();
+        // The degree anchor comes from the live-tracked session key (#277).
+        p.key = Some(theory::KeyEstimate {
+            tonic: 0,
+            mode: theory::Mode::Ionian,
+            confidence: 0.8,
+            margin: 0.3,
+        });
         // E4 is 329.63 Hz; push it ~20 cents sharp.
         let e_sharp = 329.63_f64 * 2f64.powf(20.0 / 1200.0);
         p.pitch_stats.pitches = vec![
@@ -3669,7 +3833,7 @@ mod tests {
         MusicalFingerprint {
             tone: None,
             key: mode_conf.map(|(mode, confidence)| theory::KeyEstimate {
-                tonic: 2, // D — arbitrary; tonic doesn't affect the flavour.
+                tonic: 2, // D — the tonic now names the mode in the line ("D Dorian").
                 mode,
                 confidence,
                 margin: 0.1,
@@ -3683,6 +3847,39 @@ mod tests {
                 onset_count: 16,
             }),
         }
+    }
+
+    /// #277: the flavour line embeds THIS session's measured specifics (mode
+    /// name, swing, tempo), so different sessions can't produce the same
+    /// word-for-word line — it visibly reacts to what was played. Fails if the
+    /// strings regress to fixed copy.
+    #[test]
+    fn theory_flavour_varies_with_the_measured_session() {
+        let a = theory_flavour(&fp_with(Some((theory::Mode::Dorian, 0.8)), Some(1.8)))
+            .expect("flavour for a swung Dorian session");
+        let b = theory_flavour(&fp_with(Some((theory::Mode::Mixolydian, 0.8)), Some(1.5)))
+            .expect("flavour for a swung Mixolydian session");
+        assert_ne!(a, b, "different sessions must read differently");
+        assert!(a.contains("Dorian"), "names the tracked mode, got: {a}");
+        assert!(a.contains("1.8"), "carries the measured swing, got: {a}");
+        assert!(a.contains("120"), "carries the measured tempo, got: {a}");
+
+        // The bebop (swung-diatonic) arm must carry the measured pulse too —
+        // otherwise every swung-diatonic session reads word-for-word the same,
+        // the exact #277 complaint.
+        let c = theory_flavour(&fp_with(None, Some(1.8))).expect("swung, no trusted mode");
+        let d = theory_flavour(&fp_with(None, Some(1.5))).expect("swung, no trusted mode");
+        assert_ne!(c, d, "bebop arm must vary with the measured swing");
+        assert!(c.contains("1.8"), "got: {c}");
+
+        // The straight modal-colour arm names tempo but never a swing ratio.
+        let e = theory_flavour(&fp_with(Some((theory::Mode::Lydian, 0.8)), Some(1.0)))
+            .expect("straight modal");
+        assert!(e.contains("120"), "modal colour carries tempo, got: {e}");
+        assert!(
+            !e.contains(":1"),
+            "no swing ratio on a straight verdict, got: {e}"
+        );
     }
 
     #[test]

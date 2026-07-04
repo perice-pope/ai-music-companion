@@ -9,7 +9,8 @@
 //! Fidelity contract: the output is designed to round-trip through
 //! [`crate::score::musicxml::parse_musicxml_str`] back into an equivalent
 //! `ScoreModel` (pitch by MIDI number, durations in beats, time/key/tempo,
-//! dynamics, rests). Enharmonic spelling is chosen with sharps; since the
+//! dynamics, rests). Enharmonic spelling follows the key signature (flats in
+//! flat keys, sharps otherwise); since the
 //! model carries pitch as a MIDI number, the exact spelling doesn't affect
 //! round-trip fidelity.
 
@@ -142,7 +143,7 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
             let is_chord = !note.is_rest
                 && prev_sounding_start
                     .is_some_and(|prev| (note.start_beat - prev).abs() < CHORD_ONSET_EPSILON);
-            write_note(&mut out, note, is_chord);
+            write_note(&mut out, note, is_chord, model.key_signature.fifths < 0);
             if !note.is_rest {
                 prev_sounding_start = Some(note.start_beat);
             }
@@ -157,7 +158,7 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
 }
 
 /// Write a single `<note>` element (rest or pitched).
-fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool) {
+fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool, flats: bool) {
     let duration_divs = beats_to_divs(note.duration_beats);
 
     out.push_str("      <note>\n");
@@ -169,7 +170,7 @@ fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool) {
     if note.is_rest {
         out.push_str("        <rest/>\n");
     } else {
-        let (step, alter, octave) = midi_to_pitch(note.midi_number);
+        let (step, alter, octave) = midi_to_pitch(note.midi_number, flats);
         out.push_str("        <pitch>\n");
         out.push_str(&format!("          <step>{step}</step>\n"));
         if alter != 0 {
@@ -191,15 +192,15 @@ fn beats_to_divs(beats: f64) -> u32 {
     (beats * DIVISIONS as f64).round().max(0.0) as u32
 }
 
-/// Map a MIDI note number to a MusicXML `(step, alter, octave)` triple,
-/// spelling accidentals as sharps.
+/// Map a MIDI note number to a MusicXML `(step, alter, octave)` triple —
+/// flat spellings when `flats` (flat key signatures), sharps otherwise.
 ///
 /// Inverse of the parser's `pitch_to_midi` for natural/sharp spellings:
 /// `12 * (octave + 1) + semitone`. Round-trips by MIDI number regardless of
 /// enharmonic choice.
-fn midi_to_pitch(midi: u8) -> (char, i8, i8) {
+fn midi_to_pitch(midi: u8, flats: bool) -> (char, i8, i8) {
     // (step letter, alter) for each pitch class, sharp spelling.
-    const PITCH_CLASSES: [(char, i8); 12] = [
+    const SHARP_CLASSES: [(char, i8); 12] = [
         ('C', 0), // 0
         ('C', 1), // 1  C#
         ('D', 0), // 2
@@ -213,9 +214,30 @@ fn midi_to_pitch(midi: u8) -> (char, i8, i8) {
         ('A', 1), // 10 A#
         ('B', 0), // 11
     ];
+    // Flat spelling for flat key signatures (fifths < 0): Bb-major material
+    // reads as Bb, not A# (#277 follow-up — a wall of sharps in a flat key is
+    // unreadable to a student).
+    const FLAT_CLASSES: [(char, i8); 12] = [
+        ('C', 0),  // 0
+        ('D', -1), // 1  Db
+        ('D', 0),  // 2
+        ('E', -1), // 3  Eb
+        ('E', 0),  // 4
+        ('F', 0),  // 5
+        ('G', -1), // 6  Gb
+        ('G', 0),  // 7
+        ('A', -1), // 8  Ab
+        ('A', 0),  // 9
+        ('B', -1), // 10 Bb
+        ('B', 0),  // 11
+    ];
     let pc = (midi % 12) as usize;
     let octave = (midi / 12) as i8 - 1; // MIDI 60 = C4
-    let (step, alter) = PITCH_CLASSES[pc];
+    let (step, alter) = if flats {
+        FLAT_CLASSES[pc]
+    } else {
+        SHARP_CLASSES[pc]
+    };
     (step, alter, octave)
 }
 
@@ -522,5 +544,55 @@ mod tests {
         assert_eq!(reparsed.measures[1].notes[0].midi_number, 67);
         // Time/key/tempo declared only in measure 1 still apply throughout.
         assert_eq!(reparsed.tempo_bpm, 120.0);
+    }
+
+    /// #277: under a flat key signature the emitter spells FLATS — MIDI 70 in
+    /// Bb major (fifths -2) is <step>B</step><alter>-1</alter>, never A#. And
+    /// the flat spelling roundtrips through the parser to the same MIDI note.
+    /// Fails if the fifths<0 condition is inverted or a flat-table entry is
+    /// corrupted.
+    #[test]
+    fn flat_keys_spell_flats_and_roundtrip() {
+        let model = ScoreModel {
+            title: "Bb drill".to_owned(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature {
+                beats: 4,
+                beat_type: 4,
+            },
+            key_signature: KeySignature {
+                fifths: -2,
+                mode: KeyMode::Major,
+            },
+            tempo_bpm: 80.0,
+            measures: vec![Measure {
+                number: 1,
+                notes: vec![
+                    note(70, 2.0, 0.0), // Bb4
+                    note(63, 2.0, 2.0), // Eb4
+                ],
+            }],
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<step>B</step>\n          <alter>-1</alter>"),
+            "MIDI 70 under fifths -2 must spell Bb, got:\n{xml}"
+        );
+        assert!(
+            xml.contains("<step>E</step>\n          <alter>-1</alter>"),
+            "MIDI 63 under fifths -2 must spell Eb"
+        );
+        assert!(xml.contains("<fifths>-2</fifths>"));
+        assert!(!xml.contains("<alter>1</alter>"), "no sharps in a flat key");
+
+        // Roundtrip: the parser reads alter=-1 back to the same MIDI numbers.
+        let parsed = crate::score::musicxml::parse_musicxml_str(&xml).expect("parses");
+        let midis: Vec<u8> = parsed.measures[0]
+            .notes
+            .iter()
+            .map(|n| n.midi_number)
+            .collect();
+        assert_eq!(midis, vec![70, 63]);
     }
 }
