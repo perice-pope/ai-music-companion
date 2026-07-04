@@ -51,6 +51,10 @@ Note for the report: web mode can't test mic, upload, or AI critique.
 
 ## DESKTOP walkthrough (MODE = desktop) — the real test
 
+> **Monday session (#277 re-test):** last time several things didn't pass — this run re-checks each
+> of them explicitly, plus everything new from the weekend (the app looks and behaves differently in
+> places; that's expected). Where a step says **[#277 re-test]**, compare against her last report.
+
 A native window titled **AI Music Companion** is open. This mode tests the two things that matter
 most: **what the user sees in the practice modes**, and **uploading music + the AI critiquing your
 playing**. She'll need to make sound — humming or singing a few notes is totally fine.
@@ -73,18 +77,28 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    that sound (like *G Dorian → Miles Davis – 'So What'*). When one appears, tell me:
    **(a)** does it feel **accurate and cool**?  **(b)** when a new one comes, does it **replace** the
    old (never two cards stacked)?  **(c)** is it **occasional** — about once every few phrases, not
-   spammy? **(d)** under the card, is there a little counter like **'2 in your collection'** that
-   grows only when a *new* reveal appears (a repeat shouldn't grow it)? Then noodle vaguely /
-   atonally and confirm **no** card pops up (that's expected)." (If a card never appears even on a
-   steady, clearly-pitched passage, note that.)
-6. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
+   spammy? **(d) [#277 re-test]** can you actually READ each card now — does every card stay up at
+   least a few seconds even while the key reading wobbles? **(e)** under the card, is there a little
+   counter like **'2 in your collection'** that grows only when a *new* reveal appears? Then noodle
+   vaguely / atonally and confirm **no** card pops up (that's expected)." (If a card never appears
+   even on a steady, clearly-pitched passage, note that.)
+6. **🎲 Practice this sound (NEW)** — "When a reveal card is up, tap **'Practice this sound'** under
+   it. Sheet music should appear right there in free play — smaller and see-through, sitting on the
+   app background (not a big white page) — with a row of **colored note cells** showing the keys in
+   order, and up to three buttons like **'New keys 🎲'**, **'Make it spicy'**, **'Different scale'**.
+   Tap each one: does the music visibly change to match (new key order / harder & faster / a new
+   scale sound)? Does **'Back to listening'** return you to normal free play?"
+7. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
    tips). Does it?"
 
 ### A2. The Guided Lesson 🎓 (the BIG new feature — "a private teacher")
 While the session is running:
 1. **Start it** — "Up top there's a **'Give me a lesson'** button — tap it. Sheet music should
-   appear with a header like *'Lesson · drill 1 of 4 · step 0'* and a description of what to play
-   (something easy, like one major scale, slow)."
+   appear with a header like *'Lesson · drill 1 of 4 · step 0'* and a description of what to play.
+   **(NEW look)** The notation should be smaller and see-through (no big white page), with a row of
+   **colored note cells** above it showing the drill's keys in play order — do the colors and cells
+   show up? **(founder check)** Does the sheet music show a proper **key signature** (sharps/flats
+   at the start of the staff) instead of accidentals on every note?"
 2. **Play a drill** — "Hum or play the line as best you can, then tap **'I played it — grade me'**.
    You should get a percentage and the next drill appears. Does the grade feel roughly fair for how
    you did?"
@@ -104,8 +118,11 @@ Open the samples folder for her so she can drag a file:
 6. **Upload a score** — "Go back, click **Practice with Score**, and drag
    **sample-score-c-major-scale.musicxml** from the folder I just opened onto the drop area. Does
    sheet music appear? (If it asks which part, pick the only one.)"
-7. **Practice with it** — "Click **Start Practice with This Score**. You should see the sheet music
-   with a moving cursor. Play or hum along — does the cursor follow you down the line?"
+7. **Practice with it [#277 re-test]** — "Click **Start Practice with This Score**. You should see
+   the sheet music with a moving cursor. Play or hum along — does the cursor follow you down the
+   line?" **If the cursor doesn't move**, don't stop: keep the session going a moment, then run
+   `grep -iE "follower|score-position" ~/amc/.desktop.log | tail -5` and paste the output into the
+   report — the app now logs exactly which part went quiet (#279).
 8. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -148,8 +165,15 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Cursor follows while playing: <answer>
 - Audio (.wav) import & transcription: <answer>
 
+### Explore / "Practice this sound" 🎲 (desktop only — NEW)
+- Tapping the reveal's button opened a variation in free play: <answer>
+- Colored note cells + see-through notation (no white page): <answer>
+- Each chip visibly changed the music as named: <answer>
+- "Back to listening" returned to normal free play: <answer>
+
 ### Guided Lesson 🎓 (desktop only — new feature)
 - Lesson started; sheet music + drill header shown: <answer>
+- NEW look: colored cells + transparent notation + a real key signature: <answer>
 - Grades felt roughly fair for how she played: <answer>
 - Difficulty adapted (easier after a bad drill, harder after nailed ones): <answer>
 - Recap listed all drills + difficulty movement; 2nd lesson started at the new step: <answer>
@@ -157,6 +181,10 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Reveal collection counter grows on new reveals only: <answer>
 
 ### AI critique / recap   (desktop only)
+- **[#277 re-test]** Recap key matches what the live "I hear" strip actually showed during the
+  session (watch the strip while playing; compare at the end): <answer>
+- **[#277 re-test]** The "Flavour" line changes between two different sessions (do one swung/jazzy,
+  one plain — read both lines aloud): <answer>
 - Did the recap reflect her actual playing: <answer>
 - Helpful & specific vs generic: <answer>
 
