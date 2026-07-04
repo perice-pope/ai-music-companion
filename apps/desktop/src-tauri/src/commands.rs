@@ -2286,6 +2286,9 @@ pub struct DrillDto {
     /// MusicXML for ScoreView (adapted from the generated sequence).
     pub music_xml: String,
     pub target_len: usize,
+    /// The drill's roots as pitch classes (0–11), in PLAY order — RV's shuffled
+    /// key sequence, rendered by the UI as the brand's colored cells (#278).
+    pub root_pitch_classes: Vec<u8>,
 }
 
 /// The grade of a just-submitted drill, trimmed for the UI.
@@ -2341,6 +2344,12 @@ fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
         difficulty: drill.difficulty,
         music_xml: brain::score::emit::score_model_to_musicxml(&model),
         target_len: drill.sequence.target_midi.len(),
+        root_pitch_classes: drill
+            .sequence
+            .root_order
+            .iter()
+            .map(|&r| r % 12)
+            .collect(),
     }
 }
 

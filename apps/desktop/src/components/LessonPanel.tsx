@@ -1,4 +1,5 @@
 import { usePracticeStore } from "../stores/practiceStore";
+import { colorForPitchClass, nameForPitchClass } from "../lib/rvColors";
 import ScoreView from "./ScoreView";
 
 /** Percent formatting for drill accuracies. */
@@ -69,7 +70,13 @@ export default function LessonPanel() {
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col gap-3" data-testid="lesson-panel">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div
+          className="border-l-4 pl-3"
+          data-testid="lesson-header-accent"
+          style={{
+            borderColor: colorForPitchClass(drill.root_pitch_classes[0] ?? 0),
+          }}
+        >
           <p className="text-xs font-semibold uppercase tracking-wider text-indigo-300/80">
             Lesson · drill {drill.index + 1} of {drill.drill_count} · step{" "}
             {drill.difficulty}
@@ -104,8 +111,29 @@ export default function LessonPanel() {
           </button>
         </div>
       </div>
+      {/* RV's signature made visible (#278): the drill's roots in PLAY order
+          as the brand's colored cells — the shuffled key sequence at a glance. */}
+      <div
+        className="flex flex-wrap items-center gap-1.5"
+        data-testid="lesson-root-cells"
+      >
+        {drill.root_pitch_classes.map((pc, i) => (
+          <span
+            key={`${pc}-${i}`}
+            data-testid={`root-cell-${i}`}
+            className="inline-flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-sm font-bold text-gray-900 shadow"
+            style={{ backgroundColor: colorForPitchClass(pc) }}
+          >
+            {nameForPitchClass(pc)}
+          </span>
+        ))}
+      </div>
       <div className="min-h-0 flex-1" data-testid="lesson-score-pane">
-        <ScoreView musicXml={drill.music_xml} cursorPosition={null} />
+        <ScoreView
+          musicXml={drill.music_xml}
+          cursorPosition={null}
+          variant="ambient"
+        />
       </div>
     </div>
   );

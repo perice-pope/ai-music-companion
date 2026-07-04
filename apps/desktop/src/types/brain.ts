@@ -100,6 +100,8 @@ export interface DrillDto {
   difficulty: number;
   music_xml: string;
   target_len: number;
+  /** Roots as pitch classes (0-11) in play order — RV's shuffled key cells. */
+  root_pitch_classes: number[];
 }
 
 /** Trimmed drill grade. Mirrors `commands::DrillScoreDto`. */
