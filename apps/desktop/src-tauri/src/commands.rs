@@ -2344,12 +2344,7 @@ fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
         difficulty: drill.difficulty,
         music_xml: brain::score::emit::score_model_to_musicxml(&model),
         target_len: drill.sequence.target_midi.len(),
-        root_pitch_classes: drill
-            .sequence
-            .root_order
-            .iter()
-            .map(|&r| r % 12)
-            .collect(),
+        root_pitch_classes: drill.sequence.root_order.iter().map(|&r| r % 12).collect(),
     }
 }
 
