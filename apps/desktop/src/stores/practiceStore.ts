@@ -3,8 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CoachingTip,
   DrillDto,
+  ExploreDto,
   DrillScoreDto,
   KeyOption,
+  VariationDelta,
   LessonRecapDto,
   LessonStepDto,
   PerceptionSnapshot,
@@ -133,6 +135,10 @@ export interface PracticeState {
   lessonRecap: LessonRecapDto | null;
   /** A drill submit is in flight — guards the double-tap (#254 review M2). */
   lessonSubmitting: boolean;
+
+  // Free-play exploration (#255) ------------------------------------------
+  /** The variation on the free-play surface, or null when just listening. */
+  explore: ExploreDto | null;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -299,6 +305,12 @@ export interface PracticeState {
   endLesson: () => Promise<void>;
   /** Clear the recap view after the lesson. */
   clearLessonRecap: () => void;
+  /** Start exploring a sound (#255): seeds an RV variation from a key/mode. */
+  startExplore: (tonic: number, mode: string) => Promise<void>;
+  /** Apply a tapped chip's delta to the in-flight exploration. */
+  applyChip: (delta: VariationDelta) => Promise<void>;
+  /** Stop exploring. */
+  endExplore: () => Promise<void>;
   setCursorPosition: (pos: ScorePosition | null) => void;
   tick: () => void;
   returnToSelector: () => void;
@@ -416,6 +428,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   lessonScore: null,
   lessonRecap: null,
   lessonSubmitting: false,
+  explore: null,
   recap: null,
   recapError: null,
   activeScore: null,
@@ -679,6 +692,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonScore: null,
       lessonRecap: null,
       lessonSubmitting: false,
+      explore: null,
     });
   },
 
@@ -902,6 +916,43 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   clearLessonRecap: () => set({ lessonRecap: null, lessonScore: null }),
 
+  startExplore: async (tonic, mode) => {
+    if (get().status !== "listening") {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("start_explore_variation", {
+        tonic,
+        mode,
+      });
+      set({ explore: dto });
+    } catch (err) {
+      console.error("start_explore_variation failed:", err);
+    }
+  },
+
+  applyChip: async (delta) => {
+    if (!get().explore) {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("apply_variation_delta", { delta });
+      set({ explore: dto });
+    } catch (err) {
+      // Best-effort: a failed mutation keeps the current rep on screen.
+      console.error("apply_variation_delta failed:", err);
+    }
+  },
+
+  endExplore: async () => {
+    set({ explore: null });
+    try {
+      await invoke("end_explore", {});
+    } catch (err) {
+      console.error("end_explore failed:", err);
+    }
+  },
+
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
 
   tick: () => {
@@ -932,6 +983,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonScore: null,
       lessonRecap: null,
       lessonSubmitting: false,
+      explore: null,
       activeScore: null,
       activeScoreXml: null,
       cursorPosition: null,

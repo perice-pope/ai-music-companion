@@ -20,8 +20,9 @@ use brain::accompaniment::{
     AccompanimentSynthSource,
 };
 use brain::coach::{
-    advance, build_first, finish_lesson, played_notes_from_pitch_track, score_drill,
-    sequence_to_score_model, Drill, DrillScore, LessonRecap, LessonSpec,
+    advance, apply_explore_delta, build_first, finish_lesson, played_notes_from_pitch_track,
+    score_drill, sequence_to_score_model, start_explore, ChipSpec, Drill, DrillScore, ExploreState,
+    LessonRecap, LessonSpec, VariationDelta,
 };
 use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
@@ -639,6 +640,9 @@ pub struct AppState {
     /// access is a short synchronous read-modify-write, never held across an
     /// `.await`.
     active_lesson: std::sync::Mutex<Option<ActiveLesson>>,
+    /// The in-flight free-play exploration (#255), if any. Same locking rules
+    /// as `active_lesson`.
+    active_explore: std::sync::Mutex<Option<ExploreState>>,
 }
 
 /// A running follow-me accompaniment.
@@ -754,6 +758,7 @@ impl AppState {
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
+            active_explore: std::sync::Mutex::new(None),
         }
     }
 
@@ -782,6 +787,7 @@ impl AppState {
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
+            active_explore: std::sync::Mutex::new(None),
         }
     }
 
@@ -1564,6 +1570,11 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0),
     );
+    // Exploration is session-scoped too (#255) — clear it with the session.
+    *state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned") = None;
     let mut session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
 
@@ -2258,6 +2269,135 @@ pub fn record_reveal(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     record_reveal_impl(&state, &concept, &connection, now).map_err(|e| e.to_frontend())
+}
+
+// ---------------------------------------------------------------------------
+// Free-play exploration (#255): a reveal names a sound; these turn it into
+// material with tappable mutation chips.
+// ---------------------------------------------------------------------------
+
+/// One exploration rep as the frontend renders it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExploreDto {
+    pub label: String,
+    pub music_xml: String,
+    pub chips: Vec<ChipSpec>,
+    /// Roots as pitch classes in PLAY order — the RV colored cells (#278).
+    pub root_pitch_classes: Vec<u8>,
+}
+
+/// Start (or restart) a free-play exploration from the live key. Reads the
+/// Learner Model for the difficulty; the variation renders on the free-play
+/// surface with its mutation chips.
+pub fn start_explore_variation_impl(
+    state: &AppState,
+    tonic: u8,
+    mode: &str,
+    seed: u64,
+) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = start_explore(tonic, mode, &model, seed);
+    let chips = brain::coach::suggest_chips(&explore, &model);
+    let scale_label = explore
+        .spec
+        .scale
+        .map(|m| m.scale.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
+        &seq,
+        &seq.label,
+        brain::coach::key_signature_for(explore.tonic, &scale_label),
+    ));
+    let dto = ExploreDto {
+        label: seq.label.clone(),
+        music_xml,
+        chips,
+        root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+    };
+    *state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned") = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn start_explore_variation(
+    state: State<'_, AppState>,
+    tonic: u8,
+    mode: String,
+) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1);
+    start_explore_variation_impl(&state, tonic, &mode, seed)
+}
+
+/// Apply a tapped chip's delta to the in-flight exploration and return the
+/// next rep. Calm error when nothing is being explored.
+pub fn apply_variation_delta_impl(
+    state: &AppState,
+    delta: VariationDelta,
+) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mut guard = state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned");
+    let current = guard
+        .as_ref()
+        .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
+    let (next, seq) = apply_explore_delta(current, &delta);
+    let chips = brain::coach::suggest_chips(&next, &model);
+    let scale_label = next
+        .spec
+        .scale
+        .map(|m| m.scale.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
+        &seq,
+        &seq.label,
+        brain::coach::key_signature_for(next.tonic, &scale_label),
+    ));
+    let dto = ExploreDto {
+        label: seq.label.clone(),
+        music_xml,
+        chips,
+        root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+    };
+    *guard = Some(next);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn apply_variation_delta(
+    state: State<'_, AppState>,
+    delta: VariationDelta,
+) -> Result<ExploreDto, String> {
+    apply_variation_delta_impl(&state, delta)
+}
+
+/// Stop exploring (nothing persisted).
+#[tauri::command]
+pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
+    *state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned") = None;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3270,6 +3410,29 @@ mod tests {
             0.0,
             "an empty take must grade 0, not inherit the previous drill's notes"
         );
+    }
+
+    /// #255: the explore loop end-to-end at the command layer — start seeds a
+    /// variation from the live key (chips + cells + engraved XML), a tapped
+    /// delta mutates the rep, and apply-without-start errs calmly. Fails if
+    /// the state machine or DTO assembly breaks.
+    #[test]
+    fn explore_lifecycle_starts_mutates_and_guards() {
+        let s = state();
+        assert!(
+            apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots).is_err(),
+            "no exploration yet → calm error"
+        );
+
+        let dto = start_explore_variation_impl(&s, 7, "Dorian", 42).unwrap();
+        assert!(dto.label.contains("Dorian"), "got {}", dto.label);
+        assert!(dto.music_xml.contains("<score-partwise"));
+        assert!(!dto.chips.is_empty() && dto.chips.len() <= 3);
+        assert!(!dto.root_pitch_classes.is_empty());
+
+        let next = apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
+        assert_ne!(next.music_xml, dto.music_xml, "a delta produces a new rep");
+        assert!(next.chips.len() <= 3);
     }
 
     /// #277: the drill's MusicXML engraves the drill's real key signature —

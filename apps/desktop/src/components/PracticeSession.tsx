@@ -11,6 +11,7 @@ import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
 import RevealCard from "./RevealCard";
 import LessonPanel from "./LessonPanel";
+import ExplorePanel from "./ExplorePanel";
 import ScoreView from "./ScoreView";
 
 /**
@@ -31,6 +32,7 @@ export default function PracticeSession() {
   const lessonRecap = usePracticeStore((s) => s.lessonRecap);
   const startLesson = usePracticeStore((s) => s.startLesson);
   const lessonActive = lessonDrill !== null || lessonRecap !== null;
+  const exploreActive = usePracticeStore((s) => s.explore !== null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -214,6 +216,18 @@ export default function PracticeSession() {
           <LessonPanel />
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
+          </div>
+        </div>
+      ) : exploreActive ? (
+        // Free-play exploration (#255): the variation takes the stage; the
+        // pitch meter and reveal stay alongside.
+        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+          <ExplorePanel />
+          <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
+            <PitchDisplay />
+            <div className="hidden lg:flex lg:flex-col lg:gap-4">
+              <RevealCard />
+            </div>
           </div>
         </div>
       ) : activeScoreXml ? (

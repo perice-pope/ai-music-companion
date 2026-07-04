@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
+const mockInvoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
 import RevealCard from "./RevealCard";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { Reveal } from "../types/brain";
@@ -234,6 +239,27 @@ describe("RevealCard", () => {
       vi.advanceTimersByTime(4000); // readable dwell
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #255: the reveal is actionable — "Practice this sound" starts an
+  // exploration seeded from the reveal's own key/mode.
+  it("Practice this sound starts an exploration from the reveal's key", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
+      status: "listening",
+    });
+    mockInvoke.mockResolvedValueOnce({
+      label: "x",
+      music_xml: "<score-partwise/>",
+      chips: [],
+      root_pitch_classes: [7],
+    });
+    render(<RevealCard />);
+    fireEvent.click(screen.getByTestId("reveal-practice-this"));
+    expect(mockInvoke).toHaveBeenCalledWith("start_explore_variation", {
+      tonic: 7,
+      mode: "dorian",
+    });
   });
 
   // #253 S3: the little collection counter renders once a count is known, and

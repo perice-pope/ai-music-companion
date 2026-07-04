@@ -123,7 +123,13 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
         "Guided lessons need the desktop app — run `pnpm tauri dev`.",
       );
     case "end_lesson":
+    case "end_explore":
       return undefined;
+    case "start_explore_variation":
+    case "apply_variation_delta":
+      throw new Error(
+        "Exploring variations needs the desktop app — run `pnpm tauri dev`.",
+      );
     case "record_reveal":
       // No reveals fire in the preview (see above), but keep the command
       // handled: report an unchanged, empty collection.
