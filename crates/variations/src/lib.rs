@@ -140,11 +140,15 @@ impl Default for RhythmSpec {
 
 /// A full variation request: roots × modifiers × randomization.
 ///
-/// Exactly one of `scale` / `chord` / `interval` is normally set (the figure);
-/// with none set the figure is the bare root. If more than one is set, the
-/// precedence is **scale > chord > interval** (the rest are ignored).
-/// `enclosure` composes with any of them, approaching each figure's first note
-/// chromatically.
+/// The figure comes from the first of these that is set, in precedence order
+/// **cell > scale > chord > interval** (the rest are ignored); with none set
+/// the figure is the bare root. `enclosure` composes with any of them,
+/// approaching each figure's first note chromatically.
+///
+/// `cell` is the RV method's deepest primitive (see
+/// `docs/architecture/rv-methodology.md`): ANY note sequence — most powerfully
+/// a phrase the player just played — expressed as semitone offsets from its
+/// first note, rowed through the 12 keys exactly like catalog material.
 ///
 /// Deferred from the epic-spec sketch (documented drift, #252 §4): instrument
 /// `transpose` (C/Bb/A/G/F/Eb views — lands with the notation adapter in #254,
@@ -155,6 +159,12 @@ impl Default for RhythmSpec {
 pub struct VariationSpec {
     /// Root notes as MIDI numbers (e.g. the 12 chromatic roots from C4).
     pub roots: Vec<u8>,
+    /// A custom cell: semitone offsets from the cell's first note (so a lifted
+    /// phrase C4-E4-D4 is `[0, 4, 2]`). Takes precedence over every catalog
+    /// modifier. Empty = ignored. Additive (`serde(default)`), so specs from
+    /// before this field existed still parse.
+    #[serde(default)]
+    pub cell: Option<Vec<i8>>,
     pub scale: Option<ScaleModifier>,
     pub chord: Option<ChordModifier>,
     pub interval: Option<IntervalModifier>,
@@ -301,6 +311,12 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
 fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     let root = i16::from(root);
 
+    // The player's own material rows through the keys before any catalog
+    // figure — the RV method's core move.
+    if let Some(cell) = spec.cell.as_ref().filter(|c| !c.is_empty()) {
+        return cell.iter().map(|&off| root + i16::from(off)).collect();
+    }
+
     if let Some(s) = spec.scale {
         let degrees: Vec<i16> = s
             .scale
@@ -409,7 +425,10 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
         .map(|&m| theory::pitch_class_name(m % 12).to_owned())
         .unwrap_or_else(|| "—".to_owned());
 
-    let figure = if let Some(s) = spec.scale {
+    let figure = if spec.cell.as_ref().is_some_and(|c| !c.is_empty()) {
+        let n = spec.cell.as_ref().map(Vec::len).unwrap_or(0);
+        format!("{first_root} · your {n}-note cell")
+    } else if let Some(s) = spec.scale {
         format!("{first_root} {} · {}", s.scale.label(), s.pattern.label())
     } else if let Some(c) = spec.chord {
         let inv = if c.inversion > 0 {
@@ -453,6 +472,7 @@ mod tests {
     fn base_spec() -> VariationSpec {
         VariationSpec {
             roots: vec![60], // C4
+            cell: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,
@@ -891,6 +911,74 @@ mod tests {
         }
     }
 
+    /// The RV method's deepest primitive (#285): a custom cell — e.g. a lifted
+    /// player phrase as semitone offsets — rows through the keys exactly like
+    /// catalog material, preserving its shape at every root. Fails if the cell
+    /// path is dropped or the offsets are misapplied.
+    #[test]
+    fn a_custom_cell_rows_through_the_keys() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, 4, 2, 7]); // C-E-D-G shaped lick
+        spec.roots = vec![60, 62];
+        let seq = generate(&spec, 0);
+        assert_eq!(seq.target_midi, vec![60, 64, 62, 67, 62, 66, 64, 69]);
+        assert!(seq.label.contains("4-note cell"), "got {}", seq.label);
+    }
+
+    /// Cell precedence: when a cell is present, catalog modifiers are ignored —
+    /// the player's material wins. An empty cell is ignored (falls through).
+    #[test]
+    fn cell_takes_precedence_and_empty_cell_falls_through() {
+        let mut spec = base_spec(); // has a Major scale set
+        spec.cell = Some(vec![0, 3]);
+        assert_eq!(generate(&spec, 0).target_midi, vec![60, 63]);
+
+        spec.cell = Some(vec![]);
+        assert_eq!(
+            generate(&spec, 0).target_midi,
+            vec![60, 62, 64, 65, 67, 69, 71, 72],
+            "an empty cell must fall through to the scale figure"
+        );
+    }
+
+    /// Cells compose with the RV modifiers: direction reversal flips the cell,
+    /// and an enclosure approaches its (post-direction) first note. Negative
+    /// offsets (a descending lick) work.
+    #[test]
+    fn cells_compose_with_direction_and_enclosure() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, -3, 5]); // down then up lick
+        spec.direction = DirectionMode::Reversed;
+        spec.enclosure = Some(Enclosure::OneDown);
+        let seq = generate(&spec, 0);
+        // Reversed cell from C4: 65, 57, 60; enclosure approaches 65 from below.
+        assert_eq!(seq.target_midi, vec![64, 65, 57, 60]);
+    }
+
+    /// Additive schema: a spec serialized before `cell` existed still parses
+    /// (serde default), so stored/replayed drills survive the upgrade.
+    #[test]
+    fn pre_cell_specs_still_parse() {
+        let json = r#"{
+            "roots": [60],
+            "scale": { "scale": "major", "pattern": "up" },
+            "chord": null,
+            "interval": null,
+            "enclosure": null,
+            "direction": "forward",
+            "rhythm": { "notes_per_beat": 2, "tempo_bpm": 80.0, "rest_beats_between_roots": 1.0 },
+            "randomize_roots": false
+        }"#;
+        let spec: VariationSpec = serde_json::from_str(json).expect("old spec parses");
+        assert!(spec.cell.is_none());
+        assert_eq!(
+            generate(&spec, 0).target_midi,
+            vec![60, 62, 64, 65, 67, 69, 71, 72]
+        );
+    }
+
     /// The IPC contract: spec + sequence roundtrip through JSON with the
     /// snake_case enum encoding intact. Fails on any serde rename/derive drift
     /// that would break the Tauri boundary in #254.
@@ -901,11 +989,19 @@ mod tests {
         spec.randomize_roots = true;
         spec.direction = DirectionMode::RandomPerRoot;
         spec.enclosure = Some(Enclosure::OneDownOneUp);
+        // Carry a real cell so the IPC boundary for #285 is actually pinned —
+        // a serde regression that drops `cell` must fail here, not ship a
+        // silent degrade to catalog material.
+        spec.cell = Some(vec![0, 4, -3]);
 
         let spec_json = serde_json::to_string(&spec).unwrap();
         assert!(
             spec_json.contains("\"random_per_root\""),
             "enum must serialize snake_case, got: {spec_json}"
+        );
+        assert!(
+            spec_json.contains("\"cell\":[0,4,-3]"),
+            "the cell must cross the wire, got: {spec_json}"
         );
         assert!(spec_json.contains("\"one_down_one_up\""));
         let spec_back: VariationSpec = serde_json::from_str(&spec_json).unwrap();

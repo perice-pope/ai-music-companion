@@ -56,6 +56,12 @@ export interface SyncState {
    * sessions without syncing preferences, and vice versa. No-op when `userId`
    * is falsy or `optedIn` is false.
    */
+  /**
+   * Push the local Learner Model (collection, mastery, difficulty) to the
+   * cloud (#252 F2). Rides the SAME opt-in as taste-profile sync — progress
+   * data, one switch. Push-only: local is authoritative.
+   */
+  syncLearnerModel: (userId: string | null, optedIn: boolean) => Promise<void>;
   syncTasteProfile: (
     userId: string | null | undefined,
     optedIn: boolean,
@@ -91,7 +97,7 @@ function saveSyncedIds(userId: string, ids: Set<string>): void {
   }
 }
 
-export const useSyncStore = create<SyncState>((set) => ({
+export const useSyncStore = create<SyncState>((set, get) => ({
   status: "idle",
   lastSyncedAt: null,
   syncedThisRun: 0,
@@ -164,6 +170,31 @@ export const useSyncStore = create<SyncState>((set) => ({
     }
   },
 
+  syncLearnerModel: async (userId, optedIn) => {
+    if (!userId || !optedIn) {
+      return;
+    }
+    try {
+      const blob = await invoke<Json | null>("get_learner_model_blob");
+      if (blob == null) {
+        return; // cold start — nothing to push yet
+      }
+      const { error } = await supabase.from("learner_model").upsert(
+        {
+          user_id: userId,
+          model: blob,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      );
+      if (error) throw new Error(error.message);
+    } catch (err: unknown) {
+      // Best-effort: progress sync must never disrupt the app; the local
+      // model stays authoritative and the next sync retries.
+      console.error("learner model sync failed:", err);
+    }
+  },
+
   syncTasteProfile: async (userId, optedIn) => {
     // Independent switch: do nothing unless signed in AND opted into profile
     // sync. Never implied by session sync.
@@ -188,6 +219,8 @@ export const useSyncStore = create<SyncState>((set) => ({
       );
       if (error) throw new Error(error.message);
       set({ tasteProfileStatus: "synced", tasteProfileError: null });
+      // Progress data rides the same opt-in: push the Learner Model too.
+      void get().syncLearnerModel(userId, optedIn);
     } catch (err: unknown) {
       set({ tasteProfileStatus: "error", tasteProfileError: String(err) });
     }

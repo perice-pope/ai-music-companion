@@ -90,6 +90,9 @@ function tasteProfile(): TasteProfile {
 }
 
 /** Wire invoke to return summaries then per-id details (+ taste profile). */
+/** The blob wireInvoke serves for get_learner_model_blob (tests may reassign). */
+let learnerBlob: unknown = { version: 1, collection: {}, difficulty: 2 };
+
 function wireInvoke(summaries: SessionSummaryDto[]) {
   mockInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
     if (cmd === "get_session_history") return summaries;
@@ -98,6 +101,7 @@ function wireInvoke(summaries: SessionSummaryDto[]) {
       return detail(session_id);
     }
     if (cmd === "get_taste_profile") return tasteProfile();
+    if (cmd === "get_learner_model_blob") return learnerBlob;
     throw new Error(`unexpected command ${cmd}`);
   });
 }
@@ -107,6 +111,7 @@ describe("syncStore", () => {
     vi.clearAllMocks();
     localStorageMock.clear();
     mockUpsert.mockResolvedValue({ error: null });
+    learnerBlob = { version: 1, collection: {}, difficulty: 2 };
   });
 
   it("is a no-op when called without a user id", async () => {
@@ -236,7 +241,10 @@ describe("syncStore.syncTasteProfile (independent opt-in)", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("get_taste_profile");
     expect(mockFrom).toHaveBeenCalledWith("taste_profile");
-    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    // Two upserts now: the taste row, then the chained learner-model push
+    // (progress data rides the same opt-in — see syncLearnerModel tests).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
     const [row, opts] = mockUpsert.mock.calls[0];
     expect(opts).toEqual({ onConflict: "user_id" });
     expect(row).toMatchObject({
@@ -272,5 +280,61 @@ describe("syncStore.syncTasteProfile (independent opt-in)", () => {
     expect(useStore.getState().tasteProfileError).toContain("rls denied");
     // The session-sync status is independent and stays clean.
     expect(useStore.getState().status).toBe("idle");
+  });
+});
+describe("syncLearnerModel (#252 F2)", () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+    mockUpsert.mockResolvedValue({ error: null });
+    learnerBlob = { version: 1, collection: {}, difficulty: 2 };
+  });
+
+  // The blob is pushed to learner_model keyed on the user — gutting the
+  // function (or dropping the chained call from taste sync) fails here.
+  it("pushes the local blob keyed on the user", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+    await useStore.getState().syncLearnerModel("user-1", true);
+    expect(mockFrom).toHaveBeenCalledWith("learner_model");
+    const [row, opts] = mockUpsert.mock.calls.at(-1)!;
+    expect(row.user_id).toBe("user-1");
+    expect(row.model).toEqual({ version: 1, collection: {}, difficulty: 2 });
+    expect(opts).toEqual({ onConflict: "user_id" });
+  });
+
+  it("does nothing when signed out, opted out, or on a cold start", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+    await useStore.getState().syncLearnerModel(null, true);
+    await useStore.getState().syncLearnerModel("user-1", false);
+    learnerBlob = null; // cold start — nothing to push
+    await useStore.getState().syncLearnerModel("user-1", true);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  // Best-effort: a learner push failure must not disturb the taste status.
+  it("a failed learner push leaves taste sync status alone", async () => {
+    wireInvoke([]);
+    mockUpsert
+      .mockResolvedValueOnce({ error: null }) // taste upsert
+      .mockResolvedValueOnce({ error: { message: "boom" } }); // learner upsert
+    const useStore = await freshStore();
+    await useStore.getState().syncTasteProfile("user-1", true);
+    await flush();
+    expect(useStore.getState().tasteProfileStatus).toBe("synced");
+  });
+
+  // Taste sync chains the learner push under the same opt-in.
+  it("taste sync also pushes the learner model", async () => {
+    wireInvoke([]);
+    const useStore = await freshStore();
+    await useStore.getState().syncTasteProfile("user-1", true);
+    await flush();
+    const tables = mockFrom.mock.calls.map((c) => c[0]);
+    expect(tables).toContain("taste_profile");
+    expect(tables).toContain("learner_model");
   });
 });

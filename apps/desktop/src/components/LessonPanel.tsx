@@ -19,6 +19,7 @@ export default function LessonPanel() {
   const recap = usePracticeStore((s) => s.lessonRecap);
   const submitDrill = usePracticeStore((s) => s.submitDrill);
   const submitting = usePracticeStore((s) => s.lessonSubmitting);
+  const notice = usePracticeStore((s) => s.lessonNotice);
   const endLesson = usePracticeStore((s) => s.endLesson);
   const clearLessonRecap = usePracticeStore((s) => s.clearLessonRecap);
 
@@ -111,6 +112,15 @@ export default function LessonPanel() {
           </button>
         </div>
       </div>
+      {notice && (
+        <p
+          className="rounded-md bg-indigo-950/60 px-3 py-2 text-sm text-indigo-200"
+          data-testid="lesson-notice"
+          role="status"
+        >
+          {notice}
+        </p>
+      )}
       {/* RV's signature made visible (#278): the drill's roots in PLAY order
           as the brand's colored cells — the shuffled key sequence at a glance. */}
       <div

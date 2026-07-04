@@ -8,6 +8,13 @@ AI Music Companion is a desktop practice tool for musicians (brass, voice, strin
 
 Architecture: three layers — **Ears** (audio capture & analysis), **Brain** (score following, scoring, coaching), **Face** (UI).
 
+**The RV method (product north star):** practice material is a musical **cell** — a triad, interval,
+note sequence, or the player's own phrase — transposed through a **12-tone row** (all 12 keys,
+shuffled), with modifiers (enclosures, intervals, directions) layered on top. Design cell-first.
+Key/tonal-center detection is **display honesty only** (the "I hear" header, reveals, recap must not
+visibly contradict themselves); it is *not* the unit of the practice model, and perfecting it must
+never block cell-centric features. See `docs/architecture/rv-methodology.md`.
+
 ## Repository layout
 
 ```
