@@ -187,12 +187,30 @@ export interface ChipSpec {
   delta: VariationDelta;
 }
 
+/** One dot on the staff. Mirrors `brain::score::cellstaff::CellStaffNote`. */
+export interface CellStaffNoteDto {
+  midi: number;
+  start_beat: number;
+  duration_beats: number;
+  step: number;
+  accidental: number | null;
+}
+
+/** The dot-staff view. Mirrors `brain::score::cellstaff::CellStaffView`. */
+export interface CellStaffViewDto {
+  fifths: number;
+  beats_per_measure: number;
+  total_beats: number;
+  notes: CellStaffNoteDto[];
+}
+
 /** One exploration rep. Mirrors `commands::ExploreDto`. */
 export interface ExploreDto {
   label: string;
   music_xml: string;
   chips: ChipSpec[];
   root_pitch_classes: number[];
+  staff: CellStaffViewDto;
 }
 
 /**

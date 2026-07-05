@@ -8,8 +8,8 @@ const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
-vi.mock("./ScoreView", () => ({
-  default: () => <div data-testid="stub-score-view" />,
+vi.mock("./CellStaff", () => ({
+  default: () => <div data-testid="stub-cell-staff" />,
 }));
 
 const dto: ExploreDto = {
@@ -21,6 +21,14 @@ const dto: ExploreDto = {
     { label: "Different scale", delta: { kind: "different_scale" } },
   ],
   root_pitch_classes: [7, 0, 2],
+  staff: {
+    fifths: -2,
+    beats_per_measure: 4,
+    total_beats: 12,
+    notes: [
+      { midi: 67, start_beat: 0, duration_beats: 1, step: 2, accidental: null },
+    ],
+  },
 };
 
 describe("ExplorePanel (#255)", () => {
@@ -40,7 +48,7 @@ describe("ExplorePanel (#255)", () => {
     usePracticeStore.setState({ explore: dto });
     render(<ExplorePanel />);
     expect(screen.getByText(dto.label)).toBeInTheDocument();
-    expect(screen.getByTestId("stub-score-view")).toBeInTheDocument();
+    expect(screen.getByTestId("stub-cell-staff")).toBeInTheDocument();
     const cells = screen.getByTestId("explore-root-cells");
     expect(cells.textContent).toBe("GCD"); // play order preserved
     expect(screen.getByTestId("explore-chips").children).toHaveLength(3);

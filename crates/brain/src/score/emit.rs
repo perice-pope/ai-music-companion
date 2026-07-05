@@ -198,7 +198,7 @@ fn beats_to_divs(beats: f64) -> u32 {
 /// Inverse of the parser's `pitch_to_midi` for natural/sharp spellings:
 /// `12 * (octave + 1) + semitone`. Round-trips by MIDI number regardless of
 /// enharmonic choice.
-fn midi_to_pitch(midi: u8, flats: bool) -> (char, i8, i8) {
+pub(crate) fn midi_to_pitch(midi: u8, flats: bool) -> (char, i8, i8) {
     // (step letter, alter) for each pitch class, sharp spelling.
     const SHARP_CLASSES: [(char, i8); 12] = [
         ('C', 0), // 0

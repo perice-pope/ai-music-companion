@@ -1,6 +1,6 @@
 import { usePracticeStore } from "../stores/practiceStore";
 import { colorForPitchClass, nameForPitchClass } from "../lib/rvColors";
-import ScoreView from "./ScoreView";
+import CellStaff from "./CellStaff";
 
 /**
  * The free-play exploration surface (#255): an RV variation seeded from the
@@ -60,12 +60,9 @@ export default function ExplorePanel() {
         ))}
       </div>
 
+      {/* The RV dot staff (#292): stemless colored noteheads, no white page. */}
       <div className="min-h-0 flex-1">
-        <ScoreView
-          musicXml={explore.music_xml}
-          cursorPosition={null}
-          variant="ambient"
-        />
+        <CellStaff staff={explore.staff} />
       </div>
 
       {/* The mutation chips — tapping one is the whole conversation. */}
