@@ -14,6 +14,7 @@ pub mod connections;
 pub mod fingerprint;
 pub mod follower;
 pub mod idiom_recap;
+pub mod insights;
 pub mod learner;
 pub mod mirror;
 pub mod perception;

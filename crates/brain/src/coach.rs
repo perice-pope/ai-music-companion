@@ -19,10 +19,11 @@ use crate::learner::{
 };
 use crate::score::{KeyMode, KeySignature, Measure, ScoreModel, ScoreNote, TimeSignature};
 pub use variations::GeneratedSequence;
+pub use variations::VariationSpec;
 
 use variations::{
     generate, ArpeggioPattern, ChordModifier, ChordType, DirectionMode, Enclosure,
-    IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType, VariationSpec,
+    IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
 };
 
 /// The canonical drill kinds, in play order.

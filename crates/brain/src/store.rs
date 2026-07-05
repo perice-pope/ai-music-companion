@@ -320,7 +320,39 @@ CREATE TABLE IF NOT EXISTS session_phrases (
     PRIMARY KEY (session_id, phrase_index)
 );
 CREATE INDEX IF NOT EXISTS idx_session_phrases_session ON session_phrases(session_id);
+-- The exercise log (#252 self-improvement): every exercise the engine
+-- GENERATES, with what came back. Append-only evidence of which material
+-- works — the raw feed for tuning the coach. Local-first like everything.
+CREATE TABLE IF NOT EXISTS exercise_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    logged_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    seed INTEGER NOT NULL,
+    difficulty INTEGER NOT NULL,
+    tonic INTEGER NOT NULL,
+    accuracy REAL
+);
+CREATE INDEX IF NOT EXISTS idx_exercise_log_source ON exercise_log(source);
 ";
+
+/// One row of the exercise log (#252 self-improvement): what the engine
+/// generated, and what came back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExerciseLogEntry {
+    /// Where it came from: "lesson", "explore", "explore_chip", "lift".
+    pub source: String,
+    /// The human label F1 generated (names the material + knobs).
+    pub label: String,
+    /// The full VariationSpec as JSON — replayable and analyzable.
+    pub spec_json: String,
+    pub seed: u64,
+    pub difficulty: u8,
+    pub tonic: u8,
+    /// Graded accuracy 0..1; `None` = generated but never graded.
+    pub accuracy: Option<f64>,
+}
 
 /// The `user_id` used for the single local taste profile before any cloud
 /// account exists. Local-first: the profile is captured at onboarding with no
@@ -807,6 +839,46 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Append one generated exercise + its outcome to the exercise log
+    /// (#252 self-improvement). `accuracy` is `None` for exercises that were
+    /// generated but never graded (explored, abandoned) — absence is itself a
+    /// signal. Append-only; never blocks the practice loop on failure.
+    pub fn log_exercise(&self, entry: &ExerciseLogEntry) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO exercise_log              (logged_at, source, label, spec_json, seed, difficulty, tonic, accuracy)              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                Utc::now().to_rfc3339(),
+                entry.source,
+                entry.label,
+                entry.spec_json,
+                entry.seed as i64,
+                i64::from(entry.difficulty),
+                i64::from(entry.tonic),
+                entry.accuracy,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read the whole exercise log, oldest → newest (the analyzer's input).
+    pub fn list_exercise_log(&self) -> Result<Vec<ExerciseLogEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source, label, spec_json, seed, difficulty, tonic, accuracy              FROM exercise_log ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ExerciseLogEntry {
+                source: row.get(0)?,
+                label: row.get(1)?,
+                spec_json: row.get(2)?,
+                seed: row.get::<_, i64>(3)? as u64,
+                difficulty: row.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                tonic: row.get::<_, i64>(5)?.clamp(0, 255) as u8,
+                accuracy: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// The default on-disk path for the sessions database.
     ///
     /// Follows the platform data-directory convention:
@@ -1074,6 +1146,33 @@ impl ScoreStore {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    /// Exercise log roundtrip: appends read back oldest-first with the graded
+    /// vs ungraded distinction intact; errors surface (not swallowed here).
+    #[test]
+    fn exercise_log_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SessionStore::open(&dir.path().join("t.db")).unwrap();
+        let mut e = ExerciseLogEntry {
+            source: "lesson".to_owned(),
+            label: "C Major · up-down".to_owned(),
+            spec_json: "{}".to_owned(),
+            seed: u64::MAX, // the i64 storage roundtrip must survive extremes
+            difficulty: 3,
+            tonic: 7,
+            accuracy: Some(0.85),
+        };
+        s.log_exercise(&e).unwrap();
+        e.source = "explore".to_owned();
+        e.accuracy = None;
+        s.log_exercise(&e).unwrap();
+        let back = s.list_exercise_log().unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].source, "lesson");
+        assert_eq!(back[0].accuracy, Some(0.85));
+        assert_eq!(back[0].seed, u64::MAX);
+        assert_eq!(back[1].accuracy, None);
+    }
 
     fn recap_with(instrument: &str, duration: f64, phrase_count: usize) -> SessionRecap {
         SessionRecap {

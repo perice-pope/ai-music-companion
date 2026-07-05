@@ -2323,6 +2323,37 @@ fn explore_dto(
     }
 }
 
+/// Everything one exercise-log append needs (kept as a struct so call sites
+/// stay readable).
+struct ExerciseOutcome<'a> {
+    source: &'a str,
+    label: &'a str,
+    spec: &'a brain::coach::VariationSpec,
+    seed: u64,
+    difficulty: u8,
+    tonic: u8,
+    accuracy: Option<f64>,
+}
+
+/// Append to the exercise log — best-effort, NEVER blocks the practice loop.
+fn log_exercise_best_effort(store: &SessionStore, o: ExerciseOutcome<'_>) {
+    let Ok(spec_json) = serde_json::to_string(o.spec) else {
+        return;
+    };
+    let entry = brain::store::ExerciseLogEntry {
+        source: o.source.to_owned(),
+        label: o.label.to_owned(),
+        spec_json,
+        seed: o.seed,
+        difficulty: o.difficulty,
+        tonic: o.tonic,
+        accuracy: o.accuracy,
+    };
+    if let Err(e) = store.log_exercise(&entry) {
+        tracing::warn!(error = %e, "exercise log append failed (continuing)");
+    }
+}
+
 /// The active explore key signature (for the edit engine's staff-step math).
 fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
     let scale_label = explore
@@ -2351,6 +2382,24 @@ pub fn start_explore_variation_impl(
         .unwrap_or_default();
     let (explore, seq) = start_explore(tonic, mode, &model, seed);
     let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state
+            .session_store
+            .lock()
+            .expect("session store mutex poisoned");
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "explore",
+                label: &seq.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
     *state
         .active_explore
         .lock()
@@ -2393,6 +2442,24 @@ pub fn apply_variation_delta_impl(
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let (next, seq) = apply_explore_delta(current, &delta);
     let dto = explore_dto(&next, &seq, &model);
+    {
+        let store = state
+            .session_store
+            .lock()
+            .expect("session store mutex poisoned");
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "explore_chip",
+                label: &seq.label,
+                spec: &next.spec,
+                seed: next.seed,
+                difficulty: next.difficulty,
+                tonic: next.tonic,
+                accuracy: None,
+            },
+        );
+    }
     *guard = Some(next);
     Ok(dto)
 }
@@ -2535,6 +2602,24 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
         lifted.ok_or_else(|| "play a little phrase first — then I can lift it".to_owned())?;
     let (explore, seq) = brain::coach::start_explore_cell(cell, first_midi % 12, &model, seed);
     let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state
+            .session_store
+            .lock()
+            .expect("session store mutex poisoned");
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "lift",
+                label: &seq.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
     *state
         .active_explore
         .lock()
@@ -2808,6 +2893,26 @@ pub fn submit_drill_impl(
     let score = score_drill(&lesson.current.sequence.target_midi, &played, onsets);
     let score_dto = DrillScoreDto::from(&score);
     let seed = lesson.spec.seed;
+    // Exercise log (#252 self-improvement): the graded outcome for what the
+    // engine dealt — the evidence "which exercises are good" feeds on.
+    {
+        let store = state
+            .session_store
+            .lock()
+            .expect("session store mutex poisoned");
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "lesson",
+                label: &lesson.current.sequence.label,
+                spec: &lesson.current.spec,
+                seed,
+                difficulty: lesson.current.difficulty,
+                tonic: lesson.current.tonic,
+                accuracy: Some(f64::from(score.accuracy)),
+            },
+        );
+    }
 
     match advance(&lesson.current, &score, &lesson.spec) {
         Some(next) => {
@@ -3694,6 +3799,35 @@ mod tests {
         // Still live: playing and resubmitting works.
         play_current_drill_perfectly(&s);
         assert!(submit_drill_impl(&s, 200).unwrap().score.unwrap().accuracy > 0.99);
+    }
+
+    /// Self-improvement (#252): every dealt exercise leaves EVIDENCE — a
+    /// graded drill logs with its accuracy, explore/lift deals log ungraded
+    /// (the "they bailed" signal), and the insights analyzer reads it all
+    /// back per shape. Fails if any recording hook is dropped.
+    #[test]
+    fn exercises_leave_evidence_in_the_log() {
+        let s = state();
+        // A graded lesson drill…
+        start_lesson_impl(&s, 12).unwrap();
+        play_current_drill_perfectly(&s);
+        submit_drill_impl(&s, 100).unwrap();
+        // …an explore deal + a chip…
+        start_explore_variation_impl(&s, 7, "dorian", 42).unwrap();
+        apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
+
+        let log = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        let sources: Vec<&str> = log.iter().map(|e| e.source.as_str()).collect();
+        assert_eq!(sources, vec!["lesson", "explore", "explore_chip"]);
+        assert!(
+            log[0].accuracy.unwrap() > 0.99,
+            "the graded drill logs its grade"
+        );
+        assert!(log[1].accuracy.is_none(), "explore deals log ungraded");
+        // And the analyzer reads it per shape.
+        let insights = brain::insights::exercise_insights(&log);
+        assert!(!insights.is_empty());
+        assert!(insights.iter().map(|i| i.generated).sum::<u32>() >= 3);
     }
 
     /// #258 command-layer lifecycle: below MIN_SESSIONS the mirror is dark

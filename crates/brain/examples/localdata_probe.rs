@@ -124,5 +124,22 @@ fn main() {
         println!("[tune] min_run={run}: {count} liftable; e.g. {ex:?}");
     }
 
+    // ── 5. Exercise-log insights (#252 self-improvement) ───────────────────
+    let log = store.list_exercise_log().expect("exercise log reads");
+    if log.is_empty() {
+        println!("[insights] exercise log empty (predates the feature) — honest empty");
+    } else {
+        for i in brain::insights::exercise_insights(&log).iter().take(8) {
+            println!(
+                "[insights] {} · dealt {} · graded {} · mean {:.0}% · trend {:+.2}",
+                i.shape,
+                i.generated,
+                i.graded,
+                i.mean_accuracy * 100.0,
+                i.accuracy_trend
+            );
+        }
+    }
+
     println!("PROBE OK");
 }
