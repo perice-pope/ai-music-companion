@@ -133,6 +133,22 @@ export interface LessonStepDto {
   recap: LessonRecapDto | null;
 }
 
+/** The derived "your sound" identity. Mirrors `brain::mirror::SoundProfile`. */
+export interface SoundProfileDto {
+  sessions_counted: number;
+  mode_lean: "minor" | "major" | "balanced" | null;
+  feel: "swung" | "straight" | "mixed" | null;
+  comparison: { label: string; source: string } | null;
+  confidence: number;
+  derived_at: number;
+}
+
+/** Mirrors `commands::SoundMirrorDto`. */
+export interface SoundMirrorDto {
+  profile: SoundProfileDto | null;
+  sessions_seen: number;
+}
+
 /** Mastery state of one wheel cell. Mirrors `brain::wheel::KeyState`. */
 export type KeyState = "none" | "learning" | "owned";
 

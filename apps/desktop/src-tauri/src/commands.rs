@@ -2444,6 +2444,58 @@ pub fn get_mastery_wheel(state: State<'_, AppState>) -> Result<brain::wheel::Whe
     get_mastery_wheel_impl(&state).map_err(|e| e.to_frontend())
 }
 
+/// The "your sound" mirror (#258) as the frontend renders it: the derived
+/// profile (None below brain::mirror::MIN_SESSIONS) plus how many measured
+/// sessions exist, for the "N of K" empty-state copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoundMirrorDto {
+    pub profile: Option<brain::mirror::SoundProfile>,
+    pub sessions_seen: usize,
+}
+
+/// Derive the sound mirror from stored fingerprints + taste, persist the
+/// snapshot on the Learner Model (F2's reserved field), and return it.
+pub fn get_sound_mirror_impl(state: &AppState, now: i64) -> Result<SoundMirrorDto, CommandError> {
+    let store = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned");
+    // Recent measured sessions, oldest → newest (mirrors the wheel's trends).
+    const MIRROR_SESSIONS: usize = 30;
+    let mut fingerprints: Vec<brain::fingerprint::MusicalFingerprint> = store
+        .list_recent(MIRROR_SESSIONS)?
+        .into_iter()
+        .filter_map(|summary| store.load_recap(summary.id).ok())
+        .filter_map(|recap| recap.fingerprint)
+        .collect();
+    fingerprints.reverse();
+    let taste = store
+        .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    let profile = brain::mirror::derive_sound_profile(&fingerprints, &taste, now);
+    if let Some(ref p) = profile {
+        // Persist the snapshot on the blob so it syncs with the model.
+        let mut model = store
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+            .unwrap_or_default();
+        model.sound_profile = Some(p.clone());
+        store.upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &model)?;
+    }
+    Ok(SoundMirrorDto {
+        profile,
+        sessions_seen: fingerprints.len(),
+    })
+}
+
+#[tauri::command]
+pub fn get_sound_mirror(state: State<'_, AppState>) -> Result<SoundMirrorDto, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    get_sound_mirror_impl(&state, now).map_err(|e| e.to_frontend())
+}
+
 /// Stop exploring (nothing persisted).
 #[tauri::command]
 pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
@@ -3495,6 +3547,66 @@ mod tests {
         // Still live: playing and resubmitting works.
         play_current_drill_perfectly(&s);
         assert!(submit_drill_impl(&s, 200).unwrap().score.unwrap().accuracy > 0.99);
+    }
+
+    /// #258 command-layer lifecycle: below MIN_SESSIONS the mirror is dark
+    /// with an honest count; at/after it, the profile derives from the stored
+    /// fingerprints AND persists onto the Learner Model blob (F2's reserved
+    /// field), so it rides the sync. Fails if the derivation plumbing or the
+    /// persist-back breaks.
+    #[test]
+    fn sound_mirror_derives_counts_and_persists() {
+        let s = state();
+
+        // Two measured sessions: dark mirror, honest count.
+        seed_measured_sessions(&s, 2);
+        let dark = get_sound_mirror_impl(&s, 100).unwrap();
+        assert!(dark.profile.is_none());
+        assert_eq!(dark.sessions_seen, 2);
+
+        // Six: the mirror resolves and lands on the model.
+        seed_measured_sessions(&s, 4);
+        let lit = get_sound_mirror_impl(&s, 200).unwrap();
+        let p = lit.profile.expect("6 measured sessions light the mirror");
+        assert_eq!(p.mode_lean, Some(brain::mirror::ModeLean::Minor));
+        assert_eq!(p.feel, Some(brain::mirror::Feel::Swung));
+        let stored = s
+            .session_store
+            .lock()
+            .unwrap()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .expect("model exists after mirror derivation");
+        assert_eq!(
+            stored.sound_profile.as_ref().map(|sp| sp.mode_lean),
+            Some(Some(brain::mirror::ModeLean::Minor)),
+            "the snapshot must persist onto the blob"
+        );
+    }
+
+    /// Seed `n` stored sessions whose recaps carry a consistently dark, swung
+    /// fingerprint (D dorian, swing 1.4).
+    fn seed_measured_sessions(s: &AppState, n: usize) {
+        use chrono::{Duration, TimeZone, Utc};
+        let store = s.session_store.lock().unwrap();
+        for _ in 0..n {
+            let mut recap = empty_state_recap(60.0, "trumpet".to_owned());
+            recap.fingerprint = Some(
+                serde_json::from_value(serde_json::json!({
+                    "key": { "tonic": 2, "mode": "dorian", "confidence": 0.8, "margin": 0.2 },
+                    "groove": {
+                        "tempo_bpm": 100.0, "swing_ratio": 1.4,
+                        "timing_consistency": 0.8, "mean_ioi_secs": 0.3, "onset_count": 24
+                    }
+                }))
+                .expect("fingerprint fixture parses"),
+            );
+            let id = brain::session::SessionId::new();
+            let t0 = Utc.timestamp_opt(1_000_000, 0).unwrap();
+            store
+                .save(id, t0, t0 + Duration::seconds(60), &recap)
+                .unwrap();
+        }
     }
 
     /// #255: the explore loop end-to-end at the command layer — start seeds a

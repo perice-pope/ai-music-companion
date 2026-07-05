@@ -126,6 +126,7 @@ fn main() {
             ai_music_companion::commands::end_explore,
             ai_music_companion::commands::get_learner_model_blob,
             ai_music_companion::commands::get_mastery_wheel,
+            ai_music_companion::commands::get_sound_mirror,
             ai_music_companion::commands::get_session_history,
             ai_music_companion::commands::get_session_detail,
             ai_music_companion::commands::get_practice_stats,
