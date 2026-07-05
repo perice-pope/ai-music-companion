@@ -712,6 +712,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonSubmitting: false,
       lessonNotice: null,
       explore: null,
+      exploreNotice: null,
     });
   },
 
@@ -978,10 +979,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("apply_variation_delta", { delta });
-      set({ explore: dto });
+      set({ explore: dto, exploreNotice: null });
     } catch (err) {
-      // Best-effort: a failed mutation keeps the current rep on screen.
-      console.error("apply_variation_delta failed:", err);
+      // A failed mutation keeps the current rep on screen — visibly.
+      set({ exploreNotice: String(err) });
     }
   },
 
@@ -994,10 +995,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         index,
         edit,
       });
-      set({ explore: dto });
+      set({ explore: dto, exploreNotice: null });
     } catch (err) {
-      // A refused edit (stale index, last note) keeps the current rep.
-      console.error("edit_explore_note failed:", err);
+      // A refused edit keeps the current rep — and TELLS the player why
+      // ("that's as far as this note can go"), never a silent dead tap.
+      set({ exploreNotice: String(err) });
     }
   },
 
@@ -1007,9 +1009,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("undo_explore_edit", {});
-      set({ explore: dto });
+      set({ explore: dto, exploreNotice: null });
     } catch (err) {
-      console.error("undo_explore_edit failed:", err);
+      set({ exploreNotice: String(err) });
     }
   },
 
@@ -1054,6 +1056,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonSubmitting: false,
       lessonNotice: null,
       explore: null,
+      exploreNotice: null,
       activeScore: null,
       activeScoreXml: null,
       cursorPosition: null,

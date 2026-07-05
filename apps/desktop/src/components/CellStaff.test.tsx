@@ -278,3 +278,28 @@ describe("CellStaff — review regressions", () => {
     expect(onEdit).toHaveBeenCalledWith(0, { kind: "staff_steps", by: 1 });
   });
 });
+
+describe("CellStaff — extreme registers (Monday review)", () => {
+  // An 8va-edited note far above the staff must stay ON canvas: the viewBox
+  // grows to cover it (review must-fix: it used to silently vanish).
+  it("grows the viewBox to keep high/low notes visible", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 96, step: 23 }), // ~3 octaves up: deep ledger territory
+          note({ midi: 40, step: -12, start_beat: 1 }),
+        ])}
+      />,
+    );
+    const svg = document.querySelector("svg")!;
+    const [, minY, , height] = svg
+      .getAttribute("viewBox")!
+      .split(" ")
+      .map(Number);
+    const yHigh = 50 - 23 * 5; // yFor(23)
+    const yLow = 50 - -12 * 5; // yFor(-12)
+    expect(minY).toBeLessThanOrEqual(yHigh);
+    expect(minY + height).toBeGreaterThanOrEqual(yLow);
+    expect(screen.getAllByTestId("staff-dot")).toHaveLength(2);
+  });
+});
