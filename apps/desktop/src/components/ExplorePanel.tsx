@@ -11,6 +11,8 @@ import CellStaff from "./CellStaff";
 export default function ExplorePanel() {
   const explore = usePracticeStore((s) => s.explore);
   const applyChip = usePracticeStore((s) => s.applyChip);
+  const editNote = usePracticeStore((s) => s.editExploreNote);
+  const undoEdit = usePracticeStore((s) => s.undoExploreEdit);
   const endExplore = usePracticeStore((s) => s.endExplore);
 
   if (!explore) {
@@ -60,9 +62,15 @@ export default function ExplorePanel() {
         ))}
       </div>
 
-      {/* The RV dot staff (#292): stemless colored noteheads, no white page. */}
+      {/* The RV dot staff (#292): stemless colored noteheads, tap/drag to
+          edit the cell — one gesture fixes the note in every key. */}
       <div className="min-h-0 flex-1">
-        <CellStaff staff={explore.staff} />
+        <CellStaff
+          staff={explore.staff}
+          onEditNote={(index, edit) => void editNote(index, edit)}
+          onUndo={() => void undoEdit()}
+          canUndo={explore.can_undo}
+        />
       </div>
 
       {/* The mutation chips — tapping one is the whole conversation. */}

@@ -2291,6 +2291,46 @@ pub struct ExploreDto {
     /// The dot-staff view (#292): all theory (steps, spelling, accidentals)
     /// computed here; the frontend renders geometry only.
     pub staff: brain::score::cellstaff::CellStaffView,
+    /// Whether an edit can be undone (#292 slice 3).
+    pub can_undo: bool,
+}
+
+/// Assemble the ExploreDto every explore command returns.
+fn explore_dto(
+    explore: &ExploreState,
+    seq: &brain::coach::GeneratedSequence,
+    model: &brain::learner::LearnerModel,
+) -> ExploreDto {
+    let chips = brain::coach::suggest_chips(explore, model);
+    let scale_label = explore
+        .spec
+        .scale
+        .map(|m| m.scale.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
+    let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
+        seq,
+        &seq.label,
+        key.clone(),
+    ));
+    ExploreDto {
+        label: seq.label.clone(),
+        music_xml,
+        chips,
+        root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+        staff: brain::score::cellstaff::cell_staff_view(seq, key),
+        can_undo: !explore.history.is_empty(),
+    }
+}
+
+/// The active explore key signature (for the edit engine's staff-step math).
+fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
+    let scale_label = explore
+        .spec
+        .scale
+        .map(|m| m.scale.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    brain::coach::key_signature_for(explore.tonic, &scale_label)
 }
 
 /// Start (or restart) a free-play exploration from the live key. Reads the
@@ -2310,25 +2350,7 @@ pub fn start_explore_variation_impl(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let (explore, seq) = start_explore(tonic, mode, &model, seed);
-    let chips = brain::coach::suggest_chips(&explore, &model);
-    let scale_label = explore
-        .spec
-        .scale
-        .map(|m| m.scale.label().to_lowercase())
-        .unwrap_or_else(|| "major".to_owned());
-    let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
-    let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
-        &seq,
-        &seq.label,
-        key.clone(),
-    ));
-    let dto = ExploreDto {
-        label: seq.label.clone(),
-        music_xml,
-        chips,
-        root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
-        staff: brain::score::cellstaff::cell_staff_view(&seq, key),
-    };
+    let dto = explore_dto(&explore, &seq, &model);
     *state
         .active_explore
         .lock()
@@ -2370,25 +2392,7 @@ pub fn apply_variation_delta_impl(
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let (next, seq) = apply_explore_delta(current, &delta);
-    let chips = brain::coach::suggest_chips(&next, &model);
-    let scale_label = next
-        .spec
-        .scale
-        .map(|m| m.scale.label().to_lowercase())
-        .unwrap_or_else(|| "major".to_owned());
-    let key = brain::coach::key_signature_for(next.tonic, &scale_label);
-    let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
-        &seq,
-        &seq.label,
-        key.clone(),
-    ));
-    let dto = ExploreDto {
-        label: seq.label.clone(),
-        music_xml,
-        chips,
-        root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
-        staff: brain::score::cellstaff::cell_staff_view(&seq, key),
-    };
+    let dto = explore_dto(&next, &seq, &model);
     *guard = Some(next);
     Ok(dto)
 }
@@ -2501,6 +2505,71 @@ pub fn get_sound_mirror(state: State<'_, AppState>) -> Result<SoundMirrorDto, St
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     get_sound_mirror_impl(&state, now).map_err(|e| e.to_frontend())
+}
+
+/// Apply a semantic note edit (#292 slice 3) to the in-flight exploration —
+/// the edit bakes the CELL, so it lands in every key; the row never
+/// reshuffles under the player's hands.
+pub fn edit_explore_note_impl(
+    state: &AppState,
+    index: usize,
+    edit: brain::coach::NoteEdit,
+) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mut guard = state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned");
+    let current = guard
+        .as_ref()
+        .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
+    let key = explore_key(current);
+    let (next, seq) = brain::coach::edit_explore_note(current, index, &edit, &key)?;
+    let dto = explore_dto(&next, &seq, &model);
+    *guard = Some(next);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn edit_explore_note(
+    state: State<'_, AppState>,
+    index: usize,
+    edit: brain::coach::NoteEdit,
+) -> Result<ExploreDto, String> {
+    edit_explore_note_impl(&state, index, edit)
+}
+
+/// Undo the most recent explore edit — restores the exact prior rep.
+pub fn undo_explore_edit_impl(state: &AppState) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mut guard = state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned");
+    let current = guard
+        .as_ref()
+        .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
+    let (next, seq) = brain::coach::undo_explore_edit(current)?;
+    let dto = explore_dto(&next, &seq, &model);
+    *guard = Some(next);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn undo_explore_edit(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    undo_explore_edit_impl(&state)
 }
 
 /// Stop exploring (nothing persisted).
@@ -3637,6 +3706,17 @@ mod tests {
         let next = apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
         assert_ne!(next.music_xml, dto.music_xml, "a delta produces a new rep");
         assert!(next.chips.len() <= 3);
+
+        // #292 slice 3: an edit bakes the cell (can_undo flips on, the staff
+        // changes), and undo restores the exact prior rep.
+        assert!(!next.can_undo);
+        let edited =
+            edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
+        assert!(edited.can_undo);
+        assert_ne!(edited.staff, next.staff, "the edit changes the staff");
+        let undone = undo_explore_edit_impl(&s).unwrap();
+        assert_eq!(undone.staff, next.staff, "undo restores the prior rep");
+        assert!(undo_explore_edit_impl(&s).is_err(), "history exhausted");
     }
 
     /// #277: the drill's MusicXML engraves the drill's real key signature —

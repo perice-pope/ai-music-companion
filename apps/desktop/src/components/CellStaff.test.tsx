@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import CellStaff, { MEASURES_PER_PAGE } from "./CellStaff";
 import { RV_LETTER_COLORS } from "../lib/rvColors";
@@ -132,5 +132,82 @@ describe("CellStaff — rhythm layer (#292 slice 2)", () => {
     fireEvent.click(screen.getByTestId("rhythm-toggle"));
     expect(screen.getAllByTestId("staff-stem")).toHaveLength(3);
     expect(window.localStorage.getItem("amc.cellstaff.showRhythms")).toBe("1");
+  });
+});
+
+// jsdom has no PointerEvent; React's onPointerDown still fires from a
+// MouseEvent-shaped dispatch, which carries clientY.
+if (typeof window.PointerEvent === "undefined") {
+  (window as unknown as { PointerEvent: unknown }).PointerEvent = MouseEvent;
+}
+
+describe("CellStaff — editing (#292 slice 3)", () => {
+  const three = () =>
+    view([
+      note({ midi: 60, step: -2 }),
+      note({ midi: 64, step: 0, start_beat: 1 }),
+      note({ midi: 67, step: 2, start_beat: 2 }),
+    ]);
+
+  // Read-only surfaces stay read-only: no handler → no selection affordances.
+  it("without onEditNote the staff is inert", () => {
+    render(<CellStaff staff={three()} />);
+    fireEvent.pointerDown(screen.getAllByTestId("staff-dot")[0]);
+    expect(screen.queryByTestId("edit-actions")).not.toBeInTheDocument();
+  });
+
+  // Tap selects (halo + quick actions); actions emit SEMANTIC gestures with
+  // the note's sequence index — never a pitch.
+  it("selection reveals quick actions that emit semantic gestures", () => {
+    const onEdit = vi.fn();
+    render(<CellStaff staff={three()} onEditNote={onEdit} />);
+    fireEvent.pointerDown(screen.getByTestId("staff-note-64-1"));
+    fireEvent.pointerUp(window);
+    expect(screen.getByTestId("staff-halo")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("edit-octave-up"));
+    expect(onEdit).toHaveBeenCalledWith(1, { kind: "octaves", by: 1 });
+    fireEvent.click(screen.getByTestId("edit-sharp"));
+    expect(onEdit).toHaveBeenCalledWith(1, { kind: "semitones", by: 1 });
+    fireEvent.click(screen.getByTestId("edit-remove"));
+    expect(onEdit).toHaveBeenCalledWith(1, { kind: "remove" });
+  });
+
+  // Vertical drag emits staff_steps quantized to staff positions (5px = one
+  // step at the unscaled viewBox size jsdom reports).
+  it("a vertical drag emits a staff_steps gesture", () => {
+    const onEdit = vi.fn();
+    render(<CellStaff staff={three()} onEditNote={onEdit} />);
+    fireEvent.pointerDown(screen.getByTestId("staff-note-60-0"), {
+      clientY: 100,
+    });
+    fireEvent.pointerMove(window, { clientY: 90 });
+    fireEvent.pointerUp(window, { clientY: 90 });
+    expect(onEdit).toHaveBeenCalledWith(0, { kind: "staff_steps", by: 2 });
+  });
+
+  // A drag that ends where it started edits nothing (tap = select only).
+  it("a no-move release edits nothing", () => {
+    const onEdit = vi.fn();
+    render(<CellStaff staff={three()} onEditNote={onEdit} />);
+    fireEvent.pointerDown(screen.getByTestId("staff-note-60-0"), {
+      clientY: 100,
+    });
+    fireEvent.pointerUp(window, { clientY: 100 });
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  // Undo appears only when the backend says there is history.
+  it("undo shows only with history", () => {
+    const onUndo = vi.fn();
+    const { unmount } = render(
+      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={false} />,
+    );
+    expect(screen.queryByTestId("edit-undo")).not.toBeInTheDocument();
+    unmount();
+    render(
+      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={true} />,
+    );
+    fireEvent.click(screen.getByTestId("edit-undo"));
+    expect(onUndo).toHaveBeenCalled();
   });
 });

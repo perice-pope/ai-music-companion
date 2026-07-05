@@ -69,20 +69,32 @@ fn letter_index(letter: char) -> i16 {
     }
 }
 
+/// Diatonic staff step of a midi note under `key` (E4 = 0). Shared with the
+/// edit engine so gestures and rendering can never disagree.
+pub fn staff_step(midi: u8, key: &KeySignature) -> i16 {
+    let (letter, _, octave) = midi_to_pitch(midi, key.fifths < 0);
+    i16::from(octave) * 7 + letter_index(letter) - (4 * 7 + 2)
+}
+
+/// The accidental glyph a midi note would need under `key`, if any.
+pub fn accidental_for(midi: u8, key: &KeySignature) -> Option<i8> {
+    let (letter, alter, _) = midi_to_pitch(midi, key.fifths < 0);
+    if alter == key_alter_for(letter, key.fifths) {
+        None
+    } else {
+        Some(alter)
+    }
+}
+
 /// Build the staff view for a generated sequence under a key signature.
 /// Pure and deterministic.
 pub fn cell_staff_view(seq: &GeneratedSequence, key: KeySignature) -> CellStaffView {
-    let flats = key.fifths < 0;
     let notes: Vec<CellStaffNote> = seq
         .notes
         .iter()
         .map(|n| {
-            let (letter, alter, octave) = midi_to_pitch(n.midi, flats);
-            // Diatonic position: octaves of 7 letters, rebased so the treble
-            // staff's bottom line (E4) is step 0.
-            let step = i16::from(octave) * 7 + letter_index(letter) - (4 * 7 + 2);
-            let implied = key_alter_for(letter, key.fifths);
-            let accidental = if alter == implied { None } else { Some(alter) };
+            let step = staff_step(n.midi, &key);
+            let accidental = accidental_for(n.midi, &key);
             CellStaffNote {
                 midi: n.midi,
                 start_beat: n.start_beat,

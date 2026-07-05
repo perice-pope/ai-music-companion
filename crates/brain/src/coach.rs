@@ -18,10 +18,11 @@ use crate::learner::{
     apply_difficulty, apply_drill_result, DrillResult, LearnerModel, MAX_DIFFICULTY,
 };
 use crate::score::{KeyMode, KeySignature, Measure, ScoreModel, ScoreNote, TimeSignature};
+pub use variations::GeneratedSequence;
+
 use variations::{
     generate, ArpeggioPattern, ChordModifier, ChordType, DirectionMode, Enclosure,
-    GeneratedSequence, IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
-    VariationSpec,
+    IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType, VariationSpec,
 };
 
 /// The canonical drill kinds, in play order.
@@ -748,6 +749,10 @@ pub struct ExploreState {
     pub difficulty: u8,
     pub tonic: u8,
     pub seed: u64,
+    /// Undo stack of prior specs (#292 slice 3): every edit pushes the spec it
+    /// replaced; undo pops. Bounded — old history falls off the front.
+    #[serde(default)]
+    pub history: Vec<VariationSpec>,
 }
 
 /// Map a live-detected mode label onto the generator's scale space; `None`
@@ -789,6 +794,7 @@ pub fn start_explore(
             difficulty,
             tonic,
             seed,
+            history: Vec::new(),
         },
         sequence,
     )
@@ -902,6 +908,148 @@ pub fn apply_explore_delta(
     }
     let sequence = generate(&next.spec, next.seed);
     (next, sequence)
+}
+
+// ---------------------------------------------------------------------------
+// Cell editing (#292 slice 3): the player edits the CELL — one gesture fixes
+// the note in every key, because the row re-derives from the edited cell.
+// The frontend sends semantic gestures only; all pitch math lives here.
+// ---------------------------------------------------------------------------
+
+/// One semantic edit gesture on a note of the current rep. The frontend
+/// constructs nothing but these; every resulting pitch is computed here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoteEdit {
+    /// Vertical drag: move by diatonic staff positions (Rust picks the pitch
+    /// on that line/space, preferring the in-key spelling).
+    StaffSteps {
+        by: i8,
+    },
+    /// Chromatic nudge — together with the drag this reaches ANY of the 12
+    /// notes (founder: 12 notes × 3 octaves).
+    Semitones {
+        by: i8,
+    },
+    Octaves {
+        by: i8,
+    },
+    Remove,
+}
+
+/// The founder's edit range: a note may move at most ±3 octaves from its root.
+const MAX_CELL_OFFSET: i16 = 36;
+/// Undo depth — enough for a whole editing session, bounded for the blob.
+const MAX_HISTORY: usize = 20;
+
+/// How many notes each root's segment contributes (figures are uniform-length
+/// across roots by construction). `None` if the shape is unexpectedly ragged.
+fn segment_len(seq: &GeneratedSequence, roots: usize) -> Option<usize> {
+    if roots == 0 || !seq.target_midi.len().is_multiple_of(roots) {
+        return None;
+    }
+    Some(seq.target_midi.len() / roots)
+}
+
+/// Move `midi` by `by` diatonic staff positions under `key`, preferring the
+/// pitch the key signature already covers (no accidental), then the nearest.
+fn midi_at_staff_steps(midi: u8, by: i8, key: &crate::score::KeySignature) -> u8 {
+    let step_of = |m: u8| crate::score::cellstaff::staff_step(m, key);
+    let target = step_of(midi) + i16::from(by);
+    let mut best: Option<(u8, bool, u8)> = None; // (midi, has_accidental, distance)
+    for m in midi.saturating_sub(24)..=midi.saturating_add(24).min(127) {
+        if step_of(m) != target {
+            continue;
+        }
+        let has_acc = crate::score::cellstaff::accidental_for(m, key).is_some();
+        let dist = m.abs_diff(midi);
+        let better = match best {
+            None => true,
+            Some((_, best_acc, best_dist)) => {
+                (!has_acc && best_acc) || (has_acc == best_acc && dist < best_dist)
+            }
+        };
+        if better {
+            best = Some((m, has_acc, dist));
+        }
+    }
+    best.map(|(m, _, _)| m).unwrap_or(midi)
+}
+
+/// Apply one edit gesture to note `index` of the current rep and regenerate.
+/// The edited segment's realized figure is BAKED into `spec.cell` (this is
+/// the moment "you edit the cell, not a note" becomes literal), direction and
+/// enclosure fold into the baked shape, and the seed is kept so the row order
+/// does NOT reshuffle under the player's hands. Errors are calm strings.
+pub fn edit_explore_note(
+    state: &ExploreState,
+    index: usize,
+    edit: &NoteEdit,
+    key: &crate::score::KeySignature,
+) -> Result<(ExploreState, GeneratedSequence), String> {
+    let seq = generate(&state.spec, state.seed);
+    if index >= seq.target_midi.len() {
+        return Err("that note is no longer on the staff — try again".to_owned());
+    }
+    let seg_len = segment_len(&seq, seq.root_order.len())
+        .ok_or_else(|| "this variation can't be edited yet".to_owned())?;
+    let seg = index / seg_len;
+    let root = i16::from(seq.root_order[seg]);
+    let seg_notes = &seq.target_midi[seg * seg_len..(seg + 1) * seg_len];
+    let mut offsets: Vec<i8> = seg_notes
+        .iter()
+        .map(|&m| (i16::from(m) - root).clamp(-MAX_CELL_OFFSET, MAX_CELL_OFFSET) as i8)
+        .collect();
+    let pos = index - seg * seg_len;
+    match edit {
+        NoteEdit::Remove => {
+            if offsets.len() <= 1 {
+                return Err("a cell needs at least one note".to_owned());
+            }
+            offsets.remove(pos);
+        }
+        _ => {
+            let current = seg_notes[pos];
+            let new_midi = match edit {
+                NoteEdit::StaffSteps { by } => midi_at_staff_steps(current, *by, key),
+                NoteEdit::Semitones { by } => {
+                    (i16::from(current) + i16::from(*by)).clamp(0, 127) as u8
+                }
+                NoteEdit::Octaves { by } => {
+                    (i16::from(current) + 12 * i16::from(*by)).clamp(0, 127) as u8
+                }
+                NoteEdit::Remove => unreachable!(),
+            };
+            let off = (i16::from(new_midi) - root).clamp(-MAX_CELL_OFFSET, MAX_CELL_OFFSET);
+            offsets[pos] = off as i8;
+        }
+    }
+    let mut next = state.clone();
+    next.history.push(state.spec.clone());
+    if next.history.len() > MAX_HISTORY {
+        next.history.remove(0);
+    }
+    // Bake: the cell IS the figure now; direction/enclosure are folded in.
+    next.spec.cell = Some(offsets);
+    next.spec.direction = DirectionMode::Forward;
+    next.spec.enclosure = None;
+    let seq = generate(&next.spec, next.seed);
+    Ok((next, seq))
+}
+
+/// Undo the most recent edit (restores the exact prior spec, same seed →
+/// exact prior rep). Calm error when there is nothing to undo.
+pub fn undo_explore_edit(
+    state: &ExploreState,
+) -> Result<(ExploreState, GeneratedSequence), String> {
+    let mut next = state.clone();
+    let spec = next
+        .history
+        .pop()
+        .ok_or_else(|| "nothing to undo".to_owned())?;
+    next.spec = spec;
+    let seq = generate(&next.spec, next.seed);
+    Ok((next, seq))
 }
 
 #[cfg(test)]
@@ -1299,6 +1447,99 @@ mod tests {
                 assert!((-6..=6).contains(&f), "{tonic} {label} -> {f}");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #292 slice 3 — cell editing
+    // -----------------------------------------------------------------------
+
+    fn c_major_key() -> crate::score::KeySignature {
+        key_signature_for(0, "major")
+    }
+
+    /// #292 AC (the superpower): editing ONE note bakes the cell, and the fix
+    /// appears in EVERY root's segment — same relative change everywhere.
+    /// Fails if editing degrades to a single-note patch.
+    #[test]
+    fn editing_one_note_fixes_every_key() {
+        let model = crate::learner::apply_difficulty(&LearnerModel::default(), 3, 1);
+        let (state, before) = start_explore(0, "major", &model, 9);
+        let roots = before.root_order.len();
+        assert!(roots >= 2, "need a real row for this test");
+        let seg_len = before.target_midi.len() / roots;
+
+        // Raise the SECOND note of the first segment an octave.
+        let (next, after) =
+            edit_explore_note(&state, 1, &NoteEdit::Octaves { by: 1 }, &c_major_key()).unwrap();
+        assert!(next.spec.cell.is_some(), "the edit bakes a cell");
+        for seg in 0..roots {
+            let root_before = i16::from(before.root_order[seg]);
+            let root_after = i16::from(after.root_order[seg]);
+            let b = i16::from(before.target_midi[seg * seg_len + 1]) - root_before;
+            let a = i16::from(after.target_midi[seg * seg_len + 1]) - root_after;
+            assert_eq!(a, b + 12, "segment {seg} must carry the same fix");
+        }
+        // The row did NOT reshuffle under the player's hands.
+        assert_eq!(after.root_order, before.root_order);
+    }
+
+    /// Staff-step drags land on the line/space the player dropped the note on,
+    /// preferring the in-key pitch: from E up two staff steps in C major = G;
+    /// a semitone nudge then reaches the chromatic note (G#) — together the
+    /// drag + nudge reach any of the 12 notes (founder's edit range).
+    #[test]
+    fn drags_are_diatonic_and_nudges_are_chromatic() {
+        let model = LearnerModel::default(); // difficulty 0: scale run from C
+        let (state, seq) = start_explore(0, "major", &model, 9);
+        // Note 2 of a C-major run is E (64).
+        assert_eq!(seq.target_midi[2] % 12, 4);
+        let (st2, after) =
+            edit_explore_note(&state, 2, &NoteEdit::StaffSteps { by: 2 }, &c_major_key()).unwrap();
+        assert_eq!(
+            after.target_midi[2] % 12,
+            7,
+            "E dragged +2 steps lands on G"
+        );
+        let (_, after2) =
+            edit_explore_note(&st2, 2, &NoteEdit::Semitones { by: 1 }, &c_major_key()).unwrap();
+        assert_eq!(after2.target_midi[2] % 12, 8, "then a nudge reaches G#");
+    }
+
+    /// Remove deletes the note from the cell everywhere; the last note can't
+    /// be removed; out-of-range indices err calmly.
+    #[test]
+    fn remove_and_guards() {
+        let model = crate::learner::apply_difficulty(&LearnerModel::default(), 3, 1);
+        let (state, before) = start_explore(0, "major", &model, 9);
+        let roots = before.root_order.len();
+        let (next, after) =
+            edit_explore_note(&state, 0, &NoteEdit::Remove, &c_major_key()).unwrap();
+        assert_eq!(after.target_midi.len(), before.target_midi.len() - roots);
+        assert!(
+            edit_explore_note(&next, 10_000, &NoteEdit::Remove, &c_major_key()).is_err(),
+            "stale index errs calmly"
+        );
+        // Shrink to a single-note cell, then removal must refuse.
+        let mut one = next.clone();
+        one.spec.cell = Some(vec![0]);
+        assert!(edit_explore_note(&one, 0, &NoteEdit::Remove, &c_major_key()).is_err());
+    }
+
+    /// #292 AC: undo restores the EXACT prior rep (spec and seed), stacking
+    /// through multiple edits; empty history errs calmly.
+    #[test]
+    fn undo_restores_the_exact_prior_rep() {
+        let model = LearnerModel::default();
+        let (state, original) = start_explore(0, "major", &model, 9);
+        assert!(undo_explore_edit(&state).is_err(), "nothing to undo yet");
+        let (st1, _) =
+            edit_explore_note(&state, 0, &NoteEdit::Octaves { by: 1 }, &c_major_key()).unwrap();
+        let (st2, _) =
+            edit_explore_note(&st1, 1, &NoteEdit::Semitones { by: -1 }, &c_major_key()).unwrap();
+        let (st3, undone_once) = undo_explore_edit(&st2).unwrap();
+        assert_eq!(undone_once, generate(&st1.spec, st1.seed));
+        let (_, undone_twice) = undo_explore_edit(&st3).unwrap();
+        assert_eq!(undone_twice, original, "two undos = the untouched rep");
     }
 
     // -----------------------------------------------------------------------
