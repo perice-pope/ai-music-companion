@@ -3653,6 +3653,33 @@ mod tests {
         );
     }
 
+    /// Mutation M6 (review): the guard's boundary is AND, not OR — a take the
+    /// app HEARD (onsets but nothing pitched, e.g. clapping; or pitched
+    /// legato with zero detected onsets) still GRADES instead of trapping the
+    /// player in "I didn't catch that yet" forever.
+    #[test]
+    fn heard_but_imperfect_takes_still_grade() {
+        let s = state();
+        start_lesson_impl(&s, 12).unwrap();
+        // Unpitched noise WITH onsets: grades (0%), never DrillNotHeard.
+        let mut claps = sample_phrase();
+        claps.pitch_stats.pitches = Vec::new();
+        claps.onsets_secs = vec![0.1, 0.4, 0.8];
+        s.phrase_buffer.lock().unwrap().push(claps);
+        let step = submit_drill_impl(&s, 100).unwrap();
+        assert_eq!(step.score.unwrap().accuracy, 0.0, "heard noise grades 0");
+
+        // Pitched legato with ZERO detected onsets: also grades.
+        let mut legato = sample_phrase();
+        legato.pitch_stats.pitches = std::iter::repeat_n(440.0, 40).collect();
+        legato.onsets_secs = Vec::new();
+        s.phrase_buffer.lock().unwrap().push(legato);
+        assert!(
+            submit_drill_impl(&s, 200).is_ok(),
+            "a legato singer must not be trapped in not-yet"
+        );
+    }
+
     /// #277 hardening: a tap before ANY phrase has closed for the drill is a
     /// calm "not yet" error, never a lying 0% grade — the drill stays live for
     /// a retry.
