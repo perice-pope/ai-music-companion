@@ -162,6 +162,7 @@ dependencies = [
  "tokio",
  "tone",
  "uuid",
+ "variations",
 ]
 
 [[package]]

@@ -25,12 +25,12 @@ on:
         required: false
         type: string
       model:
-        description: 'Model: haiku (fast/cheap/default, fits tier-1 TPM) or sonnet (sharp, needs tier 2+)'
+        description: 'Model: fable (default — founder call 2026-07-05: quality over cost) or sonnet'
         required: false
         type: choice
-        default: haiku
+        default: fable
         options:
-          - haiku
+          - fable
           - sonnet
       max_open_drafts:
         description: 'Skip this run if this many open agent drafts already exist (default 3; set 99 to force)'
@@ -156,21 +156,18 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      # Resolve the model: scheduled runs always use Haiku (fits tier-1
-      # rate limits, ~10× cheaper per token). Manual workflow_dispatch
-      # runs use whatever the user picked (defaults to haiku; can be
-      # "sonnet" for a sharper one-off run that actually needs reasoning).
-      #
-      # The model shortnames map to the currently-recommended pinned
-      # versions. Bump these when a newer snapshot is stable.
+      # Resolve the model. Founder call (2026-07-05): quality over cost —
+      # autonomous merges are only trustworthy with a strong model, so the
+      # default (including scheduled runs) is Fable 5. Sonnet remains a
+      # manual fallback if Fable availability/limits ever bite.
       - name: Resolve model
         id: model
         if: steps.queue_check.outputs.skip != 'true'
         run: |
-          CHOICE="${{ github.event.inputs.model || 'haiku' }}"
+          CHOICE="${{ github.event.inputs.model || 'fable' }}"
           case "$CHOICE" in
             sonnet) RESOLVED="claude-sonnet-4-6" ;;
-            haiku|*) RESOLVED="claude-haiku-4-5" ;;
+            fable|*) RESOLVED="claude-fable-5" ;;
           esac
           echo "resolved=$RESOLVED" >> $GITHUB_OUTPUT
           echo "Agent will run with model: $RESOLVED"
@@ -240,34 +237,37 @@ jobs:
             The source of truth is the spec vs. what's on main. The issue tracker
             is a lossy proxy — read the docs first.
 
+            0. `cat docs/autonomy/POLICY.md` — YOUR CONTRACT. Its required-
+               reading list is the context pack: CLAUDE.md, the RV methodology
+               north star (`docs/architecture/rv-methodology.md`), the
+               offline-first rules, the decisions log, the spec template.
+               Read every one of them, every run, before any code.
             1. `git pull origin main` — be current.
-            2. `cat CLAUDE.md` — house rules.
-            3. Read the spec, in order:
-               - `docs/architecture/README.md` — roadmap / phase order
-               - `docs/architecture/architecture-v2.md` — target system
-               - `docs/design/decisions-log.md` — settled calls, don't re-litigate
-            4. Scan the active design docs: `ls docs/design/`, then open the
-               `story-*.md` for whichever feature is being sliced right now.
-            5. `git log main --oneline -30` — what's actually shipped recently.
-            6. `gh pr list --state open --json number,headRefName,title` —
-               what's in flight. Every branch name here is reserved; don't
-               touch those stories.
-            7. `gh issue list --label hotspot --state open` — weekly CTO audit
-               flags. These ARE worth picking up (spec alone won't tell you
-               about rot on main).
-            8. If `${{ inputs.focus }}` is set, prioritize that issue.
+            2. `git log main --oneline -30` — what's actually shipped recently.
+            3. `gh pr list --state open --json number,headRefName,title` —
+               what's in flight. Every branch name here is reserved.
+            4. If `${{ inputs.focus }}` is set, that issue wins. Otherwise
+               pick by the POLICY priority ladder:
+               a. RED MAIN: `gh run list --branch main --workflow CI --limit 1`
+                  — if the latest run failed, fixing main is the only work.
+               b. TESTER FEEDBACK: `gh issue list --state open --search
+                  "[VA Test] in:title"` and `--label auto-fixable` — reproduce
+                  the top unaddressed finding and fix it.
+               c. HOTSPOTS: `gh issue list --label hotspot --state open`.
+               d. EPIC TAIL: the open feature issues of the active epic
+                  (currently #252's remainders), smallest first.
+               e. BACKLOG: the spec's next unbuilt slice
+                  (`docs/architecture/README.md`, `architecture-v2.md`,
+                  active `docs/design/story-*.md`).
 
             # The pick
 
-            The next slice of the spec that:
-              (a) main hasn't built yet, AND
-              (b) no open PR covers, AND
-              (c) has no open question in `decisions-log.md` or the active
-                  `story-*.md` design doc.
-
-            If the obvious next slice has an open question → skip it, try the
-            next slice down. Don't ask, don't guess. Silence in the decisions
-            log means "not decided yet, hands off."
+            Whatever the ladder gives you, it must ALSO satisfy:
+              (a) main hasn't built it yet, AND
+              (b) no open PR covers it, AND
+              (c) no open question in `decisions-log.md` or the active design
+                  doc. Silence in the decisions log means "not decided yet,
+                  hands off" — skip to the next candidate, don't guess.
 
             # Ship it
 
@@ -285,9 +285,21 @@ jobs:
             5. Locally run:
                - `cargo fmt --all`
                - `cargo clippy --workspace --all-targets -- -D warnings`
+               - `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings`
                - `cargo test --workspace`
-               - `pnpm lint && pnpm test` (if you touched the frontend)
+               - `pnpm lint && pnpm test && pnpm exec tsc --noEmit` (if you
+                 touched the frontend)
                All must pass before pushing.
+            5b. ADVERSARIAL SELF-REVIEW (required by POLICY.md): spawn an
+               independent review agent (the Agent tool) on your full diff
+               (`git diff main...HEAD`) with the brief: "Adversarial review —
+               find must-fix bugs, product-promise mismatches vs
+               docs/architecture/rv-methodology.md, and tests that would
+               survive mutations. Try to refute the tests." Fix every
+               must-fix it reports and re-run the gates. Summarize what the
+               review found (and what you fixed) in the PR body — an empty
+               review section means you skipped it, and the founder will
+               treat the PR as untrusted.
             6. `git push -u origin <branch>` → `gh pr create --draft`.
                PR body: what shipped, why this design, test summary,
                `Part of #<n>` or `Closes #<n>` if it maps to an issue.
@@ -384,3 +396,52 @@ jobs:
           # silently list zero drafts because @me would be the actions
           # bot instead.
           GH_TOKEN: ${{ secrets.USER_PAT }}
+
+      # ── Merge-envelope gate (docs/autonomy/POLICY.md) ────────────────────
+      # A DETERMINISTIC decision, deliberately outside the model: if the PR
+      # the agent just opened fits the envelope (small, no deps / migrations
+      # / workflow / policy / lockfile-shape changes), flip it to ready and
+      # arm auto-merge — branch protection still requires all four CI checks,
+      # so nothing red can land. Everything else stays a draft for the
+      # founder. Widening the envelope is a founder-only POLICY.md edit.
+      - name: Merge-envelope gate
+        if: steps.queue_check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.USER_PAT }}
+        run: |
+          set -euo pipefail
+          # The newest open draft by the founder created in the last 2h is
+          # this run's PR (the agent may also have exited with no PR).
+          PR=$(gh pr list --draft --author '@me' --state open \
+                 --json number,createdAt \
+                 -q 'map(select((now - (.createdAt | fromdateiso8601)) < 7200)) | sort_by(.createdAt) | last | .number // empty')
+          if [ -z "$PR" ]; then
+            echo "No fresh draft PR from this run — nothing to gate."
+            exit 0
+          fi
+          echo "Evaluating PR #$PR against the merge envelope…"
+          FILES=$(gh pr view "$PR" --json files -q '.files[].path')
+          ADDITIONS=$(gh pr view "$PR" --json additions -q '.additions')
+          DELETIONS=$(gh pr view "$PR" --json deletions -q '.deletions')
+          COUNT=$(echo "$FILES" | grep -c . || true)
+          LINES=$((ADDITIONS + DELETIONS))
+          IN=true
+          [ "$LINES" -le 400 ] || { echo "OUT: $LINES changed lines (>400)"; IN=false; }
+          [ "$COUNT" -le 12 ] || { echo "OUT: $COUNT files (>12)"; IN=false; }
+          # Forbidden paths: anything here keeps the PR a draft.
+          if echo "$FILES" | grep -E '^(Cargo\.toml|package\.json|pnpm-lock\.yaml|apps/desktop/package\.json|apps/[^/]+/src-tauri/Cargo\.toml|supabase/migrations/|\.github/workflows/|CLAUDE\.md|docs/autonomy/)' ; then
+            echo "OUT: touches envelope-forbidden paths (above)"
+            IN=false
+          fi
+          if echo "$FILES" | grep -E '^va-testing-kit/.*\.sh$' ; then
+            echo "OUT: touches tester bootstrap scripts"
+            IN=false
+          fi
+          if [ "$IN" = true ]; then
+            echo "IN-envelope → ready + auto-merge (CI still gates the merge)."
+            gh pr ready "$PR"
+            gh pr merge "$PR" --squash --auto
+            gh pr comment "$PR" --body "🤖 Envelope gate: **in-envelope** ($LINES lines, $COUNT files, no forbidden paths) → auto-merge armed; required CI checks still decide. Policy: \`docs/autonomy/POLICY.md\`."
+          else
+            gh pr comment "$PR" --body "🤖 Envelope gate: **out-of-envelope** — staying a draft for founder review. Policy: \`docs/autonomy/POLICY.md\`."
+          fi
