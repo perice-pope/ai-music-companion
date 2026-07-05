@@ -28,6 +28,7 @@ roxmltree.workspace = true
 midly.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile = "3"
 criterion.workspace = true
 
