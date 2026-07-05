@@ -94,3 +94,43 @@ describe("CellStaff (#292 slice 1)", () => {
     expect(screen.queryByTestId("staff-pager")).not.toBeInTheDocument();
   });
 });
+
+describe("CellStaff — rhythm layer (#292 slice 2)", () => {
+  const mixed = () =>
+    view([
+      note({ midi: 60, step: -2, duration_beats: 0.5 }), // eighth
+      note({ midi: 62, step: -1, start_beat: 1, duration_beats: 1 }), // quarter
+      note({ midi: 64, step: 0, start_beat: 2, duration_beats: 2 }), // half
+      note({ midi: 65, step: 1, start_beat: 4, duration_beats: 4 }), // whole
+    ]);
+
+  // #292 hard rule: toggling rhythms changes GLYPHS only — every notehead
+  // stays at exactly the same position. Fails if the layer causes a reflow.
+  it("never moves a notehead when the layer toggles", () => {
+    const positions = (dots: HTMLElement[]) =>
+      dots.map((d) => `${d.getAttribute("cx")},${d.getAttribute("cy")}`);
+    const a = render(<CellStaff staff={mixed()} defaultShowRhythms={false} />);
+    const before = positions(a.getAllByTestId("staff-dot"));
+    a.unmount();
+    const b = render(<CellStaff staff={mixed()} defaultShowRhythms={true} />);
+    expect(positions(b.getAllByTestId("staff-dot"))).toEqual(before);
+  });
+
+  // Stems/flags obey duration: whole notes stay bare, sub-beat notes flag.
+  it("draws stems and flags by duration, whole notes bare", () => {
+    render(<CellStaff staff={mixed()} defaultShowRhythms={true} />);
+    expect(screen.getAllByTestId("staff-stem")).toHaveLength(3);
+    expect(screen.getAllByTestId("staff-flag")).toHaveLength(1);
+  });
+
+  // Default is the RV brand: dots only; the toggle reveals the layer and
+  // persists the choice on the device.
+  it("defaults to dots and persists the toggle", () => {
+    window.localStorage.removeItem("amc.cellstaff.showRhythms");
+    render(<CellStaff staff={mixed()} />);
+    expect(screen.queryAllByTestId("staff-stem")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("rhythm-toggle"));
+    expect(screen.getAllByTestId("staff-stem")).toHaveLength(3);
+    expect(window.localStorage.getItem("amc.cellstaff.showRhythms")).toBe("1");
+  });
+});
