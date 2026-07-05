@@ -47,7 +47,7 @@ pub enum ScalePattern {
 }
 
 impl ScalePattern {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             ScalePattern::Up => "up",
             ScalePattern::Down => "down",
