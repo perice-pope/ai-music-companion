@@ -124,6 +124,7 @@ fn main() {
             ai_music_companion::commands::start_explore_variation,
             ai_music_companion::commands::apply_variation_delta,
             ai_music_companion::commands::edit_explore_note,
+            ai_music_companion::commands::explore_last_phrase,
             ai_music_companion::commands::undo_explore_edit,
             ai_music_companion::commands::end_explore,
             ai_music_companion::commands::get_learner_model_blob,

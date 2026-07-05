@@ -12,6 +12,7 @@ import CoachingTipPanel from "./CoachingTipPanel";
 import RevealCard from "./RevealCard";
 import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
+import LiftLickButton from "./LiftLickButton";
 import ScoreView from "./ScoreView";
 
 /**
@@ -254,6 +255,7 @@ export default function PracticeSession() {
           <div className="hidden lg:flex lg:flex-col lg:gap-4">
             <CoachingTipPanel />
             <RevealCard />
+            <LiftLickButton />
           </div>
         </div>
       )}

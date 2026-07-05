@@ -944,6 +944,80 @@ pub fn apply_explore_delta(
 }
 
 // ---------------------------------------------------------------------------
+// Phrase seeding (#285): the flagship RV loop — hear a phrase worth working
+// on, lift it as a CELL, row it through the 12 keys. "The player practices
+// their own music in every key."
+// ---------------------------------------------------------------------------
+
+/// Founder cap: a lifted phrase becomes a cell of at most 17 notes
+/// ("more than enough") — longer takes keep their most recent tail.
+pub const LIFT_MAX_NOTES: usize = 17;
+/// Below this many notes there is nothing worth rowing.
+pub const LIFT_MIN_NOTES: usize = 4;
+
+/// Lift a played pitch track into a cell: collapse to notes, keep the last
+/// ≤17, express as semitone offsets from the first note, folding any offset
+/// past the ±3-octave range back by octaves (a wild leap reads as its
+/// in-range shape, never a refusal — the player can edit from there).
+/// `None` when fewer than [`LIFT_MIN_NOTES`] clear notes were heard.
+/// Returns the cell plus the first note's MIDI (the cell's home root).
+pub fn lift_cell_from_pitch_track(pitches: &[f64], min_run: usize) -> Option<(Vec<i8>, u8)> {
+    let notes = played_notes_from_pitch_track(pitches, min_run);
+    if notes.len() < LIFT_MIN_NOTES {
+        return None;
+    }
+    let tail = &notes[notes.len().saturating_sub(LIFT_MAX_NOTES)..];
+    let first = hz_to_midi(tail[0].hz)?;
+    let offsets: Vec<i8> = tail
+        .iter()
+        .filter_map(|n| hz_to_midi(n.hz))
+        .map(|m| {
+            let mut off = i16::from(m) - i16::from(first);
+            while off > 36 {
+                off -= 12;
+            }
+            while off < -36 {
+                off += 12;
+            }
+            off as i8
+        })
+        .collect();
+    if offsets.len() < LIFT_MIN_NOTES {
+        return None;
+    }
+    Some((offsets, first))
+}
+
+fn hz_to_midi(hz: f64) -> Option<u8> {
+    if hz <= 0.0 {
+        return None;
+    }
+    let midi = (69.0 + 12.0 * (hz / 440.0).log2()).round();
+    if (0.0..=127.0).contains(&midi) {
+        Some(midi as u8)
+    } else {
+        None
+    }
+}
+
+/// Start an exploration from a LIFTED cell (#285): the player's own phrase,
+/// rowed through the keys at their difficulty. The cell plays exactly as
+/// played (no enclosure/direction modifiers until they stack chips).
+pub fn start_explore_cell(
+    cell: Vec<i8>,
+    tonic: u8,
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let (mut state, _) = start_explore(tonic, "major", model, seed);
+    state.spec.cell = Some(cell);
+    state.spec.enclosure = None;
+    state.spec.direction = DirectionMode::Forward;
+    let sequence = generate(&state.spec, state.seed);
+    (state, sequence)
+}
+
+// ---------------------------------------------------------------------------
 // Cell editing (#292 slice 3): the player edits the CELL — one gesture fixes
 // the note in every key, because the row re-derives from the edited cell.
 // The frontend sends semantic gestures only; all pitch math lives here.
@@ -1506,6 +1580,70 @@ mod tests {
                 assert!((-6..=6).contains(&f), "{tonic} {label} -> {f}");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #285 — phrase seeding
+    // -----------------------------------------------------------------------
+
+    fn track_of(midis: &[u8]) -> Vec<f64> {
+        midis
+            .iter()
+            .flat_map(|&m| {
+                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                std::iter::repeat_n(hz, 5)
+            })
+            .collect()
+    }
+
+    /// #285 AC (the lift): a clearly-played lick becomes offsets from its
+    /// first note; too few clear notes lift nothing.
+    #[test]
+    fn lifting_extracts_the_played_shape() {
+        let (cell, first) = lift_cell_from_pitch_track(&track_of(&[62, 65, 64, 69]), 3).unwrap();
+        assert_eq!(cell, vec![0, 3, 2, 7], "offsets from the first note");
+        assert_eq!(first, 62, "the lick's home root rides along");
+        assert!(
+            lift_cell_from_pitch_track(&track_of(&[60, 62, 64]), 3).is_none(),
+            "3 notes is not a lick worth rowing"
+        );
+        assert!(lift_cell_from_pitch_track(&[], 3).is_none());
+    }
+
+    /// #285 AC (founder cap): a long take keeps its most recent 17 notes; a
+    /// wild leap folds back into the ±3-octave range instead of refusing.
+    #[test]
+    fn lifting_caps_at_17_and_folds_wild_leaps() {
+        let long: Vec<u8> = (0..25).map(|i| 55 + (i % 12) as u8).collect();
+        let (cell, _) = lift_cell_from_pitch_track(&track_of(&long), 3).unwrap();
+        assert_eq!(cell.len(), LIFT_MAX_NOTES);
+        let (leap, _) = lift_cell_from_pitch_track(&track_of(&[40, 42, 44, 90]), 3).unwrap();
+        assert_eq!(leap[3], 38 % 12 + 24, "50 semitones folds to 26 (in range)");
+        assert!(leap.iter().all(|&o| (-36..=36).contains(&o)));
+    }
+
+    /// #285 AC (the row): the lifted cell rows through EVERY key of the
+    /// exploration — each root's segment carries the exact played shape.
+    #[test]
+    fn a_lifted_cell_rows_through_the_keys() {
+        let model = crate::learner::apply_difficulty(&LearnerModel::default(), 3, 1);
+        let cell = vec![0i8, 3, 2, 7];
+        let (state, seq) = start_explore_cell(cell.clone(), 2, &model, 11);
+        assert_eq!(state.spec.cell.as_ref(), Some(&cell));
+        let roots = seq.root_order.len();
+        assert!(roots >= 2);
+        let seg_len = seq.target_midi.len() / roots;
+        assert_eq!(seg_len, cell.len(), "the cell IS the figure, unmodified");
+        for seg in 0..roots {
+            let root = i16::from(seq.root_order[seg]);
+            let shape: Vec<i16> = seq.target_midi[seg * seg_len..(seg + 1) * seg_len]
+                .iter()
+                .map(|&m| i16::from(m) - root)
+                .collect();
+            let expected: Vec<i16> = cell.iter().map(|&o| i16::from(o)).collect();
+            assert_eq!(shape, expected, "segment {seg} plays the player's lick");
+        }
+        assert!(seq.label.contains("4-note cell"), "got {}", seq.label);
     }
 
     // -----------------------------------------------------------------------

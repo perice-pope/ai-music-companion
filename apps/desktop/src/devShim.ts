@@ -127,6 +127,9 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       return undefined;
     case "start_explore_variation":
     case "apply_variation_delta":
+    case "explore_last_phrase":
+    case "edit_explore_note":
+    case "undo_explore_edit":
       throw new Error(
         "Exploring variations needs the desktop app — run `pnpm tauri dev`.",
       );

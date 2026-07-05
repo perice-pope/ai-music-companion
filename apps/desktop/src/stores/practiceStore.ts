@@ -314,6 +314,11 @@ export interface PracticeState {
   clearLessonRecap: () => void;
   /** Start exploring a sound (#255): seeds an RV variation from a key/mode. */
   startExplore: (tonic: number, mode: string) => Promise<void>;
+  /** #285: lift the player's last phrase as a cell and row it through the
+   * keys. Sets a calm notice when nothing liftable was played yet. */
+  exploreLastPhrase: () => Promise<void>;
+  /** Calm one-liner from the explore backend (e.g. "play a phrase first"). */
+  exploreNotice: string | null;
   /** Apply a tapped chip's delta to the in-flight exploration. */
   applyChip: (delta: VariationDelta) => Promise<void>;
   /** Apply a semantic note edit (#292): the backend bakes the cell. */
@@ -441,6 +446,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   lessonSubmitting: false,
   lessonNotice: null,
   explore: null,
+  exploreNotice: null,
   recap: null,
   recapError: null,
   activeScore: null,
@@ -953,6 +959,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
+  exploreLastPhrase: async () => {
+    if (get().status !== "listening") {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("explore_last_phrase", {});
+      set({ explore: dto, exploreNotice: null });
+    } catch (err) {
+      // The backend's message is written for the player — show it.
+      set({ exploreNotice: String(err) });
+    }
+  },
+
   applyChip: async (delta) => {
     if (!get().explore) {
       return;
@@ -995,7 +1014,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   endExplore: async () => {
-    set({ explore: null });
+    set({ explore: null, exploreNotice: null });
     try {
       await invoke("end_explore", {});
     } catch (err) {
