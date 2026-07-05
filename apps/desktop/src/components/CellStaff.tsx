@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { NoteEdit } from "../types/brain";
 
 /** localStorage key for the device-local rhythm-layer preference. */
 const RHYTHM_PREF_KEY = "amc.cellstaff.showRhythms";
@@ -33,6 +34,11 @@ const WIDTH = 640;
 const LEFT_PAD = 56; // room for clef + key signature
 const RIGHT_PAD = 12;
 const HEIGHT = BOTTOM_Y + 4 * LINE_GAP; // headroom for ledger lines both ways
+/** The SINGLE source of truth for the svg viewBox vertical extent — stepPx's
+ * drag quantization divides by this, so it must match the JSX exactly
+ * (review M6: a mismatch skews every drag by the ratio). */
+const VIEWBOX_MIN_Y = -2 * LINE_GAP;
+const VIEWBOX_HEIGHT = HEIGHT + LINE_GAP;
 
 /** Staff steps carrying each sharp/flat of a treble key signature. */
 const SHARP_STEPS = [8, 5, 9, 6, 3, 7, 4];
@@ -60,12 +66,19 @@ function Dot({
   note,
   x,
   showRhythms,
+  selected,
+  ghostSteps,
+  onPointerDown,
 }: {
   note: CellStaffNoteDto;
   x: number;
   showRhythms: boolean;
+  selected: boolean;
+  /** Live drag preview: diatonic steps the ghost has moved (0 = at rest). */
+  ghostSteps: number;
+  onPointerDown?: (e: React.PointerEvent) => void;
 }) {
-  const y = yFor(note.step);
+  const y = yFor(note.step + ghostSteps);
   // Rhythm layer (#292 slice 2): stems/flags are drawn ON the same dot at the
   // same position — the layer NEVER moves a notehead. Whole notes stay bare.
   const stemUp = note.step < 4;
@@ -74,7 +87,11 @@ function Dot({
   const wantsStem = showRhythms && note.duration_beats < 4;
   const wantsFlag = showRhythms && note.duration_beats < 1;
   return (
-    <g data-testid={`staff-note-${note.midi}-${note.start_beat}`}>
+    <g
+      data-testid={`staff-note-${note.midi}-${note.start_beat}`}
+      onPointerDown={onPointerDown}
+      className={onPointerDown ? "cursor-grab" : undefined}
+    >
       {ledgerSteps(note.step).map((s) => (
         <line
           key={s}
@@ -99,12 +116,24 @@ function Dot({
           {accidentalGlyph(note.accidental)}
         </text>
       )}
+      {selected && (
+        <circle
+          cx={x}
+          cy={y}
+          r={9}
+          fill="none"
+          stroke="#FBBF24"
+          strokeWidth={1.5}
+          data-testid="staff-halo"
+        />
+      )}
       <ellipse
         cx={x}
         cy={y}
         rx={5.5}
         ry={4.2}
         fill={colorForPitchClass(note.midi % 12)}
+        fillOpacity={ghostSteps === 0 ? 1 : 0.7}
         data-testid="staff-dot"
       />
       {/* Half notes read as a ring: an inner void, color untouched. */}
@@ -138,15 +167,84 @@ function Dot({
 export default function CellStaff({
   staff,
   defaultShowRhythms,
+  onEditNote,
+  onUndo,
+  canUndo,
 }: {
   staff: CellStaffViewDto;
   /** Test/override hook; real usage reads the persisted device preference. */
   defaultShowRhythms?: boolean;
+  /** When present, dots become tappable/draggable (#292 slice 3). The staff
+   * only ever emits semantic gestures — never pitches. */
+  onEditNote?: (index: number, edit: NoteEdit) => void;
+  onUndo?: () => void;
+  canUndo?: boolean;
 }) {
   const [page, setPage] = useState(0);
   const [showRhythms, setShowRhythms] = useState(
     defaultShowRhythms ?? readRhythmPref(),
   );
+  const [selected, setSelected] = useState<number | null>(null);
+  const [ghostSteps, setGhostSteps] = useState(0);
+  // The staff changed under us (chip, undo, new rep): a kept selection would
+  // silently retarget whatever note now holds that index — drop it.
+  useEffect(() => {
+    setSelected(null);
+    setGhostSteps(0);
+    drag.current = null;
+  }, [staff]);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const drag = useRef<{ index: number; startY: number } | null>(null);
+  const cleanupDrag = useRef<(() => void) | null>(null);
+  // Unmount mid-drag must not leave window listeners firing stale closures.
+  useEffect(() => () => cleanupDrag.current?.(), []);
+
+  /** px per diatonic step at the rendered size (viewBox scaling). */
+  const stepPx = () => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    return rect && rect.height > 0
+      ? (rect.height / VIEWBOX_HEIGHT) * STEP
+      : STEP;
+  };
+  const dragSteps = (e: { clientY: number }) => {
+    if (!drag.current || !Number.isFinite(e.clientY)) {
+      return 0;
+    }
+    return Math.round((drag.current.startY - e.clientY) / stepPx());
+  };
+
+  const beginDrag = (index: number) => (e: React.PointerEvent) => {
+    if (!onEditNote) return;
+    setSelected(index);
+    drag.current = { index, startY: e.clientY };
+    setGhostSteps(0);
+    const move = (ev: PointerEvent) => setGhostSteps(dragSteps(ev));
+    const finish = (ev: PointerEvent | null) => {
+      const by = ev ? dragSteps(ev) : 0;
+      const idx = drag.current?.index;
+      drag.current = null;
+      setGhostSteps(0);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      cleanupDrag.current = null;
+      if (ev && idx !== undefined && Number.isFinite(by) && by !== 0) {
+        onEditNote(idx, { kind: "staff_steps", by });
+      }
+    };
+    const up = (ev: PointerEvent) => finish(ev);
+    const cancel = () => finish(null); // touch-scroll etc.: no edit, no ghost
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    cleanupDrag.current = () => finish(null);
+  };
+
+  const act = (edit: NoteEdit) => {
+    if (selected !== null && onEditNote) {
+      onEditNote(selected, edit);
+    }
+  };
   const toggleRhythms = () => {
     const next = !showRhythms;
     setShowRhythms(next);
@@ -173,9 +271,12 @@ export default function CellStaff({
   const xFor = (beat: number) =>
     LEFT_PAD + 14 + ((beat - windowStart) / windowBeats) * (innerWidth - 20);
 
-  const visible = staff.notes.filter(
-    (n) => n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
-  );
+  const visible = staff.notes
+    .map((n, index) => ({ n, index }))
+    .filter(
+      ({ n }) =>
+        n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
+    );
   const sigSteps =
     staff.fifths > 0
       ? SHARP_STEPS.slice(0, Math.min(staff.fifths, 7))
@@ -185,7 +286,8 @@ export default function CellStaff({
   return (
     <div className="flex flex-col gap-1" data-testid="cell-staff">
       <svg
-        viewBox={`0 -${2 * LINE_GAP} ${WIDTH} ${HEIGHT + LINE_GAP}`}
+        ref={svgRef}
+        viewBox={`0 ${VIEWBOX_MIN_Y} ${WIDTH} ${VIEWBOX_HEIGHT}`}
         className="h-auto w-full"
         role="img"
         aria-label="Cell staff"
@@ -243,16 +345,78 @@ export default function CellStaff({
             />
           );
         })}
-        {visible.map((n) => (
+        {visible.map(({ n, index }) => (
           <Dot
             key={`${n.midi}-${n.start_beat}`}
             note={n}
             x={xFor(n.start_beat)}
             showRhythms={showRhythms}
+            selected={selected === index}
+            ghostSteps={drag.current?.index === index ? ghostSteps : 0}
+            onPointerDown={onEditNote ? beginDrag(index) : undefined}
           />
         ))}
       </svg>
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          {onEditNote && selected !== null && (
+            <div className="flex gap-1.5" data-testid="edit-actions">
+              <button
+                type="button"
+                onClick={() => act({ kind: "octaves", by: 1 })}
+                data-testid="edit-octave-up"
+                className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-600"
+              >
+                8va ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => act({ kind: "octaves", by: -1 })}
+                data-testid="edit-octave-down"
+                className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-600"
+              >
+                8va ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => act({ kind: "semitones", by: 1 })}
+                data-testid="edit-sharp"
+                className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-600"
+              >
+                ♯
+              </button>
+              <button
+                type="button"
+                onClick={() => act({ kind: "semitones", by: -1 })}
+                data-testid="edit-flat"
+                className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-600"
+              >
+                ♭
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  act({ kind: "remove" });
+                  setSelected(null);
+                }}
+                data-testid="edit-remove"
+                className="rounded bg-gray-700 px-2 py-0.5 text-xs text-red-300 hover:bg-gray-600"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          {onUndo && canUndo && (
+            <button
+              type="button"
+              onClick={onUndo}
+              data-testid="edit-undo"
+              className="rounded px-2 py-0.5 text-xs text-gray-400 hover:text-gray-200"
+            >
+              ↩ undo
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={toggleRhythms}

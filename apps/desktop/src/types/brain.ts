@@ -211,7 +211,16 @@ export interface ExploreDto {
   chips: ChipSpec[];
   root_pitch_classes: number[];
   staff: CellStaffViewDto;
+  can_undo: boolean;
 }
+
+/** A semantic note-edit gesture. Mirrors `brain::coach::NoteEdit` — the
+ * frontend never computes pitches, only gestures. */
+export type NoteEdit =
+  | { kind: "staff_steps"; by: number }
+  | { kind: "semitones"; by: number }
+  | { kind: "octaves"; by: number }
+  | { kind: "remove" };
 
 /**
  * Where a reveal's wording came from. Mirrors

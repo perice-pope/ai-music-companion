@@ -6,6 +6,7 @@ import type {
   ExploreDto,
   DrillScoreDto,
   KeyOption,
+  NoteEdit,
   VariationDelta,
   LessonRecapDto,
   LessonStepDto,
@@ -315,6 +316,10 @@ export interface PracticeState {
   startExplore: (tonic: number, mode: string) => Promise<void>;
   /** Apply a tapped chip's delta to the in-flight exploration. */
   applyChip: (delta: VariationDelta) => Promise<void>;
+  /** Apply a semantic note edit (#292): the backend bakes the cell. */
+  editExploreNote: (index: number, edit: NoteEdit) => Promise<void>;
+  /** Undo the most recent explore edit. */
+  undoExploreEdit: () => Promise<void>;
   /** Stop exploring. */
   endExplore: () => Promise<void>;
   setCursorPosition: (pos: ScorePosition | null) => void;
@@ -958,6 +963,34 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     } catch (err) {
       // Best-effort: a failed mutation keeps the current rep on screen.
       console.error("apply_variation_delta failed:", err);
+    }
+  },
+
+  editExploreNote: async (index, edit) => {
+    if (!get().explore) {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("edit_explore_note", {
+        index,
+        edit,
+      });
+      set({ explore: dto });
+    } catch (err) {
+      // A refused edit (stale index, last note) keeps the current rep.
+      console.error("edit_explore_note failed:", err);
+    }
+  },
+
+  undoExploreEdit: async () => {
+    if (!get().explore) {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("undo_explore_edit", {});
+      set({ explore: dto });
+    } catch (err) {
+      console.error("undo_explore_edit failed:", err);
     }
   },
 
