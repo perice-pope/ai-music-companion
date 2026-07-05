@@ -133,6 +133,29 @@ export interface LessonStepDto {
   recap: LessonRecapDto | null;
 }
 
+/** Mastery state of one wheel cell. Mirrors `brain::wheel::KeyState`. */
+export type KeyState = "none" | "learning" | "owned";
+
+/** Trend of a measured dimension. Mirrors `brain::wheel::Trend`. */
+export type WheelTrend = "improving" | "steady" | "slipping" | "unknown";
+
+/** One wheel cell. Mirrors `brain::wheel::KeyCell`. */
+export interface KeyCellDto {
+  tonic: number;
+  state: KeyState;
+  attempts: number;
+  best_accuracy: number;
+  scales: string[];
+}
+
+/** The mastery wheel snapshot. Mirrors `brain::wheel::WheelView`. */
+export interface WheelViewDto {
+  cells: KeyCellDto[];
+  intonation_trend: WheelTrend;
+  tone_trend: WheelTrend;
+  total_owned: number;
+}
+
 /** A concrete change a chip applies. Mirrors `brain::coach::VariationDelta`
  * (serde tag = "kind", snake_case). The frontend never constructs these beyond
  * echoing a chip's own delta back. */

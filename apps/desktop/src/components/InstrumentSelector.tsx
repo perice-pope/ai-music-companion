@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
+import KeyWheel from "./KeyWheel";
 import { usePracticeStore } from "../stores/practiceStore";
 import { PRACTICE_MODES } from "../types/brain";
 
@@ -237,6 +238,10 @@ export default function InstrumentSelector() {
             {startError}
           </p>
         )}
+      </div>
+      {/* The 12-key mastery wheel (#256): the Learner Model made visible. */}
+      <div className="mt-8 flex justify-center">
+        <KeyWheel />
       </div>
     </section>
   );

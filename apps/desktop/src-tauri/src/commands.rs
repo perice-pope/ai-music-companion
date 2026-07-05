@@ -2415,6 +2415,35 @@ pub fn get_learner_model_blob(
     }
 }
 
+/// The 12-key mastery wheel (#256): a pure snapshot over the Learner Model +
+/// recent fingerprint history. Read-only; fetched on screen mount.
+pub fn get_mastery_wheel_impl(state: &AppState) -> Result<brain::wheel::WheelView, CommandError> {
+    let store = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned");
+    let model = store
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    // Recent sessions' fingerprints, oldest → newest (list_recent is
+    // newest-first), for the trend halves. Missing/legacy recaps contribute
+    // nothing — trends stay honest with fewer points.
+    const TREND_SESSIONS: usize = 12;
+    let mut fingerprints: Vec<brain::fingerprint::MusicalFingerprint> = store
+        .list_recent(TREND_SESSIONS)?
+        .into_iter()
+        .filter_map(|summary| store.load_recap(summary.id).ok())
+        .filter_map(|recap| recap.fingerprint)
+        .collect();
+    fingerprints.reverse();
+    Ok(brain::wheel::build_wheel(&model, &fingerprints))
+}
+
+#[tauri::command]
+pub fn get_mastery_wheel(state: State<'_, AppState>) -> Result<brain::wheel::WheelView, String> {
+    get_mastery_wheel_impl(&state).map_err(|e| e.to_frontend())
+}
+
 /// Stop exploring (nothing persisted).
 #[tauri::command]
 pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
