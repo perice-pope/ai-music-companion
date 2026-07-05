@@ -130,6 +130,20 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       throw new Error(
         "Exploring variations needs the desktop app — run `pnpm tauri dev`.",
       );
+    case "get_mastery_wheel":
+      // Preview: an empty wheel (nothing practiced in the browser).
+      return {
+        cells: Array.from({ length: 12 }, (_, tonic) => ({
+          tonic,
+          state: "none",
+          attempts: 0,
+          best_accuracy: 0,
+          scales: [],
+        })),
+        intonation_trend: "unknown",
+        tone_trend: "unknown",
+        total_owned: 0,
+      };
     case "record_reveal":
       // No reveals fire in the preview (see above), but keep the command
       // handled: report an unchanged, empty collection.

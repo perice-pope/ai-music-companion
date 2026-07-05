@@ -22,6 +22,7 @@ pub mod scoring;
 pub mod session;
 pub mod stats;
 pub mod store;
+pub mod wheel;
 
 #[cfg(test)]
 mod tests {
