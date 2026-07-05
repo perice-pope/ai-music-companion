@@ -2507,6 +2507,47 @@ pub fn get_sound_mirror(state: State<'_, AppState>) -> Result<SoundMirrorDto, St
     get_sound_mirror_impl(&state, now).map_err(|e| e.to_frontend())
 }
 
+/// #285 — the flagship RV loop: lift the player's most recent worth-lifting
+/// phrase as a cell and row it through the keys at their difficulty. Errors
+/// calmly when nothing liftable has been played yet.
+pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock()
+        .expect("session store mutex poisoned")
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let lifted = {
+        let phrases = state
+            .phrase_buffer
+            .lock()
+            .expect("phrase buffer mutex poisoned");
+        // Most recent phrase that yields a real cell wins.
+        phrases.iter().rev().find_map(|p| {
+            brain::coach::lift_cell_from_pitch_track(&p.pitch_stats.pitches, DRILL_MIN_PITCH_RUN)
+        })
+    };
+    let (cell, first_midi) =
+        lifted.ok_or_else(|| "play a little phrase first — then I can lift it".to_owned())?;
+    let (explore, seq) = brain::coach::start_explore_cell(cell, first_midi % 12, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    *state
+        .active_explore
+        .lock()
+        .expect("active explore mutex poisoned") = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn explore_last_phrase(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1);
+    explore_last_phrase_impl(&state, seed)
+}
+
 /// Apply a semantic note edit (#292 slice 3) to the in-flight exploration —
 /// the edit bakes the CELL, so it lands in every key; the row never
 /// reshuffles under the player's hands.
@@ -3683,6 +3724,38 @@ mod tests {
                 .save(id, t0, t0 + Duration::seconds(60), &recap)
                 .unwrap();
         }
+    }
+
+    /// #285 end-to-end at the command layer: a played lick in the phrase
+    /// buffer lifts into an editable, rowed exploration; an empty buffer
+    /// refuses calmly. Fails if the lift → explore → edit chain breaks.
+    #[test]
+    fn last_phrase_lifts_into_an_editable_row() {
+        let s = state();
+        assert!(
+            explore_last_phrase_impl(&s, 42).is_err(),
+            "nothing played yet → calm error"
+        );
+        // A clear 5-note lick: D F E A D (each held long enough to collapse).
+        let mut phrase = sample_phrase();
+        phrase.pitch_stats.pitches = [62u8, 65, 64, 69, 62]
+            .iter()
+            .flat_map(|&m| {
+                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                std::iter::repeat_n(hz, 6)
+            })
+            .collect();
+        s.phrase_buffer.lock().unwrap().push(phrase);
+
+        let dto = explore_last_phrase_impl(&s, 42).unwrap();
+        assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
+        assert!(!dto.root_pitch_classes.is_empty());
+        assert!(!dto.staff.notes.is_empty());
+        // And it's immediately editable (#292): the correction UX this loop
+        // was built for.
+        let edited =
+            edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
+        assert!(edited.can_undo);
     }
 
     /// #255: the explore loop end-to-end at the command layer — start seeds a
