@@ -2525,7 +2525,10 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
             .expect("phrase buffer mutex poisoned");
         // Most recent phrase that yields a real cell wins.
         phrases.iter().rev().find_map(|p| {
-            brain::coach::lift_cell_from_pitch_track(&p.pitch_stats.pitches, DRILL_MIN_PITCH_RUN)
+            brain::coach::lift_cell_from_pitch_track(
+                &p.pitch_stats.pitches,
+                brain::coach::LIFT_MIN_RUN,
+            )
         })
     };
     let (cell, first_midi) =

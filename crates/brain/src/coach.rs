@@ -999,6 +999,10 @@ pub fn apply_explore_delta(
 pub const LIFT_MAX_NOTES: usize = 17;
 /// Below this many notes there is nothing worth rowing.
 pub const LIFT_MIN_NOTES: usize = 4;
+/// Collapse threshold for LIFTING (stricter than grading's): tuned against
+/// real voice/trumpet phrases — at 3 samples, pitch-track jitter lifts as
+/// chromatic wiggle; at 5, only clearly held notes survive.
+pub const LIFT_MIN_RUN: usize = 5;
 
 /// Lift a played pitch track into a cell: collapse to notes, keep the last
 /// ≤17, express as semitone offsets from the first note, folding any offset
@@ -1007,7 +1011,19 @@ pub const LIFT_MIN_NOTES: usize = 4;
 /// `None` when fewer than [`LIFT_MIN_NOTES`] clear notes were heard.
 /// Returns the cell plus the first note's MIDI (the cell's home root).
 pub fn lift_cell_from_pitch_track(pitches: &[f64], min_run: usize) -> Option<(Vec<i8>, u8)> {
-    let notes = played_notes_from_pitch_track(pitches, min_run);
+    let collapsed = played_notes_from_pitch_track(pitches, min_run);
+    // Merge re-articulated repeats (tuned on real data): a note re-struck at
+    // the same pitch adds rhythm, not melody — an RV cell is a pitch pattern.
+    let mut notes: Vec<PlayedNote> = Vec::with_capacity(collapsed.len());
+    let mut last_midi: Option<u8> = None;
+    for n in collapsed {
+        let midi = hz_to_midi(n.hz);
+        if midi.is_some() && midi == last_midi {
+            continue;
+        }
+        last_midi = midi;
+        notes.push(n);
+    }
     if notes.len() < LIFT_MIN_NOTES {
         return None;
     }
@@ -1028,6 +1044,15 @@ pub fn lift_cell_from_pitch_track(pitches: &[f64], min_run: usize) -> Option<(Ve
         })
         .collect();
     if offsets.len() < LIFT_MIN_NOTES {
+        return None;
+    }
+    // A single pitch repeated is not a melodic cell — nothing to row.
+    if offsets
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        < 2
+    {
         return None;
     }
     Some((offsets, first))
@@ -1654,6 +1679,15 @@ mod tests {
             "3 notes is not a lick worth rowing"
         );
         assert!(lift_cell_from_pitch_track(&[], 3).is_none());
+        // Tuned on real data: re-struck repeats merge (rhythm, not melody)…
+        let (dedup, _) =
+            lift_cell_from_pitch_track(&track_of(&[62, 62, 65, 65, 64, 69]), 3).unwrap();
+        assert_eq!(dedup, vec![0, 3, 2, 7], "consecutive repeats merge");
+        // …and a monotone drone is not a melodic cell at all.
+        assert!(
+            lift_cell_from_pitch_track(&track_of(&[60, 60, 60, 60, 60, 60]), 3).is_none(),
+            "one pitch repeated has nothing to row"
+        );
     }
 
     /// #285 AC (founder cap): a long take keeps its most recent 17 notes; a
