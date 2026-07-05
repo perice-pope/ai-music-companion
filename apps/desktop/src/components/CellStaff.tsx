@@ -1,4 +1,15 @@
 import { useState } from "react";
+
+/** localStorage key for the device-local rhythm-layer preference. */
+const RHYTHM_PREF_KEY = "amc.cellstaff.showRhythms";
+
+function readRhythmPref(): boolean {
+  try {
+    return window.localStorage.getItem(RHYTHM_PREF_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 import type { CellStaffViewDto, CellStaffNoteDto } from "../types/brain";
 import { colorForPitchClass } from "../lib/rvColors";
 
@@ -48,11 +59,20 @@ function accidentalGlyph(alter: number): string {
 function Dot({
   note,
   x,
+  showRhythms,
 }: {
   note: CellStaffNoteDto;
   x: number;
+  showRhythms: boolean;
 }) {
   const y = yFor(note.step);
+  // Rhythm layer (#292 slice 2): stems/flags are drawn ON the same dot at the
+  // same position — the layer NEVER moves a notehead. Whole notes stay bare.
+  const stemUp = note.step < 4;
+  const stemX = stemUp ? x + 5 : x - 5;
+  const stemY2 = stemUp ? y - 3.2 * LINE_GAP : y + 3.2 * LINE_GAP;
+  const wantsStem = showRhythms && note.duration_beats < 4;
+  const wantsFlag = showRhythms && note.duration_beats < 1;
   return (
     <g data-testid={`staff-note-${note.midi}-${note.start_beat}`}>
       {ledgerSteps(note.step).map((s) => (
@@ -87,12 +107,55 @@ function Dot({
         fill={colorForPitchClass(note.midi % 12)}
         data-testid="staff-dot"
       />
+      {/* Half notes read as a ring: an inner void, color untouched. */}
+      {showRhythms && note.duration_beats >= 2 && note.duration_beats < 4 && (
+        <ellipse cx={x} cy={y} rx={2.6} ry={1.8} fill="#111827" />
+      )}
+      {wantsStem && (
+        <line
+          x1={stemX}
+          x2={stemX}
+          y1={y}
+          y2={stemY2}
+          stroke="#9CA3AF"
+          strokeWidth={1.2}
+          data-testid="staff-stem"
+        />
+      )}
+      {wantsFlag && (
+        <path
+          d={`M ${stemX} ${stemY2} q 7 ${stemUp ? 3 : -3} 5 ${stemUp ? 10 : -10}`}
+          stroke="#9CA3AF"
+          strokeWidth={1.2}
+          fill="none"
+          data-testid="staff-flag"
+        />
+      )}
     </g>
   );
 }
 
-export default function CellStaff({ staff }: { staff: CellStaffViewDto }) {
+export default function CellStaff({
+  staff,
+  defaultShowRhythms,
+}: {
+  staff: CellStaffViewDto;
+  /** Test/override hook; real usage reads the persisted device preference. */
+  defaultShowRhythms?: boolean;
+}) {
   const [page, setPage] = useState(0);
+  const [showRhythms, setShowRhythms] = useState(
+    defaultShowRhythms ?? readRhythmPref(),
+  );
+  const toggleRhythms = () => {
+    const next = !showRhythms;
+    setShowRhythms(next);
+    try {
+      window.localStorage.setItem(RHYTHM_PREF_KEY, next ? "1" : "0");
+    } catch {
+      // Preference is a nicety; rendering must never depend on storage.
+    }
+  };
   const beatsPerMeasure = Math.max(1, staff.beats_per_measure);
   const totalMeasures = Math.max(
     1,
@@ -181,9 +244,29 @@ export default function CellStaff({ staff }: { staff: CellStaffViewDto }) {
           );
         })}
         {visible.map((n) => (
-          <Dot key={`${n.midi}-${n.start_beat}`} note={n} x={xFor(n.start_beat)} />
+          <Dot
+            key={`${n.midi}-${n.start_beat}`}
+            note={n}
+            x={xFor(n.start_beat)}
+            showRhythms={showRhythms}
+          />
         ))}
       </svg>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={toggleRhythms}
+          data-testid="rhythm-toggle"
+          aria-pressed={showRhythms}
+          className={`rounded px-2 py-0.5 text-xs ${
+            showRhythms
+              ? "bg-gray-600 text-gray-100"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          ♪ rhythms
+        </button>
+      </div>
       {pages > 1 && (
         <div
           className="flex items-center justify-center gap-3 text-xs text-gray-400"
