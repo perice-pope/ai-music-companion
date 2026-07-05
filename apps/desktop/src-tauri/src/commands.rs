@@ -2288,6 +2288,9 @@ pub struct ExploreDto {
     pub chips: Vec<ChipSpec>,
     /// Roots as pitch classes in PLAY order — the RV colored cells (#278).
     pub root_pitch_classes: Vec<u8>,
+    /// The dot-staff view (#292): all theory (steps, spelling, accidentals)
+    /// computed here; the frontend renders geometry only.
+    pub staff: brain::score::cellstaff::CellStaffView,
 }
 
 /// Start (or restart) a free-play exploration from the live key. Reads the
@@ -2313,16 +2316,18 @@ pub fn start_explore_variation_impl(
         .scale
         .map(|m| m.scale.label().to_lowercase())
         .unwrap_or_else(|| "major".to_owned());
+    let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
     let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
         &seq,
         &seq.label,
-        brain::coach::key_signature_for(explore.tonic, &scale_label),
+        key.clone(),
     ));
     let dto = ExploreDto {
         label: seq.label.clone(),
         music_xml,
         chips,
         root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+        staff: brain::score::cellstaff::cell_staff_view(&seq, key),
     };
     *state
         .active_explore
@@ -2371,16 +2376,18 @@ pub fn apply_variation_delta_impl(
         .scale
         .map(|m| m.scale.label().to_lowercase())
         .unwrap_or_else(|| "major".to_owned());
+    let key = brain::coach::key_signature_for(next.tonic, &scale_label);
     let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
         &seq,
         &seq.label,
-        brain::coach::key_signature_for(next.tonic, &scale_label),
+        key.clone(),
     ));
     let dto = ExploreDto {
         label: seq.label.clone(),
         music_xml,
         chips,
         root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+        staff: brain::score::cellstaff::cell_staff_view(&seq, key),
     };
     *guard = Some(next);
     Ok(dto)

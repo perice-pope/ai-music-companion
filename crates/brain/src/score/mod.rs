@@ -5,6 +5,7 @@
 //! direction (serialising a `ScoreModel` back to MusicXML) lives in
 //! [`emit`] and is exposed via [`score_model_to_musicxml`].
 
+pub mod cellstaff;
 pub mod emit;
 pub mod midi;
 pub mod musicxml;
