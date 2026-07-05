@@ -77,9 +77,9 @@ pub struct MusicalContext {
 }
 
 /// One curated exemplar: a grounded connection plus its one-line "why".
-struct Exemplar {
-    connection: &'static str,
-    why: &'static str,
+pub(crate) struct Exemplar {
+    pub(crate) connection: &'static str,
+    pub(crate) why: &'static str,
 }
 
 const NOTE_NAMES: [&str; 12] = [
@@ -91,7 +91,7 @@ const NOTE_NAMES: [&str; 12] = [
 /// grounding is what keeps reveals honest. Returns the display label for the
 /// mode and its exemplars. Expand this table over time; an unknown mode yields
 /// no reveal (we never fabricate).
-fn curated_for(mode_normalized: &str) -> Option<(&'static str, &'static [Exemplar])> {
+pub(crate) fn curated_for(mode_normalized: &str) -> Option<(&'static str, &'static [Exemplar])> {
     match mode_normalized {
         "major" | "ionian" => Some((
             "Major",

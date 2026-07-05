@@ -130,6 +130,8 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
       throw new Error(
         "Exploring variations needs the desktop app — run `pnpm tauri dev`.",
       );
+    case "get_sound_mirror":
+      return { profile: null, sessions_seen: 0 };
     case "get_mastery_wheel":
       // Preview: an empty wheel (nothing practiced in the browser).
       return {

@@ -103,6 +103,12 @@ pub struct LearnerModel {
     /// as step 0 (gentlest).
     #[serde(default)]
     pub difficulty: u8,
+    /// The derived "your sound" snapshot (#258), written by
+    /// [`crate::mirror::derive_sound_profile`] at read time. Additive; blobs
+    /// from before this field existed load as `None`, and partial profiles
+    /// from other versions parse via per-field defaults.
+    #[serde(default)]
+    pub sound_profile: Option<crate::mirror::SoundProfile>,
     /// Per-key/scale mastery, keyed by [`mastery_key`]. Additive like
     /// `difficulty`.
     #[serde(default)]
@@ -122,6 +128,7 @@ impl Default for LearnerModel {
             version: LEARNER_MODEL_VERSION,
             collection: BTreeMap::new(),
             difficulty: 0,
+            sound_profile: None,
             key_mastery: BTreeMap::new(),
             updated_at_epoch_secs: 0,
             extra: serde_json::Map::new(),

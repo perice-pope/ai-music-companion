@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAudioStore, type InstrumentInfo } from "../stores/audioStore";
 import KeyWheel from "./KeyWheel";
+import SoundMirrorCard from "./SoundMirrorCard";
 import { usePracticeStore } from "../stores/practiceStore";
 import { PRACTICE_MODES } from "../types/brain";
 
@@ -239,9 +240,11 @@ export default function InstrumentSelector() {
           </p>
         )}
       </div>
-      {/* The 12-key mastery wheel (#256): the Learner Model made visible. */}
-      <div className="mt-8 flex justify-center">
+      {/* The Learner Model made visible: the 12-key wheel (#256) and the
+          "your sound" mirror (#258), side by side. */}
+      <div className="mt-8 flex flex-wrap items-start justify-center gap-8">
         <KeyWheel />
+        <SoundMirrorCard />
       </div>
     </section>
   );
