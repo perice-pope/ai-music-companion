@@ -2906,7 +2906,7 @@ pub fn submit_drill_impl(
                 source: "lesson",
                 label: &lesson.current.sequence.label,
                 spec: &lesson.current.spec,
-                seed: seed,
+                seed,
                 difficulty: lesson.current.difficulty,
                 tonic: lesson.current.tonic,
                 accuracy: Some(f64::from(score.accuracy)),
