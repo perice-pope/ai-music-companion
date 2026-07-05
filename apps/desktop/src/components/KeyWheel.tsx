@@ -94,7 +94,15 @@ export default function KeyWheel() {
     void (async () => {
       try {
         const view = await invoke<WheelViewDto>("get_mastery_wheel");
-        if (!cancelled) setWheel(view);
+        // Defensive shape check: render nothing rather than crash the whole
+        // selector if the payload is ever malformed (or, in tests, if a
+        // shared invoke mock hands back something foreign).
+        const valid =
+          view &&
+          Array.isArray(view.cells) &&
+          view.cells.length === 12 &&
+          view.cells.every((c) => typeof c?.tonic === "number");
+        if (!cancelled && valid) setWheel(view);
       } catch (err) {
         console.error("get_mastery_wheel failed:", err);
       }
