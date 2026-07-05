@@ -83,12 +83,21 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    vaguely / atonally and confirm **no** card pops up (that's expected)." (If a card never appears
    even on a steady, clearly-pitched passage, note that.)
 6. **🎲 Practice this sound (NEW)** — "When a reveal card is up, tap **'Practice this sound'** under
-   it. Sheet music should appear right there in free play — smaller and see-through, sitting on the
-   app background (not a big white page) — with a row of **colored note cells** showing the keys in
-   order, and up to three buttons like **'New keys 🎲'**, **'Make it spicy'**, **'Different scale'**.
-   Tap each one: does the music visibly change to match (new key order / harder & faster / a new
-   scale sound)? Does **'Back to listening'** return you to normal free play?"
-7. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
+   it. A slim staff of **colored dots (no stems!)** should appear right in free play, with a row of
+   **colored note cells** showing the keys in order, and up to three buttons like **'New keys 🎲'**,
+   **'Make it spicy'**, **'Different scale'**. Tap each one: does the music visibly change to match?
+   Does **'Back to listening'** return you to normal free play?"
+7. **Edit the notes (NEW)** — "While exploring: **tap any dot** — a gold ring appears with little
+   buttons (8va ↑/↓, ♯, ♭, ✕). **Drag a dot up or down** — it should snap to lines and spaces, and
+   when you let go, THE SAME change appears in **every key section** of the exercise. Try **↩ undo**
+   — does it bring back exactly what was there? Also tap **'♪ rhythms'** — stems appear on the same
+   dots without anything moving around; tap again, they vanish."
+8. **🎲 Work on my last lick (NEW — the big one)** — "Back in normal free play, play any short
+   melody you make up (5–10 notes), pause a beat, then hit **'Work on my last lick'**. Your OWN
+   melody should appear as colored dots, repeated through several different keys. Is it really what
+   you played? If a note is wrong, drag it to fix it — in every key at once. If you tap the button
+   before playing anything, it should politely say to play a phrase first (not crash)."
+9. **Mode difference** — "Switch the mode to **Warm-up** and play again. It should go quiet (no
    tips). Does it?"
 
 ### A2. The Guided Lesson 🎓 (the BIG new feature — "a private teacher")
@@ -176,9 +185,17 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 
 ### Explore / "Practice this sound" 🎲 (desktop only — NEW)
 - Tapping the reveal's button opened a variation in free play: <answer>
-- Colored note cells + see-through notation (no white page): <answer>
+- Colored STEMLESS dots on a slim staff (no white page): <answer>
 - Each chip visibly changed the music as named: <answer>
 - "Back to listening" returned to normal free play: <answer>
+
+### Editing + My Lick 🎼 (desktop only — NEW)
+- Tap-select showed the gold ring + little buttons: <answer>
+- Dragging a dot fixed the note in EVERY key section: <answer>
+- Undo restored exactly the previous version: <answer>
+- "♪ rhythms" added stems without moving anything: <answer>
+- "Work on my last lick" showed my own melody through the keys: <answer>
+- Tapping it before playing gave a polite message (no crash): <answer>
 
 ### Your Keys wheel 🎡 (desktop only — NEW)
 - Wheel visible on the picker; dim + "play to light up" before practicing: <answer>
