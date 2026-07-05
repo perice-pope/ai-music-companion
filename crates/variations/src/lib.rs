@@ -165,6 +165,13 @@ pub struct VariationSpec {
     /// before this field existed still parse.
     #[serde(default)]
     pub cell: Option<Vec<i8>>,
+    /// RV's pattern database (#289): 1-based scale-DEGREE indices applied
+    /// through the active scale (so `[1,2,3,5]` over C major = C D E G, over
+    /// C Dorian = C D Eb G). Degrees past the scale length extend into the
+    /// next octave (degree 9 of a 7-note scale = the 2nd, an octave up).
+    /// Precedence: cell > degrees > the scale's own pattern. Empty = ignored.
+    #[serde(default)]
+    pub degrees: Option<Vec<u8>>,
     pub scale: Option<ScaleModifier>,
     pub chord: Option<ChordModifier>,
     pub interval: Option<IntervalModifier>,
@@ -318,6 +325,19 @@ fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     }
 
     if let Some(s) = spec.scale {
+        // Degree pattern (#289): map each 1-based degree through the scale,
+        // octave-extending past its length. Shadows the scale's own pattern.
+        if let Some(pat) = spec.degrees.as_ref().filter(|d| !d.is_empty()) {
+            let ivs = s.scale.semitones();
+            return pat
+                .iter()
+                .map(|&d| {
+                    let z = usize::from(d.max(1)) - 1;
+                    let oct = (z / ivs.len()) as i16;
+                    root + i16::from(ivs[z % ivs.len()]) + 12 * oct
+                })
+                .collect();
+        }
         let degrees: Vec<i16> = s
             .scale
             .semitones()
@@ -428,6 +448,16 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
     let figure = if spec.cell.as_ref().is_some_and(|c| !c.is_empty()) {
         let n = spec.cell.as_ref().map(Vec::len).unwrap_or(0);
         format!("{first_root} · your {n}-note cell")
+    } else if let (Some(pat), Some(s)) = (
+        spec.degrees.as_ref().filter(|d| !d.is_empty()),
+        spec.scale.as_ref(),
+    ) {
+        let digits: Vec<String> = pat.iter().map(u8::to_string).collect();
+        format!(
+            "{first_root} {} · {} pattern",
+            s.scale.label(),
+            digits.join("-")
+        )
     } else if let Some(s) = spec.scale {
         format!("{first_root} {} · {}", s.scale.label(), s.pattern.label())
     } else if let Some(c) = spec.chord {
@@ -473,6 +503,7 @@ mod tests {
         VariationSpec {
             roots: vec![60], // C4
             cell: None,
+            degrees: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,
@@ -909,6 +940,46 @@ mod tests {
         for seed in 0..10 {
             assert_eq!(figure_roots(&generate(&spec, seed), 8), vec![60, 67]);
         }
+    }
+
+    /// #289: a degree pattern maps through the ACTIVE scale — `[1,2,3,5]`
+    /// spells major thirds in major and minor thirds in dorian — and degrees
+    /// past the scale length extend into the next octave. Fails if the
+    /// mapping goes chromatic or the octave extension breaks.
+    #[test]
+    fn degree_patterns_map_through_the_scale() {
+        let mut spec = base_spec();
+        spec.degrees = Some(vec![1, 2, 3, 5]);
+        assert_eq!(generate(&spec, 0).target_midi, vec![60, 62, 64, 67]);
+        spec.scale = Some(ScaleModifier {
+            scale: ScaleType::Dorian,
+            pattern: ScalePattern::Up,
+        });
+        assert_eq!(
+            generate(&spec, 0).target_midi,
+            vec![60, 62, 63, 67],
+            "the same pattern through Dorian flats the 3rd"
+        );
+        spec.degrees = Some(vec![1, 8, 9]); // octave + the 2nd above it
+        assert_eq!(generate(&spec, 0).target_midi, vec![60, 72, 74]);
+        assert!(generate(&spec, 0).label.contains("1-8-9 pattern"));
+    }
+
+    /// Precedence: a cell shadows degrees; empty degrees fall through to the
+    /// scale's own pattern.
+    #[test]
+    fn cell_shadows_degrees_and_empty_degrees_fall_through() {
+        let mut spec = base_spec();
+        spec.degrees = Some(vec![1, 2, 3, 5]);
+        spec.cell = Some(vec![0, 1]);
+        assert_eq!(generate(&spec, 0).target_midi, vec![60, 61]);
+        spec.cell = None;
+        spec.degrees = Some(vec![]);
+        assert_eq!(
+            generate(&spec, 0).target_midi,
+            vec![60, 62, 64, 65, 67, 69, 71, 72],
+            "empty degrees = the plain scale run"
+        );
     }
 
     /// The RV method's deepest primitive (#285): a custom cell — e.g. a lifted
