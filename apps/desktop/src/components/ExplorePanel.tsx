@@ -10,6 +10,7 @@ import CellStaff from "./CellStaff";
  */
 export default function ExplorePanel() {
   const explore = usePracticeStore((s) => s.explore);
+  const notice = usePracticeStore((s) => s.exploreNotice);
   const applyChip = usePracticeStore((s) => s.applyChip);
   const editNote = usePracticeStore((s) => s.editExploreNote);
   const undoEdit = usePracticeStore((s) => s.undoExploreEdit);
@@ -73,6 +74,15 @@ export default function ExplorePanel() {
         />
       </div>
 
+      {notice && (
+        <p
+          className="text-xs italic text-gray-400"
+          data-testid="explore-notice"
+          role="status"
+        >
+          {notice}
+        </p>
+      )}
       {/* The mutation chips — tapping one is the whole conversation. */}
       <div className="flex flex-wrap gap-2" data-testid="explore-chips">
         {explore.chips.map((chip) => (

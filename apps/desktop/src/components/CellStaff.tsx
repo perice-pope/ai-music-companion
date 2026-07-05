@@ -34,11 +34,23 @@ const WIDTH = 640;
 const LEFT_PAD = 56; // room for clef + key signature
 const RIGHT_PAD = 12;
 const HEIGHT = BOTTOM_Y + 4 * LINE_GAP; // headroom for ledger lines both ways
-/** The SINGLE source of truth for the svg viewBox vertical extent — stepPx's
- * drag quantization divides by this, so it must match the JSX exactly
- * (review M6: a mismatch skews every drag by the ratio). */
-const VIEWBOX_MIN_Y = -2 * LINE_GAP;
-const VIEWBOX_HEIGHT = HEIGHT + LINE_GAP;
+/** Default vertical extent; grows when notes ride ledger lines beyond it so
+ * an 8va-edited note can never vanish off-canvas (review must-fix). The
+ * computed value is shared with stepPx's drag quantization (review M6). */
+const DEFAULT_MIN_Y = -2 * LINE_GAP;
+const DEFAULT_MAX_Y = HEIGHT + LINE_GAP + DEFAULT_MIN_Y;
+
+/** ViewBox [minY, height] covering every visible step, with padding. */
+function viewBoxFor(steps: number[]): [number, number] {
+  const pad = LINE_GAP;
+  let minY = DEFAULT_MIN_Y;
+  let maxY = DEFAULT_MAX_Y;
+  for (const s of steps) {
+    minY = Math.min(minY, yFor(s) - pad);
+    maxY = Math.max(maxY, yFor(s) + pad);
+  }
+  return [minY, maxY - minY];
+}
 
 /** Staff steps carrying each sharp/flat of a treble key signature. */
 const SHARP_STEPS = [8, 5, 9, 6, 3, 7, 4];
@@ -196,21 +208,24 @@ export default function CellStaff({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const drag = useRef<{ index: number; startY: number } | null>(null);
   const cleanupDrag = useRef<(() => void) | null>(null);
+  /** Current viewBox height — drag math reads it via ref so window-level
+   * pointer handlers never close over a stale value. */
+  const vbHeightRef = useRef(DEFAULT_MAX_Y - DEFAULT_MIN_Y);
   // Unmount mid-drag must not leave window listeners firing stale closures.
   useEffect(() => () => cleanupDrag.current?.(), []);
 
   /** px per diatonic step at the rendered size (viewBox scaling). */
-  const stepPx = () => {
+  const stepPx = (vbHeight: number) => {
     const rect = svgRef.current?.getBoundingClientRect();
-    return rect && rect.height > 0
-      ? (rect.height / VIEWBOX_HEIGHT) * STEP
-      : STEP;
+    return rect && rect.height > 0 ? (rect.height / vbHeight) * STEP : STEP;
   };
   const dragSteps = (e: { clientY: number }) => {
     if (!drag.current || !Number.isFinite(e.clientY)) {
       return 0;
     }
-    return Math.round((drag.current.startY - e.clientY) / stepPx());
+    return Math.round(
+      (drag.current.startY - e.clientY) / stepPx(vbHeightRef.current),
+    );
   };
 
   const beginDrag = (index: number) => (e: React.PointerEvent) => {
@@ -277,6 +292,8 @@ export default function CellStaff({
       ({ n }) =>
         n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
     );
+  const [vbMinY, vbHeight] = viewBoxFor(visible.map(({ n }) => n.step));
+  vbHeightRef.current = vbHeight;
   const sigSteps =
     staff.fifths > 0
       ? SHARP_STEPS.slice(0, Math.min(staff.fifths, 7))
@@ -287,7 +304,7 @@ export default function CellStaff({
     <div className="flex flex-col gap-1" data-testid="cell-staff">
       <svg
         ref={svgRef}
-        viewBox={`0 ${VIEWBOX_MIN_Y} ${WIDTH} ${VIEWBOX_HEIGHT}`}
+        viewBox={`0 ${vbMinY} ${WIDTH} ${vbHeight}`}
         className="h-auto w-full"
         role="img"
         aria-label="Cell staff"
@@ -438,7 +455,10 @@ export default function CellStaff({
         >
           <button
             type="button"
-            onClick={() => setPage(Math.max(0, current - 1))}
+            onClick={() => {
+              setPage(Math.max(0, current - 1));
+              setSelected(null);
+            }}
             disabled={current === 0}
             className="rounded px-2 py-0.5 hover:bg-gray-700 disabled:opacity-30"
             aria-label="Previous measures"
@@ -450,7 +470,10 @@ export default function CellStaff({
           </span>
           <button
             type="button"
-            onClick={() => setPage(Math.min(pages - 1, current + 1))}
+            onClick={() => {
+              setPage(Math.min(pages - 1, current + 1));
+              setSelected(null);
+            }}
             disabled={current === pages - 1}
             className="rounded px-2 py-0.5 hover:bg-gray-700 disabled:opacity-30"
             aria-label="Next measures"

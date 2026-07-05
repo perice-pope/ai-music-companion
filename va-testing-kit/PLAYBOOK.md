@@ -60,16 +60,20 @@ most: **what the user sees in the practice modes**, and **uploading music + the 
 playing**. She'll need to make sound — humming or singing a few notes is totally fine.
 
 ### A. Practice modes & what she sees
-1. **Open it** — "Pick an instrument (or **Voice** if you'll hum/sing). Choose the **Practice** mode
-   for full coaching. Start a session — if macOS asks for the **microphone**, click **Allow**."
+1. **Open it** — "FIRST, from the picker screen, open **Connections & Privacy** and tell me whether
+   **'AI coaching narration'** is ON (the Back button there lands on the History page — just tap
+   back to the picker). Then pick an instrument (or **Voice** if you'll hum/sing), choose the
+   **Practice** mode, and start a session — if macOS asks for the **microphone**, click **Allow**.
+   Keep the app window **big / full-screen** — some cards live in a side column that hides when the
+   window is narrow."
 2. **It hears you** — "Hum or play a few steady notes. Does the big note + the pitch meter move and
    roughly match what you're singing? Does it feel quick or laggy?"
 3. **'I hear' strip** — "Look for an 'I hear' line. Does it show a tempo (like '120 BPM') and a key
    (like 'G major') while you play?"
-4. **Coaching tips** — first check the switch: "Open **Connections & Privacy** and tell me whether
-   **'AI coaching narration'** is ON." If it's OFF, tip cards are **expected to be absent** (that's
-   the offline mode, not a bug) — note the toggle state and move on. If it's ON: "Do small tip cards
-   slide in while you play? Read one to me — does it sound like helpful, sensible feedback?"
+4. **Coaching tips** — (you checked the switch in step 1) If **'AI coaching narration'** was OFF,
+   tip cards are **expected to be absent** (that's the offline mode, not a bug) — note the toggle
+   state and move on. If it was ON: "Do small tip cards slide in while you play? Read one to me —
+   does it sound like helpful, sensible feedback?"
    *(Heads-up: the amber **'In the wild'** cards are music **reveals**, not coaching tips — report
    them in the Reveals section, not here.)*
 5. **Reveals 🎵 (the new feature)** — "Keep playing in one clear key for a little while — a steady
@@ -123,35 +127,36 @@ While the session is running:
 
 ### A3. Your Keys wheel 🎡 (NEW)
 Back on the **instrument picker screen** (end the session or tap Done first):
-1. "Below the instruments there's a **colorful wheel of 12 keys**. Before you've practiced, it
-   should be dim and say **'play to light up'**. After your lesson, do the keys you drilled show
-   **brighter** than the rest? Tap a bright one — does a little card show your drills, best %, and
-   the scales you worked?"
+1. "Below the instruments there's a **colorful wheel of 12 keys**. When you first opened the app
+   today it was dim, saying **'play to light up'** (if you've practiced on this machine before,
+   some keys may already glow — that's your history, it remembers). After your lesson, do the keys
+   you drilled show **brighter** than the rest? Tap a bright one — does a little card show your
+   drills, best %, and the scales you worked?"
 2. "Do a second lesson, come back, and check the wheel again — did anything change?"
 
 ### B. Upload music & practice with it
 Open the samples folder for her so she can drag a file:
 `open "$HOME/amc/ai-music-companion/va-testing-kit/samples"`
 
-6. **Upload a score** — "Go back, click **Practice with Score**, and drag
+10. **Upload a score** — "Go back, click **Practice with Score**, and drag
    **sample-score-c-major-scale.musicxml** from the folder I just opened onto the drop area. Does
    sheet music appear? (If it asks which part, pick the only one.)"
-7. **Practice with it [#277 re-test]** — "Click **Start Practice with This Score**. You should see
+11. **Practice with it [#277 re-test]** — "Click **Start Practice with This Score**. You should see
    the sheet music with a moving cursor. Play or hum along — does the cursor follow you down the
    line?" **If the cursor doesn't move**, don't stop: keep the session going a moment, then run
    `grep -iE "follower|score-position" ~/amc/.desktop.log | tail -5` and paste the output into the
    report — the app now logs exactly which part went quiet (#279).
-8. **Upload a recording (bonus)** — "Back at the drop area, drag in
+12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
 
 ### C. The AI critique
-9. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
+13. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
    things like tone, how in-tune you were (a % or 'in tune'), tempo, plus **Strengths**, **Areas to
    work on**, and **Next time, try**? Is it specific and useful, or generic?"
-10. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful, specific
-    feedback on the music**? What was missing or wrong?"
-11. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
+14. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful,
+    specific feedback on the music**? What was missing or wrong?"
+15. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
 
 If the mic never reacts, or upload/critique errors out, just note it plainly in the report — don't
 troubleshoot with her.
