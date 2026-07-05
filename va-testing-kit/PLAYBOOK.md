@@ -112,6 +112,14 @@ While the session is running:
 5. **Escape hatch** — "Start one more lesson and tap **'End lesson'** mid-way — it should calmly
    return you to free play."
 
+### A3. Your Keys wheel 🎡 (NEW)
+Back on the **instrument picker screen** (end the session or tap Done first):
+1. "Below the instruments there's a **colorful wheel of 12 keys**. Before you've practiced, it
+   should be dim and say **'play to light up'**. After your lesson, do the keys you drilled show
+   **brighter** than the rest? Tap a bright one — does a little card show your drills, best %, and
+   the scales you worked?"
+2. "Do a second lesson, come back, and check the wheel again — did anything change?"
+
 ### B. Upload music & practice with it
 Open the samples folder for her so she can drag a file:
 `open "$HOME/amc/ai-music-companion/va-testing-kit/samples"`
@@ -171,6 +179,10 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Colored note cells + see-through notation (no white page): <answer>
 - Each chip visibly changed the music as named: <answer>
 - "Back to listening" returned to normal free play: <answer>
+
+### Your Keys wheel 🎡 (desktop only — NEW)
+- Wheel visible on the picker; dim + "play to light up" before practicing: <answer>
+- Keys brightened after lessons; tap-detail showed drills/%/scales: <answer>
 
 ### Guided Lesson 🎓 (desktop only — new feature)
 - Lesson started; sheet music + drill header shown: <answer>
