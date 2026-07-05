@@ -179,6 +179,7 @@ export type VariationDelta =
   | { kind: "reshuffle_roots" }
   | { kind: "bump_difficulty"; by: number }
   | { kind: "different_scale" }
+  | { kind: "try_pattern" }
   | { kind: "toggle_direction" };
 
 /** One tappable chip. Mirrors `brain::coach::ChipSpec`. */

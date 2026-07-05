@@ -205,6 +205,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let spec = VariationSpec {
                 roots,
                 cell: None,
+                degrees: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: if d >= 3 {
@@ -227,6 +228,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let spec = VariationSpec {
                 roots,
                 cell: None,
+                degrees: None,
                 scale: None,
                 chord: Some(ChordModifier {
                     chord,
@@ -250,6 +252,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let spec = VariationSpec {
                 roots,
                 cell: None,
+                degrees: None,
                 scale: None,
                 chord: None,
                 interval: Some(IntervalModifier {
@@ -270,6 +273,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
             let spec = VariationSpec {
                 roots,
                 cell: None,
+                degrees: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: ScalePattern::UpDown,
@@ -730,6 +734,9 @@ pub enum VariationDelta {
     BumpDifficulty { by: i8 },
     /// Swap to a different scale colour (seeded pick, never the current one).
     DifferentScale,
+    /// Pull a 4-note pattern from RV's pattern database (#289) — seeded pick,
+    /// never the current one; ties to whatever scale is active.
+    TryPattern,
     /// Forward ↔ reversed figures.
     ToggleDirection,
 }
@@ -855,10 +862,19 @@ pub fn suggest_chips(state: &ExploreState, model: &LearnerModel) -> Vec<ChipSpec
             delta: VariationDelta::BumpDifficulty { by: 1 },
         });
     }
-    chips.push(ChipSpec {
-        label: "Different scale".to_owned(),
-        delta: VariationDelta::DifferentScale,
-    });
+    // Slot 3 alternates by seed parity (the seed advances every rep), so both
+    // the scale palette and the pattern database stay reachable in <=3 chips.
+    if state.seed.is_multiple_of(2) {
+        chips.push(ChipSpec {
+            label: "Different scale".to_owned(),
+            delta: VariationDelta::DifferentScale,
+        });
+    } else {
+        chips.push(ChipSpec {
+            label: "Try a pattern 🎲".to_owned(),
+            delta: VariationDelta::TryPattern,
+        });
+    }
     if chips.len() < 3 {
         chips.push(ChipSpec {
             label: "Reverse it".to_owned(),
@@ -868,6 +884,19 @@ pub fn suggest_chips(state: &ExploreState, model: &LearnerModel) -> Vec<ChipSpec
     chips.truncate(3);
     chips
 }
+
+/// RV's pattern database (#289): classic 4-note degree patterns, named,
+/// ordered easy → hard. Each ties to ANY scale (degrees, not pitches).
+pub const DEGREE_PATTERNS: [(&str, [u8; 4]); 8] = [
+    ("1-2-3-5", [1, 2, 3, 5]),
+    ("1-2-3-4", [1, 2, 3, 4]),
+    ("5-3-2-1", [5, 3, 2, 1]),
+    ("1-3-2-4", [1, 3, 2, 4]),
+    ("1-3-5-3", [1, 3, 5, 3]),
+    ("3-2-1-5", [3, 2, 1, 5]),
+    ("1-4-3-2", [1, 4, 3, 2]),
+    ("5-6-5-3", [5, 6, 5, 3]),
+];
 
 /// Scales the `[Different scale]` chip cycles through, easy → exotic.
 const EXPLORE_SCALES: [ScaleType; 6] = [
@@ -931,6 +960,22 @@ pub fn apply_explore_delta(
                     .unwrap_or(ScaleType::Major);
                 m.scale = pick;
             }
+        }
+        VariationDelta::TryPattern => {
+            // Like DifferentScale, a pattern is "fresh material" vs a hand-
+            // edited cell — discard the cell (undo recovers it) and pull a
+            // pattern from the database, never the one already playing.
+            next.spec.cell = None;
+            let current = next.spec.degrees.clone();
+            let idx = (next.seed as usize) % DEGREE_PATTERNS.len();
+            let pick = DEGREE_PATTERNS
+                .iter()
+                .cycle()
+                .skip(idx)
+                .map(|(_, d)| d.to_vec())
+                .find(|d| Some(d) != current.as_ref())
+                .expect("database has >1 pattern");
+            next.spec.degrees = Some(pick);
         }
         VariationDelta::ToggleDirection => {
             next.spec.direction = match next.spec.direction {
@@ -1491,6 +1536,7 @@ mod tests {
         let spec = VariationSpec {
             roots: vec![60, 62],
             cell: None,
+            degrees: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,
@@ -1644,6 +1690,65 @@ mod tests {
             assert_eq!(shape, expected, "segment {seg} plays the player's lick");
         }
         assert!(seq.label.contains("4-note cell"), "got {}", seq.label);
+    }
+
+    // -----------------------------------------------------------------------
+    // #289 — the pattern database
+    // -----------------------------------------------------------------------
+
+    /// #289: the pattern chip is reachable (slot 3 alternates by seed parity
+    /// with the scale chip), and applying it pulls a database pattern that
+    /// ties to the active scale — never the one already playing.
+    #[test]
+    fn pattern_chip_alternates_and_applies_from_the_database() {
+        let model = LearnerModel::default();
+        let (mut state, _) = start_explore(0, "major", &model, 2); // even seed
+        let labels = |st: &ExploreState| -> Vec<String> {
+            suggest_chips(st, &model)
+                .iter()
+                .map(|c| c.label.clone())
+                .collect()
+        };
+        assert!(labels(&state).iter().any(|l| l.contains("Different scale")));
+        state.seed = 3; // odd
+        assert!(
+            labels(&state).iter().any(|l| l.contains("Try a pattern")),
+            "odd seeds offer the pattern chip: {:?}",
+            labels(&state)
+        );
+
+        let (with_pat, seq) = apply_explore_delta(&state, &VariationDelta::TryPattern);
+        let degrees = with_pat.spec.degrees.clone().expect("a pattern landed");
+        assert!(
+            DEGREE_PATTERNS.iter().any(|(_, d)| d.to_vec() == degrees),
+            "the pick comes from the database"
+        );
+        assert!(seq.label.contains("pattern"), "got {}", seq.label);
+        // Again: never the same pattern twice in a row.
+        let (with_pat2, _) = apply_explore_delta(&with_pat, &VariationDelta::TryPattern);
+        assert_ne!(with_pat2.spec.degrees, with_pat.spec.degrees);
+    }
+
+    /// #289 + #292: a pattern is "fresh material" vs a hand-edited cell (the
+    /// cell is discarded, undo recovers it), while [Different scale] KEEPS
+    /// the pattern — degrees ride any scale, that's the whole point.
+    #[test]
+    fn patterns_respect_cells_and_survive_scale_swaps() {
+        let model = LearnerModel::default();
+        let (state, _) = start_explore(0, "major", &model, 3);
+        let (edited, _) =
+            edit_explore_note(&state, 0, &NoteEdit::Octaves { by: 1 }, &c_major_key()).unwrap();
+        let cell = edited.spec.cell.clone().unwrap();
+        let (with_pat, _) = apply_explore_delta(&edited, &VariationDelta::TryPattern);
+        assert!(with_pat.spec.cell.is_none(), "pattern = fresh material");
+        let (back, _) = undo_explore_edit(&with_pat).unwrap();
+        assert_eq!(back.spec.cell, Some(cell), "undo recovers the cell");
+
+        let (swapped, _) = apply_explore_delta(&with_pat, &VariationDelta::DifferentScale);
+        assert_eq!(
+            swapped.spec.degrees, with_pat.spec.degrees,
+            "a scale swap keeps the degree pattern — it re-colors it"
+        );
     }
 
     // -----------------------------------------------------------------------
