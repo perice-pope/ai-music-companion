@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { NoteEdit } from "../types/brain";
 
 /** localStorage key for the device-local rhythm-layer preference. */
@@ -34,6 +34,11 @@ const WIDTH = 640;
 const LEFT_PAD = 56; // room for clef + key signature
 const RIGHT_PAD = 12;
 const HEIGHT = BOTTOM_Y + 4 * LINE_GAP; // headroom for ledger lines both ways
+/** The SINGLE source of truth for the svg viewBox vertical extent — stepPx's
+ * drag quantization divides by this, so it must match the JSX exactly
+ * (review M6: a mismatch skews every drag by the ratio). */
+const VIEWBOX_MIN_Y = -2 * LINE_GAP;
+const VIEWBOX_HEIGHT = HEIGHT + LINE_GAP;
 
 /** Staff steps carrying each sharp/flat of a treble key signature. */
 const SHARP_STEPS = [8, 5, 9, 6, 3, 7, 4];
@@ -181,14 +186,25 @@ export default function CellStaff({
   );
   const [selected, setSelected] = useState<number | null>(null);
   const [ghostSteps, setGhostSteps] = useState(0);
+  // The staff changed under us (chip, undo, new rep): a kept selection would
+  // silently retarget whatever note now holds that index — drop it.
+  useEffect(() => {
+    setSelected(null);
+    setGhostSteps(0);
+    drag.current = null;
+  }, [staff]);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const drag = useRef<{ index: number; startY: number } | null>(null);
+  const cleanupDrag = useRef<(() => void) | null>(null);
+  // Unmount mid-drag must not leave window listeners firing stale closures.
+  useEffect(() => () => cleanupDrag.current?.(), []);
 
   /** px per diatonic step at the rendered size (viewBox scaling). */
   const stepPx = () => {
     const rect = svgRef.current?.getBoundingClientRect();
-    const vbHeight = HEIGHT + 3 * LINE_GAP;
-    return rect && rect.height > 0 ? (rect.height / vbHeight) * STEP : STEP;
+    return rect && rect.height > 0
+      ? (rect.height / VIEWBOX_HEIGHT) * STEP
+      : STEP;
   };
   const dragSteps = (e: { clientY: number }) => {
     if (!drag.current || !Number.isFinite(e.clientY)) {
@@ -203,19 +219,25 @@ export default function CellStaff({
     drag.current = { index, startY: e.clientY };
     setGhostSteps(0);
     const move = (ev: PointerEvent) => setGhostSteps(dragSteps(ev));
-    const up = (ev: PointerEvent) => {
-      const by = dragSteps(ev);
+    const finish = (ev: PointerEvent | null) => {
+      const by = ev ? dragSteps(ev) : 0;
       const idx = drag.current?.index;
       drag.current = null;
       setGhostSteps(0);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      if (idx !== undefined && Number.isFinite(by) && by !== 0) {
+      window.removeEventListener("pointercancel", cancel);
+      cleanupDrag.current = null;
+      if (ev && idx !== undefined && Number.isFinite(by) && by !== 0) {
         onEditNote(idx, { kind: "staff_steps", by });
       }
     };
+    const up = (ev: PointerEvent) => finish(ev);
+    const cancel = () => finish(null); // touch-scroll etc.: no edit, no ghost
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    cleanupDrag.current = () => finish(null);
   };
 
   const act = (edit: NoteEdit) => {
@@ -265,7 +287,7 @@ export default function CellStaff({
     <div className="flex flex-col gap-1" data-testid="cell-staff">
       <svg
         ref={svgRef}
-        viewBox={`0 -${2 * LINE_GAP} ${WIDTH} ${HEIGHT + LINE_GAP}`}
+        viewBox={`0 ${VIEWBOX_MIN_Y} ${WIDTH} ${VIEWBOX_HEIGHT}`}
         className="h-auto w-full"
         role="img"
         aria-label="Cell staff"

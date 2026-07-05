@@ -3707,15 +3707,19 @@ mod tests {
         assert_ne!(next.music_xml, dto.music_xml, "a delta produces a new rep");
         assert!(next.chips.len() <= 3);
 
-        // #292 slice 3: an edit bakes the cell (can_undo flips on, the staff
-        // changes), and undo restores the exact prior rep.
-        assert!(!next.can_undo);
+        // #292 slice 3: chips and edits are both undo-able steps; an edit
+        // bakes the cell and undo restores the exact prior rep.
+        assert!(next.can_undo, "the chip itself is an undo-able step");
         let edited =
             edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
         assert!(edited.can_undo);
         assert_ne!(edited.staff, next.staff, "the edit changes the staff");
         let undone = undo_explore_edit_impl(&s).unwrap();
         assert_eq!(undone.staff, next.staff, "undo restores the prior rep");
+        // One more undo steps back over the CHIP to the very first rep…
+        let back_to_start = undo_explore_edit_impl(&s).unwrap();
+        assert_eq!(back_to_start.staff, dto.staff, "chips are undo-able too");
+        // …and only then is history exhausted.
         assert!(undo_explore_edit_impl(&s).is_err(), "history exhausted");
     }
 

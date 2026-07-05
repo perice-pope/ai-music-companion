@@ -211,3 +211,70 @@ describe("CellStaff — editing (#292 slice 3)", () => {
     expect(onUndo).toHaveBeenCalled();
   });
 });
+
+describe("CellStaff — review regressions", () => {
+  const three = () =>
+    view([
+      note({ midi: 60, step: -2 }),
+      note({ midi: 64, step: 0, start_beat: 1 }),
+      note({ midi: 67, step: 2, start_beat: 2 }),
+    ]);
+
+  // Review M6/G: drag quantization at a REAL render size — the px-per-step
+  // scale must divide by the actual viewBox height. At 2× render scale a
+  // 2-step drag is 20 real px; a mismatched constant would misquantize it.
+  it("quantizes drags correctly at a scaled render size", () => {
+    const onEdit = vi.fn();
+    render(<CellStaff staff={three()} onEditNote={onEdit} />);
+    const svg = document.querySelector("svg")!;
+    const vb = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const spy = vi
+      .spyOn(svg, "getBoundingClientRect")
+      .mockReturnValue({ height: vb[3] * 2, width: 1280 } as DOMRect);
+    fireEvent.pointerDown(screen.getByTestId("staff-note-60-0"), {
+      clientY: 200,
+    });
+    fireEvent.pointerUp(window, { clientY: 180 }); // 20px up at 2× = 2 steps
+    expect(onEdit).toHaveBeenCalledWith(0, { kind: "staff_steps", by: 2 });
+    spy.mockRestore();
+  });
+
+  // Review nice-to-have: when the staff changes (chip / undo / new rep), a
+  // kept selection would retarget an arbitrary note — it must clear instead.
+  it("clears the selection when the staff changes", () => {
+    const onEdit = vi.fn();
+    const { rerender } = render(
+      <CellStaff staff={three()} onEditNote={onEdit} />,
+    );
+    fireEvent.pointerDown(screen.getByTestId("staff-note-64-1"));
+    fireEvent.pointerUp(window);
+    expect(screen.getByTestId("staff-halo")).toBeInTheDocument();
+    rerender(
+      <CellStaff
+        staff={view([note({ midi: 62, step: -1 })])}
+        onEditNote={onEdit}
+      />,
+    );
+    expect(screen.queryByTestId("staff-halo")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("edit-actions")).not.toBeInTheDocument();
+  });
+
+  // Review nice-to-have: a cancelled pointer (touch scroll) ends the drag
+  // without editing.
+  it("pointercancel abandons the drag without an edit", () => {
+    const onEdit = vi.fn();
+    render(<CellStaff staff={three()} onEditNote={onEdit} />);
+    fireEvent.pointerDown(screen.getByTestId("staff-note-60-0"), {
+      clientY: 100,
+    });
+    fireEvent.pointerMove(window, { clientY: 60 });
+    fireEvent.pointerCancel(window);
+    expect(onEdit).not.toHaveBeenCalled();
+    // And a fresh drag afterwards still works.
+    fireEvent.pointerDown(screen.getByTestId("staff-note-60-0"), {
+      clientY: 100,
+    });
+    fireEvent.pointerUp(window, { clientY: 95 });
+    expect(onEdit).toHaveBeenCalledWith(0, { kind: "staff_steps", by: 1 });
+  });
+});
