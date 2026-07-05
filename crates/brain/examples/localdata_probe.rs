@@ -10,7 +10,7 @@
 use brain::coach::{lift_cell_from_pitch_track, start_explore_cell, suggest_chips, LIFT_MAX_NOTES};
 use brain::mirror::derive_sound_profile;
 use brain::score::cellstaff::cell_staff_view;
-use brain::store::{SessionStore, TasteProfile};
+use brain::store::SessionStore;
 use brain::wheel::build_wheel;
 
 fn main() {
@@ -57,7 +57,7 @@ fn main() {
     let taste = store
         .get_taste_profile("local")
         .expect("taste read")
-        .unwrap_or_else(TasteProfile::default);
+        .unwrap_or_default();
     match derive_sound_profile(&fingerprints, &taste, 0) {
         Some(p) => println!(
             "[mirror] {} sessions → lean {:?} feel {:?} conf {:.2} comparison {:?}",
