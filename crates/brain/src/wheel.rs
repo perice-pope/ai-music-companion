@@ -199,10 +199,21 @@ mod tests {
     /// shown honestly as Learning — the wheel re-checks, never trusts the flag.
     #[test]
     fn wheel_rechecks_a_stale_owned_flag() {
+        // Attempts leg: owned=true with too few attempts reads Learning.
         let mut m = drilled(&LearnerModel::default(), 0, "major", 0.5, 1);
         let key = crate::learner::mastery_key(0, "major");
         m.key_mastery.get_mut(&key).unwrap().owned = true; // lying flag
         assert_eq!(classify(&m.key_mastery[&key]), KeyState::Learning);
+
+        // Accuracy leg: owned=true, ENOUGH attempts, but a tanked EWMA — the
+        // wheel must still refuse the glow (a synced/tampered blob can't
+        // fake mastery past either gate).
+        let mut m2 = drilled(&LearnerModel::default(), 0, "major", 0.2, 3);
+        let entry = m2.key_mastery.get_mut(&key).unwrap();
+        entry.owned = true;
+        assert!(entry.attempts >= 3);
+        assert!(entry.accuracy_ewma < 0.5);
+        assert_eq!(classify(&m2.key_mastery[&key]), KeyState::Learning);
     }
 
     /// Cells aggregate across a root's modes: state is the BEST entry, scales

@@ -846,11 +846,13 @@ pub fn suggest_chips(state: &ExploreState, model: &LearnerModel) -> Vec<ChipSpec
             delta: VariationDelta::ReshuffleRoots,
         });
     }
-    let mastery = model
-        .key_mastery
-        .get(&crate::learner::mastery_key(state.tonic, "major"))
-        .or_else(|| model.key_mastery.values().next());
-    let struggling = mastery.is_some_and(|m| m.attempts > 0 && m.accuracy_ewma < STRUGGLING_EWMA);
+    // Struggling = ANY practiced mode on THIS tonic below the bar (mastery
+    // keys are "tonic:mode"; judging by an unrelated key's struggle would
+    // gate [Simpler] arbitrarily).
+    let tonic_prefix = format!("{}:", state.tonic % 12);
+    let struggling = model.key_mastery.iter().any(|(k, m)| {
+        k.starts_with(&tonic_prefix) && m.attempts > 0 && m.accuracy_ewma < STRUGGLING_EWMA
+    });
     if (struggling || state.difficulty >= MAX_DIFFICULTY) && state.difficulty > 0 {
         chips.push(ChipSpec {
             label: "Simpler".to_owned(),
@@ -935,12 +937,16 @@ pub fn apply_explore_delta(
             // tempo/roots/rest knobs still ramp meaningfully around a cell.
             let scale = next.spec.scale;
             let cell = next.spec.cell.take();
+            let degrees = next.spec.degrees.take();
             let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
                 m.scale = prev.scale;
             }
             next.spec.cell = cell;
+            // Degree patterns are the player's material too (#289) — they
+            // survive the ladder rebuild exactly like a hand-edited cell.
+            next.spec.degrees = degrees;
         }
         VariationDelta::DifferentScale => {
             // With a hand-edited cell the scale figure is shadowed (cell has
@@ -966,6 +972,14 @@ pub fn apply_explore_delta(
             // edited cell — discard the cell (undo recovers it) and pull a
             // pattern from the database, never the one already playing.
             next.spec.cell = None;
+            // Degrees need a scale to map through; give a default rather than
+            // silently no-op if explore ever seeds from scale-less material.
+            if next.spec.scale.is_none() {
+                next.spec.scale = Some(ScaleModifier {
+                    scale: ScaleType::Major,
+                    pattern: ScalePattern::Up,
+                });
+            }
             let current = next.spec.degrees.clone();
             let idx = (next.seed as usize) % DEGREE_PATTERNS.len();
             let pick = DEGREE_PATTERNS
@@ -1073,6 +1087,11 @@ fn hz_to_midi(hz: f64) -> Option<u8> {
 /// Start an exploration from a LIFTED cell (#285): the player's own phrase,
 /// rowed through the keys at their difficulty. The cell plays exactly as
 /// played (no enclosure/direction modifiers until they stack chips).
+/// A lifted lick always rows through at least this many keys — the method IS
+/// the transposition ("transpose it to 12 keys"); one key would demo nothing,
+/// and a fresh learner starts at difficulty 0 = 1 root.
+pub const LIFT_MIN_ROOTS: usize = 3;
+
 pub fn start_explore_cell(
     cell: Vec<i8>,
     tonic: u8,
@@ -1083,6 +1102,10 @@ pub fn start_explore_cell(
     state.spec.cell = Some(cell);
     state.spec.enclosure = None;
     state.spec.direction = DirectionMode::Forward;
+    if state.spec.roots.len() < LIFT_MIN_ROOTS {
+        state.spec.roots = roots_for(tonic, LIFT_MIN_ROOTS);
+        state.spec.randomize_roots = true; // the RV shuffle, from the start
+    }
     let sequence = generate(&state.spec, state.seed);
     (state, sequence)
 }
@@ -1782,6 +1805,58 @@ mod tests {
         assert_eq!(
             swapped.spec.degrees, with_pat.spec.degrees,
             "a scale swap keeps the degree pattern — it re-colors it"
+        );
+    }
+
+    /// Review must-fix regression: [Make it spicy] preserves a degree
+    /// PATTERN exactly like a hand-edited cell — the player's material never
+    /// silently vanishes on a difficulty chip.
+    #[test]
+    fn degrees_survive_a_difficulty_bump() {
+        let model = LearnerModel::default();
+        let (state, _) = start_explore(0, "major", &model, 3); // odd: pattern chip
+        let (with_pat, _) = apply_explore_delta(&state, &VariationDelta::TryPattern);
+        let degrees = with_pat.spec.degrees.clone().expect("pattern landed");
+        let (harder, seq) =
+            apply_explore_delta(&with_pat, &VariationDelta::BumpDifficulty { by: 1 });
+        assert_eq!(
+            harder.spec.degrees,
+            Some(degrees),
+            "a difficulty chip must never destroy the pattern"
+        );
+        assert!(seq.label.contains("pattern"), "got {}", seq.label);
+    }
+
+    /// Review must-fix regression (the flagship demo): a lifted lick rows
+    /// through SEVERAL keys even for a brand-new learner (difficulty 0 = one
+    /// root), because the method IS the transposition.
+    #[test]
+    fn a_fresh_learners_lick_still_rows_through_keys() {
+        let model = LearnerModel::default(); // difficulty 0
+        let (state, seq) = start_explore_cell(vec![0, 3, 2, 7], 2, &model, 11);
+        assert!(
+            seq.root_order.len() >= LIFT_MIN_ROOTS,
+            "got {} roots",
+            seq.root_order.len()
+        );
+        // And the reshuffle chip is on offer (roots > 1).
+        assert!(suggest_chips(&state, &model)
+            .iter()
+            .any(|c| c.delta == VariationDelta::ReshuffleRoots));
+    }
+
+    /// Mutation M1: a one-root row must NOT offer [New keys] — the chip would
+    /// do nothing.
+    #[test]
+    fn one_root_rows_offer_no_reshuffle_chip() {
+        let model = LearnerModel::default(); // difficulty 0 → 1 root
+        let (state, seq) = start_explore(0, "major", &model, 2);
+        assert_eq!(seq.root_order.len(), 1, "difficulty 0 is a one-root row");
+        assert!(
+            !suggest_chips(&state, &model)
+                .iter()
+                .any(|c| c.delta == VariationDelta::ReshuffleRoots),
+            "no reshuffle chip on a single root"
         );
     }
 

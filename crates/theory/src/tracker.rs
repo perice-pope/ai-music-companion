@@ -275,13 +275,18 @@ mod tests {
     #[test]
     fn alternating_seventh_pairs_do_not_flap_the_mode() {
         let mut t = KeyTracker::new();
-        feed_scale(&mut t, 0, Mode::Ionian, 8);
+        // A LIGHT C-major establishment (2 reps), then heavy alternating
+        // b7/natural-7 pairs — the volatile-profile case that demonstrably
+        // flaps at a same-tonic dwell below 3.
+        feed_scale(&mut t, 0, Mode::Ionian, 2);
         let start = t.current().unwrap();
         let mut flips = 0;
         let mut last = (start.tonic, start.mode);
-        for _ in 0..5 {
+        for _ in 0..8 {
             for pc in [10u8, 10, 11, 11] {
-                t.observe_pc(pc, 2.0);
+                t.observe_pc(pc, 4.0);
+                // Keep some tonal context so the reading stays committable.
+                t.observe_pc(0, 1.0);
                 let cur = t.current().unwrap();
                 if (cur.tonic, cur.mode) != last {
                     flips += 1;
