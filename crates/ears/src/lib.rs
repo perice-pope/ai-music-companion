@@ -24,8 +24,10 @@ pub mod retention;
 pub struct NoteInfo {
     /// MIDI note number (0–127, A4 = 69)
     pub midi_note: u8,
-    /// Name of the note (e.g. "A", "C#")
-    pub note_name: String,
+    /// Name of the note (e.g. "A", "C#"). `Cow` so the audio thread can borrow
+    /// from the static pitch-class table instead of allocating per frame;
+    /// serializes as a plain string, deserializes as owned.
+    pub note_name: std::borrow::Cow<'static, str>,
     /// Octave number (A4 is octave 4)
     pub octave: i8,
     /// Cents deviation from equal temperament, range (-50, 50]
@@ -66,15 +68,23 @@ mod tests {
             is_onset: true,
             note_info: Some(NoteInfo {
                 midi_note: 69,
-                note_name: "A".to_string(),
+                note_name: "A".into(),
                 octave: 4,
                 cents_deviation: 0.0,
             }),
         };
         let json = serde_json::to_string(&event).unwrap();
+        // The frontend reads `note_info.note_name` as a plain JSON string —
+        // the Cow must serialize transparently, not as an enum wrapper.
+        assert!(
+            json.contains(r#""note_name":"A""#),
+            "note_name must serialize as a plain string, got: {json}"
+        );
         let parsed: AudioEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.pitch_hz, Some(440.0));
         assert!(parsed.is_onset);
-        assert!(parsed.note_info.is_some());
+        let note = parsed.note_info.expect("note_info survives the roundtrip");
+        assert_eq!(note.note_name, "A");
+        assert_eq!(note.midi_note, 69);
     }
 }

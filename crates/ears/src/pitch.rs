@@ -146,7 +146,7 @@ impl PitchDetector {
                 let octave = (midi_note as i8 / 12) - 1;
                 NoteInfo {
                     midi_note,
-                    note_name: PITCH_CLASS_NAMES[pitch_class].to_string(),
+                    note_name: std::borrow::Cow::Borrowed(PITCH_CLASS_NAMES[pitch_class]),
                     octave,
                     cents_deviation: cents,
                 }
