@@ -107,10 +107,22 @@ jobs:
             echo "::warning::Invalid max_open_drafts='$THRESHOLD_RAW' (must be a non-negative integer). Falling back to 3."
             THRESHOLD=3
           fi
-          OPEN=$(gh pr list --draft --author '@me' --state open --json number -q 'length')
-          echo "Open agent draft PRs: $OPEN  (cap: $THRESHOLD)"
+          # Only FRESH drafts (updated in the last 7 days) count against the
+          # cap. A draft nobody has touched in a week is abandoned review
+          # debt, not queue-in-use — three stale June drafts silently starved
+          # every scheduled run for weeks (2026-07-06 incident) because the
+          # raw count never distinguished them. Stale drafts still exist and
+          # still want triage; they just don't block new work.
+          CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          OPEN=$(gh pr list --draft --author '@me' --state open --json updatedAt \
+            --jq "[.[] | select(.updatedAt > \"$CUTOFF\")] | length")
+          TOTAL=$(gh pr list --draft --author '@me' --state open --json number -q 'length')
+          echo "Open agent draft PRs: $TOTAL total, $OPEN fresh since $CUTOFF  (cap: $THRESHOLD)"
+          if [ "$TOTAL" -gt "$OPEN" ]; then
+            echo "::warning::$((TOTAL - OPEN)) stale draft PR(s) (>7 days untouched) are open but not counted — close or revive them."
+          fi
           if [ "$OPEN" -ge "$THRESHOLD" ]; then
-            echo "::notice::Skipping run — review queue full ($OPEN >= $THRESHOLD open drafts). Clear some PRs, then re-dispatch or wait for the next cron."
+            echo "::notice::Skipping run — review queue full ($OPEN >= $THRESHOLD fresh open drafts). Clear some PRs, then re-dispatch or wait for the next cron."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
