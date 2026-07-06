@@ -923,10 +923,7 @@ impl AppState {
     /// handle is taken out from under the lock *before* joining so the lock isn't
     /// held across the thread join.
     pub(crate) fn teardown_accompaniment(&self) {
-        let taken = self
-            .accompaniment
-            .lock_or_recover()
-            .take();
+        let taken = self.accompaniment.lock_or_recover().take();
         if let Some(accompaniment) = taken {
             accompaniment.output.stop();
         }
@@ -936,11 +933,7 @@ impl AppState {
     /// commands and `start_accompaniment` (so a pre-set override takes effect
     /// when a new band starts).
     fn apply_key_override_to_live_band(&self, ov: Option<(u8, bool)>) {
-        if let Some(band) = self
-            .accompaniment
-            .lock_or_recover()
-            .as_mut()
-        {
+        if let Some(band) = self.accompaniment.lock_or_recover().as_mut() {
             match ov {
                 Some((tonic, minor)) => band.driver.set_key_override(tonic, minor),
                 None => band.driver.clear_key_override(),
@@ -1039,9 +1032,7 @@ impl AppState {
         let duration_measures = model.measures.len();
         let music_xml = brain::score::emit::score_model_to_musicxml(&model);
 
-        let store = self
-            .score_store
-            .lock_or_recover();
+        let store = self.score_store.lock_or_recover();
         store
             .import(
                 title,
@@ -1085,9 +1076,7 @@ impl AppState {
         let composer = model.composer.clone();
         let duration_measures = model.measures.len();
 
-        let store = self
-            .score_store
-            .lock_or_recover();
+        let store = self.score_store.lock_or_recover();
         store
             .import(
                 title,
@@ -1585,9 +1574,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             .unwrap_or(0),
     );
     // Exploration is session-scoped too (#255) — clear it with the session.
-    *state
-        .active_explore
-        .lock_or_recover() = None;
+    *state.active_explore.lock_or_recover() = None;
     let mut session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
 
@@ -1653,9 +1640,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             // and a recap the user is waiting on must never be sunk by a
             // persistence failure — so we log and carry on rather than erroring.
             {
-                let store = state
-                    .session_store
-                    .lock_or_recover();
+                let store = state.session_store.lock_or_recover();
                 if let Err(e) = store.save(
                     completed.id,
                     completed.started_at,
@@ -1772,9 +1757,7 @@ pub fn get_session_history_impl(
     start_date: Option<DateTime<Utc>>,
     end_date: Option<DateTime<Utc>>,
 ) -> Result<Vec<SessionSummaryDto>, CommandError> {
-    let store = state
-        .session_store
-        .lock_or_recover();
+    let store = state.session_store.lock_or_recover();
     let sessions = if let Some(instrument) = instrument_filter {
         store.list_by_instrument(Some(&instrument))?
     } else if start_date.is_some() || end_date.is_some() {
@@ -1795,10 +1778,7 @@ pub fn get_session_detail_impl(
     use brain::session::SessionId;
     let id = SessionId::from_str(&session_id)
         .map_err(|_| CommandError::Store(brain::store::StoreError::NotFound(session_id)))?;
-    let session = state
-        .session_store
-        .lock_or_recover()
-        .load(id)?;
+    let session = state.session_store.lock_or_recover().load(id)?;
     Ok(StoredSessionDto::from(session))
 }
 
@@ -1835,9 +1815,7 @@ pub fn record_reveal_impl(
     connection: &str,
     now_epoch_secs: i64,
 ) -> Result<usize, CommandError> {
-    let store = state
-        .session_store
-        .lock_or_recover();
+    let store = state.session_store.lock_or_recover();
     let current = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
         .unwrap_or_default();
@@ -1848,10 +1826,7 @@ pub fn record_reveal_impl(
 
 /// Pure implementation of `get_practice_stats`.
 pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, CommandError> {
-    let all_sessions = state
-        .session_store
-        .lock_or_recover()
-        .list_recent(10000)?;
+    let all_sessions = state.session_store.lock_or_recover().list_recent(10000)?;
     let stats = PracticeStats::calculate(&all_sessions, Utc::now());
     Ok(PracticeStatsDto::from(stats))
 }
@@ -2132,9 +2107,7 @@ pub async fn start_accompaniment<R: Runtime>(
     }
     // The slot is guaranteed empty (we just tore down under the cmd lock), so
     // this assignment never drops a live `AudioOutput` while holding the lock.
-    *state
-        .accompaniment
-        .lock_or_recover() = Some(accompaniment);
+    *state.accompaniment.lock_or_recover() = Some(accompaniment);
 
     emit_accompaniment_status(&app, true);
     Ok(())
@@ -2373,9 +2346,7 @@ pub fn start_explore_variation_impl(
     let (explore, seq) = start_explore(tonic, mode, &model, seed);
     let dto = explore_dto(&explore, &seq, &model);
     {
-        let store = state
-            .session_store
-            .lock_or_recover();
+        let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2389,9 +2360,7 @@ pub fn start_explore_variation_impl(
             },
         );
     }
-    *state
-        .active_explore
-        .lock_or_recover() = Some(explore);
+    *state.active_explore.lock_or_recover() = Some(explore);
     Ok(dto)
 }
 
@@ -2420,18 +2389,14 @@ pub fn apply_variation_delta_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let mut guard = state
-        .active_explore
-        .lock_or_recover();
+    let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let (next, seq) = apply_explore_delta(current, &delta);
     let dto = explore_dto(&next, &seq, &model);
     {
-        let store = state
-            .session_store
-            .lock_or_recover();
+        let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2480,9 +2445,7 @@ pub fn get_learner_model_blob(
 /// The 12-key mastery wheel (#256): a pure snapshot over the Learner Model +
 /// recent fingerprint history. Read-only; fetched on screen mount.
 pub fn get_mastery_wheel_impl(state: &AppState) -> Result<brain::wheel::WheelView, CommandError> {
-    let store = state
-        .session_store
-        .lock_or_recover();
+    let store = state.session_store.lock_or_recover();
     let model = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
         .unwrap_or_default();
@@ -2517,9 +2480,7 @@ pub struct SoundMirrorDto {
 /// Derive the sound mirror from stored fingerprints + taste, persist the
 /// snapshot on the Learner Model (F2's reserved field), and return it.
 pub fn get_sound_mirror_impl(state: &AppState, now: i64) -> Result<SoundMirrorDto, CommandError> {
-    let store = state
-        .session_store
-        .lock_or_recover();
+    let store = state.session_store.lock_or_recover();
     // Recent measured sessions, oldest → newest (mirrors the wheel's trends).
     const MIRROR_SESSIONS: usize = 30;
     let mut fingerprints: Vec<brain::fingerprint::MusicalFingerprint> = store
@@ -2567,9 +2528,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let lifted = {
-        let phrases = state
-            .phrase_buffer
-            .lock_or_recover();
+        let phrases = state.phrase_buffer.lock_or_recover();
         // Most recent phrase that yields a real cell wins.
         phrases.iter().rev().find_map(|p| {
             brain::coach::lift_cell_from_pitch_track(
@@ -2583,9 +2542,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     let (explore, seq) = brain::coach::start_explore_cell(cell, first_midi % 12, &model, seed);
     let dto = explore_dto(&explore, &seq, &model);
     {
-        let store = state
-            .session_store
-            .lock_or_recover();
+        let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2599,9 +2556,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
             },
         );
     }
-    *state
-        .active_explore
-        .lock_or_recover() = Some(explore);
+    *state.active_explore.lock_or_recover() = Some(explore);
     Ok(dto)
 }
 
@@ -2628,9 +2583,7 @@ pub fn edit_explore_note_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let mut guard = state
-        .active_explore
-        .lock_or_recover();
+    let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
@@ -2658,9 +2611,7 @@ pub fn undo_explore_edit_impl(state: &AppState) -> Result<ExploreDto, String> {
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let mut guard = state
-        .active_explore
-        .lock_or_recover();
+    let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
@@ -2678,9 +2629,7 @@ pub fn undo_explore_edit(state: State<'_, AppState>) -> Result<ExploreDto, Strin
 /// Stop exploring (nothing persisted).
 #[tauri::command]
 pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
-    *state
-        .active_explore
-        .lock_or_recover() = None;
+    *state.active_explore.lock_or_recover() = None;
     Ok(())
 }
 
@@ -2780,11 +2729,7 @@ const DRILL_MIN_PITCH_RUN: usize = 3;
 /// build drill 0, and mark the phrase buffer. Pure logic lives in
 /// `brain::coach`; this wires state + persistence.
 pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, CommandError> {
-    if state
-        .active_lesson
-        .lock_or_recover()
-        .is_some()
-    {
+    if state.active_lesson.lock_or_recover().is_some() {
         return Err(CommandError::LessonActive);
     }
     let model = state
@@ -2800,13 +2745,8 @@ pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, C
     };
     let first = build_first(&spec, &model);
     let dto = drill_dto(&first, spec.drill_count);
-    let phrase_mark = state
-        .phrase_buffer
-        .lock_or_recover()
-        .len();
-    *state
-        .active_lesson
-        .lock_or_recover() = Some(ActiveLesson {
+    let phrase_mark = state.phrase_buffer.lock_or_recover().len();
+    *state.active_lesson.lock_or_recover() = Some(ActiveLesson {
         spec,
         current: first,
         completed: Vec::new(),
@@ -2827,17 +2767,13 @@ pub fn submit_drill_impl(
     state: &AppState,
     now_epoch_secs: i64,
 ) -> Result<LessonStepDto, CommandError> {
-    let mut lesson_guard = state
-        .active_lesson
-        .lock_or_recover();
+    let mut lesson_guard = state.active_lesson.lock_or_recover();
     let lesson = lesson_guard.as_mut().ok_or(CommandError::NotActive)?;
 
     // What was played for this drill: the pitch track + onset count across the
     // phrases completed since the drill began.
     let (pitches, onsets) = {
-        let buf = state
-            .phrase_buffer
-            .lock_or_recover();
+        let buf = state.phrase_buffer.lock_or_recover();
         let slice = &buf[lesson.phrase_mark.min(buf.len())..];
         let pitches: Vec<f64> = slice
             .iter()
@@ -2863,9 +2799,7 @@ pub fn submit_drill_impl(
     // Exercise log (#252 self-improvement): the graded outcome for what the
     // engine dealt — the evidence "which exercises are good" feeds on.
     {
-        let store = state
-            .session_store
-            .lock_or_recover();
+        let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2885,10 +2819,7 @@ pub fn submit_drill_impl(
             let dto = drill_dto(&next, lesson.spec.drill_count);
             let completed = std::mem::replace(&mut lesson.current, next);
             lesson.completed.push((completed, score));
-            lesson.phrase_mark = state
-                .phrase_buffer
-                .lock_or_recover()
-                .len();
+            lesson.phrase_mark = state.phrase_buffer.lock_or_recover().len();
             Ok(LessonStepDto {
                 seed,
                 score: Some(score_dto),
@@ -2903,9 +2834,7 @@ pub fn submit_drill_impl(
             let mut drills = lesson.completed.clone();
             drills.push((lesson.current.clone(), score));
             {
-                let store = state
-                    .session_store
-                    .lock_or_recover();
+                let store = state.session_store.lock_or_recover();
                 let model = store
                     .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
                     .unwrap_or_default();
@@ -2929,17 +2858,12 @@ pub fn submit_drill_impl(
 /// nothing is persisted. Persistence at teardown is best-effort: a store error
 /// is logged, never surfaced as a crash.
 pub fn end_lesson_impl(state: &AppState, now_epoch_secs: i64) {
-    let taken = state
-        .active_lesson
-        .lock_or_recover()
-        .take();
+    let taken = state.active_lesson.lock_or_recover().take();
     let Some(lesson) = taken else { return };
     if lesson.completed.is_empty() {
         return;
     }
-    let store = state
-        .session_store
-        .lock_or_recover();
+    let store = state.session_store.lock_or_recover();
     let persisted = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map(Option::unwrap_or_default)
@@ -3116,9 +3040,7 @@ pub fn import_score(
     part_index: usize,
     duration_measures: usize,
 ) -> Result<ScoreLibraryEntryDto, String> {
-    let score_store = state
-        .score_store
-        .lock_or_recover();
+    let score_store = state.score_store.lock_or_recover();
     let entry = score_store
         .import(
             title,
@@ -3382,9 +3304,7 @@ pub fn recognize_pdf_score<R: Runtime>(
 /// List all scores in the library.
 #[tauri::command]
 pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDto>, String> {
-    let score_store = state
-        .score_store
-        .lock_or_recover();
+    let score_store = state.score_store.lock_or_recover();
     let entries = score_store.list().map_err(|e| e.to_string())?;
     Ok(entries.into_iter().map(|e| e.into()).collect())
 }
@@ -3396,9 +3316,7 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
     // `uuid` isn't a direct dependency of this crate, so naming its error
     // type won't resolve, but the inferred error still impls `Display`.
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
-    let score_store = state
-        .score_store
-        .lock_or_recover();
+    let score_store = state.score_store.lock_or_recover();
     let entry = score_store.get(score_id).map_err(|e| e.to_string())?;
     Ok(LoadedScoreDto {
         music_xml: entry.music_xml.clone(),
@@ -3412,9 +3330,7 @@ pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String
     // See `get_score`: turbofish pins the parse target without naming the
     // non-direct-dependency `uuid::Error` type.
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
-    let score_store = state
-        .score_store
-        .lock_or_recover();
+    let score_store = state.score_store.lock_or_recover();
     score_store.delete(score_id).map_err(|e| e.to_string())?;
     Ok(())
 }
