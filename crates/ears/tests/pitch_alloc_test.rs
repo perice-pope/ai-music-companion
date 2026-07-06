@@ -3,10 +3,12 @@
 //! The audio-thread rule (CLAUDE.md) is: NEVER allocate in the real-time path.
 //! `PitchDetector::detect()` documents "zero heap allocations" — but hotspot
 //! #245 found it allocating a fresh `String` for every detected frame's
-//! `note_name`. This test installs a global allocator that counts allocations
-//! and asserts the steady-state detect loop — voiced frames (which build
-//! `NoteInfo`), silence frames, and the silence→sound transition — performs
-//! **zero** of them, so the regression can't come back.
+//! `note_name`. This test installs a global allocator that counts allocator
+//! traffic (alloc, realloc, AND dealloc — free takes the same lock) and
+//! asserts the detect loop — voiced frames (which build `NoteInfo`), silence
+//! frames, and the silence→sound transition — performs **zero** of it, both
+//! in steady state and on the very first call, so the regression can't come
+//! back and can't hide behind a lazy one-time init.
 //!
 //! Counting is **per-thread**: the `GlobalAlloc` is process-global and runs on
 //! every thread (including libtest's own harness thread, which allocates
@@ -47,6 +49,9 @@ unsafe impl GlobalAlloc for CountingAlloc {
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // free() on the audio thread is as forbidden as malloc(): both take
+        // the allocator lock. Count it too.
+        note_alloc();
         System.dealloc(ptr, layout);
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -107,5 +112,34 @@ fn detect_does_not_allocate_in_steady_state() {
         allocs, 0,
         "analysis path allocated {allocs} times across the detect loop; \
          detect() is documented audio-thread-safe and must never allocate (#245)"
+    );
+}
+
+#[test]
+fn first_detect_call_does_not_allocate() {
+    // The steady-state test warms up before counting, so a lazy one-time
+    // allocation inside detect() (e.g. a OnceLock init) would slip past it.
+    // The contract is unconditional: construction may allocate, the first
+    // detect() call may not.
+    let mut detector = PitchDetector::new(PitchConfig::default()).unwrap();
+    let tone = generate_sine(440.0, 44100, detector.window_size());
+    let silence = vec![0.0f32; detector.window_size()];
+
+    COUNTING.with(|c| c.set(true));
+    let first = detector.detect(&tone);
+    let first_voiced = first.note_info.is_some();
+    detector.detect(&silence);
+    let reentry_voiced = detector.detect(&tone).note_info.is_some();
+    COUNTING.with(|c| c.set(false));
+
+    assert!(
+        first_voiced && reentry_voiced,
+        "cold-start guard must exercise the NoteInfo-building path"
+    );
+    let allocs = ALLOC_COUNT.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "first detect() calls allocated {allocs} times; the zero-alloc \
+         contract has no warm-up exemption (#245)"
     );
 }
