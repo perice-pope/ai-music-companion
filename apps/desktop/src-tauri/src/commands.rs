@@ -567,6 +567,26 @@ impl ActiveSession {
     }
 }
 
+/// Lock a `std::sync::Mutex`, recovering the data if a previous holder
+/// panicked instead of propagating the poison.
+///
+/// Every std mutex in [`AppState`] guards state that stays valid at any
+/// commit point a panic could interrupt (a store handle, an `Option` of
+/// session-scoped state, a buffer of complete phrases) — so the
+/// last-written value is always safe to keep serving. Propagating the
+/// poison instead would turn one panic under a lock into a permanent
+/// crash of every later history/taste/lesson command (#246).
+trait LockRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockRecover<T> for std::sync::Mutex<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Global backend state held via `tauri::Manager`.
 ///
 /// `Mutex<Option<ActiveSession>>` guarantees at most one session exists
@@ -905,8 +925,7 @@ impl AppState {
     pub(crate) fn teardown_accompaniment(&self) {
         let taken = self
             .accompaniment
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_or_recover()
             .take();
         if let Some(accompaniment) = taken {
             accompaniment.output.stop();
@@ -919,8 +938,7 @@ impl AppState {
     fn apply_key_override_to_live_band(&self, ov: Option<(u8, bool)>) {
         if let Some(band) = self
             .accompaniment
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_or_recover()
             .as_mut()
         {
             match ov {
@@ -933,19 +951,19 @@ impl AppState {
     /// Pin the band to a specific key (the user correcting the auto-read, or
     /// "locking" the currently-shown key — both are a concrete key).
     pub(crate) fn set_key_override(&self, tonic: u8, minor: bool) {
-        *self.key_override.lock().unwrap_or_else(|p| p.into_inner()) = Some((tonic, minor));
+        *self.key_override.lock_or_recover() = Some((tonic, minor));
         self.apply_key_override_to_live_band(Some((tonic, minor)));
     }
 
     /// Resume automatic key-following; also reset on session end.
     pub(crate) fn clear_key_override(&self) {
-        *self.key_override.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.key_override.lock_or_recover() = None;
         self.apply_key_override_to_live_band(None);
     }
 
     /// The current key override, applied when a new band starts.
     fn current_key_override(&self) -> Option<(u8, bool)> {
-        *self.key_override.lock().unwrap_or_else(|p| p.into_inner())
+        *self.key_override.lock_or_recover()
     }
 
     /// Build a [`ScoreFollower`] for the given score id by loading its
@@ -965,13 +983,7 @@ impl AppState {
             }
         };
         let (music_xml, part_index) = {
-            let store = match self.score_store.lock() {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "score store lock poisoned; no follower");
-                    return None;
-                }
-            };
+            let store = self.score_store.lock_or_recover();
             match store.get(id) {
                 Ok(entry) => (entry.music_xml, entry.part_index),
                 Err(e) => {
@@ -990,11 +1002,11 @@ impl AppState {
     }
 
     /// Look up a score's title by id for recap context. Returns `None` on
-    /// a bad id, a lock failure, or an unknown score — all non-fatal: the
-    /// session simply falls back to free-play recap framing.
+    /// a bad id or an unknown score — both non-fatal: the session simply
+    /// falls back to free-play recap framing.
     fn score_title_for(&self, score_id: &str) -> Option<String> {
         let id: ScoreId = score_id.parse().ok()?;
-        let store = self.score_store.lock().ok()?;
+        let store = self.score_store.lock_or_recover();
         store.get(id).ok().map(|entry| entry.title)
     }
 
@@ -1029,8 +1041,7 @@ impl AppState {
 
         let store = self
             .score_store
-            .lock()
-            .map_err(|e| format!("lock error: {e}"))?;
+            .lock_or_recover();
         store
             .import(
                 title,
@@ -1076,8 +1087,7 @@ impl AppState {
 
         let store = self
             .score_store
-            .lock()
-            .map_err(|e| format!("lock error: {e}"))?;
+            .lock_or_recover();
         store
             .import(
                 title,
@@ -1577,8 +1587,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     // Exploration is session-scoped too (#255) — clear it with the session.
     *state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned") = None;
+        .lock_or_recover() = None;
     let mut session = taken.expect("session was Some under the lock we just took");
     let generator = Arc::clone(&state.recap_generator);
 
@@ -1589,11 +1598,8 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     // buffer now holds the complete set including the final flushed phrase.
     // Without this the recorder is empty and the recap is always the
     // "you didn't play" empty state regardless of how much was played (#185).
-    let detected_phrases: Vec<PhraseSummary> = state
-        .phrase_buffer
-        .lock()
-        .map(|mut buf| std::mem::take(&mut *buf))
-        .unwrap_or_default();
+    let detected_phrases: Vec<PhraseSummary> =
+        std::mem::take(&mut *state.phrase_buffer.lock_or_recover());
     for phrase in detected_phrases {
         if let Err(e) = session.recorder.record_phrase(phrase) {
             tracing::warn!(error = %e, "could not record a detected phrase into the session");
@@ -1618,8 +1624,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     // and connections (profile-driven) are complementary and both flow through.
     let taste_profile = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)
         .ok()
         .flatten();
@@ -1650,8 +1655,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             {
                 let store = state
                     .session_store
-                    .lock()
-                    .expect("session store mutex poisoned");
+                    .lock_or_recover();
                 if let Err(e) = store.save(
                     completed.id,
                     completed.started_at,
@@ -1770,8 +1774,7 @@ pub fn get_session_history_impl(
 ) -> Result<Vec<SessionSummaryDto>, CommandError> {
     let store = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned");
+        .lock_or_recover();
     let sessions = if let Some(instrument) = instrument_filter {
         store.list_by_instrument(Some(&instrument))?
     } else if start_date.is_some() || end_date.is_some() {
@@ -1794,8 +1797,7 @@ pub fn get_session_detail_impl(
         .map_err(|_| CommandError::Store(brain::store::StoreError::NotFound(session_id)))?;
     let session = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .load(id)?;
     Ok(StoredSessionDto::from(session))
 }
@@ -1808,8 +1810,7 @@ pub fn get_session_detail_impl(
 pub fn get_taste_profile_impl(state: &AppState) -> Result<TasteProfile, CommandError> {
     let stored = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_taste_profile(LOCAL_TASTE_PROFILE_USER_ID)?;
     Ok(stored.unwrap_or_default())
 }
@@ -1818,8 +1819,7 @@ pub fn get_taste_profile_impl(state: &AppState) -> Result<TasteProfile, CommandE
 pub fn set_taste_profile_impl(state: &AppState, profile: TasteProfile) -> Result<(), CommandError> {
     state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .upsert_taste_profile(LOCAL_TASTE_PROFILE_USER_ID, &profile)?;
     Ok(())
 }
@@ -1837,8 +1837,7 @@ pub fn record_reveal_impl(
 ) -> Result<usize, CommandError> {
     let store = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned");
+        .lock_or_recover();
     let current = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
         .unwrap_or_default();
@@ -1851,8 +1850,7 @@ pub fn record_reveal_impl(
 pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, CommandError> {
     let all_sessions = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .list_recent(10000)?;
     let stats = PracticeStats::calculate(&all_sessions, Utc::now());
     Ok(PracticeStatsDto::from(stats))
@@ -1930,9 +1928,7 @@ pub async fn start_practice_session<R: Runtime>(
                 let idiom_buffer = state.idiom_buffer.clone();
                 // Fresh phrase buffer too — the worker fills it as phrases close
                 // so end_practice_session can record them into the recap (#185).
-                if let Ok(mut buf) = state.phrase_buffer.lock() {
-                    buf.clear();
-                }
+                state.phrase_buffer.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
@@ -1954,12 +1950,10 @@ pub async fn start_practice_session<R: Runtime>(
                         // the event is moved into the emit. Lock is uncontended
                         // (processing thread only) and never touches the realtime
                         // callback.
-                        if let Ok(mut guard) = accomp_for_event.lock() {
-                            if let Some(accompaniment) = guard.as_mut() {
-                                accompaniment
-                                    .driver
-                                    .observe_event(event.is_onset, event.timestamp_secs);
-                            }
+                        if let Some(accompaniment) = accomp_for_event.lock_or_recover().as_mut() {
+                            accompaniment
+                                .driver
+                                .observe_event(event.is_onset, event.timestamp_secs);
                         }
                         // Update perception and emit a throttled snapshot so the
                         // UI shows live tempo/key/feel as the player plays.
@@ -1976,15 +1970,13 @@ pub async fn start_practice_session<R: Runtime>(
                     move |phrase| {
                         // Buffer a copy for the recap (drained into the recorder
                         // at session end), then emit to the UI for live display.
-                        if let Ok(mut buf) = phrase_buffer.lock() {
-                            buf.push(phrase.clone());
-                        }
+                        phrase_buffer.lock_or_recover().push(phrase.clone());
                         // Retune the band when this phrase carries a confident key.
                         if let Some(key) = phrase.key.as_ref() {
-                            if let Ok(mut guard) = accomp_for_phrase.lock() {
-                                if let Some(accompaniment) = guard.as_mut() {
-                                    accompaniment.driver.observe_key(key);
-                                }
+                            if let Some(accompaniment) =
+                                accomp_for_phrase.lock_or_recover().as_mut()
+                            {
+                                accompaniment.driver.observe_key(key);
                             }
                         }
                         emit_phrase_detected(&app_for_phrase, phrase);
@@ -2142,8 +2134,7 @@ pub async fn start_accompaniment<R: Runtime>(
     // this assignment never drops a live `AudioOutput` while holding the lock.
     *state
         .accompaniment
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some(accompaniment);
+        .lock_or_recover() = Some(accompaniment);
 
     emit_accompaniment_status(&app, true);
     Ok(())
@@ -2375,8 +2366,7 @@ pub fn start_explore_variation_impl(
 ) -> Result<ExploreDto, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
@@ -2385,8 +2375,7 @@ pub fn start_explore_variation_impl(
     {
         let store = state
             .session_store
-            .lock()
-            .expect("session store mutex poisoned");
+            .lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2402,8 +2391,7 @@ pub fn start_explore_variation_impl(
     }
     *state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned") = Some(explore);
+        .lock_or_recover() = Some(explore);
     Ok(dto)
 }
 
@@ -2428,15 +2416,13 @@ pub fn apply_variation_delta_impl(
 ) -> Result<ExploreDto, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let mut guard = state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned");
+        .lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
@@ -2445,8 +2431,7 @@ pub fn apply_variation_delta_impl(
     {
         let store = state
             .session_store
-            .lock()
-            .expect("session store mutex poisoned");
+            .lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2481,8 +2466,7 @@ pub fn get_learner_model_blob(
 ) -> Result<Option<serde_json::Value>, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?;
     match model {
@@ -2498,8 +2482,7 @@ pub fn get_learner_model_blob(
 pub fn get_mastery_wheel_impl(state: &AppState) -> Result<brain::wheel::WheelView, CommandError> {
     let store = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned");
+        .lock_or_recover();
     let model = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
         .unwrap_or_default();
@@ -2536,8 +2519,7 @@ pub struct SoundMirrorDto {
 pub fn get_sound_mirror_impl(state: &AppState, now: i64) -> Result<SoundMirrorDto, CommandError> {
     let store = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned");
+        .lock_or_recover();
     // Recent measured sessions, oldest → newest (mirrors the wheel's trends).
     const MIRROR_SESSIONS: usize = 30;
     let mut fingerprints: Vec<brain::fingerprint::MusicalFingerprint> = store
@@ -2580,16 +2562,14 @@ pub fn get_sound_mirror(state: State<'_, AppState>) -> Result<SoundMirrorDto, St
 pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let lifted = {
         let phrases = state
             .phrase_buffer
-            .lock()
-            .expect("phrase buffer mutex poisoned");
+            .lock_or_recover();
         // Most recent phrase that yields a real cell wins.
         phrases.iter().rev().find_map(|p| {
             brain::coach::lift_cell_from_pitch_track(
@@ -2605,8 +2585,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     {
         let store = state
             .session_store
-            .lock()
-            .expect("session store mutex poisoned");
+            .lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2622,8 +2601,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     }
     *state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned") = Some(explore);
+        .lock_or_recover() = Some(explore);
     Ok(dto)
 }
 
@@ -2646,15 +2624,13 @@ pub fn edit_explore_note_impl(
 ) -> Result<ExploreDto, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let mut guard = state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned");
+        .lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
@@ -2678,15 +2654,13 @@ pub fn edit_explore_note(
 pub fn undo_explore_edit_impl(state: &AppState) -> Result<ExploreDto, String> {
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let mut guard = state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned");
+        .lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
@@ -2706,8 +2680,7 @@ pub fn undo_explore_edit(state: State<'_, AppState>) -> Result<ExploreDto, Strin
 pub fn end_explore(state: State<'_, AppState>) -> Result<(), String> {
     *state
         .active_explore
-        .lock()
-        .expect("active explore mutex poisoned") = None;
+        .lock_or_recover() = None;
     Ok(())
 }
 
@@ -2809,16 +2782,14 @@ const DRILL_MIN_PITCH_RUN: usize = 3;
 pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, CommandError> {
     if state
         .active_lesson
-        .lock()
-        .expect("active lesson mutex poisoned")
+        .lock_or_recover()
         .is_some()
     {
         return Err(CommandError::LessonActive);
     }
     let model = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned")
+        .lock_or_recover()
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
         .unwrap_or_default();
     let spec = LessonSpec {
@@ -2831,13 +2802,11 @@ pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, C
     let dto = drill_dto(&first, spec.drill_count);
     let phrase_mark = state
         .phrase_buffer
-        .lock()
-        .expect("phrase buffer mutex poisoned")
+        .lock_or_recover()
         .len();
     *state
         .active_lesson
-        .lock()
-        .expect("active lesson mutex poisoned") = Some(ActiveLesson {
+        .lock_or_recover() = Some(ActiveLesson {
         spec,
         current: first,
         completed: Vec::new(),
@@ -2860,8 +2829,7 @@ pub fn submit_drill_impl(
 ) -> Result<LessonStepDto, CommandError> {
     let mut lesson_guard = state
         .active_lesson
-        .lock()
-        .expect("active lesson mutex poisoned");
+        .lock_or_recover();
     let lesson = lesson_guard.as_mut().ok_or(CommandError::NotActive)?;
 
     // What was played for this drill: the pitch track + onset count across the
@@ -2869,8 +2837,7 @@ pub fn submit_drill_impl(
     let (pitches, onsets) = {
         let buf = state
             .phrase_buffer
-            .lock()
-            .expect("phrase buffer mutex poisoned");
+            .lock_or_recover();
         let slice = &buf[lesson.phrase_mark.min(buf.len())..];
         let pitches: Vec<f64> = slice
             .iter()
@@ -2898,8 +2865,7 @@ pub fn submit_drill_impl(
     {
         let store = state
             .session_store
-            .lock()
-            .expect("session store mutex poisoned");
+            .lock_or_recover();
         log_exercise_best_effort(
             &store,
             ExerciseOutcome {
@@ -2921,8 +2887,7 @@ pub fn submit_drill_impl(
             lesson.completed.push((completed, score));
             lesson.phrase_mark = state
                 .phrase_buffer
-                .lock()
-                .expect("phrase buffer mutex poisoned")
+                .lock_or_recover()
                 .len();
             Ok(LessonStepDto {
                 seed,
@@ -2940,8 +2905,7 @@ pub fn submit_drill_impl(
             {
                 let store = state
                     .session_store
-                    .lock()
-                    .expect("session store mutex poisoned");
+                    .lock_or_recover();
                 let model = store
                     .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
                     .unwrap_or_default();
@@ -2967,8 +2931,7 @@ pub fn submit_drill_impl(
 pub fn end_lesson_impl(state: &AppState, now_epoch_secs: i64) {
     let taken = state
         .active_lesson
-        .lock()
-        .expect("active lesson mutex poisoned")
+        .lock_or_recover()
         .take();
     let Some(lesson) = taken else { return };
     if lesson.completed.is_empty() {
@@ -2976,8 +2939,7 @@ pub fn end_lesson_impl(state: &AppState, now_epoch_secs: i64) {
     }
     let store = state
         .session_store
-        .lock()
-        .expect("session store mutex poisoned");
+        .lock_or_recover();
     let persisted = store
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map(Option::unwrap_or_default)
@@ -3156,8 +3118,7 @@ pub fn import_score(
 ) -> Result<ScoreLibraryEntryDto, String> {
     let score_store = state
         .score_store
-        .lock()
-        .map_err(|e| format!("lock error: {e}"))?;
+        .lock_or_recover();
     let entry = score_store
         .import(
             title,
@@ -3423,8 +3384,7 @@ pub fn recognize_pdf_score<R: Runtime>(
 pub fn list_scores(state: State<'_, AppState>) -> Result<Vec<ScoreLibraryEntryDto>, String> {
     let score_store = state
         .score_store
-        .lock()
-        .map_err(|e| format!("lock error: {e}"))?;
+        .lock_or_recover();
     let entries = score_store.list().map_err(|e| e.to_string())?;
     Ok(entries.into_iter().map(|e| e.into()).collect())
 }
@@ -3438,8 +3398,7 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
     let score_store = state
         .score_store
-        .lock()
-        .map_err(|e| format!("lock error: {e}"))?;
+        .lock_or_recover();
     let entry = score_store.get(score_id).map_err(|e| e.to_string())?;
     Ok(LoadedScoreDto {
         music_xml: entry.music_xml.clone(),
@@ -3455,8 +3414,7 @@ pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
     let score_store = state
         .score_store
-        .lock()
-        .map_err(|e| format!("lock error: {e}"))?;
+        .lock_or_recover();
     score_store.delete(score_id).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -4088,6 +4046,93 @@ mod tests {
         set_taste_profile_impl(&state, edited.clone()).unwrap();
 
         assert_eq!(get_taste_profile_impl(&state).unwrap(), edited);
+    }
+
+    /// Poison `m` the only way std allows: panic while holding the guard.
+    fn poison<T>(m: &std::sync::Mutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = m.lock().unwrap();
+            panic!("deliberate poison (#246)");
+        }));
+    }
+
+    /// #246: the helper must hand back the last-written data after a panic
+    /// under the lock, not propagate the poison. Fails if `lock_or_recover`
+    /// ever reverts to `.expect`/`?` semantics.
+    #[test]
+    fn lock_or_recover_yields_data_after_poison() {
+        let m = std::sync::Mutex::new(41);
+        *m.lock_or_recover() += 1;
+        poison(&m);
+        assert!(m.lock().is_err(), "the mutex must really be poisoned");
+        assert_eq!(
+            *m.lock_or_recover(),
+            42,
+            "recovery must return the last-written value"
+        );
+        *m.lock_or_recover() += 1;
+        assert_eq!(*m.lock_or_recover(), 43, "the mutex must stay usable");
+    }
+
+    /// #246: a panic that poisons the session-store mutex must degrade the
+    /// history/taste commands to their normal behavior — the store's data is
+    /// still valid — instead of turning every later query into a crash.
+    /// Fails (by panicking) if any of these paths reverts to
+    /// `.lock().expect("… poisoned")`.
+    #[test]
+    fn poisoned_session_store_degrades_commands_instead_of_crashing() {
+        let s = state();
+        let profile = TasteProfile {
+            genres: vec!["jazz".to_owned()],
+            ..TasteProfile::default()
+        };
+        set_taste_profile_impl(&s, profile.clone()).unwrap();
+
+        poison(&s.session_store);
+        assert!(s.session_store.lock().is_err(), "store must be poisoned");
+
+        assert_eq!(
+            get_taste_profile_impl(&s).expect("read after poison must succeed"),
+            profile,
+            "the profile written before the poison must still be served"
+        );
+        let history = get_session_history_impl(&s, None, None, None)
+            .expect("history after poison must succeed");
+        assert!(history.is_empty(), "no sessions were recorded");
+        let edited = TasteProfile {
+            genres: vec!["salsa".to_owned()],
+            ..TasteProfile::default()
+        };
+        set_taste_profile_impl(&s, edited.clone()).expect("write after poison must succeed");
+        assert_eq!(
+            get_taste_profile_impl(&s).unwrap(),
+            edited,
+            "writes after the poison must land, not be silently dropped"
+        );
+    }
+
+    /// #246: a poisoned phrase buffer at session end must not erase the take.
+    /// The pre-fix code (`.lock().map(…).unwrap_or_default()`) silently
+    /// returned zero phrases here — the recap claimed "you didn't play" even
+    /// though the buffer held the whole session.
+    #[tokio::test]
+    async fn end_session_keeps_worker_phrases_after_buffer_poison() {
+        let s = state();
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .unwrap();
+        {
+            let mut buf = s.phrase_buffer.lock().unwrap();
+            buf.push(sample_phrase());
+            buf.push(sample_phrase());
+        }
+        poison(&s.phrase_buffer);
+
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(
+            recap.phrase_count, 2,
+            "phrases buffered before the poison must reach the recap"
+        );
     }
 
     #[tokio::test]
