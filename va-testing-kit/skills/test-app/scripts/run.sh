@@ -11,7 +11,8 @@ REPO_URL="https://github.com/perice-pope/ai-music-companion.git"
 AMC_HOME="${AMC_HOME:-$HOME/amc}"
 REPO_DIR="$AMC_HOME/ai-music-companion"
 APP_DIR="$REPO_DIR/apps/desktop"
-URL="http://localhost:1420"
+# Overridable so run.test.sh can point the guards at fixture servers.
+URL="${AMC_URL:-http://localhost:1420}"
 
 WEB_PIDFILE="$AMC_HOME/.web.pid";      WEB_LOG="$AMC_HOME/.web.log"
 DESK_PIDFILE="$AMC_HOME/.desktop.pid"; DESK_LOG="$AMC_HOME/.desktop.log"
@@ -122,6 +123,46 @@ ensure_audio_engine(){
 web_alive(){  [ -f "$WEB_PIDFILE" ]  && kill -0 "$(cat "$WEB_PIDFILE")"  2>/dev/null; }
 desk_alive(){ [ -f "$DESK_PIDFILE" ] && kill -0 "$(cat "$DESK_PIDFILE")" 2>/dev/null; }
 
+url_responds(){ curl -sf -o /dev/null --max-time 5 "$URL"; }
+
+# The app has NO login and no required account (offline-first promise). If the
+# page at $URL isn't recognizably ours, some OTHER program on this Mac owns the
+# app's address — vite fails on its strict port while the app window (or Chrome)
+# happily renders the stranger, which the tester saw as a surprise "login
+# screen" (#312). The marker is the <title> shipped in apps/desktop/index.html.
+serves_our_app(){ curl -sf --max-time 5 "$URL" 2>/dev/null | grep -q "<title>AI Music Companion</title>"; }
+
+kill_ours(){
+  for pf in "$WEB_PIDFILE" "$DESK_PIDFILE"; do
+    [ -f "$pf" ] && { kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; }
+  done
+  pkill -f "cargo tauri dev" 2>/dev/null || true
+  pkill -f "$DESK_BIN" 2>/dev/null || true
+  pkill -f "vite" 2>/dev/null || true
+}
+
+stranger_msg(){
+  err "Another program on this Mac is using the app's address (port 1420), so the"
+  err "window would show THAT program instead of the app — for example a surprise"
+  err "login screen. The app itself never asks for a login. Please restart the Mac"
+  err "and run the test again; if this message comes back, tell your manager"
+  err "\"port 1420 is taken\" and send a screenshot."
+}
+
+# Refuse to launch into a port owned by a stranger. Our own leftovers are
+# cleared silently first; anything that still answers afterwards isn't ours.
+preflight_port(){
+  url_responds || return 0
+  serves_our_app && return 0
+  log "Something is already using the app's address — clearing our old runs..."
+  kill_ours
+  sleep 2
+  url_responds || return 0
+  serves_our_app && return 0
+  stranger_msg
+  exit 13
+}
+
 wait_for_url(){
   local i=0
   while [ $i -lt 90 ]; do
@@ -138,7 +179,8 @@ commit(){ git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown;
 cmd_start_web(){
   ensure_path; require_base
   update_repo; install_deps
-  if web_alive && curl -sf -o /dev/null "$URL"; then
+  preflight_port
+  if web_alive && serves_our_app; then
     ok "App is already running."
   else
     [ -f "$WEB_PIDFILE" ] && kill "$(cat "$WEB_PIDFILE")" 2>/dev/null || true
@@ -147,6 +189,7 @@ cmd_start_web(){
     if ! wait_for_url; then
       err "The app did not start in time. Last log lines:"; tail -n 20 "$WEB_LOG" >&2 || true; exit 7
     fi
+    if ! serves_our_app; then stranger_msg; exit 13; fi
   fi
   open_browser
   ok "App is open in Chrome at $URL"
@@ -172,6 +215,7 @@ cmd_start_desktop(){
     echo "MODE=desktop"; echo "COMMIT=$(commit)"; return 0
   fi
   [ -f "$DESK_PIDFILE" ] && kill "$(cat "$DESK_PIDFILE")" 2>/dev/null || true
+  preflight_port
 
   log "Building and launching the desktop app."
   log "The FIRST build can take 10-30 minutes while it compiles. The app window opens when ready. Please leave it running."
@@ -181,6 +225,11 @@ cmd_start_desktop(){
   while [ $i -lt $max ]; do
     # success: cargo launched the built binary, or the process is up
     if grep -q 'Running `target' "$DESK_LOG" 2>/dev/null || pgrep -f "$DESK_BIN" >/dev/null 2>&1; then
+      # If the app's address answers but not with OUR page, the open window is
+      # rendering a stranger — close it rather than let the tester "log in".
+      if url_responds && ! serves_our_app; then
+        kill_ours; stranger_msg; exit 13
+      fi
       ok "Desktop app window should now be open (look for 'AI Music Companion')."
       echo "MODE=desktop"; echo "COMMIT=$(commit)"; return 0
     fi
@@ -208,12 +257,7 @@ cmd_start(){
 }
 
 cmd_stop(){
-  for pf in "$WEB_PIDFILE" "$DESK_PIDFILE"; do
-    [ -f "$pf" ] && { kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; }
-  done
-  pkill -f "cargo tauri dev" 2>/dev/null || true
-  pkill -f "$DESK_BIN" 2>/dev/null || true
-  pkill -f "vite" 2>/dev/null || true
+  kill_ours
   ok "App stopped."
 }
 
@@ -229,6 +273,9 @@ cmd_info(){
     echo "COMMIT=$(commit)"; echo "BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
   else echo "COMMIT=none"; fi
 }
+
+# Sourced by run.test.sh to exercise the functions without dispatching.
+if [ "${AMC_SOURCE_ONLY:-}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "${1:-start}" in
   start)  shift; cmd_start "${1:-web}" ;;

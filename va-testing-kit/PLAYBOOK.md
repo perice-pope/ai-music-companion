@@ -12,6 +12,14 @@ Paths (on her machine):
 Ask one question at a time. Acknowledge warmly. Keep her answers for the report. Offer to skip
 anything she gets stuck on. Never show errors/jargon.
 
+**If a login or password screen ever blocks the app:** the app has **no login, no account, no
+password** — practicing never requires signing in (the only sign-in anywhere is the optional
+"sync" box on the History page, which can be ignored). A password screen standing between her and
+the instrument picker means the window is showing **some other program by mistake** — the launcher
+now detects this and explains it, but if one slips through: don't type anything into it, note the
+exact window title and what the screen says, take a screenshot for the manager, and file the
+report as blocked with those details.
+
 ---
 
 ## WEB walkthrough (MODE = web)
