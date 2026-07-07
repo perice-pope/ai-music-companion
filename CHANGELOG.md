@@ -1,3 +1,9 @@
+## [2.15.3](https://github.com/perice-pope/ai-music-companion/compare/v2.15.2...v2.15.3) (2026-07-07)
+
+### Bug Fixes
+
+* **release:** unsigned builds must not attempt signing; bundle the generated .ico/.icns ([#322](https://github.com/perice-pope/ai-music-companion/issues/322)) ([89dc067](https://github.com/perice-pope/ai-music-companion/commit/89dc06750cc61c95dca4161675be106ef306a663))
+
 ## [2.15.2](https://github.com/perice-pope/ai-music-companion/compare/v2.15.1...v2.15.2) (2026-07-07)
 
 ### Bug Fixes
