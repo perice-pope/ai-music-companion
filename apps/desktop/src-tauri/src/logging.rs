@@ -76,7 +76,9 @@ pub fn init() {
         None
     };
 
-    // Combine layers
+    // Combine layers. The filter MUST come from `env_filter` — constructing
+    // it any other way (e.g. `EnvFilter::from_default_env()`) re-introduces
+    // the #313 error-only default the tests below guard against.
     tracing_subscriber::registry()
         .with(env_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .with(file_layer)
@@ -142,6 +144,24 @@ mod tests {
         assert!(out.contains("score session started WITHOUT a follower"));
     }
 
+    // Breadcrumbs added to the analysis crates must land too — each
+    // workspace member needs its own directive, not just the app crate.
+    #[test]
+    fn workspace_crate_info_passes_the_default_filter() {
+        let out = captured(env_filter(None), || {
+            tracing::info!(target: "brain::follower", "follower aligned");
+            tracing::info!(target: "ears::pitch", "detector reconfigured");
+        });
+        assert!(
+            out.contains("follower aligned"),
+            "brain info filtered: {out:?}"
+        );
+        assert!(
+            out.contains("detector reconfigured"),
+            "ears info filtered: {out:?}"
+        );
+    }
+
     #[test]
     fn explicit_rust_log_still_wins_over_the_default() {
         let out = captured(env_filter(Some("error")), || {
@@ -167,9 +187,12 @@ mod tests {
     fn third_party_info_stays_out_of_the_unrotated_log() {
         let out = captured(env_filter(None), || {
             tracing::info!(target: "wry::webview", "chatty dependency chatter");
+            tracing::info!(target: "hyper::client", "more dependency chatter");
             tracing::warn!(target: "wry::webview", "dependency warning");
         });
+        // The warn floor is global for third parties, not a per-crate carve-out.
         assert!(!out.contains("chatty dependency chatter"));
+        assert!(!out.contains("more dependency chatter"));
         assert!(out.contains("dependency warning"));
     }
 }
