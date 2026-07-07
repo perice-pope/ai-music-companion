@@ -1,3 +1,9 @@
+## [2.15.2](https://github.com/perice-pope/ai-music-companion/compare/v2.15.1...v2.15.2) (2026-07-07)
+
+### Bug Fixes
+
+* **perception:** feed the live key tracker per note, not per frame — the [#313](https://github.com/perice-pope/ai-music-companion/issues/313) strip flap ([#321](https://github.com/perice-pope/ai-music-companion/issues/321)) ([a31d8c1](https://github.com/perice-pope/ai-music-companion/commit/a31d8c15986cf29855106cd7c2b581bf6aafb732))
+
 ## [2.15.1](https://github.com/perice-pope/ai-music-companion/compare/v2.15.0...v2.15.1) (2026-07-07)
 
 ### Bug Fixes
