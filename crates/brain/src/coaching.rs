@@ -992,10 +992,15 @@ All text should be written as a teacher would speak — warm, specific, and acti
                 k.name(),
                 k.confidence
             ),
-            (None, _) if !input.phrases.is_empty() => {
+            // Tonal readings existed but never firmed into a claim — forbid
+            // naming a key instead of staying silent (an absent line lets
+            // the model guess one).
+            (None, Some(KeyClaimStrength::Unsettled)) => {
                 "- Key / mode: kept moving — never settled on one key; do not name a key\n"
                     .to_owned()
             }
+            // No tonal readings at all (percussive / silent material): say
+            // nothing about key.
             (None, _) => String::new(),
         };
 
@@ -1762,11 +1767,15 @@ fn connections_gate_open(input: &RecapInput) -> bool {
 /// the four measurements are assembled — the recap prompt and the persisted
 /// recap both source their grounded facts from the result.
 fn build_fingerprint(phrases: &[PhraseSummary]) -> MusicalFingerprint {
-    let key_claim = aggregate_key(phrases);
+    let (key, key_claim) = match aggregate_key(phrases) {
+        KeyVerdict::Claimed(est, strength) => (Some(est), Some(strength)),
+        KeyVerdict::Unsettled => (None, Some(KeyClaimStrength::Unsettled)),
+        KeyVerdict::Silent => (None, None),
+    };
     MusicalFingerprint {
         tone: aggregate_tone(phrases),
-        key: key_claim.map(|(est, _)| est),
-        key_claim: key_claim.map(|(_, strength)| strength),
+        key,
+        key_claim,
         intonation: aggregate_intonation(phrases),
         groove: aggregate_groove(phrases),
     }
@@ -1794,71 +1803,114 @@ fn fingerprint_for_recap(phrases: &[PhraseSummary]) -> Option<MusicalFingerprint
 /// recap must never contradict what the player watched, so it now votes only
 /// over keys that were actually tracked live, or stays silent.
 ///
-/// The returned [`KeyClaimStrength`] is the honesty contract of #316 — the
-/// recap must not state a key more firmly than the tracking earned:
+/// The session-level key verdict (#316): what key, if any, the recap may talk
+/// about, and how firmly. Internal to the aggregation — the persisted shape
+/// is [`MusicalFingerprint::key`] + [`MusicalFingerprint::key_claim`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum KeyVerdict {
+    /// A key the recap may name, at the given strength.
+    Claimed(theory::KeyEstimate, KeyClaimStrength),
+    /// Tonal readings existed but never firmed into a claimable key — the
+    /// recap says the key kept moving, and names nothing.
+    Unsettled,
+    /// No tonal readings at all (percussive / silent material) — the recap
+    /// says nothing about key whatsoever.
+    Silent,
+}
+
+/// The returned [`KeyVerdict`] is the honesty contract of #316 — the recap
+/// must not state a key more firmly than the live tracking earned:
 ///
-/// - The vote winner **is** the final tracked reading and carried at least
-///   [`ASSERT_SHARE`] of the total counted confidence → `Asserted`.
-/// - The vote winner and the final tracked reading **disagree** (the VA's
-///   half-step case: the strip ended on G# while G won the vote) → the claim
-///   defers to the final reading — what the player last watched — as
-///   `Leaning`. Neither key is ever asserted flatly.
-/// - Winner == final but the vote was contested / it settled late (share
-///   below [`ASSERT_SHARE`]) → `Leaning`.
-/// - Nothing counted → `None`: no claim, no guess.
-fn aggregate_key(phrases: &[PhraseSummary]) -> Option<(theory::KeyEstimate, KeyClaimStrength)> {
-    /// Don't count a tracked reading below this confidence — hedge instead.
+/// - **Every** displayed reading participates. The live tracker commits keys
+///   from confidence 0.4 and holds them as confidence decays, so the strip
+///   can end on a reading below the 0.5 claim bar — the aggregation must
+///   still see it, or the recap can flatly contradict the strip (the review
+///   probe on the first cut of this code). Sub-bar readings contribute to
+///   the denominator and to the final-reading check; only claim-*eligible*
+///   keys (some sighting ≥ [`MIN_CONFIDENCE`]) can be named.
+/// - `Asserted` needs all three: the winner is where the strip **ended**
+///   (its trailing run), it carried ≥ [`ASSERT_SHARE`] of the total tracked
+///   confidence mass (wandering time counts against it), and it was seen in
+///   at least two phrases (one reading is never "sat firmly").
+/// - Winner ≠ final reading — the VA's half-step case (#313): if the closing
+///   key held ≥ 2 phrases, defer to it (what the player last watched),
+///   `Leaning`; if the session ended on a single-phrase blip, lean the
+///   dominant key instead — a blip may not hijack the recap. Either way,
+///   neither key is ever asserted flatly.
+/// - Readings but no eligible key → `Unsettled`. No readings → `Silent`.
+fn aggregate_key(phrases: &[PhraseSummary]) -> KeyVerdict {
+    /// A key must have at least one sighting at/above this confidence to be
+    /// *claimable* — below it, the tracking never firmed up enough to name.
     const MIN_CONFIDENCE: f32 = 0.5;
-    /// The winning key must carry at least this share of the total counted
-    /// confidence mass to be asserted flatly. A session that wandered for
-    /// most of its length and settled only near the end (#313: "a coin
-    /// flip") splits its mass across keys and lands below this — the recap
-    /// then *leans* instead of asserting.
+    /// The winning key must carry at least this share of the total tracked
+    /// confidence mass (including sub-bar wandering) to be asserted flatly.
+    /// A session that wandered for most of its length and settled only near
+    /// the end (#313: "a coin flip") lands below this and *leans*.
     const ASSERT_SHARE: f32 = 0.6;
 
-    let mut votes: std::collections::BTreeMap<
-        (u8, &'static str),
-        (f32, usize, theory::KeyEstimate),
-    > = std::collections::BTreeMap::new();
+    type KeyId = (u8, &'static str);
+    let id = |k: &theory::KeyEstimate| -> KeyId { (k.tonic % 12, k.mode.label()) };
+
+    // (mass, last idx, exemplar, eligible, phrase count) per key — over ALL
+    // non-NaN readings, so displayed-but-shaky time is never invisible.
+    let mut votes: std::collections::BTreeMap<KeyId, (f32, usize, theory::KeyEstimate, bool, u32)> =
+        std::collections::BTreeMap::new();
     let mut total_mass = 0.0f32;
-    // The last tracked reading that cleared the confidence bar — the key the
-    // live "I hear" strip showed as the session closed.
-    let mut final_reading: Option<theory::KeyEstimate> = None;
+    let mut readings: Vec<theory::KeyEstimate> = Vec::new();
     for (idx, p) in phrases.iter().enumerate() {
         let Some(key) = p.key else { continue };
-        if key.confidence < MIN_CONFIDENCE || key.confidence.is_nan() {
+        if key.confidence.is_nan() {
             continue;
         }
         total_mass += key.confidence;
-        final_reading = Some(key);
-        let entry = votes
-            .entry((key.tonic % 12, key.mode.label()))
-            .or_insert((0.0, idx, key));
+        readings.push(key);
+        let entry = votes.entry(id(&key)).or_insert((0.0, idx, key, false, 0));
         entry.0 += key.confidence;
         entry.1 = idx; // most recent phrase carrying this key
         if key.confidence > entry.2.confidence {
             entry.2 = key; // keep the most confident sighting as the exemplar
         }
+        entry.3 |= key.confidence >= MIN_CONFIDENCE;
+        entry.4 += 1;
     }
-    let (winner_mass, _, winner) = votes.into_values().max_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.cmp(&b.1))
-    })?;
-    let final_reading = final_reading?;
-    if (winner.tonic % 12, winner.mode) != (final_reading.tonic % 12, final_reading.mode) {
-        // The vote and the strip's final state disagree — the exact
-        // contradiction #313 caught. Defer to what the player watched,
-        // hedged; asserting either key would be claiming a certainty the
-        // session never produced.
-        return Some((final_reading, KeyClaimStrength::Leaning));
+    if readings.is_empty() {
+        return KeyVerdict::Silent;
     }
-    let strength = if winner_mass / total_mass >= ASSERT_SHARE {
+    let Some((winner_mass, _, winner, _, winner_count)) =
+        votes.into_values().filter(|v| v.3).max_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        })
+    else {
+        return KeyVerdict::Unsettled;
+    };
+    // What the live "I hear" strip showed as the session closed, and for how
+    // many closing phrases it held.
+    let final_reading = *readings.last().expect("readings is non-empty");
+    let final_run = readings
+        .iter()
+        .rev()
+        .take_while(|k| id(k) == id(&final_reading))
+        .count();
+    if id(&winner) != id(&final_reading) {
+        // The vote and the strip's end state disagree — the exact
+        // contradiction #313 caught. Never assert either key: defer to the
+        // closing key when it genuinely held (≥ 2 phrases), otherwise lean
+        // the dominant key — a single-phrase closing blip may not hijack
+        // the recap.
+        return if final_run >= 2 {
+            KeyVerdict::Claimed(final_reading, KeyClaimStrength::Leaning)
+        } else {
+            KeyVerdict::Claimed(winner, KeyClaimStrength::Leaning)
+        };
+    }
+    let strength = if winner_mass / total_mass >= ASSERT_SHARE && winner_count >= 2 {
         KeyClaimStrength::Asserted
     } else {
         KeyClaimStrength::Leaning
     };
-    Some((winner, strength))
+    KeyVerdict::Claimed(winner, strength)
 }
 
 /// Session-level intonation over every phrase's detected pitches. Returns
@@ -1874,10 +1926,14 @@ fn aggregate_intonation(phrases: &[PhraseSummary]) -> Option<theory::IntonationS
     /// the mean would swing wildly on a couple of notes.
     const MIN_NOTES: u32 = 12;
 
-    // Reuse the gated session key (if any) to anchor per-degree tendencies.
-    // A hedged (Leaning) key still anchors degrees: the tendencies name "the
-    // 3rd", never the key itself, so no over-claim can leak through here.
-    let tonic = aggregate_key(phrases).map(|(k, _)| k.tonic);
+    // Degree names ("the 3rd ran sharp") are key-relative claims stated as
+    // fact downstream, so they anchor only to an ASSERTED key (#316 review):
+    // with a hedged or absent key the attribution would be a coin flip, and
+    // the summary reports raw cents statistics with no degree tendencies.
+    let tonic = match aggregate_key(phrases) {
+        KeyVerdict::Claimed(k, KeyClaimStrength::Asserted) => Some(k.tonic),
+        _ => None,
+    };
 
     let pitches: Vec<f32> = phrases
         .iter()
@@ -2164,8 +2220,8 @@ mod tests {
 
     #[test]
     fn aggregate_key_names_a_clear_key_and_hedges_otherwise() {
-        // No phrases → no key.
-        assert!(aggregate_key(&[]).is_none());
+        // No phrases → no tonal readings → silence, not "kept moving".
+        assert_eq!(aggregate_key(&[]), KeyVerdict::Silent);
 
         let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
             let mut p = sample_phrase();
@@ -2187,19 +2243,22 @@ mod tests {
             tracked(7, theory::Mode::Mixolydian, 0.6), // brief mid-session wander
             tracked(0, theory::Mode::Ionian, 0.8),
         ];
-        let (key, strength) = aggregate_key(&phrases).expect("a clear key");
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a clear key must be claimed");
+        };
         assert_eq!(key.name(), "C major", "got {}", key.name());
         assert_eq!(strength, KeyClaimStrength::Asserted, "dominant + final");
 
-        // Low-confidence tracked readings are hedged to silence — the recap
-        // must never assert a key the tracker never called confidently.
+        // Low-confidence tracked readings never firm into a claim — but the
+        // session isn't silent either: the honest verdict is "kept moving".
         let shaky = vec![tracked(3, theory::Mode::Dorian, 0.3)];
-        assert!(aggregate_key(&shaky).is_none());
+        assert_eq!(aggregate_key(&shaky), KeyVerdict::Unsettled);
 
-        // Phrases with no tracked key at all (thin material) → None, never a
-        // fabricated re-estimate.
-        assert!(
-            aggregate_key(std::slice::from_ref(&sample_phrase())).is_none(),
+        // Phrases with no tracked key at all (thin / percussive material) →
+        // Silent: "kept moving" would claim motion nothing observed.
+        assert_eq!(
+            aggregate_key(std::slice::from_ref(&sample_phrase())),
+            KeyVerdict::Silent,
             "untracked phrases must not yield a key"
         );
     }
@@ -2221,8 +2280,12 @@ mod tests {
         // Raw pitches that a pooled estimator would read as something else
         // entirely (a C-major scale) — they must be ignored.
         a.pitch_stats.pitches = vec![261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
-        let (key, _) = aggregate_key(std::slice::from_ref(&a)).expect("tracked key wins");
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(std::slice::from_ref(&a)) else {
+            panic!("tracked key wins");
+        };
         assert_eq!(key.name(), "F# Phrygian", "got {}", key.name());
+        // A single reading can be named, but never "sat firmly" (#316).
+        assert_eq!(strength, KeyClaimStrength::Leaning);
     }
 
     /// The vote is CONFIDENCE-weighted, not a head count: two 0.9 readings of
@@ -2247,7 +2310,9 @@ mod tests {
             tracked(7, theory::Mode::Mixolydian, 0.9),
             tracked(7, theory::Mode::Mixolydian, 0.9), // 2 votes, weight 1.8
         ];
-        let (key, strength) = aggregate_key(&phrases).unwrap();
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
         assert_eq!(key.name(), "G Mixolydian", "got {}", key.name());
         // 1.8 of 3.3 total mass = a contested vote → the claim hedges (#316).
         assert_eq!(strength, KeyClaimStrength::Leaning);
@@ -2271,7 +2336,9 @@ mod tests {
             tracked(0, theory::Mode::Ionian),
             tracked(9, theory::Mode::Aeolian), // same weight, seen later
         ];
-        let (key, _) = aggregate_key(&phrases).unwrap();
+        let KeyVerdict::Claimed(key, _) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
         assert_eq!(
             key.name(),
             "A minor",
@@ -2297,7 +2364,9 @@ mod tests {
             confidence: f32::NAN,
             margin: 0.2,
         });
-        let (key, _) = aggregate_key(&[good, bad]).unwrap();
+        let KeyVerdict::Claimed(key, _) = aggregate_key(&[good, bad]) else {
+            panic!("the good reading claims");
+        };
         assert_eq!(key.name(), "C major", "got {}", key.name());
     }
 
@@ -2322,14 +2391,179 @@ mod tests {
             tracked(7, 0.8), // G major dominates the vote…
             tracked(7, 0.8),
             tracked(8, 0.7), // …but the tracker settled on G# at the end
+            tracked(8, 0.7), // (held ≥ 2 phrases — genuinely where it ended)
         ];
-        let (key, strength) = aggregate_key(&phrases).expect("a key was tracked");
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
         assert_eq!(key.name(), "G# major", "must follow the strip's end state");
         assert_eq!(
             strength,
             KeyClaimStrength::Leaning,
             "a contradicted key is never asserted flatly"
         );
+    }
+
+    /// #316 review MUST-FIX 1 — the live tracker commits keys from
+    /// confidence 0.4 and holds them as confidence decays, so the strip can
+    /// END on a reading below the 0.5 claim bar. The aggregation must still
+    /// see it: a session that closed on sub-bar G readings must not flatly
+    /// assert the earlier G# — that's the literal #313 bug in the
+    /// [0.4, 0.5) band. Fails if sub-bar readings are filtered before the
+    /// final-reading check.
+    #[test]
+    fn a_sub_bar_closing_key_still_counts_as_the_strips_end_state() {
+        let tracked = |tonic: u8, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode: theory::Mode::Ionian,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(8, 0.7), // G# major, confidently…
+            tracked(8, 0.7),
+            tracked(7, 0.45), // …then the strip drifts to G and HOLDS it,
+            tracked(7, 0.45), // displayed below the claim bar
+        ];
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
+        assert_eq!(
+            key.name(),
+            "G major",
+            "the recap must follow the strip's displayed end state"
+        );
+        assert_eq!(strength, KeyClaimStrength::Leaning);
+    }
+
+    /// #316 review MUST-FIX 2 — sub-bar wandering counts AGAINST assertion:
+    /// the canonical #313 session (wanders shakily for most of its length,
+    /// settles late) must lean even though only the settled key clears the
+    /// claim bar. Also pins the two-sighting floor: a single counted reading
+    /// alone is never "sat firmly". Fails if the assert-share denominator
+    /// drops sub-bar readings, or the count floor is removed.
+    #[test]
+    fn sub_bar_wandering_counts_against_assertion() {
+        let tracked = |tonic: u8, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode: theory::Mode::Ionian,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        // Four shaky wandering keys (displayed live at ≥0.4), then G# settles.
+        let phrases = vec![
+            tracked(2, 0.45),
+            tracked(4, 0.45),
+            tracked(9, 0.45),
+            tracked(5, 0.45),
+            tracked(8, 0.7),
+            tracked(8, 0.7),
+        ];
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
+        assert_eq!(key.name(), "G# major");
+        assert_eq!(
+            strength,
+            KeyClaimStrength::Leaning,
+            "most of the session wandered — settling late must not read as 'sat firmly'"
+        );
+
+        // A single counted reading with nothing else: claimable, never firm.
+        let KeyVerdict::Claimed(_, strength) = aggregate_key(&[tracked(8, 0.7)]) else {
+            panic!("a key was tracked");
+        };
+        assert_eq!(strength, KeyClaimStrength::Leaning);
+    }
+
+    /// #316 review SHOULD 3 — a single-phrase blip at session end must not
+    /// hijack the recap key: with C major dominant and one closing
+    /// G-Mixolydian phrase, the recap leans C (hedged), not the blip. Fails
+    /// if the contradiction branch defers to any final reading regardless of
+    /// how briefly it held.
+    #[test]
+    fn a_single_phrase_closing_blip_does_not_hijack_the_recap_key() {
+        let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(0, theory::Mode::Ionian, 0.8),
+            tracked(0, theory::Mode::Ionian, 0.8),
+            tracked(0, theory::Mode::Ionian, 0.8),
+            tracked(7, theory::Mode::Mixolydian, 0.6), // one-phrase closing blip
+        ];
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
+        assert_eq!(
+            key.name(),
+            "C major",
+            "the blip must not win: {}",
+            key.name()
+        );
+        assert_eq!(
+            strength,
+            KeyClaimStrength::Leaning,
+            "but the disagreement still costs the flat assertion"
+        );
+    }
+
+    /// #316 review SHOULD 4 — degree names ("the 3rd ran sharp") are
+    /// key-relative claims: they anchor only to an ASSERTED key. A hedged
+    /// session reports raw cents statistics with no degree tendencies, so
+    /// the recap can't state a coin-flip attribution as fact.
+    #[test]
+    fn degree_tendencies_require_an_asserted_key() {
+        let sharp = |hz: f64| hz * 2f64.powf(20.0 / 1200.0);
+        let tracked = |tonic: u8, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode: theory::Mode::Ionian,
+                confidence,
+                margin: 0.2,
+            });
+            p.pitch_stats.pitches = (0..16).map(|_| sharp(440.0)).collect();
+            p
+        };
+
+        // Asserted key → tendencies are attributed to degrees.
+        let stable = vec![tracked(8, 0.8), tracked(8, 0.8)];
+        let summary = aggregate_intonation(&stable).expect("enough notes");
+        assert!(
+            !summary.tendencies.is_empty(),
+            "an asserted key anchors degree tendencies"
+        );
+
+        // The #313 contradiction shape → hedged → no degree attribution,
+        // but the overall cents statistics still report.
+        let hedged = vec![
+            tracked(7, 0.8),
+            tracked(7, 0.8),
+            tracked(8, 0.7),
+            tracked(8, 0.7),
+        ];
+        let summary = aggregate_intonation(&hedged).expect("enough notes");
+        assert!(
+            summary.tendencies.is_empty(),
+            "a hedged key must not attribute tendencies to degrees"
+        );
+        assert!(summary.note_count >= 12, "raw cents stats still report");
     }
 
     /// #316 AC2 — a session that wanders through keys and settles only near
@@ -2357,7 +2591,9 @@ mod tests {
             tracked(8, 0.7),
             tracked(8, 0.7),
         ];
-        let (key, strength) = aggregate_key(&phrases).expect("a key was tracked");
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
         assert_eq!(key.name(), "G# major");
         assert_eq!(strength, KeyClaimStrength::Leaning, "settled late = hedge");
     }
@@ -2398,9 +2634,15 @@ mod tests {
             recap.next_session_suggestions
         );
 
-        // The #313 shape: G dominates, G# at the end → leaning, hedged copy.
+        // The #313 shape: G dominates, G# holds at the end → leaning, hedged
+        // copy.
         let hedged = recap_input_with(
-            vec![tracked(7, 0.8), tracked(7, 0.8), tracked(8, 0.7)],
+            vec![
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(8, 0.7),
+                tracked(8, 0.7),
+            ],
             None,
         );
         let recap = grounded_offline_recap(&hedged);
@@ -2436,7 +2678,12 @@ mod tests {
 
         // Hedged (#313 shape): the prompt says "leaning" and "tentatively".
         let hedged = recap_input_with(
-            vec![tracked(7, 0.8), tracked(7, 0.8), tracked(8, 0.7)],
+            vec![
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(8, 0.7),
+                tracked(8, 0.7),
+            ],
             None,
         );
         let prompt = CoachingEngine::build_recap_user_prompt(&hedged);
@@ -2445,18 +2692,27 @@ mod tests {
             "hedged key must read as tentative in the prompt: {prompt}"
         );
         assert!(
-            !prompt.contains("confidence 0."),
+            !prompt.contains("confidence"),
             "a hedged key must not also print a flat confidence figure"
         );
 
-        // Never settled: played material, no committed key → the prompt
-        // forbids naming one instead of staying silent (an absent line lets
-        // the model guess).
-        let unsettled = recap_input_with(vec![sample_phrase()], None);
+        // Unsettled: tonal readings existed but never firmed into a claim →
+        // the prompt forbids naming a key instead of staying silent (an
+        // absent line lets the model guess).
+        let unsettled = recap_input_with(vec![tracked(3, 0.3)], None);
         let prompt = CoachingEngine::build_recap_user_prompt(&unsettled);
         assert!(
             prompt.contains("do not name a key"),
             "an unsettled session must instruct against naming a key: {prompt}"
+        );
+
+        // Silent: no tonal readings at all (percussive material) → no key
+        // line of any kind; "kept moving" would claim motion nothing saw.
+        let silent = recap_input_with(vec![sample_phrase()], None);
+        let prompt = CoachingEngine::build_recap_user_prompt(&silent);
+        assert!(
+            !prompt.contains("Key / mode"),
+            "a session with no tonal readings says nothing about key: {prompt}"
         );
     }
 
@@ -2557,8 +2813,10 @@ mod tests {
             392.0, 392.0, // G ×2
             440.0, 493.88, // A B
         ];
-        let summary =
-            aggregate_intonation(std::slice::from_ref(&p)).expect("enough notes to report");
+        // Two phrases in the same key: degree anchoring requires an ASSERTED
+        // key (#316), and a single tracked reading is never asserted.
+        let phrases = vec![p.clone(), p];
+        let summary = aggregate_intonation(&phrases).expect("enough notes to report");
         let third = summary
             .tendencies
             .iter()

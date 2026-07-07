@@ -28,8 +28,10 @@ use serde::{Deserialize, Serialize};
 /// a bug. The honesty rule is that the recap must not claim more certainty
 /// than the tracking earned: a key that dominated the session is `Asserted`
 /// ("G# major"); one that settled only late, or that the vote contested, is
-/// `Leaning` ("leaning G# major toward the end"). A session that never
-/// settled carries no key at all (`MusicalFingerprint::key` = `None`).
+/// `Leaning` ("leaning G# major toward the end"); a session whose tracking
+/// never firmed up enough to claim any key is `Unsettled` ("the key kept
+/// moving") — and one that produced no tonal readings at all carries no
+/// claim whatsoever (percussive material isn't "moving", it's silent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyClaimStrength {
@@ -38,6 +40,9 @@ pub enum KeyClaimStrength {
     Asserted,
     /// The key settled late or was contested — hedge every reference to it.
     Leaning,
+    /// Tonal readings existed but never firmed up into a claimable key —
+    /// say the key kept moving. `MusicalFingerprint::key` is `None`.
+    Unsettled,
 }
 
 /// The four session-level measurements of a student's musicianship, each
@@ -64,10 +69,11 @@ pub struct MusicalFingerprint {
     pub key: Option<theory::KeyEstimate>,
     /// How firmly the recap may state `key` (#316 display honesty): `Asserted`
     /// when the key dominated the session's live tracking, `Leaning` when it
-    /// settled late or contested the vote. `None` on fingerprints serialised
-    /// before this field existed — readers must treat that as `Asserted` (the
-    /// legacy behavior) so old recaps don't retroactively hedge. Meaningful
-    /// only when `key` is `Some`.
+    /// settled late or contested the vote, `Unsettled` (with `key` = `None`)
+    /// when readings existed but never firmed into a claim. `None` on
+    /// fingerprints serialised before this field existed — readers must treat
+    /// that as `Asserted` (the legacy behavior) so old recaps don't
+    /// retroactively hedge — and on sessions with no tonal readings at all.
     #[serde(default)]
     pub key_claim: Option<KeyClaimStrength>,
     /// Session-level intonation summary (cents vs equal temperament + per-degree

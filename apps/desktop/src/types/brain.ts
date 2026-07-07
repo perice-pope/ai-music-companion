@@ -413,10 +413,13 @@ export interface MusicalFingerprint {
    * How firmly `key` may be stated (#316 display honesty). Mirrors
    * `brain::fingerprint::KeyClaimStrength`: `"asserted"` = the key dominated
    * the live tracking, state it plainly; `"leaning"` = it settled late or was
-   * contested, hedge it. Absent/`null` on recaps persisted before this field
-   * existed — treat as asserted (the behavior those recaps shipped with).
+   * contested, hedge it; `"unsettled"` (with `key` absent) = tonal readings
+   * existed but never firmed into a claim — say the key kept moving.
+   * Absent/`null` on recaps persisted before this field existed — treat as
+   * asserted (the behavior those recaps shipped with) — and on sessions with
+   * no tonal readings at all (say nothing about key).
    */
-  key_claim?: "asserted" | "leaning" | null;
+  key_claim?: "asserted" | "leaning" | "unsettled" | null;
   /** Session-level intonation summary, when enough notes were observed. */
   intonation?: IntonationSummary | null;
   /** Session-level groove (tempo/swing/timing), when enough onsets were observed. */

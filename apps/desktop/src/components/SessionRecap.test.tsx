@@ -173,17 +173,19 @@ describe("SessionRecap", () => {
     // sessions don't retroactively hedge.
     seedRecap(fullRecap({ fingerprint: { key } }));
     rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain("G# major");
     expect(screen.getByTestId("recap-key").textContent).not.toContain(
       "leaning",
     );
   });
 
-  it("says the key kept moving when a measured session never settled", () => {
-    // Something was measured (tone), but no key committed → honest no-claim
-    // copy instead of silence or a guess.
+  it("says the key kept moving only on an explicit unsettled claim", () => {
+    // Tonal readings existed but never firmed into a claim → honest
+    // "kept moving" copy instead of silence or a guess.
     seedRecap(
       fullRecap({
         fingerprint: {
+          key_claim: "unsettled",
           tone: {
             brightness: 0.6,
             warmth: 0.5,
@@ -199,6 +201,24 @@ describe("SessionRecap", () => {
       "kept moving",
     );
     expect(screen.queryByTestId("recap-key")).toBeNull();
+
+    // A measured session with NO tonal readings (groove-only / percussive):
+    // "kept moving" would claim motion nothing observed → no key copy.
+    seedRecap(
+      fullRecap({
+        fingerprint: {
+          tone: {
+            brightness: 0.6,
+            warmth: 0.5,
+            air_noise: 0.2,
+            core_clarity: 0.8,
+            vibrato_quality: 0.55,
+          },
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.queryByTestId("recap-key-unsettled")).toBeNull();
 
     // No fingerprint at all (nothing measured) → no key copy of any kind.
     seedRecap(fullRecap());

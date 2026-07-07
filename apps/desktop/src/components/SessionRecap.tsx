@@ -162,7 +162,10 @@ export default function SessionRecap() {
               </span>
             </p>
           )}
-          {!isEmptyState && fingerprint && !fingerprint.key && (
+          {/* "Kept moving" only when the tracking actually observed motion
+            (the explicit unsettled claim) — a percussive/groove-only session
+            with no tonal readings says nothing about key at all. */}
+          {!isEmptyState && fingerprint?.key_claim === "unsettled" && (
             <p className="text-sm text-gray-400" data-testid="recap-key-unsettled">
               Key:{" "}
               <span className="text-gray-200">
