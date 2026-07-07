@@ -2,78 +2,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use ai_music_companion::commands::AppState;
-use std::fs::OpenOptions;
-use std::io;
-use std::sync::Mutex;
 // `Manager` brings `App::manage` / `App::handle` into scope for the setup hook.
 use tauri::Manager;
-use tracing_subscriber::fmt::Layer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-// `Layer` as a trait is needed for `.boxed()`; imported anonymously so it
-// doesn't clash with the `Layer` struct from `tracing_subscriber::fmt`.
-use tracing_subscriber::Layer as _;
 
 #[tauri::command]
 fn ping() -> String {
     "pong".to_string()
 }
 
-fn init_tracing() {
-    // Determine log file path. `dirs::cache_dir()` returns an
-    // `Option<PathBuf>`; fall back to `/tmp` on platforms without one.
-    let log_dir = match dirs::cache_dir() {
-        Some(cache_dir) => cache_dir
-            .join("ai-music-companion")
-            .to_string_lossy()
-            .into_owned(),
-        None => "/tmp".to_string(),
-    };
-
-    // Create log directory if it doesn't exist
-    let _ = std::fs::create_dir_all(&log_dir);
-
-    // Try to open log file for writing (append mode)
-    let log_file = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(format!("{}/app.log", log_dir))
-    {
-        Ok(file) => Some(file),
-        Err(e) => {
-            eprintln!("failed to open log file: {}", e);
-            None
-        }
-    };
-
-    // Build file layer if log file was successfully opened.
-    // `tracing_subscriber::MakeWriter` is implemented for `Mutex<W: Write>`
-    // but not for a bare `LineWriter<File>`, so wrap in a Mutex.
-    let file_layer = log_file.map(|file| {
-        Layer::new()
-            .with_writer(Mutex::new(io::LineWriter::new(file)))
-            .with_ansi(false)
-            .boxed()
-    });
-
-    // Build console layer for debug builds
-    let console_layer = if cfg!(debug_assertions) {
-        Some(Layer::new().with_writer(io::stderr).with_ansi(true).boxed())
-    } else {
-        None
-    };
-
-    // Combine layers
-    tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
-        .with(file_layer)
-        .with(console_layer)
-        .init();
-}
-
 fn main() {
-    init_tracing();
+    ai_music_companion::logging::init();
 
     let mut builder = tauri::Builder::default();
 
