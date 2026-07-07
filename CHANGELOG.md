@@ -1,3 +1,9 @@
+## [2.15.1](https://github.com/perice-pope/ai-music-companion/compare/v2.15.0...v2.15.1) (2026-07-07)
+
+### Bug Fixes
+
+* **desktop:** align @tauri-apps/api with the tauri crate's minor (2.11) ([#320](https://github.com/perice-pope/ai-music-companion/issues/320)) ([dcf35ce](https://github.com/perice-pope/ai-music-companion/commit/dcf35cea15a0bf3e77bd265c50dd7085857caacf))
+
 ## [2.15.0](https://github.com/perice-pope/ai-music-companion/compare/v2.14.0...v2.15.0) (2026-07-07)
 
 ### Features
