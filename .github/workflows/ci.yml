@@ -51,6 +51,9 @@ jobs:
       # its own job with the full dependency list.
       - name: Install system dependencies
         run: |
+          # Broken third-party apt mirrors (packages.microsoft.com) failed 5+
+          # runs on 2026-07-07; we install nothing from them. Drop before update.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev \
@@ -154,6 +157,9 @@ jobs:
       # Install the full set from the issue #50 recommendation.
       - name: Install system dependencies
         run: |
+          # Broken third-party apt mirrors (packages.microsoft.com) failed 5+
+          # runs on 2026-07-07; we install nothing from them. Drop before update.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev \
@@ -204,6 +210,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Broken third-party apt mirrors (packages.microsoft.com) failed 5+
+          # runs on 2026-07-07; we install nothing from them. Drop before update.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev \

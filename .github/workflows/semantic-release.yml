@@ -37,14 +37,15 @@ jobs:
         with:
           version: 9
 
-      # USER_PAT, not GITHUB_TOKEN, for two load-bearing reasons (both bit us
-      # 2026-07-05..07 — every release failed and no installers were built):
-      #  1. Branch protection on main blocks the default token's changelog
-      #     push; the founder's PAT passes because enforce_admins is off.
-      #  2. Tags/releases created with GITHUB_TOKEN do NOT trigger other
-      #     workflows (GitHub's anti-recursion rule), so release.yml never
-      #     fired and every release since June shipped without installers.
-      #     PAT-created tags trigger it normally.
+      # USER_PAT, not GITHUB_TOKEN: branch protection on main blocks the
+      # default token's changelog push; the founder's PAT passes because
+      # enforce_admins is off. (Every release 2026-07-05..07 failed on this.)
+      - name: Record latest release before
+        id: before
+        env:
+          GH_TOKEN: ${{ secrets.USER_PAT }}
+        run: echo "tag=$(gh release view --json tagName -q .tagName 2>/dev/null || echo none)" >> "$GITHUB_OUTPUT"
+
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.USER_PAT }}
@@ -56,3 +57,22 @@ jobs:
           -p @semantic-release/github
           -p conventional-changelog-conventionalcommits
           semantic-release
+
+      # The installer build CANNOT ride the tag-push event: the changelog
+      # commit semantic-release tags carries "[skip ci]", and GitHub
+      # suppresses ALL push-event workflows for refs whose head commit says
+      # so — including the v* tag push (proven on v2.15.0: PAT-pushed tag,
+      # zero release.yml runs). Dispatch it explicitly at the tag ref;
+      # ref_type there is 'tag', so release.yml behaves exactly as a tag
+      # push would (attach to the published release + stable-named aliases).
+      - name: Fire the installer build for the new release
+        env:
+          GH_TOKEN: ${{ secrets.USER_PAT }}
+        run: |
+          TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || echo none)
+          if [ "$TAG" != "${{ steps.before.outputs.tag }}" ] && [ "$TAG" != "none" ]; then
+            gh workflow run release.yml --ref "$TAG"
+            echo "dispatched installer build for $TAG"
+          else
+            echo "no new release this run — nothing to build"
+          fi
