@@ -86,8 +86,11 @@ jobs:
       # Generate the platform-specific icons (icon.ico for Windows, icon.icns
       # for macOS, plus Square*Logo.png for Windows) from the committed PNG.
       # These are intentionally NOT committed (.gitignore: icons/* keeps only
-      # the three base PNGs) and are regenerated deterministically here. Tauri's
-      # bundler auto-discovers icons/icon.ico and icons/icon.icns by convention.
+      # the three base PNGs) and are regenerated deterministically here. The
+      # bundler does NOT auto-discover them — icon.icns/icon.ico are listed
+      # explicitly in tauri.conf.json bundle.icon (v2.15.1's Windows leg died
+      # on "Couldn't find a .ico icon" when they weren't). This step must run
+      # before `tauri build`.
       - name: Generate platform icons
         working-directory: apps/desktop
         run: pnpm tauri icon src-tauri/icons/128x128@2x.png
@@ -104,33 +107,50 @@ jobs:
           tar xzf /tmp/onnxruntime.tgz -C /tmp
           echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
 
-      - name: Import Apple code-signing certificate
-        # Only runs when the cert secret is present; otherwise macOS builds are
-        # produced UNSIGNED (Gatekeeper will warn end users until signed).
-        if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+      # Tauri's bundler treats a PRESENT-but-empty APPLE_CERTIFICATE as "sign
+      # with this" and dies importing a blank keychain cert (killed v2.15.1's
+      # macOS leg — the signing secrets aren't configured yet, but a YAML
+      # `env:` key is always present even when its secret is unset). YAML
+      # can't declare conditional env keys, so export each signing variable
+      # to GITHUB_ENV only when its secret actually has a value: unsigned
+      # builds see no signing variables at all. Values stay secret-masked.
+      #
+      # Updater signing (TAURI_SIGNING_*): without it, installers build but
+      # the updater `latest.json` carries no signature and clients configured
+      # with a pubkey will reject the update.
+      - name: Export signing secrets when configured
+        shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-        run: echo "Apple certificate present — tauri-action will sign & notarize."
-
-      - name: Build & draft release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # --- Updater signing (Tauri). Without these, installers build but the
-          # updater `latest.json` is produced WITHOUT a signature and clients
-          # configured with a pubkey will reject the update. ---
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # --- macOS code signing + notarization (gated: empty == unsigned) ---
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # --- Windows code signing (gated: empty == unsigned) ---
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+                      APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+                      WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+            if [ -n "${!name}" ]; then
+              {
+                echo "$name<<__SECRET_EOF__"
+                echo "${!name}"
+                echo "__SECRET_EOF__"
+              } >> "$GITHUB_ENV"
+              echo "signing: exported $name"
+            fi
+          done
+          echo "done — unset secrets were NOT exported (build stays unsigned)"
+
+      - name: Build & draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           # Path to the Tauri app (where tauri.conf.json lives, via the JS CLI).
           projectPath: apps/desktop
