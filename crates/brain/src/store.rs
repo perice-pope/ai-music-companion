@@ -1265,6 +1265,7 @@ mod tests {
                     vibrato_quality: 0.55,
                 }),
                 key: None,
+                key_claim: None,
                 intonation: None,
                 groove: None,
             }),

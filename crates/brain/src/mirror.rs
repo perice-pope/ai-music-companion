@@ -211,6 +211,7 @@ mod tests {
                 confidence: 0.8,
                 margin: 0.2,
             }),
+            key_claim: mode.map(|_| crate::fingerprint::KeyClaimStrength::Asserted),
             intonation: None,
             groove: swing.map(|s| groove::GrooveDescriptor {
                 tempo_bpm: Some(100.0),

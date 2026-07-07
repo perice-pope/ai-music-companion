@@ -148,12 +148,29 @@ export default function SessionRecap() {
                 }`
               : `${durationMinutes} minute${durationMinutes === 1 ? "" : "s"}`}
           </p>
-          {/* Detected key/mode, when confident. Quiet, factual — it grounds the
-            coaching above (and, later, the cultural-relevance connections). */}
+          {/* Detected key/mode, stated only as firmly as the live tracking
+            earned (#316): asserted keys read flat, late-settling keys lean,
+            and a session that never settled says so instead of guessing.
+            A missing key_claim is a pre-#316 recap → the flat form. */}
           {!isEmptyState && fingerprint?.key && (
             <p className="text-sm text-gray-400" data-testid="recap-key">
               Key:{" "}
-              <span className="text-gray-200">{keyName(fingerprint.key)}</span>
+              <span className="text-gray-200">
+                {fingerprint.key_claim === "leaning"
+                  ? `leaning ${keyName(fingerprint.key)} toward the end`
+                  : keyName(fingerprint.key)}
+              </span>
+            </p>
+          )}
+          {/* "Kept moving" only when the tracking actually observed motion
+            (the explicit unsettled claim) — a percussive/groove-only session
+            with no tonal readings says nothing about key at all. */}
+          {!isEmptyState && fingerprint?.key_claim === "unsettled" && (
+            <p className="text-sm text-gray-400" data-testid="recap-key-unsettled">
+              Key:{" "}
+              <span className="text-gray-200">
+                kept moving — normal for exploratory playing
+              </span>
             </p>
           )}
         </header>

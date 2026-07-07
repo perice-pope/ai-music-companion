@@ -145,6 +145,87 @@ describe("SessionRecap", () => {
     );
   });
 
+  // #316: the key line states the claim only as firmly as the tracking
+  // earned — leaning keys hedge, asserted/legacy keys stay flat, and a
+  // session that never settled says so instead of guessing.
+  it("hedges a leaning key and keeps asserted/legacy keys flat", () => {
+    const key = {
+      tonic: 8,
+      mode: "ionian",
+      confidence: 0.7,
+      margin: 0.1,
+    } as const;
+    seedRecap(fullRecap({ fingerprint: { key, key_claim: "leaning" } }));
+    const { rerender } = render(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain(
+      "leaning G# major toward the end",
+    );
+
+    // Asserted → today's flat form, no hedge.
+    seedRecap(fullRecap({ fingerprint: { key, key_claim: "asserted" } }));
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain("G# major");
+    expect(screen.getByTestId("recap-key").textContent).not.toContain(
+      "leaning",
+    );
+
+    // Legacy recap (persisted before key_claim existed) → flat form, so old
+    // sessions don't retroactively hedge.
+    seedRecap(fullRecap({ fingerprint: { key } }));
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain("G# major");
+    expect(screen.getByTestId("recap-key").textContent).not.toContain(
+      "leaning",
+    );
+  });
+
+  it("says the key kept moving only on an explicit unsettled claim", () => {
+    // Tonal readings existed but never firmed into a claim → honest
+    // "kept moving" copy instead of silence or a guess.
+    seedRecap(
+      fullRecap({
+        fingerprint: {
+          key_claim: "unsettled",
+          tone: {
+            brightness: 0.6,
+            warmth: 0.5,
+            air_noise: 0.2,
+            core_clarity: 0.8,
+            vibrato_quality: 0.55,
+          },
+        },
+      }),
+    );
+    const { rerender } = render(<SessionRecap />);
+    expect(screen.getByTestId("recap-key-unsettled").textContent).toContain(
+      "kept moving",
+    );
+    expect(screen.queryByTestId("recap-key")).toBeNull();
+
+    // A measured session with NO tonal readings (groove-only / percussive):
+    // "kept moving" would claim motion nothing observed → no key copy.
+    seedRecap(
+      fullRecap({
+        fingerprint: {
+          tone: {
+            brightness: 0.6,
+            warmth: 0.5,
+            air_noise: 0.2,
+            core_clarity: 0.8,
+            vibrato_quality: 0.55,
+          },
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.queryByTestId("recap-key-unsettled")).toBeNull();
+
+    // No fingerprint at all (nothing measured) → no key copy of any kind.
+    seedRecap(fullRecap());
+    rerender(<SessionRecap />);
+    expect(screen.queryByTestId("recap-key-unsettled")).toBeNull();
+  });
+
   it("shows the intonation read-out only when the recap carries one", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
