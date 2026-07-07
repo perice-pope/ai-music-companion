@@ -130,7 +130,13 @@ url_responds(){ curl -sf -o /dev/null --max-time 5 "$URL"; }
 # app's address — vite fails on its strict port while the app window (or Chrome)
 # happily renders the stranger, which the tester saw as a surprise "login
 # screen" (#312). The marker is the <title> shipped in apps/desktop/index.html.
-serves_our_app(){ curl -sf --max-time 5 "$URL" 2>/dev/null | grep -q "<title>AI Music Companion</title>"; }
+# Buffered (no pipe): under pipefail, grep -q's early exit would fail curl and
+# report the app's own page as foreign.
+serves_our_app(){
+  local page
+  page="$(curl -sf --max-time 5 "$URL" 2>/dev/null)" || return 1
+  case "$page" in *"<title>AI Music Companion</title>"*) return 0 ;; *) return 1 ;; esac
+}
 
 kill_ours(){
   for pf in "$WEB_PIDFILE" "$DESK_PIDFILE"; do
@@ -138,7 +144,8 @@ kill_ours(){
   done
   pkill -f "cargo tauri dev" 2>/dev/null || true
   pkill -f "$DESK_BIN" 2>/dev/null || true
-  pkill -f "vite" 2>/dev/null || true
+  # Path-scoped: only OUR checkout's vite, never another project's dev server.
+  pkill -f "$APP_DIR.*vite" 2>/dev/null || true
 }
 
 stranger_msg(){
@@ -232,6 +239,12 @@ cmd_start_desktop(){
       fi
       ok "Desktop app window should now be open (look for 'AI Music Companion')."
       echo "MODE=desktop"; echo "COMMIT=$(commit)"; return 0
+    fi
+    # vite lost its strict port mid-run — a stranger grabbed the app's address.
+    # Checked before the generic error grep, which its death line also matches.
+    if grep -qi "Port 1420 is already in use" "$DESK_LOG" 2>/dev/null; then
+      kill "$(cat "$DESK_PIDFILE" 2>/dev/null)" 2>/dev/null || true; rm -f "$DESK_PIDFILE"
+      stranger_msg; exit 13
     fi
     # hard failure: compile error
     if grep -qiE 'error: could not compile|error\[E[0-9]+\]|^error:' "$DESK_LOG" 2>/dev/null; then

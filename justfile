@@ -13,6 +13,7 @@ ci: fmt lint test audit build-frontend
 test:
     cargo test --workspace
     cd apps/desktop && pnpm test --passWithNoTests
+    bash va-testing-kit/skills/test-app/scripts/run.test.sh
 
 # Run Rust tests only
 test-rust:
