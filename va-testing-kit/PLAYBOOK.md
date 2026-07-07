@@ -162,6 +162,18 @@ Open the samples folder for her so she can drag a file:
 13. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
    things like tone, how in-tune you were (a % or 'in tune'), tempo, plus **Strengths**, **Areas to
    work on**, and **Next time, try**? Is it specific and useful, or generic?"
+13b. **The key line is honest now (retest of your 'coin flip' finding)** — the recap's "Key:" line
+   should only be as confident as the app actually was. Two quick sessions:
+   **(a) Stable:** "Play or sing comfortably in ONE key for the whole session, then end it. The
+   recap should state the key plainly (like 'Key: G major') — and it must be the SAME key the
+   'I hear' strip was showing when you stopped."
+   **(b) Wandering:** "Now noodle around — drift between keys on purpose, maybe settle somewhere
+   only right at the end, then end the session. The recap should NOT state a key flatly. It should
+   either say **'leaning … toward the end'** or **'kept moving — normal for exploratory
+   playing'**." The one thing to flag hard: the recap flatly naming a key **different** from what
+   the strip showed at the end — that's the exact bug this fixes (was: off by a half-step). Also
+   note whether any Strengths line still says the session "sat firmly" in a key after a wandering
+   session — it shouldn't.
 14. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful,
     specific feedback on the music**? What was missing or wrong?"
 15. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
@@ -226,6 +238,10 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 ### AI critique / recap   (desktop only)
 - **[#277 re-test]** Recap key matches what the live "I hear" strip actually showed during the
   session (watch the strip while playing; compare at the end): <answer>
+- **[#316 re-test — the 'coin flip' fix]** Stable one-key session → recap states the key plainly
+  and it matches the strip's end state: <answer>
+- **[#316 re-test]** Wandering session → recap hedges ("leaning … toward the end") or says "kept
+  moving" — never flatly names a key, and no Strengths line claims it "sat firmly": <answer>
 - **[#277 re-test]** The "Flavour" line changes between two different sessions (do one swung/jazzy,
   one plain — read both lines aloud): <answer>
 - Did the recap reflect her actual playing: <answer>
