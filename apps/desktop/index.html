@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- This exact title is a launch-integrity marker: the VA kit's
+         va-testing-kit/skills/test-app/scripts/run.sh serves_our_app() refuses
+         to open a dev page without it (#312). Renaming it aborts every
+         tester launch — update the guard and its test in the same change. -->
     <title>AI Music Companion</title>
   </head>
   <body>
