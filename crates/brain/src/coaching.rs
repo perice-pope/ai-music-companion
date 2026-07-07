@@ -511,6 +511,16 @@ Respond with valid JSON in this exact form: { \"why\": \"...\" }";
     }
 
     /// Build an instrument-specific system prompt for coaching.
+    ///
+    /// Different instruments have different pedagogical priorities:
+    /// - Brass: embouchure, breath support, resonance, tonguing, range extension
+    /// - Voice: breath management, resonance, vowel placement, vibrato control, projection
+    /// - Strings: bow control, intonation stability, vibrato quality, articulation, shifting
+    /// - Woodwinds: embouchure flexibility, tone centering, articulation clarity, vibrato control
+    /// - Piano: hand position, voicing clarity, pedal timing, evenness across registers
+    ///
+    /// Each prompt includes instrument-specific vocabulary and emphasis while maintaining
+    /// the "coach, don't judge" philosophy.
     pub fn build_system_prompt_for_instrument(instrument: &str) -> String {
         prompts::build_system_prompt_for_instrument(instrument)
     }
@@ -3115,6 +3125,17 @@ mod tests {
             prompt.contains("register"),
             "Woodwind prompt should mention register transitions"
         );
+        // "air stream" appears only in the woodwind guidance and "tonguing"
+        // only in brass, so a rerouted match arm can't hide behind vocabulary
+        // ("embouchure", "articulation", "register") the two families share.
+        assert!(
+            prompt.contains("air stream"),
+            "Woodwind prompt should use woodwind-specific language (air stream)"
+        );
+        assert!(
+            !prompt.contains("tonguing"),
+            "Woodwind prompt must not carry the brass guidance"
+        );
     }
 
     #[test]
@@ -3142,6 +3163,37 @@ mod tests {
             prompt, generic,
             "Unknown instrument should use generic prompt"
         );
+    }
+
+    #[test]
+    fn tip_system_prompts_carry_the_json_output_contract() {
+        // `parse_tip_from_response` deserializes the model's text into
+        // `CoachingTip`, so every tip system prompt must demand JSON with the
+        // exact severity/category vocabularies the serde enums accept. If this
+        // block is dropped or drifts, tips silently stop parsing.
+        for (label, prompt) in [
+            ("generic", CoachingEngine::build_system_prompt()),
+            (
+                "instrument",
+                CoachingEngine::build_system_prompt_for_instrument("trumpet"),
+            ),
+        ] {
+            assert!(
+                prompt.contains("Respond with valid JSON in this exact format"),
+                "{label} prompt must demand JSON output"
+            );
+            assert!(
+                prompt.contains("\"severity\": \"encouragement\" | \"suggestion\" | \"focus\""),
+                "{label} prompt must enumerate the CoachingSeverity variants"
+            );
+            assert!(
+                prompt.contains(
+                    "\"category\": \"tone\" | \"intonation\" | \"rhythm\" | \"dynamics\" | \
+                     \"expression\" | \"technique\""
+                ),
+                "{label} prompt must enumerate the CoachingCategory variants"
+            );
+        }
     }
 
     #[test]
