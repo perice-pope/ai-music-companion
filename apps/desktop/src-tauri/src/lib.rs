@@ -9,6 +9,7 @@
 
 pub mod audio_pipeline;
 pub mod commands;
+pub mod logging;
 pub mod runtime;
 
 pub use commands::{
