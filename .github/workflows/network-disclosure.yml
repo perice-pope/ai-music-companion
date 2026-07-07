@@ -34,6 +34,9 @@ jobs:
 
       - name: Install ripgrep
         run: |
+          # Broken third-party apt mirrors (packages.microsoft.com) failed 5+
+          # runs on 2026-07-07; we install nothing from them. Drop before update.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update
           sudo apt-get install -y ripgrep
 

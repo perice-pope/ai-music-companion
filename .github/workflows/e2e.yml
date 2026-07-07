@@ -77,7 +77,12 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: apps/desktop
-        run: pnpm e2e:install
+        # playwright --with-deps runs apt under the hood; drop the broken
+        # third-party mirrors first (packages.microsoft.com failed 5+ runs on
+        # 2026-07-07; we install nothing from them).
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/azure-cli*
+          pnpm e2e:install
 
       # Drives the built bundle via vite preview (configured as Playwright's
       # webServer). The suite fails the build if the practice→recap flow makes
