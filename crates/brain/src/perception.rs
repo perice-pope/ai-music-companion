@@ -24,9 +24,12 @@ const NOTE_GAP_SECS: f64 = 0.25;
 /// Trailing duration credited past a note's last frame (~one analysis hop,
 /// upper bound) — a note seen in one frame still lasted about a hop.
 const MAX_FRAME_DT_SECS: f64 = 0.1;
-/// Evidence shorter than this isn't a note — it's a single-frame detector
-/// glitch (octave errors, attack transients) and must not feed the tracker.
-const MIN_NOTE_SECS: f64 = 0.04;
+/// A real note is seen across multiple analysis frames (~40–50 Hz); evidence
+/// whose FRAMES span less than this is a single-frame detector glitch —
+/// release chirps, octave errors — and never feeds the tracker. Checked on
+/// the observed span, before trailing credit, so a glitch that happens to be
+/// the last voiced frame before a rest can't buy its way in.
+const MIN_NOTE_SPAN_SECS: f64 = 0.02;
 /// Duration-weight cap so one long drone can't own the whole profile.
 const MAX_NOTE_WEIGHT_SECS: f64 = 2.0;
 
@@ -40,6 +43,11 @@ const MAX_NOTE_WEIGHT_SECS: f64 = 2.0;
 /// keys per session. This gate merges consecutive same-pitch-class frames
 /// into one duration-weighted observation, so the tracker sees what it was
 /// tuned for.
+///
+/// Same-pitch-class re-attacks inside the voiced gap merge too, rests
+/// included — intentional: as key evidence, five staccato tonic hits are one
+/// sustained claim on that pitch class, and a calm display beats per-attack
+/// updates.
 #[derive(Debug, Default)]
 struct NoteGate {
     pending: Option<PendingNote>,
@@ -93,12 +101,15 @@ impl NoteGate {
     }
 
     /// A note ends when the next one starts (or, bounded by one hop of
-    /// trailing credit, when its frames stop). Sub-frame evidence is a glitch,
-    /// not a note.
+    /// trailing credit, when its frames stop). The glitch gate runs on the
+    /// observed frame span — trailing credit is duration weighting only and
+    /// must never rescue single-frame evidence.
     fn close(note: PendingNote, end_hint: f64) -> Option<(u8, f32)> {
+        let span = note.last_seen_secs - note.start_secs;
         let end = end_hint.min(note.last_seen_secs + MAX_FRAME_DT_SECS);
         let dur = end - note.start_secs;
-        (dur >= MIN_NOTE_SECS).then_some((note.pc, dur.min(MAX_NOTE_WEIGHT_SECS) as f32))
+        (span >= MIN_NOTE_SPAN_SECS && dur > 0.0)
+            .then_some((note.pc, dur.min(MAX_NOTE_WEIGHT_SECS) as f32))
     }
 }
 
@@ -353,14 +364,14 @@ mod tests {
         let mut p = PerceptionTracker::new();
         // Full C-major scale (≥4 distinct pitch classes are required before the
         // tracker reports a key) with the tonic triad emphasized so C wins.
+        // Each note arrives as realistic ~45 Hz analysis frames.
         let stream = [
             261.63, 261.63, 329.63, 392.0, 293.66, 349.23, 440.0, 493.88, 261.63,
         ]; // C C E G D F A B C
         let mut t = 0.0;
         for _ in 0..12 {
             for &hz in &stream {
-                p.observe(&pitched(hz, t));
-                t += 0.1;
+                t = feed_note_frames(&mut p, hz, t, 0.15);
             }
         }
         let key = p.snapshot(t).key.expect("a key should be detected");
@@ -508,7 +519,9 @@ mod tests {
         let held = p.snapshot(t).key.expect("C material should read a key");
         assert_eq!(held.tonic, 0, "setup should read a C key; got {held:?}");
 
-        // Three quick F#-major-triad notes — a lick, not a modulation.
+        // Three quick F#-major-triad notes — a lick, not a modulation. (The
+        // third is still pending at the snapshot; the two closed observations
+        // are well under the tracker's dwell either way.)
         for &hz in &[369.99, 466.16, 554.37] {
             t = feed_note_frames(&mut p, hz, t, 0.25);
         }
@@ -579,6 +592,69 @@ mod tests {
         assert!(
             settled.is_some(),
             "the final held note must land after the gap; got {settled:?}"
+        );
+    }
+
+    /// The release-chirp path (review probe): a single glitch frame that is
+    /// the LAST voiced frame before silence or before the next note must be
+    /// discarded — trailing credit is duration weighting, not evidence, and
+    /// must never buy a one-frame reading past the glitch gate.
+    #[test]
+    fn a_single_frame_before_silence_is_not_a_note() {
+        let mut g = NoteGate::default();
+        assert_eq!(g.observe(6, 10.0), None);
+        assert_eq!(
+            g.flush(10.5),
+            None,
+            "trailing credit must not rescue a single-frame glitch at a rest"
+        );
+
+        let mut g = NoteGate::default();
+        assert_eq!(g.observe(6, 10.0), None);
+        assert_eq!(
+            g.observe(0, 10.3),
+            None,
+            "a single-frame glitch closed by the next note must be discarded too"
+        );
+    }
+
+    /// Duration weighting is capped: a drone counts as at most
+    /// `MAX_NOTE_WEIGHT_SECS` of evidence, so one held pitch can't own the
+    /// whole rolling profile.
+    #[test]
+    fn a_drone_cannot_outweigh_the_window() {
+        let mut g = NoteGate::default();
+        let mut t = 0.0;
+        while t < 5.0 {
+            let _ = g.observe(0, t);
+            t += 0.022;
+        }
+        let (pc, w) = g.flush(t + 1.0).expect("the drone should land as one note");
+        assert_eq!(pc, 0);
+        assert!(
+            (w - MAX_NOTE_WEIGHT_SECS as f32).abs() < 1e-6,
+            "a 5 s drone must weigh exactly the cap; got {w}"
+        );
+    }
+
+    /// A note that ends into silence is credited at most ~one analysis hop
+    /// past its last frame — a long rest before the flush must not inflate
+    /// its duration weight.
+    #[test]
+    fn trailing_credit_is_bounded() {
+        let mut g = NoteGate::default();
+        let mut t = 0.0;
+        let mut last = 0.0;
+        while t <= 0.5 {
+            let _ = g.observe(0, t);
+            last = t;
+            t += 0.022;
+        }
+        let (_, w) = g.flush(last + 30.0).expect("the note should land");
+        let expected = (last + MAX_FRAME_DT_SECS) as f32;
+        assert!(
+            (w - expected).abs() < 1e-4,
+            "weight must be span plus bounded trailing credit ({expected}); got {w}"
         );
     }
 
