@@ -37,9 +37,17 @@ jobs:
         with:
           version: 9
 
+      # USER_PAT, not GITHUB_TOKEN, for two load-bearing reasons (both bit us
+      # 2026-07-05..07 — every release failed and no installers were built):
+      #  1. Branch protection on main blocks the default token's changelog
+      #     push; the founder's PAT passes because enforce_admins is off.
+      #  2. Tags/releases created with GITHUB_TOKEN do NOT trigger other
+      #     workflows (GitHub's anti-recursion rule), so release.yml never
+      #     fired and every release since June shipped without installers.
+      #     PAT-created tags trigger it normally.
       - name: Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.USER_PAT }}
         run: >
           npx
           -p semantic-release

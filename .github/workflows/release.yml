@@ -135,11 +135,59 @@ jobs:
           # to a ref-derived name.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-manual', github.run_number) }}
           releaseName: "AI Music Companion ${{ github.ref_type == 'tag' && github.ref_name || github.run_number }}"
-          releaseBody: "See CHANGELOG.md. Installers are attached below. This release is a DRAFT until reviewed and published."
-          # Always draft — a human publishes after smoke-testing the installers.
-          releaseDraft: true
+          releaseBody: "See CHANGELOG.md. Installers are attached below."
+          # Tag builds attach to the release semantic-release already
+          # PUBLISHED (that publish is the human-visible gate — the landing
+          # page's /releases/latest/download links must go live without a
+          # second manual step). Manual workflow_dispatch builds still land
+          # in a draft for review.
+          releaseDraft: ${{ github.ref_type != 'tag' }}
           prerelease: false
           # The updater manifest (latest.json) is generated and attached when
           # TAURI_SIGNING_PRIVATE_KEY is set.
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      # Stable-named copies for the landing page's "always latest" buttons.
+      # `/releases/latest/download/<name>` needs a FILENAME that never
+      # changes, but Tauri stamps the version into every bundle
+      # ("AI Music Companion_0.1.0_universal.dmg"), so the landing page would
+      # need editing on every release. Re-upload the primary installers under
+      # fixed names; the version-stamped originals stay attached alongside.
+      - name: Upload stable-named installer aliases
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bundle_root="apps/desktop/src-tauri/target"
+          stage="$RUNNER_TEMP/stable-assets"
+          mkdir -p "$stage"
+          # find, not globstar: the macOS runner's /bin/bash is 3.2.
+          alias_first() {
+            local f
+            f=$(find "$bundle_root" -type f -path "$1" | head -n 1)
+            if [ -n "$f" ]; then
+              cp "$f" "$stage/$2"
+              echo "aliased $(basename "$f") -> $2"
+            fi
+          }
+          case "${{ matrix.platform }}" in
+            macos-latest)
+              alias_first "*/release/bundle/dmg/*.dmg" "AI-Music-Companion-macOS.dmg"
+              ;;
+            windows-latest)
+              alias_first "*/release/bundle/nsis/*-setup.exe" "AI-Music-Companion-Windows-Setup.exe"
+              alias_first "*/release/bundle/msi/*.msi" "AI-Music-Companion-Windows.msi"
+              ;;
+            ubuntu-latest)
+              alias_first "*/release/bundle/appimage/*.AppImage" "AI-Music-Companion-Linux.AppImage"
+              alias_first "*/release/bundle/deb/*.deb" "AI-Music-Companion-Linux.deb"
+              ;;
+          esac
+          if [ -z "$(ls -A "$stage")" ]; then
+            echo "::error::No bundles found to alias — did the build produce artifacts?"
+            exit 1
+          fi
+          gh release upload "$TAG" "$stage"/* --clobber
