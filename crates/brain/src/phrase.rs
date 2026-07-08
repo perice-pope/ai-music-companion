@@ -137,7 +137,14 @@ pub struct PhraseSummary {
     /// [`crate::perception::NoteGate`] discipline as the live "I hear" strip,
     /// so it tracks modulation without flapping and the recap's key vote sees
     /// the calm readings the player watched (#316 / #324). `None` until
-    /// enough pitch evidence accumulates. Additive + `serde(default)`.
+    /// enough pitch evidence accumulates.
+    ///
+    /// Key evidence gates at the strip's fixed confidence bar
+    /// ([`crate::perception::MIN_PITCH_CONFIDENCE`]), NOT the per-instrument
+    /// voiced threshold: a breathy sung session that detects below the bar
+    /// still forms phrases (#185) but stays keyless — the strip never showed
+    /// a key for it, and the recap must not out-claim the strip (#316).
+    /// Additive + `serde(default)`.
     #[serde(default)]
     pub key: Option<theory::KeyEstimate>,
     /// Onset timestamps (seconds from session start) of the events in this
@@ -148,6 +155,17 @@ pub struct PhraseSummary {
     /// persisted phrases deserialize cleanly.
     #[serde(default)]
     pub onsets_secs: Vec<f64>,
+}
+
+/// What a phrase-closing boundary means for the note pending in the key
+/// gate: a silence gap (or session end) ended the note too — drain it into
+/// the tracker so it counts in the closing phrase's snapshot; a measure
+/// boundary may cut straight through a held note — keep it pending as ONE
+/// note, exactly as the live strip hears it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NoteGateAtClose {
+    Drain,
+    Keep,
 }
 
 /// Groups [`AudioEvent`]s into musical phrases based on silence gaps and score positions.
@@ -254,12 +272,17 @@ impl PhraseAggregator {
             event.pitch_hz.is_some() && event.confidence > self.config.voiced_confidence_threshold;
 
         if is_voiced {
-            // Check for score measure boundaries if a score is loaded
+            // Check for score measure boundaries if a score is loaded.
+            // A measure boundary does NOT drain the note gate: the player may
+            // be holding one note straight across it, and force-splitting a
+            // tied pedal tone per measure would re-enter it as a fresh
+            // (drone-capped) note every time — letting it outweigh the whole
+            // rolling profile the cap protects.
             let aligned_position = if let Some(follower) = &mut self.score_follower {
                 let pos = follower.align(event);
                 if let Some(last_measure) = self.last_score_measure {
                     if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
-                        self.close_current_phrase();
+                        self.close_current_phrase(NoteGateAtClose::Keep);
                     }
                 }
                 self.last_score_measure = Some(pos.measure_number);
@@ -268,13 +291,16 @@ impl PhraseAggregator {
                 None
             };
 
-            // Check if there's been a silence gap since the last voiced event
+            // Check if there's been a silence gap since the last voiced event.
+            // A silence gap means the previous phrase's final note truly
+            // ended — drain it into the tracker so it counts in that
+            // phrase's key snapshot.
             if let Some(last_time) = self.last_voiced_time {
                 let gap = event.timestamp_secs - last_time;
                 if gap - self.config.silence_gap_secs > GAP_EPSILON
                     && !self.current_phrase_events.is_empty()
                 {
-                    self.close_current_phrase();
+                    self.close_current_phrase(NoteGateAtClose::Drain);
                 }
             }
 
@@ -290,10 +316,13 @@ impl PhraseAggregator {
             self.current_phrase_events.push(event.clone());
         }
 
-        // Key evidence rides the strip's own gate (after any boundary close,
-        // so a gap-opening event can't leak the previous phrase's pending
-        // note into the new one): every confident pitched frame, segmented
-        // into duration-weighted notes.
+        // Key evidence rides the strip's own gate: every confident pitched
+        // frame, segmented into duration-weighted notes. Fed after the
+        // boundary handling above so a gap-opening event starts its note in
+        // the new phrase, not as a one-frame remnant drained into the old
+        // one. Gated at the strip's fixed confidence bar (NOT the
+        // per-instrument voiced threshold) deliberately — see the note on
+        // `PhraseSummary::key`.
         if let Some(hz) = event.pitch_hz {
             if event.confidence >= MIN_PITCH_CONFIDENCE && hz > 0.0 {
                 if let Some(pc) = pitch_class_of(hz as f32) {
@@ -313,7 +342,7 @@ impl PhraseAggregator {
     /// phrase is captured.
     pub fn flush(&mut self) {
         if !self.current_phrase_events.is_empty() {
-            self.close_current_phrase();
+            self.close_current_phrase(NoteGateAtClose::Drain);
         }
         self.clear_score_follower();
     }
@@ -332,8 +361,10 @@ impl PhraseAggregator {
         self.phrases[start..].to_vec()
     }
 
-    /// Close the current phrase, computing its summary.
-    fn close_current_phrase(&mut self) {
+    /// Close the current phrase, computing its summary. `gate` says whether
+    /// the closing boundary also ended the player's current note (a silence
+    /// gap / session end did; a measure boundary may cut through a held one).
+    fn close_current_phrase(&mut self, gate: NoteGateAtClose) {
         let events = &self.current_phrase_events;
 
         // Discard phrases that are too short
@@ -360,12 +391,14 @@ impl PhraseAggregator {
         // the filtering, keeping the onset definition in one place.
         let onsets_secs = groove::onsets_from_events(events);
 
-        // The phrase is closing, so its final note has ended — land it before
-        // reading the snapshot, or that note would miss this phrase's key
-        // (and the session's last phrase would lose it entirely). Notes were
-        // fed per event in `push`; see `note_gate`.
-        if let Some((pc, weight)) = self.note_gate.drain() {
-            self.key_tracker.observe_pc(pc, weight);
+        // When the boundary ended the final note (silence / session end),
+        // land it before reading the snapshot, or that note would miss this
+        // phrase's key (and the session's last phrase would lose it
+        // entirely). Notes were fed per event in `push`; see `note_gate`.
+        if gate == NoteGateAtClose::Drain {
+            if let Some((pc, weight)) = self.note_gate.drain() {
+                self.key_tracker.observe_pc(pc, weight);
+            }
         }
         let key = self.key_tracker.current();
 
@@ -1044,14 +1077,28 @@ mod tests {
     /// Feed one sustained note as realistic ~45 Hz analysis frames (the rate
     /// the pipeline's detect loop actually produces — the key tracker is fed
     /// per NOTE via the same gate as the live strip, and a real note spans
-    /// many frames). Returns the time after the note.
-    fn feed_note_frames(agg: &mut PhraseAggregator, hz: f64, start: f64, dur: f64) -> f64 {
+    /// many frames), at the given detection confidence. Returns the time
+    /// after the note.
+    fn feed_note_frames_at(
+        agg: &mut PhraseAggregator,
+        hz: f64,
+        confidence: f64,
+        start: f64,
+        dur: f64,
+    ) -> f64 {
         let mut t = start;
         while t < start + dur {
-            agg.push(&voiced_event(hz, 0.8, t));
+            let mut e = voiced_event(hz, 0.8, t);
+            e.confidence = confidence;
+            agg.push(&e);
             t += 0.022;
         }
         t
+    }
+
+    /// [`feed_note_frames_at`] at a comfortably confident 0.95.
+    fn feed_note_frames(agg: &mut PhraseAggregator, hz: f64, start: f64, dur: f64) -> f64 {
+        feed_note_frames_at(agg, hz, 0.95, start, dur)
     }
 
     /// One pass of tonic-emphasized scale material at frame rate: the scale
@@ -1121,19 +1168,12 @@ mod tests {
         let phrases = agg.phrases();
         assert!(phrases.len() >= 4, "expected several phrases");
         // The opening phrase may honestly still be refining (mode ambiguity
-        // on one pass of material is real); every reading after it must hold
+        // on one pass of material is real); every phrase after it must hold
         // the one steady key — that steadiness is what earns the recap's
         // flat assertion downstream (see coaching::aggregate_key).
-        let names: Vec<String> = phrases
-            .iter()
-            .filter_map(|p| p.key.map(|k| k.name()))
-            .collect();
+        let names: Vec<Option<String>> = phrases.iter().map(|p| p.key.map(|k| k.name())).collect();
         assert!(
-            names.len() >= phrases.len() - 1,
-            "a steady session should read a key on nearly every phrase; got {names:?}"
-        );
-        assert!(
-            names[1..].iter().all(|n| n == "G# major"),
+            names[1..].iter().all(|n| n.as_deref() == Some("G# major")),
             "after settling, every phrase snapshot must hold the steady key; got {names:?}"
         );
     }
@@ -1168,12 +1208,10 @@ mod tests {
         );
     }
 
-    /// Low-confidence frames — breath noise, squeaks between phrases — never
-    /// feed the key evidence, mirroring the strip's gate. A run of confident
-    /// foreign-key readings WOULD move the tracker; the same run below the
-    /// confidence bar must not.
-    #[test]
-    fn low_confidence_frames_do_not_move_the_key() {
+    /// Establish C major confidently, then feed `passes` full passes of an
+    /// F#-major scale at the given detection confidence. Returns the final
+    /// phrase's key name — the reading the recap would vote over.
+    fn key_after_foreign_material(confidence: f64, passes: usize) -> String {
         let mut agg = PhraseAggregator::new(PhraseConfig {
             silence_gap_secs: 0.3,
             min_phrase_events: 3,
@@ -1185,14 +1223,103 @@ mod tests {
         for _ in 0..4 {
             t = feed_scale_frames(&mut agg, &c_major, t);
         }
-        // A sustained F# squeak, voiced by this profile's low threshold but
-        // below the key-evidence confidence gate.
-        let mut squeak = t;
-        while squeak < t + 1.5 {
-            let mut e = voiced_event(369.99, 0.8, squeak);
-            e.confidence = 0.3;
-            agg.push(&e);
-            squeak += 0.022;
+        let fs_major = [369.99, 415.30, 466.16, 493.88, 554.37, 622.25, 698.46];
+        for _ in 0..passes {
+            for &hz in &fs_major {
+                t = feed_note_frames_at(&mut agg, hz, confidence, t, 0.25);
+            }
+        }
+        agg.flush();
+        agg.phrases()
+            .last()
+            .unwrap()
+            .key
+            .expect("a key was detected")
+            .name()
+    }
+
+    /// Low-confidence frames — breath noise, squeaks, shaky detection — never
+    /// feed the key evidence, mirroring the strip's gate. The foreign
+    /// material here is potent: the positive control proves the SAME notes
+    /// above the confidence bar flip the key, so only the gate keeps the
+    /// sub-bar variant from doing so. Fails if the key-evidence confidence
+    /// gate is dropped or loosened to the per-instrument voiced threshold
+    /// (0.2 here — voice-like).
+    #[test]
+    fn low_confidence_frames_do_not_move_the_key() {
+        assert_ne!(
+            key_after_foreign_material(0.9, 8),
+            "C major",
+            "positive control: this material, confidently detected, must flip the key"
+        );
+        assert_eq!(
+            key_after_foreign_material(0.3, 8),
+            "C major",
+            "the same material below the key-evidence gate must not move the key"
+        );
+    }
+
+    /// The deliberate strip-parity tradeoff (#316, "recap ≤ strip"): a
+    /// breathy sung session whose frames sit between the instrument's voiced
+    /// threshold and the strip's key-evidence bar still forms phrases (#185
+    /// stays fixed) but stays KEYLESS — the strip never showed a key for it,
+    /// and the recap must not out-claim the strip. Fails if the key gate is
+    /// re-plumbed to the per-instrument threshold without deciding this
+    /// on purpose.
+    #[test]
+    fn a_session_the_strip_never_keyed_stays_keyless() {
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.3, // the Voice profile's band
+        })
+        .unwrap();
+        let c_major = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
+        let mut t = 0.0;
+        for _ in 0..4 {
+            for &hz in &c_major {
+                t = feed_note_frames_at(&mut agg, hz, 0.4, t, 0.25);
+            }
+            t += 0.5;
+        }
+        agg.flush();
+
+        let phrases = agg.phrases();
+        assert!(
+            phrases.len() >= 3 && phrases.iter().all(|p| p.note_count > 0),
+            "sub-bar voiced material must still form phrases (#185)"
+        );
+        assert!(
+            phrases.iter().all(|p| p.key.is_none()),
+            "no phrase may claim a key the strip never earned"
+        );
+    }
+
+    /// A note held straight across measure-boundary closes is ONE
+    /// drone-capped observation, not one re-entered (and re-capped) note per
+    /// measure — that would let a tied pedal tone own the whole rolling
+    /// profile, which is exactly what the drone cap exists to stop. Closes
+    /// here use [`NoteGateAtClose::Keep`], the measure branch's mode; fails
+    /// if measure closes drain the gate.
+    #[test]
+    fn a_note_held_across_measure_closes_cannot_own_the_key() {
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
+        })
+        .unwrap();
+        let c_major = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
+        let mut t = 0.0;
+        for _ in 0..4 {
+            t = feed_scale_frames(&mut agg, &c_major, t);
+        }
+        // An F# pedal tone tied across 8 "measures": the drone keeps
+        // sounding while the phrase closes the way the measure branch
+        // closes it.
+        for _ in 0..8 {
+            t = feed_note_frames(&mut agg, 369.99, t, 2.0);
+            agg.close_current_phrase(NoteGateAtClose::Keep);
         }
         agg.flush();
 
@@ -1205,7 +1332,7 @@ mod tests {
         assert_eq!(
             key.name(),
             "C major",
-            "sub-gate frames must not skew the key; got {}",
+            "a tied pedal must weigh in once (capped), not once per measure; got {}",
             key.name()
         );
     }
