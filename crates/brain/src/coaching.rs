@@ -1796,7 +1796,10 @@ fn fingerprint_for_recap(phrases: &[PhraseSummary]) -> Option<MusicalFingerprint
 ///
 /// Each phrase carries the session-long `theory::KeyTracker` reading at the
 /// moment it closed (`PhraseSummary::key`) — the same tracker family behind
-/// the live "I hear" header. The recap takes a confidence-weighted vote over
+/// the live "I hear" header, fed per NOTE through the same gate (#324: fed
+/// per frame instead, the phrase tracker wandered where the strip stayed
+/// calm, and the vote below hedged genuinely steady sessions). The recap
+/// takes a confidence-weighted vote over
 /// those tracked readings (ties → the later call wins, since the tracker had
 /// more evidence by then). A pooled whole-session re-estimate was used before
 /// and could confidently name a key the header **never showed** (#277) — the
@@ -2482,6 +2485,63 @@ mod tests {
             panic!("a key was tracked");
         };
         assert_eq!(strength, KeyClaimStrength::Leaning);
+    }
+
+    /// #324 — the VA's "one thing to change": a session that sits steadily
+    /// in ONE key must earn the FLAT assertion, end-to-end through the real
+    /// phrase aggregation. Fails when the aggregator feeds its key tracker
+    /// per frame instead of per note: the collapsed rolling window snapshots
+    /// wandering relative-mode readings across phrases, the vote's winner
+    /// share drops below the assert bar, and the recap hedges ("leaning G#
+    /// major toward the end") a session the strip showed as rock-steady.
+    #[test]
+    fn a_steady_session_earns_the_flat_assertion() {
+        let mut agg = crate::phrase::PhraseAggregator::new(crate::phrase::PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
+        })
+        .expect("valid config");
+        let frame = |hz: f64, t: f64| ears::AudioEvent {
+            pitch_hz: Some(hz),
+            confidence: 0.9,
+            amplitude: 0.6,
+            timestamp_secs: t,
+            is_onset: false,
+            note_info: None,
+        };
+        // G# major, tonic and fifth emphasized, at the pipeline's real
+        // ~45 Hz frame rate — several phrases separated by breaths.
+        let gs_major = [415.30, 466.16, 523.25, 554.37, 622.25, 698.46, 783.99];
+        let mut t = 0.0;
+        for _ in 0..6 {
+            for (i, &hz) in gs_major.iter().enumerate() {
+                let dur = match i {
+                    0 => 0.5,
+                    4 => 0.35,
+                    _ => 0.2,
+                };
+                let end = t + dur;
+                while t < end {
+                    agg.push(&frame(hz, t));
+                    t += 0.022;
+                }
+            }
+            t += 0.5; // a breath → phrase boundary
+        }
+        agg.flush();
+        let phrases = agg.phrases();
+        assert!(phrases.len() >= 4, "expected several phrases");
+
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(phrases) else {
+            panic!("a steady session must claim its key");
+        };
+        assert_eq!(key.name(), "G# major", "got {}", key.name());
+        assert_eq!(
+            strength,
+            KeyClaimStrength::Asserted,
+            "a session that sat in one key the whole time earned the flat claim"
+        );
     }
 
     /// #316 review SHOULD 3 — a single-phrase blip at session end must not

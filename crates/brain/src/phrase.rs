@@ -9,6 +9,7 @@
 //! so heap allocation (Vec, String, etc.) is allowed.
 
 use crate::follower::{ScoreFollower, ScorePosition};
+use crate::perception::{pitch_class_of, NoteGate, MIN_PITCH_CONFIDENCE};
 use ears::AudioEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -132,9 +133,11 @@ pub struct PhraseSummary {
     #[serde(default)]
     pub tone: Option<tone::ToneDescriptor>,
     /// Rolling key/mode estimate as of this phrase (Phase 4). Carried from a
-    /// session-long [`theory::KeyTracker`] so it tracks modulation rather than
-    /// guessing from this phrase's few notes in isolation. `None` until enough
-    /// pitch evidence accumulates. Additive + `serde(default)`.
+    /// session-long [`theory::KeyTracker`] fed per NOTE through the same
+    /// [`crate::perception::NoteGate`] discipline as the live "I hear" strip,
+    /// so it tracks modulation without flapping and the recap's key vote sees
+    /// the calm readings the player watched (#316 / #324). `None` until
+    /// enough pitch evidence accumulates. Additive + `serde(default)`.
     #[serde(default)]
     pub key: Option<theory::KeyEstimate>,
     /// Onset timestamps (seconds from session start) of the events in this
@@ -173,10 +176,17 @@ pub struct PhraseAggregator {
     /// phrase. Carried into the emitted [`PhraseSummary::score_position`] so
     /// the LLM and OSMD cursor can anchor feedback to where the phrase began.
     current_phrase_start_position: Option<ScorePosition>,
-    /// Session-long rolling key/mode tracker. Fed every voiced pitch as phrases
-    /// close, so each phrase's `key` reflects accumulated context and follows
-    /// modulation without flickering (Phase 4, `crates/theory`).
+    /// Session-long rolling key/mode tracker behind each phrase's `key`
+    /// snapshot. Fed one duration-weighted observation per NOTE — the
+    /// tracker's documented contract. Feeding it raw frames collapses its
+    /// rolling window to under a second of audio, and the recap then votes
+    /// over wandering readings the calm strip never showed, hedging even a
+    /// rock-steady session (#316 / #324).
     key_tracker: theory::KeyTracker,
+    /// Frame→note segmentation in front of `key_tracker` — the same gate the
+    /// live strip runs (see [`NoteGate`]), so both trackers hear the session
+    /// the same way.
+    note_gate: NoteGate,
 }
 
 impl PhraseAggregator {
@@ -197,6 +207,7 @@ impl PhraseAggregator {
             last_score_measure: None,
             current_phrase_start_position: None,
             key_tracker: theory::KeyTracker::new(),
+            note_gate: NoteGate::default(),
         })
     }
 
@@ -278,6 +289,22 @@ impl PhraseAggregator {
             self.last_voiced_time = Some(event.timestamp_secs);
             self.current_phrase_events.push(event.clone());
         }
+
+        // Key evidence rides the strip's own gate (after any boundary close,
+        // so a gap-opening event can't leak the previous phrase's pending
+        // note into the new one): every confident pitched frame, segmented
+        // into duration-weighted notes.
+        if let Some(hz) = event.pitch_hz {
+            if event.confidence >= MIN_PITCH_CONFIDENCE && hz > 0.0 {
+                if let Some(pc) = pitch_class_of(hz as f32) {
+                    if let Some((note_pc, weight)) =
+                        self.note_gate.observe(pc, event.timestamp_secs)
+                    {
+                        self.key_tracker.observe_pc(note_pc, weight);
+                    }
+                }
+            }
+        }
     }
 
     /// Flush the aggregator, closing the current phrase if one is in progress.
@@ -333,11 +360,12 @@ impl PhraseAggregator {
         // the filtering, keeping the onset definition in one place.
         let onsets_secs = groove::onsets_from_events(events);
 
-        // Feed this phrase's pitches into the session-long key tracker, then
-        // read the rolling estimate — it follows modulation and won't pin a key
-        // from a handful of notes (see crates/theory).
-        for &hz in &pitch_stats.pitches {
-            self.key_tracker.observe_hz(hz as f32, 1.0);
+        // The phrase is closing, so its final note has ended — land it before
+        // reading the snapshot, or that note would miss this phrase's key
+        // (and the session's last phrase would lose it entirely). Notes were
+        // fed per event in `push`; see `note_gate`.
+        if let Some((pc, weight)) = self.note_gate.drain() {
+            self.key_tracker.observe_pc(pc, weight);
         }
         let key = self.key_tracker.current();
 
@@ -1013,6 +1041,32 @@ mod tests {
         assert_eq!(with_tone, back);
     }
 
+    /// Feed one sustained note as realistic ~45 Hz analysis frames (the rate
+    /// the pipeline's detect loop actually produces — the key tracker is fed
+    /// per NOTE via the same gate as the live strip, and a real note spans
+    /// many frames). Returns the time after the note.
+    fn feed_note_frames(agg: &mut PhraseAggregator, hz: f64, start: f64, dur: f64) -> f64 {
+        let mut t = start;
+        while t < start + dur {
+            agg.push(&voiced_event(hz, 0.8, t));
+            t += 0.022;
+        }
+        t
+    }
+
+    /// One pass of tonic-emphasized scale material at frame rate: the scale
+    /// with the tonic held longest and the fifth next (real tonal playing —
+    /// that's what disambiguates a major key from its relative modes, which
+    /// share all seven notes). Returns the time after the material.
+    fn feed_scale_frames(agg: &mut PhraseAggregator, scale: &[f64; 7], start: f64) -> f64 {
+        let mut t = feed_note_frames(agg, scale[0], start, 0.5);
+        for (i, &hz) in scale[1..].iter().enumerate() {
+            let dur = if i == 3 { 0.35 } else { 0.2 }; // the fifth, emphasized
+            t = feed_note_frames(agg, hz, t, dur);
+        }
+        t
+    }
+
     #[test]
     fn aggregator_detects_key_from_a_scale() {
         // A C-major scale played a few times within one phrase should surface
@@ -1023,19 +1077,10 @@ mod tests {
             voiced_confidence_threshold: 0.5,
         })
         .unwrap();
-        // C D E F G A B, with the tonic (C) and fifth (G) emphasised the way
-        // real tonal playing does — that's what disambiguates C major from its
-        // relative modes (A minor / D dorian share the same seven notes).
         let c_major = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
-        let emphasis = [3, 1, 1, 1, 2, 1, 1];
         let mut t = 0.0;
         for _ in 0..6 {
-            for (hz, reps) in c_major.iter().zip(emphasis.iter()) {
-                for _ in 0..*reps {
-                    agg.push(&voiced_event(*hz, 0.8, t));
-                    t += 0.02;
-                }
-            }
+            t = feed_scale_frames(&mut agg, &c_major, t);
         }
         agg.flush();
 
@@ -1046,6 +1091,123 @@ mod tests {
             .key
             .expect("a key was detected");
         assert_eq!(key.name(), "C major", "got {}", key.name());
+    }
+
+    /// The #324 hedge-on-stable regression: a session that sits steadily in
+    /// ONE key must read that key on EVERY phrase snapshot. Fed per frame
+    /// (the pre-fix path), the session-long tracker's rolling window
+    /// collapses to under a second of audio, each phrase snapshots whatever
+    /// relative mode the last bar happened to emphasize, and the recap's
+    /// vote — diluted across readings the calm strip never displayed —
+    /// hedges a rock-steady session ("leaning G# major toward the end").
+    #[test]
+    fn steady_material_reads_one_key_on_every_phrase() {
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
+        })
+        .unwrap();
+        // G# major (G# A# C C# D# F G), tonic-emphasized, as several phrases
+        // separated by real silence gaps — the VA's steady singing session.
+        let gs_major = [415.30, 466.16, 523.25, 554.37, 622.25, 698.46, 783.99];
+        let mut t = 0.0;
+        for _ in 0..6 {
+            t = feed_scale_frames(&mut agg, &gs_major, t);
+            t += 0.5; // rest between phrases → phrase boundary
+        }
+        agg.flush();
+
+        let phrases = agg.phrases();
+        assert!(phrases.len() >= 4, "expected several phrases");
+        // The opening phrase may honestly still be refining (mode ambiguity
+        // on one pass of material is real); every reading after it must hold
+        // the one steady key — that steadiness is what earns the recap's
+        // flat assertion downstream (see coaching::aggregate_key).
+        let names: Vec<String> = phrases
+            .iter()
+            .filter_map(|p| p.key.map(|k| k.name()))
+            .collect();
+        assert!(
+            names.len() >= phrases.len() - 1,
+            "a steady session should read a key on nearly every phrase; got {names:?}"
+        );
+        assert!(
+            names[1..].iter().all(|n| n == "G# major"),
+            "after settling, every phrase snapshot must hold the steady key; got {names:?}"
+        );
+    }
+
+    /// A phrase whose DECISIVE note is its last one (the 4th distinct pitch
+    /// class the tracker needs before committing) still snapshots the key:
+    /// the closing drain lands the final note before the snapshot is read.
+    /// Fails if the drain is dropped — the last note would otherwise wait
+    /// for a next phrase that never comes.
+    #[test]
+    fn a_phrases_final_note_lands_before_its_key_snapshot() {
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.5,
+        })
+        .unwrap();
+        // C E G repeatedly, then B as the very last note — only with it does
+        // the tracker have the 4 distinct pitch classes it needs to commit.
+        let mut t = 0.0;
+        for _ in 0..3 {
+            for &hz in &[261.63, 329.63, 392.0] {
+                t = feed_note_frames(&mut agg, hz, t, 0.4);
+            }
+        }
+        feed_note_frames(&mut agg, 493.88, t, 0.4);
+        agg.flush();
+
+        assert!(
+            agg.phrases().last().unwrap().key.is_some(),
+            "the final note must land in its own phrase's snapshot"
+        );
+    }
+
+    /// Low-confidence frames — breath noise, squeaks between phrases — never
+    /// feed the key evidence, mirroring the strip's gate. A run of confident
+    /// foreign-key readings WOULD move the tracker; the same run below the
+    /// confidence bar must not.
+    #[test]
+    fn low_confidence_frames_do_not_move_the_key() {
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            silence_gap_secs: 0.3,
+            min_phrase_events: 3,
+            voiced_confidence_threshold: 0.2,
+        })
+        .unwrap();
+        let c_major = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88];
+        let mut t = 0.0;
+        for _ in 0..4 {
+            t = feed_scale_frames(&mut agg, &c_major, t);
+        }
+        // A sustained F# squeak, voiced by this profile's low threshold but
+        // below the key-evidence confidence gate.
+        let mut squeak = t;
+        while squeak < t + 1.5 {
+            let mut e = voiced_event(369.99, 0.8, squeak);
+            e.confidence = 0.3;
+            agg.push(&e);
+            squeak += 0.022;
+        }
+        agg.flush();
+
+        let key = agg
+            .phrases()
+            .last()
+            .unwrap()
+            .key
+            .expect("a key was detected");
+        assert_eq!(
+            key.name(),
+            "C major",
+            "sub-gate frames must not skew the key; got {}",
+            key.name()
+        );
     }
 
     #[test]
