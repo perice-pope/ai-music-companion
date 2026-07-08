@@ -1,3 +1,9 @@
+## [2.16.1](https://github.com/perice-pope/ai-music-companion/compare/v2.16.0...v2.16.1) (2026-07-08)
+
+### Bug Fixes
+
+* **desktop:** run audio/PDF imports off the main thread so progress actually paints ([#313](https://github.com/perice-pope/ai-music-companion/issues/313)) ([#323](https://github.com/perice-pope/ai-music-companion/issues/323)) ([b7717cd](https://github.com/perice-pope/ai-music-companion/commit/b7717cd129bc61b9f2993a3491d263a1a6b78585)), closes [#267](https://github.com/perice-pope/ai-music-companion/issues/267)
+
 ## [2.16.0](https://github.com/perice-pope/ai-music-companion/compare/v2.15.3...v2.16.0) (2026-07-08)
 
 ### Features
