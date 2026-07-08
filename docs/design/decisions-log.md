@@ -142,6 +142,29 @@ Silence is honest. Generic filler is a little lie that compounds.
 
 ---
 
+## 2026-07-08 — Stem separation runs locally (Demucs-class), never in the cloud (v1)
+
+1. **Decided:** full-mix audio imports get on-device stem separation (Demucs-class
+   quality bar), with the player choosing which stem to practice. No cloud separation
+   tier in v1.
+2. **Rejected:** cloud separation API (quality + zero install cost, but violates the
+   offline-first default and ships user audio off-device); bundling model weights in
+   the installer (300 MB class — installer bloat for a feature many won't touch).
+3. **Reasoning:** practice audio is the most private thing users give us; the
+   offline-first promise ("the internet is NEVER required for core value") is the
+   product's spine. We already run ONNX models on-device (`crates/transcribe` via
+   `ort` load-dynamic + vendored runtime), so local inference is our paved road.
+   Weights download once, on first use, behind an explicit disclosed prompt.
+4. **Watch out:** htdemucs's ONNX export (transformer + iSTFT) is known-painful —
+   the spec's slice-2 spike benches it against Open-Unmix and may land Open-Unmix
+   first with the same architecture. The DECISION (local, on-device) stands
+   regardless of which model ships. Also: separation is CPU-heavy; it must run off
+   the main thread (#323's pattern) with progress + cancel.
+5. **Related:** #328 (story), `docs/specs/328-stem-separation.md`, #324 (the 4/8-notes
+   silent fail), #267 (calm degradation), #323 (off-main-thread imports).
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:
