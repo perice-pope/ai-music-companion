@@ -23,6 +23,12 @@ pub struct CellStaffNote {
     /// key signature already implies for this letter: `-1` flat, `0` natural,
     /// `1` sharp. `None` = no glyph (the signature covers it).
     pub accidental: Option<i8>,
+    /// `true` when this note's pitch class is one of the sequence's roots.
+    /// RV color rule (founder, 2026-07-08): only root notes carry their
+    /// pitch-class color on the staff — every other note draws white, so the
+    /// roots pop and the cell reads as shape-around-a-root.
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 /// The whole staff view for one cell/drill rep.
@@ -101,6 +107,11 @@ pub fn cell_staff_view(seq: &GeneratedSequence, key: KeySignature) -> CellStaffV
                 duration_beats: n.duration_beats,
                 step,
                 accidental,
+                // Straight from the generator, which flags roots PER CELL —
+                // in a 12-root row every pitch class is somebody's root, so
+                // a global pitch-class check would color everything (review
+                // must-fix on the first cut of this rule).
+                is_root: n.is_root,
             }
         })
         .collect();
@@ -132,6 +143,9 @@ mod tests {
                     midi: m,
                     start_beat: i as f64,
                     duration_beats: 1.0,
+                    // The generator flags roots per cell; this fixture mirrors
+                    // its single-root shape (first pitch class = the root).
+                    is_root: m % 12 == midis.first().copied().unwrap_or(60) % 12,
                 })
                 .collect(),
             target_midi: midis.to_vec(),
@@ -184,6 +198,22 @@ mod tests {
         assert_eq!(v.notes[1].accidental, Some(0), "F natural needs a glyph");
         let v2 = cell_staff_view(&seq(&[61]), key(0));
         assert_eq!(v2.notes[0].accidental, Some(1), "C# in C major draws #");
+    }
+
+    /// RV color rule: the view carries the generator's PER-CELL root flags
+    /// through untouched — the renderer colors exactly what the generator
+    /// marked (roots colored, everything else white). Fails if the view drops
+    /// the flag or re-derives it with its own (global) pitch-class logic.
+    #[test]
+    fn the_view_carries_per_cell_root_flags_through() {
+        let s = seq(&[64, 67, 76, 71]); // E4, G4, E5, B4 — root E
+        let v = cell_staff_view(&s, key(0));
+        let flags: Vec<bool> = v.notes.iter().map(|n| n.is_root).collect();
+        assert_eq!(
+            flags,
+            vec![true, false, true, false],
+            "E4 and E5 carry the root flag; G and B do not"
+        );
     }
 
     /// Windowing inputs: total beats covers the last note and never reads

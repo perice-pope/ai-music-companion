@@ -10,7 +10,7 @@ export default function LiftLickButton() {
   const notice = usePracticeStore((s) => s.exploreNotice);
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col items-center gap-1">
       <button
         type="button"
         onClick={() => void exploreLastPhrase()}
@@ -21,7 +21,7 @@ export default function LiftLickButton() {
       </button>
       {notice && (
         <p
-          className="text-xs italic text-gray-400"
+          className="text-center text-xs italic text-gray-400"
           data-testid="lift-lick-notice"
           role="status"
         >

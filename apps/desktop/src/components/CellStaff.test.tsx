@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import CellStaff, { MEASURES_PER_PAGE } from "./CellStaff";
-import { RV_LETTER_COLORS } from "../lib/rvColors";
+import { RV_LETTER_COLORS, RV_NON_ROOT_FILL } from "../lib/rvColors";
 import type { CellStaffViewDto, CellStaffNoteDto } from "../types/brain";
 
 function note(overrides: Partial<CellStaffNoteDto>): CellStaffNoteDto {
@@ -11,6 +11,9 @@ function note(overrides: Partial<CellStaffNoteDto>): CellStaffNoteDto {
     duration_beats: 1,
     step: -2,
     accidental: null,
+    // Default fixtures to root notes so the palette assertions keep testing
+    // the colored path; the RV root-vs-white rule has its own test below.
+    is_root: true,
     ...overrides,
   };
 }
@@ -42,6 +45,25 @@ describe("CellStaff (#292 slice 1)", () => {
     expect(dots).toHaveLength(2);
     expect(dots[0]).toHaveAttribute("fill", RV_LETTER_COLORS.G);
     expect(dots[1]).toHaveAttribute("fill", RV_LETTER_COLORS.C);
+  });
+
+  // RV color rule (founder, 2026-07-08): only ROOT notes carry their
+  // pitch-class color — every other note draws white so the roots pop.
+  // Fails if the renderer colors by pitch class unconditionally.
+  it("colors only root notes; scale tones draw white", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 64, step: 0 }), // E root — colored
+          note({ midi: 67, step: 2, start_beat: 1, is_root: false }), // G — white
+          note({ midi: 71, step: 4, start_beat: 2, is_root: false }), // B — white
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    expect(dots[0]).toHaveAttribute("fill", RV_LETTER_COLORS.E);
+    expect(dots[1]).toHaveAttribute("fill", RV_NON_ROOT_FILL);
+    expect(dots[2]).toHaveAttribute("fill", RV_NON_ROOT_FILL);
   });
 
   // Accidentals draw only when the backend says so (spelling lives in Rust).

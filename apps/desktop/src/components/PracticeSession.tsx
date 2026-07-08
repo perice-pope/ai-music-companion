@@ -249,13 +249,18 @@ export default function PracticeSession() {
           </div>
         </div>
       ) : (
-        // Free play: the pitch meter is the centerpiece.
+        // Free play: the pitch meter is the centerpiece, with "work on my
+        // last lick" anchored directly beneath it (VA #324 screenshot:
+        // parked in the side column it floated in dead space — and vanished
+        // entirely on narrow windows behind the lg: breakpoint).
         <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
-          <PitchDisplay />
+          <div className="flex flex-col items-center gap-6">
+            <PitchDisplay />
+            <LiftLickButton />
+          </div>
           <div className="hidden lg:flex lg:flex-col lg:gap-4">
             <CoachingTipPanel />
             <RevealCard />
-            <LiftLickButton />
           </div>
         </div>
       )}

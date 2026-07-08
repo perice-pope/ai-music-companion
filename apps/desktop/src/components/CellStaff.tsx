@@ -12,7 +12,7 @@ function readRhythmPref(): boolean {
   }
 }
 import type { CellStaffViewDto, CellStaffNoteDto } from "../types/brain";
-import { colorForPitchClass } from "../lib/rvColors";
+import { colorForPitchClass, RV_NON_ROOT_FILL } from "../lib/rvColors";
 
 /**
  * CellStaff (#292 slice 1): the RV dot staff. Stemless noteheads colored by
@@ -139,12 +139,15 @@ function Dot({
           data-testid="staff-halo"
         />
       )}
+      {/* RV color rule: only ROOT notes carry their pitch-class color; every
+        other note draws white so the roots pop and the cell reads as
+        shape-around-a-root. `is_root` is computed by the Rust core. */}
       <ellipse
         cx={x}
         cy={y}
         rx={5.5}
         ry={4.2}
-        fill={colorForPitchClass(note.midi % 12)}
+        fill={note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL}
         fillOpacity={ghostSteps === 0 ? 1 : 0.7}
         data-testid="staff-dot"
       />
