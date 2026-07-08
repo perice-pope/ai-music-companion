@@ -29,6 +29,9 @@ use serde::{Deserialize, Serialize};
 pub const MIDI_MIN: u8 = 36;
 /// See [`MIDI_MIN`].
 pub const MIDI_MAX: u8 = 96;
+/// The RV grid's fixed meter: cells are placed ONE PER MEASURE of this size
+/// (founder rule, 2026-07-08) — every root's figure starts on a barline.
+pub const BEATS_PER_MEASURE: u8 = 4;
 
 /// How a scale figure walks its degrees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,10 +124,11 @@ pub struct RhythmSpec {
     pub notes_per_beat: u8,
     /// Tempo the drill is meant to be played at.
     pub tempo_bpm: f64,
-    /// Silent beats inserted between one root's figure and the next (thinking
-    /// time — RV's "rests"). Treated as a **minimum**: the next figure always
-    /// starts on a whole beat, so the actual gap is rounded up to beat
-    /// alignment (a 0.5-beat request after a triplet figure becomes ≥1 beat).
+    /// Historical "thinking time" between figures. **Inert since the RV grid
+    /// rule (founder, 2026-07-08):** every figure now starts on a measure
+    /// boundary and the breath is whatever remains of the measure, so this
+    /// field no longer moves the grid. Kept in the wire format so persisted
+    /// specs (exercise log, assignments) keep parsing.
     pub rest_beats_between_roots: f64,
 }
 
@@ -188,6 +192,13 @@ pub struct GeneratedNote {
     pub midi: u8,
     pub start_beat: f64,
     pub duration_beats: f64,
+    /// This note IS the root of the cell it belongs to (same pitch class as
+    /// its own segment's root — any octave). RV color rule (founder,
+    /// 2026-07-08): renderers color root notes and draw everything else
+    /// white. Set per SEGMENT, not globally: in a 12-root row every pitch
+    /// class is somebody's root, but inside C's cell only the C's are roots.
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 /// The generated drill: playable notes, the exact grading target, and a human
@@ -291,13 +302,22 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
                 midi: *m as u8,
                 start_beat: cursor_beat,
                 duration_beats: step,
+                // Root of THIS cell only (octave-insensitive). Enclosure
+                // approach notes and scale neighbors stay non-root even when
+                // some other cell in the row is anchored on their pitch class.
+                is_root: (*m).rem_euclid(12) == i16::from(root).rem_euclid(12),
             });
             cursor_beat += step;
         }
-        cursor_beat += spec.rhythm.rest_beats_between_roots.max(0.0);
-        // Keep each root's figure starting on a whole beat so the grid stays
-        // readable when rendered.
-        cursor_beat = cursor_beat.ceil();
+        // RV grid rule (founder, 2026-07-08): ONE CELL PER MEASURE. Every
+        // root's figure starts on a measure boundary — a 4-note cell reads as
+        // four notes to the bar, an exact-measure scale run flows measure to
+        // measure, and a longer figure owns whole measures before the next
+        // root begins. The breath between cells is whatever remains of the
+        // measure; `rest_beats_between_roots` stays in the wire format for
+        // compat but no longer moves the grid.
+        cursor_beat =
+            (cursor_beat / f64::from(BEATS_PER_MEASURE)).ceil() * f64::from(BEATS_PER_MEASURE);
     }
 
     let target_midi = notes.iter().map(|n| n.midi).collect();
@@ -309,7 +329,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         root_order: roots,
         label,
         tempo_bpm: spec.rhythm.tempo_bpm,
-        beats_per_measure: 4,
+        beats_per_measure: BEATS_PER_MEASURE,
     }
 }
 
@@ -677,10 +697,11 @@ mod tests {
         );
     }
 
-    /// The beat grid: notes step by 1/notes_per_beat, roots are separated by
-    /// the rest gap, and every figure starts on a whole beat.
+    /// The beat grid: notes step by 1/notes_per_beat and every figure starts
+    /// on a MEASURE boundary (the RV one-cell-per-measure rule) — an
+    /// exact-measure scale run flows measure to measure with no dead bar.
     #[test]
-    fn rhythm_grid_is_monotonic_with_rests_between_roots() {
+    fn rhythm_grid_flows_measure_to_measure_on_exact_fills() {
         let mut spec = base_spec();
         spec.roots = vec![60, 62];
         spec.rhythm = RhythmSpec {
@@ -693,12 +714,56 @@ mod tests {
         assert_eq!(seq.notes.len(), 16);
         assert_eq!(seq.notes[0].start_beat, 0.0);
         assert_eq!(seq.notes[1].start_beat, 0.5);
-        // Second figure starts on a whole beat after the rest (4.0 + 1.0 = 5.0).
-        assert_eq!(seq.notes[8].start_beat, 5.0);
+        // The first figure fills measure 1 exactly (8 notes × 0.5 = 4 beats),
+        // so the second starts right at the next measure boundary — the rest
+        // field no longer pushes it into a dead bar.
+        assert_eq!(seq.notes[8].start_beat, 4.0);
         // Monotonic non-overlapping starts throughout.
         for w in seq.notes.windows(2) {
             assert!(w[1].start_beat > w[0].start_beat);
         }
+    }
+
+    /// The RV grid rule (founder, 2026-07-08): one cell per measure. A 4-note
+    /// cell at one note per beat owns exactly one bar per root; a figure that
+    /// spills past a barline owns whole measures and the next root starts on
+    /// the next boundary. Fails if cell starts drift off measure boundaries.
+    #[test]
+    fn one_cell_per_measure_anchors_every_root_on_a_barline() {
+        // 4-note cell, 1 note/beat → roots at beats 0, 4, 8.
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, 3, 5, 7]);
+        spec.roots = vec![60, 62, 64];
+        spec.rhythm = RhythmSpec {
+            notes_per_beat: 1,
+            tempo_bpm: 100.0,
+            rest_beats_between_roots: 1.0,
+        };
+        let seq = generate(&spec, 0);
+        let starts: Vec<f64> = seq.notes.iter().map(|n| n.start_beat).collect();
+        assert_eq!(&starts[0..4], &[0.0, 1.0, 2.0, 3.0], "cell 1 = measure 1");
+        assert_eq!(&starts[4..8], &[4.0, 5.0, 6.0, 7.0], "cell 2 = measure 2");
+        assert_eq!(starts[8], 8.0, "cell 3 = measure 3");
+
+        // A 6-note cell at 2 notes/beat ends mid-measure (3 beats); the next
+        // root still waits for the barline.
+        spec.cell = Some(vec![0, 2, 3, 5, 7, 8]);
+        spec.rhythm.notes_per_beat = 2;
+        let seq = generate(&spec, 0);
+        assert_eq!(
+            seq.notes[6].start_beat, 4.0,
+            "mid-measure cell end still snaps"
+        );
+
+        // A figure longer than a measure (9 notes at 2/beat = 4.5 beats) owns
+        // two measures; the next root starts at beat 8.
+        spec.cell = Some(vec![0, 2, 3, 5, 7, 8, 10, 12, 14]);
+        let seq = generate(&spec, 0);
+        assert_eq!(
+            seq.notes[9].start_beat, 8.0,
+            "long cells own whole measures"
+        );
     }
 
     /// Out-of-range figures fold back into the playable window by whole
@@ -918,16 +983,66 @@ mod tests {
         assert_eq!(generate(&spec, 0).target_midi, vec![60, 64, 67]);
     }
 
-    /// A negative rest is clamped to zero: the grid stays monotonic.
+    /// The rest field is inert under the RV grid rule: ANY value (negative,
+    /// zero, huge) yields the identical measure-aligned grid, and the grid
+    /// stays monotonic. Fails if rests start moving cell placement again
+    /// without a deliberate decision.
     #[test]
-    fn negative_rest_keeps_the_grid_monotonic() {
+    fn rest_field_is_inert_and_the_grid_stays_monotonic() {
         let mut spec = base_spec();
         spec.roots = vec![60, 62];
-        spec.rhythm.rest_beats_between_roots = -3.0;
-        let seq = generate(&spec, 0);
-        for w in seq.notes.windows(2) {
-            assert!(w[1].start_beat > w[0].start_beat);
+        let grids: Vec<Vec<f64>> = [-3.0, 0.0, 1.0, 7.5]
+            .into_iter()
+            .map(|rest| {
+                spec.rhythm.rest_beats_between_roots = rest;
+                generate(&spec, 0)
+                    .notes
+                    .iter()
+                    .map(|n| n.start_beat)
+                    .collect()
+            })
+            .collect();
+        assert!(
+            grids.windows(2).all(|w| w[0] == w[1]),
+            "the grid must not depend on the rest field"
+        );
+        for w in grids[0].windows(2) {
+            assert!(w[1] > w[0], "grid stays monotonic");
         }
+    }
+
+    /// RV color rule: `is_root` marks each cell's OWN root only (any octave).
+    /// A pitch class that is some OTHER cell's root — G inside C's figure
+    /// when G is also a dealt root — stays unmarked, and a 12-root row still
+    /// has plenty of unmarked (white) notes. Fails if the flag regresses to a
+    /// global pitch-class check (which colors everything at 12 roots).
+    #[test]
+    fn is_root_marks_only_each_cells_own_root() {
+        let mut spec = base_spec(); // C major scale, Up: 8 notes per figure
+        spec.roots = vec![60, 67]; // C and G — G appears inside C's figure
+        let seq = generate(&spec, 0);
+        let c_figure = &seq.notes[0..8];
+        let flags: Vec<bool> = c_figure.iter().map(|n| n.is_root).collect();
+        assert_eq!(
+            flags,
+            vec![true, false, false, false, false, false, false, true],
+            "in C's cell only the C's are roots — the G inside it is not, \
+             even though G anchors the next cell"
+        );
+        let g_figure = &seq.notes[8..16];
+        assert!(g_figure[0].is_root && g_figure[7].is_root);
+        assert!(!g_figure[1].is_root);
+
+        // The flagship 12-root row: every pitch class is somebody's root,
+        // but most notes are still white.
+        spec.roots = (60..72).collect();
+        let seq = generate(&spec, 0);
+        let white = seq.notes.iter().filter(|n| !n.is_root).count();
+        assert_eq!(
+            white,
+            12 * 6,
+            "each 8-note figure keeps 6 non-root (white) notes"
+        );
     }
 
     /// With two roots, "shuffle all but the first" is a no-op — stable order,

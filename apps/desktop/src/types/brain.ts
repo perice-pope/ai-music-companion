@@ -195,6 +195,11 @@ export interface CellStaffNoteDto {
   duration_beats: number;
   step: number;
   accidental: number | null;
+  /**
+   * This note's pitch class is one of the sequence's roots. RV color rule:
+   * root dots draw in their pitch-class color, all other dots draw white.
+   */
+  is_root: boolean;
 }
 
 /** The dot-staff view. Mirrors `brain::score::cellstaff::CellStaffView`. */

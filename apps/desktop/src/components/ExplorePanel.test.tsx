@@ -27,7 +27,7 @@ const dto: ExploreDto = {
     beats_per_measure: 4,
     total_beats: 12,
     notes: [
-      { midi: 67, start_beat: 0, duration_beats: 1, step: 2, accidental: null },
+      { midi: 67, start_beat: 0, duration_beats: 1, step: 2, accidental: null, is_root: true },
     ],
   },
 };

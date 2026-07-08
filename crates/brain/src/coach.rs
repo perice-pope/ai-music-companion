@@ -191,7 +191,10 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
     let rhythm = RhythmSpec {
         notes_per_beat: if d >= 6 { 3 } else { 2 },
         tempo_bpm: tempo_for(d),
-        rest_beats_between_roots: if d >= 4 { 1.0 } else { 2.0 },
+        // Inert since the RV one-cell-per-measure rule: the grid ignores
+        // rests (the breath is the remainder of each cell's measure). Kept
+        // at 0.0 so nobody mistakes it for a live pedagogical knob.
+        rest_beats_between_roots: 0.0,
     };
     let direction = if d >= 5 {
         DirectionMode::RandomPerRoot
@@ -935,7 +938,7 @@ pub fn apply_explore_delta(
             // Rebuild the knobs at the new step, preserving the explored
             // scale AND any hand-edited cell — a difficulty chip must never
             // silently destroy the player's own material (review M4); the
-            // tempo/roots/rest knobs still ramp meaningfully around a cell.
+            // tempo/roots knobs still ramp meaningfully around a cell.
             let scale = next.spec.scale;
             let cell = next.spec.cell.take();
             let degrees = next.spec.degrees.take();
@@ -1621,6 +1624,24 @@ mod tests {
         // The rendered MusicXML is consumable by the existing emitter.
         let xml = crate::score::emit::score_model_to_musicxml(&model);
         assert!(xml.contains("<score-partwise"));
+
+        // RV grid rule, pinned where lessons actually consume it: each
+        // root's figure sits at the TOP of its own measure — the C figure
+        // opens measure 1, the D figure opens measure 2 (8 notes × 0.5
+        // beats fill a bar exactly). Fails if generator spacing drifts off
+        // barlines or the adapter re-flows figures across measures.
+        assert!(model.measures.len() >= 2, "two figures → two measures");
+        let first_sounding = |mi: usize| {
+            model.measures[mi]
+                .notes
+                .iter()
+                .find(|n| !n.is_rest)
+                .expect("measure has notes")
+        };
+        let c_open = first_sounding(0);
+        assert_eq!((c_open.midi_number, c_open.start_beat), (60, 0.0));
+        let d_open = first_sounding(1);
+        assert_eq!((d_open.midi_number, d_open.start_beat), (62, 0.0));
     }
 
     /// #277 must-fix: the key-signature mapping over the REAL drill-label

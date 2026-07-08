@@ -54,6 +54,13 @@ const PC_COLORS: string[] = (() => {
 })();
 
 /** RV color for a pitch class (0–11; larger values wrap). */
+/**
+ * Fill for non-root notes on the CellStaff (RV color rule, founder
+ * 2026-07-08): only each cell's root carries its pitch-class color — every
+ * other note draws this near-white so the roots pop.
+ */
+export const RV_NON_ROOT_FILL = "#f9fafb";
+
 export function colorForPitchClass(pc: number): string {
   return PC_COLORS[((pc % 12) + 12) % 12];
 }
