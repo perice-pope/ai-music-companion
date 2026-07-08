@@ -1114,7 +1114,7 @@ impl AppState {
     /// the real (native, panic-capable) transcription; a test can pass a
     /// panicking one and assert this returns a calm error instead of crashing
     /// the app (#267). The native call runs behind [`guard_transcription`], so a
-    /// panic in it never unwinds past the (synchronous) import command.
+    /// panic in it becomes a calm error instead of unwinding into the command.
     fn import_audio_with<F>(
         &self,
         source_filename: String,
@@ -3334,18 +3334,39 @@ pub async fn recognize_pdf_score<R: Runtime>(
          isn't available."
             .to_string()
     })?;
+    recognize_pdf_score_with(app, bytes, move |state, bytes| {
+        let engine = omr::SidecarOmrEngine::new(std::path::PathBuf::from(engine_path));
+        state.recognize_pdf(&engine, bytes)
+    })
+    .await
+}
+
+/// Calm message when the OMR run panics on the blocking thread — the join
+/// error would otherwise leave the frontend's promise hanging.
+const PDF_READER_STOPPED: &str =
+    "The sheet-music reader stopped unexpectedly while reading that PDF.";
+
+/// Body of [`recognize_pdf_score`] after its gates, with the OMR run as a
+/// **seam** — the same testing story as [`import_audio_file_with`]: tests can
+/// observe the threading contract and the panic path without a real engine.
+async fn recognize_pdf_score_with<R, F>(
+    app: tauri::AppHandle<R>,
+    bytes: Vec<u8>,
+    recognize_fn: F,
+) -> Result<RecognizedPdfDto, String>
+where
+    R: Runtime,
+    F: FnOnce(&AppState, &[u8]) -> Result<RecognizedScore, String> + Send + 'static,
+{
     emit_import_progress(&app, "rasterizing", 20);
     emit_import_progress(&app, "reading-notes", 55);
     let handle = app.clone();
     let recognized = tauri::async_runtime::spawn_blocking(move || {
-        let engine = omr::SidecarOmrEngine::new(std::path::PathBuf::from(engine_path));
         let state = handle.state::<AppState>();
-        state.recognize_pdf(&engine, &bytes)
+        recognize_fn(&state, &bytes)
     })
     .await
-    .map_err(|_| {
-        "The sheet-music reader stopped unexpectedly while reading that PDF.".to_string()
-    })??;
+    .map_err(|_| PDF_READER_STOPPED.to_string())??;
     emit_import_progress(&app, "done", 100);
     Ok(recognized.into())
 }
@@ -5242,11 +5263,13 @@ mod tests {
     }
 
     /// #313 AC1: a successful audio import reports every progress beat in
-    /// order AND runs the import off the dispatching thread. If the command
-    /// ever goes synchronous again (main-thread execution), the injected
-    /// import runs on the caller's thread and the ThreadId assertion fails —
-    /// which is exactly the bug: a blocked main thread means the progress UI
-    /// never paints.
+    /// order AND runs the import off the dispatching thread. If the blocking
+    /// hop is ever removed (the import inlined into the command body), the
+    /// injected import runs on the caller's thread and the ThreadId assertion
+    /// fails — which is exactly the bug: work on the dispatching (main) thread
+    /// blocks the webview event loop and the progress UI never paints. (A full
+    /// sync revert is pinned separately: the tests that `.await` the real
+    /// commands stop compiling.)
     #[tokio::test]
     async fn import_audio_command_reports_progress_and_runs_off_the_dispatching_thread() {
         use tauri::test::mock_app;
@@ -5355,6 +5378,115 @@ mod tests {
         assert!(
             err.contains("Audio import isn't available"),
             "expected the calm engine-unavailable message, got: {err}"
+        );
+    }
+
+    /// #313 AC4: the PDF recognizer reports its progress beats in order and
+    /// runs the OMR work off the dispatching thread — the same contract as
+    /// audio import, with the same failure mode if the blocking hop is removed.
+    #[tokio::test]
+    async fn recognize_pdf_command_reports_progress_and_runs_off_the_dispatching_thread() {
+        use tauri::test::mock_app;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks().with_omr_enabled());
+        let events = capture_import_progress(&app);
+
+        let omr_thread = Arc::new(std::sync::Mutex::new(None));
+        let seen = omr_thread.clone();
+        let dto = recognize_pdf_score_with(
+            app.handle().clone(),
+            FAKE_PDF.to_vec(),
+            move |state, bytes| {
+                *seen.lock().unwrap() = Some(std::thread::current().id());
+                state.recognize_pdf(&omr::StaticOmrEngine::new(TWO_PART_MUSICXML), bytes)
+            },
+        )
+        .await
+        .expect("recognition should succeed");
+
+        assert_eq!(dto.parts.len(), 2, "both parts reach the picker");
+        assert!(dto.from_scan, "OMR results always carry the scan note");
+        let stages = events.lock().unwrap().clone();
+        assert_eq!(
+            stages,
+            vec![
+                ("rasterizing".to_owned(), 20),
+                ("reading-notes".to_owned(), 55),
+                ("done".to_owned(), 100),
+            ],
+            "the UI's stage labels depend on these exact beats, in order"
+        );
+        let omr_thread = omr_thread.lock().unwrap().expect("OMR ran");
+        assert_ne!(
+            omr_thread,
+            std::thread::current().id(),
+            "OMR must never run on the dispatching thread — that blocks the \
+             webview event loop and the progress UI never paints (#313)"
+        );
+    }
+
+    /// #313 AC5: a panic in the blocking OMR section degrades to the calm
+    /// reader-stopped message and never claims `done`.
+    #[tokio::test]
+    async fn recognize_pdf_command_converts_a_blocking_panic_to_the_calm_error() {
+        use tauri::test::mock_app;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks().with_omr_enabled());
+        let events = capture_import_progress(&app);
+
+        let err = recognize_pdf_score_with(
+            app.handle().clone(),
+            FAKE_PDF.to_vec(),
+            |_state, _bytes| -> Result<RecognizedScore, String> {
+                panic!("the OMR sidecar blew up")
+            },
+        )
+        .await
+        .expect_err("a panicking OMR run must surface as an error");
+        assert_eq!(err, PDF_READER_STOPPED);
+
+        let stages: Vec<String> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(stage, _)| stage.clone())
+            .collect();
+        assert_eq!(
+            stages,
+            vec!["rasterizing".to_owned(), "reading-notes".to_owned()],
+            "a failed recognition must not report done"
+        );
+    }
+
+    /// #313 AC6: the real command still refuses calmly when the beta is off —
+    /// before any progress event. Awaiting the real command also pins its
+    /// async signature: a revert to a sync command stops compiling here.
+    #[tokio::test]
+    async fn recognize_pdf_command_stays_gated_off_with_no_progress_events() {
+        use tauri::test::mock_app;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let events = capture_import_progress(&app);
+
+        let state = app.state::<AppState>();
+        let err = recognize_pdf_score(
+            app.handle().clone(),
+            state,
+            "score.pdf".to_string(),
+            FAKE_PDF.to_vec(),
+        )
+        .await
+        .expect_err("the beta gate must refuse");
+        assert!(
+            err.contains("experimental feature"),
+            "expected the gate message, got: {err}"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "no progress beats may be emitted before the gate"
         );
     }
 

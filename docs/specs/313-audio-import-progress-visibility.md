@@ -40,8 +40,12 @@ state. The frontend is correct; the backend starves it.
    `converting`/`done` stage after the failure.
 3. A panic anywhere in the off-thread audio import degrades to the calm engine-unavailable
    message (extends #267's guard to the whole blocking section).
-4. `recognize_pdf_score` behavior is otherwise unchanged: beta-off gate message, engine-path
-   message, and result DTO are identical (state-level tests already pin these).
+4. A successful PDF recognition emits `rasterizing`(20) → `reading-notes`(55) → `done`(100),
+   in that order, with the OMR run on a different thread than the command's dispatching thread.
+5. A panic in the blocking OMR section degrades to the calm reader-stopped message and never
+   claims `done`.
+6. `recognize_pdf_score`'s gates are unchanged: beta-off refuses with the gate message before
+   any progress event; the engine-path message and result DTO are identical.
 
 ## 6. Edge cases & failure modes
 - Panic outside `guard_transcription` (e.g. MIDI→MusicXML conversion) → `spawn_blocking`
@@ -56,7 +60,12 @@ state. The frontend is correct; the backend starves it.
 | AC1 | `commands::tests::import_audio_command_reports_progress_and_runs_off_the_dispatching_thread` | exact stage/pct sequence; import `ThreadId` ≠ caller `ThreadId` |
 | AC2 | `commands::tests::import_audio_file_fails_calmly_without_claiming_completion` | real command + garbage bytes → `Err`, stages end at `transcribing` |
 | AC3 | `commands::tests::import_audio_command_converts_a_blocking_panic_to_the_calm_error` | seam panics → engine-unavailable `Err`, no crash |
-| AC4 | existing `recognize_pdf_*` state tests (unchanged) | gate + messages pinned |
+| AC4 | `commands::tests::recognize_pdf_command_reports_progress_and_runs_off_the_dispatching_thread` | exact stage/pct sequence; OMR `ThreadId` ≠ caller `ThreadId` |
+| AC5 | `commands::tests::recognize_pdf_command_converts_a_blocking_panic_to_the_calm_error` | seam panics → reader-stopped `Err`, no `done` beat |
+| AC6 | `commands::tests::recognize_pdf_command_stays_gated_off_with_no_progress_events` + existing `recognize_pdf_*` state tests | gate refuses before any event; messages pinned |
+
+A revert of either command to a synchronous signature is additionally pinned at **compile
+time**: the AC2/AC6 tests `.await` the real commands.
 
 ## 8. Architecture / approach
 The fix lives at the command boundary in `apps/desktop/src-tauri/src/commands.rs`, mirroring
