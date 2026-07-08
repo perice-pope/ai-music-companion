@@ -1,3 +1,9 @@
+## [2.16.0](https://github.com/perice-pope/ai-music-companion/compare/v2.15.3...v2.16.0) (2026-07-08)
+
+### Features
+
+* **staff:** the RV grid — one cell per measure, roots colored, all else white ([#330](https://github.com/perice-pope/ai-music-companion/issues/330)) ([8f2e83f](https://github.com/perice-pope/ai-music-companion/commit/8f2e83ff3d9c235641042e0bb628f1d097177344)), closes [#324](https://github.com/perice-pope/ai-music-companion/issues/324)
+
 ## [2.15.3](https://github.com/perice-pope/ai-music-companion/compare/v2.15.2...v2.15.3) (2026-07-07)
 
 ### Bug Fixes
