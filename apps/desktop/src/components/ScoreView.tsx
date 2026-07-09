@@ -147,6 +147,14 @@ export default function ScoreView({
   const [error, setError] = useState<string | null>(null);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
+  /**
+   * Whether we have show()n the cursor for the current score. Real OSMD's
+   * show() re-runs update() — getBoundingClientRect + a smooth
+   * scrollIntoView — so calling it on every ~10 Hz position tick would
+   * snap the pane back to the cursor 10×/second and fight the user's own
+   * scrolling. Only the hidden→shown transition may call show().
+   */
+  const cursorShownRef = useRef(false);
 
   // Effect 1: load + render on MusicXML change.
   useEffect(() => {
@@ -170,6 +178,7 @@ export default function ScoreView({
         osmd.render();
         osmd.cursor.reset();
         osmd.cursor.hide();
+        cursorShownRef.current = false;
         cursorMeasureRef.current = currentMeasure(osmd);
         setReady(true);
       } catch (err) {
@@ -199,12 +208,16 @@ export default function ScoreView({
         cursorMeasureRef.current = currentMeasure(osmd);
       }
       osmd.cursor.hide();
+      cursorShownRef.current = false;
       return;
     }
 
+    if (!cursorShownRef.current) {
+      osmd.cursor.show();
+      cursorShownRef.current = true;
+    }
     // ScorePosition measures are 1-based (MusicXML convention); OSMD's
     // iterator is 0-based.
-    osmd.cursor.show();
     moveCursorToMeasure(
       osmd,
       Math.max(0, cursorPosition.measure_number - 1),
