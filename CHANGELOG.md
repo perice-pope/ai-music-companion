@@ -1,3 +1,9 @@
+## [2.16.3](https://github.com/perice-pope/ai-music-companion/compare/v2.16.2...v2.16.3) (2026-07-10)
+
+### Bug Fixes
+
+* **recap:** recap key evidence rides the strip's note gate — steady sessions earn the flat claim ([#324](https://github.com/perice-pope/ai-music-companion/issues/324)) ([#325](https://github.com/perice-pope/ai-music-companion/issues/325)) ([960ab33](https://github.com/perice-pope/ai-music-companion/commit/960ab336c7daf502ba55d8609f03f4da6e77a77c)), closes [#321](https://github.com/perice-pope/ai-music-companion/issues/321) [#316](https://github.com/perice-pope/ai-music-companion/issues/316) [F#-major](https://github.com/perice-pope/F/issues/-major) [#185](https://github.com/perice-pope/ai-music-companion/issues/185) [#316](https://github.com/perice-pope/ai-music-companion/issues/316)
+
 ## [2.16.2](https://github.com/perice-pope/ai-music-companion/compare/v2.16.1...v2.16.2) (2026-07-10)
 
 ### Bug Fixes
