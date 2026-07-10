@@ -237,6 +237,35 @@ describe("ScoreDropZone", () => {
     );
   });
 
+  // #336 — the VA saw NO loading message during .wav imports even with the
+  // #323 backend fix in her build: if event delivery loses its race against
+  // the invoke's resolution, the listener is already gone and nothing ever
+  // paints. The indicator must not DEPEND on events: it seeds the moment the
+  // import starts (worst case: events never fire) and clears when it ends.
+  it("shows the transcribing message even when no progress event ever arrives", async () => {
+    let resolveImport: ((v: unknown) => void) | undefined;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "import_audio_file")
+        return new Promise((res) => {
+          resolveImport = res;
+        });
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("take.wav", [1, 2]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    // Mid-import, zero events delivered: the loading message still shows.
+    await screen.findByText("Listening for notes…");
+
+    resolveImport?.(AUDIO_RESULT);
+    await waitFor(() =>
+      expect(screen.queryByText("Listening for notes…")).toBeNull(),
+    );
+  });
+
   it("renders progress from import-progress events during audio import", async () => {
     // Hold the import open so we can fire a progress event mid-flight.
     let resolveImport: (v: unknown) => void = () => {};

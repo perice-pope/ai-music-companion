@@ -146,6 +146,11 @@ export default function ScoreDropZone() {
         });
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
+        // #336: the loading message must not DEPEND on event delivery — the
+        // VA saw imports finish without it ever painting. We know we're
+        // transcribing the moment the call starts, so seed the indicator
+        // (the backend's own beats are fixed constants; events refine it).
+        setProgress({ stage: "transcribing", pct: 45 });
         const result = await importAudioFromFile(file.name, bytes);
         // AC2 (#337 S1): transcription is the beta tier — say so at import
         // time, every time, not only when quality looks off.
@@ -177,6 +182,8 @@ export default function ScoreDropZone() {
         });
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
+        // #336: same event-independent seed as the audio path.
+        setProgress({ stage: "reading-notes", pct: 55 });
         const recognized = await recognizePdfFromFile(file.name, bytes);
         // OMR is approximate — always surface the "read from a scan" note.
         setScanNote({ lowContent: recognized.low_content });
