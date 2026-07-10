@@ -588,15 +588,6 @@ fn midi_to_hz(midi: u8) -> f64 {
     440.0 * 2f64.powf((f64::from(midi) - 69.0) / 12.0)
 }
 
-/// Key signature for a drill: `fifths` on the circle plus major/minor family,
-/// derived from the tonic pitch class and the drill's material label (#277
-/// follow-up: drills used to render keyless — an A# figure showed a wall of
-/// accidentals over an implied C major).
-///
-/// Modes map to their conventional signatures relative to the tonic's major
-/// (Dorian −2, Mixolydian −1, Lydian +1, Phrygian −4, minor family −3,
-/// Locrian −5); chord/interval material uses the tonic's plain major or minor.
-/// The result is clamped into the engravable −7..=7.
 const SHARP_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
@@ -648,6 +639,15 @@ pub fn respell_label(label: &str, fifths: i8) -> String {
     }
 }
 
+/// Key signature for a drill: `fifths` on the circle plus major/minor family,
+/// derived from the tonic pitch class and the drill's material label (#277
+/// follow-up: drills used to render keyless — an A# figure showed a wall of
+/// accidentals over an implied C major).
+///
+/// Modes map to their conventional signatures relative to the tonic's major
+/// (Dorian −2, Mixolydian −1, Lydian +1, Phrygian −4, minor family −3,
+/// Locrian −5); chord/interval material uses the tonic's plain major or minor.
+/// The result is clamped into the engravable −7..=7.
 pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
     /// fifths of the MAJOR key for each tonic pitch class, favoring the flat
     /// spelling where conventional (Db over C#, Eb, Ab, Bb; F# kept for pc 6).
@@ -1797,8 +1797,8 @@ mod tests {
     }
 
     /// The header names exactly what the first colored root cell names, for
-    /// every tonic — including shuffled-row difficulties where the first
-    /// played root is not the tonic (the label follows the PLAYED order).
+    /// every tonic, at an unshuffled and a shuffled-row difficulty (the RV
+    /// shuffle keeps the first root fixed, so both follow the PLAYED order).
     #[test]
     fn drill_label_head_matches_the_first_root_cell_for_every_tonic() {
         for tonic in 0u8..12 {
@@ -1828,6 +1828,9 @@ mod tests {
         assert_eq!(respell_label("your 5-note cell", -5), "your 5-note cell");
         // Sharp signature keeps sharp names.
         assert_eq!(respell_label("F# major · up", 6), "F# major · up");
+        // The zero-fifths boundary spells SHARP: C major's shuffled row may
+        // open on any black key, and it must read C#, never Db.
+        assert_eq!(respell_label("C# major · up", 0), "C# major · up");
         // Flat→sharp: Db dorian wraps to +5 fifths, so it must read C#.
         assert_eq!(
             respell_label("Db · your 3-note cell", 5),

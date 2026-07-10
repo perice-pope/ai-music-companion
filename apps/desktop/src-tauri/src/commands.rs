@@ -2465,7 +2465,7 @@ pub fn start_explore_variation_impl(
             &store,
             ExerciseOutcome {
                 source: "explore",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -2515,7 +2515,7 @@ pub fn apply_variation_delta_impl(
             &store,
             ExerciseOutcome {
                 source: "explore_chip",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &next.spec,
                 seed: next.seed,
                 difficulty: next.difficulty,
@@ -2661,7 +2661,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
             &store,
             ExerciseOutcome {
                 source: "lift",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -2750,7 +2750,7 @@ pub fn explore_measure_impl(
             &store,
             ExerciseOutcome {
                 source: "measure_bridge",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -4316,6 +4316,23 @@ mod tests {
             !dto.label.contains("C#"),
             "no C# over a flat signature, got {:?}",
             dto.label
+        );
+        // The engraved score title carries the same spelling…
+        assert!(
+            dto.music_xml.contains("<work-title>Db"),
+            "score title must speak the flat spelling too"
+        );
+        // …and the exercise log records the label the player actually saw.
+        let log = s
+            .session_store
+            .lock()
+            .unwrap()
+            .list_exercise_log()
+            .expect("log reads");
+        assert_eq!(
+            log.last().unwrap().label,
+            dto.label,
+            "exercise log must record the displayed label"
         );
     }
 
