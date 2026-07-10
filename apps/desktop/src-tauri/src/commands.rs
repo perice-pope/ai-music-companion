@@ -5386,7 +5386,11 @@ mod tests {
             .iter()
             .flat_map(|m| m.notes.iter().filter(|n| !n.is_rest).map(|n| n.midi_number))
             .collect();
-        assert_eq!(midis, vec![72, 74], "only the chosen track's notes: {midis:?}");
+        assert_eq!(
+            midis,
+            vec![72, 74],
+            "only the chosen track's notes: {midis:?}"
+        );
     }
 
     #[test]
