@@ -43,7 +43,9 @@ export default function ScoreDropZone() {
   const [quality, setQuality] = useState<ImportedAudio | null>(null);
   // Set after a PDF is read by OMR — a calm "this came from a scan, check it"
   // note that stays visible after import (it's about the score's provenance).
-  const [scanNote, setScanNote] = useState<{ lowContent: boolean } | null>(null);
+  const [scanNote, setScanNote] = useState<{ lowContent: boolean } | null>(
+    null,
+  );
   // A multi-part file (MusicXML or MIDI) waiting for the user to pick which
   // part to read. For MIDI, `midiTrackIndices[i]` is the original track
   // number behind label `parts[i]`; absent for MusicXML (part = list index).
@@ -54,11 +56,16 @@ export default function ScoreDropZone() {
     midiTrackIndices?: number[];
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Single-shot guard for the part-picker buttons: two clicks in one frame
+  // both see the pre-dismissal partChoice and would import twice (review S7).
+  const partImportInFlight = useRef(false);
   const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
   const listMidiParts = usePracticeStore((s) => s.listMidiParts);
   const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
   const listScoreParts = usePracticeStore((s) => s.listScoreParts);
-  const importMusicXmlFromFile = usePracticeStore((s) => s.importMusicXmlFromFile);
+  const importMusicXmlFromFile = usePracticeStore(
+    (s) => s.importMusicXmlFromFile,
+  );
   const recognizePdfFromFile = usePracticeStore((s) => s.recognizePdfFromFile);
 
   // Import a (plain) MusicXML file once the part is known: a single-part score
@@ -140,7 +147,11 @@ export default function ScoreDropZone() {
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
         const result = await importAudioFromFile(file.name, bytes);
-        setStatus(`Imported "${result.entry.title}".`);
+        // AC2 (#337 S1): transcription is the beta tier — say so at import
+        // time, every time, not only when quality looks off.
+        setStatus(
+          `Imported "${result.entry.title}" — transcribed from audio (beta): check the notes look right.`,
+        );
         // Only surface the banner when something looks off — never nag.
         if (result.polyphonic || result.low_confidence) {
           setQuality(result);
@@ -259,7 +270,9 @@ export default function ScoreDropZone() {
       >
         <div className="text-4xl mb-4">🎵</div>
         <h3 className="text-lg font-semibold">
-          {isDragging ? "Drop your score here" : "Drag a score or recording here"}
+          {isDragging
+            ? "Drop your score here"
+            : "Drag a score or recording here"}
         </h3>
         <p className="mt-2 text-sm text-gray-400">
           Reliable: .musicxml, .xml, .mid, .midi scores · Beta, still rough:
@@ -319,26 +332,32 @@ export default function ScoreDropZone() {
               <button
                 key={`${name}-${idx}`}
                 onClick={async () => {
-                  if (partChoice.midiTrackIndices) {
-                    try {
-                      setPartChoice(null);
-                      setStatus(`Importing ${partChoice.fileName}…`);
-                      const entry = await importMidiFromFile(
+                  if (partImportInFlight.current) return;
+                  partImportInFlight.current = true;
+                  try {
+                    if (partChoice.midiTrackIndices) {
+                      try {
+                        setPartChoice(null);
+                        setStatus(`Importing ${partChoice.fileName}…`);
+                        const entry = await importMidiFromFile(
+                          partChoice.fileName,
+                          partChoice.bytes,
+                          partChoice.midiTrackIndices[idx],
+                        );
+                        setStatus(`Imported "${entry.title}".`);
+                      } catch (err) {
+                        setStatus(null);
+                        setError(`${err instanceof Error ? err.message : err}`);
+                      }
+                    } else {
+                      await importMusicXml(
                         partChoice.fileName,
                         partChoice.bytes,
-                        partChoice.midiTrackIndices[idx],
+                        idx,
                       );
-                      setStatus(`Imported "${entry.title}".`);
-                    } catch (err) {
-                      setStatus(null);
-                      setError(`${err instanceof Error ? err.message : err}`);
                     }
-                  } else {
-                    await importMusicXml(
-                      partChoice.fileName,
-                      partChoice.bytes,
-                      idx,
-                    );
+                  } finally {
+                    partImportInFlight.current = false;
                   }
                 }}
                 className="text-left rounded bg-gray-800 hover:bg-blue-700 border border-gray-600 px-3 py-2 transition"

@@ -1663,10 +1663,6 @@ mod tests {
         assert_eq!((d_open.midi_number, d_open.start_beat), (62, 0.0));
     }
 
-    /// #277 must-fix: the key-signature mapping over the REAL drill-label
-    /// space. Any wrong LUT entry, mode offset, family flag, or the
-    /// mixolydian-before-lydian ordering trap fails here.
-    #[test]
     /// #335 — the VA's C#-major lesson drew a FLAT signature under a header
     /// saying "C#". The display name must follow the SIGNATURE's spelling:
     /// a sharp name may never sit over a flat signature or vice versa, for
@@ -1703,6 +1699,9 @@ mod tests {
         );
     }
 
+    /// #277 must-fix: the key-signature mapping over the REAL drill-label
+    /// space. Any wrong LUT entry, mode offset, family flag, or the
+    /// mixolydian-before-lydian ordering trap fails here.
     #[test]
     fn key_signature_for_maps_the_real_label_space() {
         let ks = |t: u8, l: &str| {

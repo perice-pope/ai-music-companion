@@ -134,13 +134,31 @@ pub fn parse_midi_bytes_track(
     // tempo is the score's tempo — later events are ritardandos/rubato that
     // must not retroactively rewrite the whole piece (#337 S1; v1 has no
     // tempo map).
-    let mut tempo_quarter_bpm: Option<f64> = None;
+    // (abs_tick, quarter-BPM) of the EARLIEST tempo event by tick time —
+    // not iteration order: a conductor track's mid-piece tempo must not
+    // beat another track's tick-0 header tempo (review S6).
+    let mut tempo_quarter_bpm: Option<(u64, f64)> = None;
 
     // Collect all note events with absolute tick positions from all tracks
     let mut raw_notes: Vec<RawNote> = Vec::new();
 
+    // Out-of-range filter = a caller bug; refuse with the real reason, not
+    // the misleading "no playable notes" (review S5).
+    if let Some(want) = track_filter {
+        if want >= smf.tracks.len() {
+            return Err(ScoreError::Midi(format!(
+                "track {want} doesn't exist in this file ({} tracks)",
+                smf.tracks.len()
+            )));
+        }
+    }
+
     for (track_index, track) in smf.tracks.iter().enumerate() {
-        // The filter silences a track's NOTES only; meta still applies.
+        // The filter silences a track's NOTES and its NAME; tempo and
+        // signatures still come from every track (the conductor track
+        // carries them), but the score's title/instrument must describe
+        // the part the player chose — importing "Bass" must not label the
+        // library entry "Trumpet" (review MUST-FIX 1).
         let notes_wanted = track_filter.is_none_or(|want| want == track_index);
         let mut abs_tick: u64 = 0;
         // Track active note-on events: (channel, key, velocity, start_tick).
@@ -152,14 +170,20 @@ pub fn parse_midi_bytes_track(
             abs_tick += event.delta.as_int() as u64;
 
             match event.kind {
-                TrackEventKind::Meta(meta) => apply_meta_message(
-                    meta,
-                    &mut title,
-                    &mut instrument,
-                    &mut time_signature,
-                    &mut key_signature,
-                    &mut tempo_quarter_bpm,
-                ),
+                TrackEventKind::Meta(meta) => {
+                    let is_name = matches!(meta, midly::MetaMessage::TrackName(_));
+                    if !is_name || notes_wanted {
+                        apply_meta_message(
+                            meta,
+                            abs_tick,
+                            &mut title,
+                            &mut instrument,
+                            &mut time_signature,
+                            &mut key_signature,
+                            &mut tempo_quarter_bpm,
+                        );
+                    }
+                }
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
                     // Percussion notes are kit-piece ids, not pitches; a
@@ -260,7 +284,7 @@ pub fn parse_midi_bytes_track(
     // This is the inverse of the ticks_per_beat multiplier above — ticks
     // scale with beat *period*, tempo scales with beat *frequency*.
     // 120 quarter-BPM is MIDI's defined default when no Tempo event exists.
-    let tempo_bpm = tempo_quarter_bpm.unwrap_or(120.0) * (beat_type / 4.0);
+    let tempo_bpm = tempo_quarter_bpm.map_or(120.0, |(_, bpm)| bpm) * (beat_type / 4.0);
 
     Ok(ScoreModel {
         title,
@@ -290,11 +314,12 @@ struct RawNote {
 /// first track-name that isn't the title.
 fn apply_meta_message(
     meta: midly::MetaMessage,
+    abs_tick: u64,
     title: &mut String,
     instrument: &mut Option<String>,
     time_signature: &mut TimeSignature,
     key_signature: &mut KeySignature,
-    tempo_quarter_bpm: &mut Option<f64>,
+    tempo_quarter_bpm: &mut Option<(u64, f64)>,
 ) {
     match meta {
         midly::MetaMessage::TrackName(name_bytes) => {
@@ -311,12 +336,13 @@ fn apply_meta_message(
             }
         }
         midly::MetaMessage::Tempo(t) => {
-            // Microseconds per quarter-note → quarter-note BPM. FIRST event
-            // wins: the header tempo is the piece's tempo; later Tempo events
-            // (a closing ritardando is the classic) must not rewrite it.
+            // Microseconds per quarter-note → quarter-note BPM. The EARLIEST
+            // event (by tick, across tracks) wins: the header tempo is the
+            // piece's tempo; later Tempo events (a closing ritardando is the
+            // classic) must not rewrite it.
             let uspqn = t.as_int() as f64;
-            if uspqn > 0.0 && tempo_quarter_bpm.is_none() {
-                *tempo_quarter_bpm = Some(60_000_000.0 / uspqn);
+            if uspqn > 0.0 && tempo_quarter_bpm.is_none_or(|(tick, _)| abs_tick < tick) {
+                *tempo_quarter_bpm = Some((abs_tick, 60_000_000.0 / uspqn));
             }
         }
         midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
@@ -733,6 +759,113 @@ mod tests {
         assert!(
             (model.tempo_bpm - 120.0).abs() < 0.1,
             "conductor-track tempo still applies to a filtered import"
+        );
+        // Review MUST-FIX 1: the imported part is NAMED after the chosen
+        // track — picking Bass must not produce a score titled "Trumpet"
+        // with a percussion "instrument".
+        assert_eq!(model.title, "Bass", "the chosen track names the score");
+        assert_eq!(model.instrument, None, "other tracks' names don't leak");
+    }
+
+    /// Review S5: an out-of-range track index is a caller bug and gets the
+    /// real reason — not the misleading "no playable notes" message.
+    #[test]
+    fn out_of_range_track_filter_names_the_real_problem() {
+        let err = parse_midi_bytes_track(&build_band_midi(), Some(99)).unwrap_err();
+        assert!(
+            matches!(&err, ScoreError::Midi(m) if m.contains("track 99 doesn't exist")),
+            "got: {err:?}"
+        );
+    }
+
+    /// Review S6: "first tempo" means first in TICK TIME across tracks —
+    /// track order must not let a mid-piece conductor tempo beat another
+    /// track's tick-0 header tempo.
+    #[test]
+    fn earliest_tempo_by_tick_wins_across_tracks() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        bytes.extend_from_slice(&480u16.to_be_bytes());
+        // Track 0: tempo 60 BPM but at tick 1920 (mid-piece).
+        let mut t0 = Vec::new();
+        write_variable_length(&mut t0, 1920);
+        t0.push(0xFF);
+        t0.push(0x51);
+        write_variable_length(&mut t0, 3);
+        t0.extend_from_slice(&[0x0F, 0x42, 0x40]); // 60 BPM
+        write_meta_event(&mut t0, 0, 0x2F, &[]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(t0.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&t0);
+        // Track 1: tempo 100 BPM at tick 0, plus a note.
+        let mut t1 = Vec::new();
+        write_meta_event(&mut t1, 0, 0x51, &[0x09, 0x27, 0xC0]); // 100 BPM
+        write_midi_event(&mut t1, 0, 0x90, 60, 80);
+        write_midi_event(&mut t1, 480, 0x80, 60, 0);
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(t1.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&t1);
+
+        let model = parse_midi_bytes(&bytes).expect("parse");
+        assert!(
+            (model.tempo_bpm - 100.0).abs() < 0.5,
+            "the tick-0 tempo wins regardless of track order, got {}",
+            model.tempo_bpm
+        );
+    }
+
+    /// Review MUST-FIX 2 (pickup coverage): a pickup bar — first note off
+    /// the measure start — lands in measure 1 at its real beat with a
+    /// leading rest, and measure numbering stays 1-based and contiguous.
+    #[test]
+    fn a_pickup_bar_keeps_sane_measures() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&480u16.to_be_bytes());
+        let mut track = Vec::new();
+        write_meta_event(&mut track, 0, 0x58, &[4, 2, 24, 8]); // 4/4
+                                                               // Pickup: first note enters on beat 4 of measure 1 (tick 1440),
+                                                               // then two on-beat notes carry into measure 2.
+        write_variable_length(&mut track, 1440);
+        track.push(0x90);
+        track.push(67);
+        track.push(80);
+        write_midi_event(&mut track, 480, 0x80, 67, 0);
+        for &key in &[60u8, 62] {
+            write_midi_event(&mut track, 0, 0x90, key, 80);
+            write_midi_event(&mut track, 480, 0x80, key, 0);
+        }
+        write_meta_event(&mut track, 0, 0x2F, &[]);
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&track);
+
+        let model = parse_midi_bytes(&buf).expect("parse pickup");
+        let numbers: Vec<usize> = model.measures.iter().map(|m| m.number).collect();
+        assert_eq!(numbers, vec![1, 2], "1-based contiguous measures");
+        let m1 = &model.measures[0];
+        let pickup = m1.notes.iter().find(|n| !n.is_rest).expect("pickup note");
+        assert!(
+            (pickup.start_beat - 3.0).abs() < 0.01,
+            "pickup enters on beat 4 (0-based 3.0), got {}",
+            pickup.start_beat
+        );
+        let lead_rest: f64 = m1
+            .notes
+            .iter()
+            .take_while(|n| n.is_rest)
+            .map(|n| n.duration_beats)
+            .sum();
+        assert!(
+            (lead_rest - 3.0).abs() < 0.01,
+            "the empty front of the pickup bar is rests, got {lead_rest}"
         );
     }
 

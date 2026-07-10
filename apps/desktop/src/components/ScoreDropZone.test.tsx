@@ -153,13 +153,27 @@ describe("ScoreDropZone", () => {
     await screen.findByText(/Imported "scales"/);
   });
 
-  // #337 S1: the format hint tells the truth about reliability tiers.
+  // #337 S1 AC2: the format hint tells the truth about reliability tiers —
+  // exact copy (escaped), both tiers, both beta formats named.
   it("labels the stable and beta format tiers", () => {
     render(<ScoreDropZone />);
     expect(
-      screen.getByText(/Reliable: .musicxml, .xml, .mid, .midi/),
+      screen.getByText(
+        /Reliable: \.musicxml, \.xml, \.mid, \.midi scores/,
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Beta, still rough/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Beta, still rough:\s*\.pdf scans, \.wav\/\.mp3 recordings/),
+    ).toBeInTheDocument();
+  });
+
+  // #337 S1 AC2 (second clause): a .wav import shows its beta label AT
+  // import time, every time — not only when quality looks off.
+  it("labels a .wav import as beta on success", async () => {
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("take.wav", [1, 2]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+    await screen.findByText(/transcribed from audio \(beta\)/);
   });
 
   it("routes a .wav file to import_audio_file with its bytes", async () => {

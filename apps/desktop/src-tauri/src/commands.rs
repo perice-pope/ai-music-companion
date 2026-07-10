@@ -1140,7 +1140,19 @@ impl AppState {
         >,
     {
         let (midi, quality) = guard_transcription(|| transcribe_fn().map_err(|e| e.to_string()))?;
-        let entry = self.import_midi(source_filename, midi)?;
+        // The parser's no-notes refusal speaks MIDI ("drum, click, or marker
+        // track") — for a recording the honest reason is that we couldn't
+        // hear notes in the audio (review MUST-FIX 4).
+        let entry = self
+            .import_midi(source_filename, midi)
+            .map_err(|e| {
+                if e.contains("no playable notes") {
+                    "we couldn't hear any notes in that recording — try a clearer,                      closer take"
+                        .to_string()
+                } else {
+                    e
+                }
+            })?;
         Ok((entry, quality))
     }
 
@@ -3527,6 +3539,44 @@ mod tests {
                 .err()
                 .is_some_and(|e| e.contains("Audio import isn't available")),
             "a transcription panic must degrade to the friendly error, got {result:?}"
+        );
+    }
+
+    /// Review MUST-FIX 4 (#337 S1): a recording whose transcription hears
+    /// zero notes gets a RECORDING-flavored refusal — never the MIDI
+    /// parser's "drum, click, or marker track" copy, which is a lie for a
+    /// .wav. Fails if the audio seam stops mapping the parser's message.
+    #[test]
+    fn a_silent_recording_refuses_in_recording_terms() {
+        let s = state();
+        // A valid but empty MIDI transcription result (header + bare track).
+        let mut midi = Vec::new();
+        midi.extend_from_slice(b"MThd");
+        midi.extend_from_slice(&6u32.to_be_bytes());
+        midi.extend_from_slice(&0u16.to_be_bytes());
+        midi.extend_from_slice(&1u16.to_be_bytes());
+        midi.extend_from_slice(&480u16.to_be_bytes());
+        midi.extend_from_slice(b"MTrk");
+        midi.extend_from_slice(&4u32.to_be_bytes());
+        midi.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        let result = s.import_audio_with("silence.wav".to_string(), move || {
+            Ok((
+                midi,
+                transcribe::TranscriptionQuality {
+                    note_count: 0,
+                    mean_confidence: 0.0,
+                    polyphony: 0.0,
+                },
+            ))
+        });
+        let err = result.err().expect("empty transcription must refuse");
+        assert!(
+            err.contains("couldn't hear any notes in that recording"),
+            "recording-flavored copy expected, got: {err}"
+        );
+        assert!(
+            !err.contains("MIDI") && !err.contains("marker track"),
+            "MIDI-parser copy must not leak to a .wav user: {err}"
         );
     }
 
