@@ -130,6 +130,7 @@ fn bench_integrated_analysis(c: &mut Criterion) {
                 phrases: new_phrases,
                 tips: Vec::new(),
                 score_title: Some("C Major Scale".to_string()),
+                note_verdicts: Vec::new(),
                 idiom_notes: Vec::new(),
                 taste_profile: None,
             };

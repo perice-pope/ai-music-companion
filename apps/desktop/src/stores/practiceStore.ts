@@ -68,6 +68,30 @@ export interface QueuedReveal {
   phraseIndex: number;
 }
 
+/** A live note verdict class from the backend (#337 S2). */
+export type NoteVerdictKind = "hit" | "near" | "missed";
+
+const EMPTY_VERDICTS = {
+  hit: 0,
+  near: 0,
+  missed: 0,
+  recent: [] as NoteVerdictKind[],
+};
+
+/** Most recent verdicts kept for the strip — enough to read a trend. */
+const VERDICT_RECENT_CAP = 12;
+
+/**
+ * One playable track of a multi-part MIDI file (field names mirror the Rust
+ * `MidiPartDto`). `track_index` is the file's original track number — pass it
+ * back to `importMidiFromFile` to import just that part.
+ */
+export interface MidiPart {
+  track_index: number;
+  name: string;
+  note_count: number;
+}
+
 /**
  * Result of an audio import: the new library entry plus a calm quality
  * signal (field names mirror the Rust `ImportedAudioDto`). We surface
@@ -162,6 +186,35 @@ export interface PracticeState {
   activeScoreXml: string | null;
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
+  /**
+   * An exploration created from the RECAP screen (#337 S5 — "row this
+   * measure through 12 keys") waiting for the next session to start. It
+   * survives returnToSelector (which clears `explore`) and is promoted to
+   * `explore` when the session reaches listening.
+   */
+  pendingExplore: ExploreDto | null;
+  /** #337 S5: row one measure of the practiced score through 12 keys. */
+  exploreMeasure: (measureNumber: number) => Promise<void>;
+  /**
+   * Calm inline notice for the recap's RV-bridge buttons (#337 S5): a
+   * refusal ("measure 9 is all rests") must never replace the recap the
+   * way recapError does — the summary stays, the notice explains.
+   */
+  bridgeNotice: string | null;
+  /**
+   * Live note-verdict tally for the current score session (#337 S2):
+   * running counts plus the most recent verdicts (newest last, capped) for
+   * the strip. Reset when a session starts (the only consumer mounts inside
+   * a session, so stragglers after session end are invisible until then).
+   */
+  noteVerdicts: {
+    hit: number;
+    near: number;
+    missed: number;
+    recent: NoteVerdictKind[];
+  };
+  /** Fold one backend `note-verdict` event into the tally. */
+  recordNoteVerdict: (verdict: NoteVerdictKind) => void;
 
   // Follow-me accompaniment ("Play with me") ------------------------------
   /**
@@ -209,7 +262,15 @@ export interface PracticeState {
   importMidiFromFile: (
     sourceFilename: string,
     bytes: number[],
+    trackIndex?: number,
   ) => Promise<ScoreLibraryEntry>;
+  /**
+   * List the playable tracks of a MIDI file (read-only, nothing stored) so
+   * the UI can ask which part to practice — the MIDI twin of
+   * `listScoreParts`. Conductor and percussion tracks are omitted; a
+   * single-part file returns one entry so the caller can skip the picker.
+   */
+  listMidiParts: (bytes: number[]) => Promise<MidiPart[]>;
   importAudioFromFile: (
     sourceFilename: string,
     bytes: number[],
@@ -453,6 +514,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   activeScoreXml: null,
   scoreLibrary: [],
   cursorPosition: null,
+  pendingExplore: null,
+  bridgeNotice: null,
+  noteVerdicts: { ...EMPTY_VERDICTS, recent: [] },
+  recordNoteVerdict: (verdict: NoteVerdictKind) =>
+    set((state) => ({
+      noteVerdicts: {
+        ...state.noteVerdicts,
+        [verdict]: state.noteVerdicts[verdict] + 1,
+        recent: [...state.noteVerdicts.recent, verdict].slice(
+          -VERDICT_RECENT_CAP,
+        ),
+      },
+    })),
   accompanimentPlaying: false,
   perception: null,
   keyPinned: false,
@@ -477,11 +551,16 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
-  importMidiFromFile: async (sourceFilename: string, bytes: number[]) => {
+  importMidiFromFile: async (
+    sourceFilename: string,
+    bytes: number[],
+    trackIndex?: number,
+  ) => {
     try {
       const entry = await invoke<ScoreLibraryEntry>("import_midi_file", {
         sourceFilename,
         bytes,
+        trackIndex: trackIndex ?? null,
       });
       // Load the freshly-imported MusicXML so ScoreView can render it
       // without a second user action (mirrors loadScoreFromFile).
@@ -526,6 +605,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return await invoke<string[]>("list_score_parts", { bytes });
     } catch (err) {
       throw new Error(`Couldn't read the parts in that file: ${err}`);
+    }
+  },
+
+  listMidiParts: async (bytes: number[]) => {
+    try {
+      return await invoke<MidiPart[]>("list_midi_parts", { bytes });
+    } catch (err) {
+      throw new Error(`Couldn't read the tracks in that file: ${err}`);
     }
   },
 
@@ -622,7 +709,13 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         `cannot start session from status=${status} — call endSession first`,
       );
     }
-    set({ status: "starting", recap: null, recapError: null });
+    set({
+      status: "starting",
+      recap: null,
+      recapError: null,
+      // Fresh verdict tally per session (#337 S2).
+      noteVerdicts: { hit: 0, near: 0, missed: 0, recent: [] },
+    });
     try {
       const sessionId = await invoke<string>("start_practice_session", {
         instrument,
@@ -632,6 +725,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       });
       set({
         status: "listening",
+        // Promote a recap-made exploration (#337 S5) into the live session.
+        explore: get().pendingExplore ?? null,
+        pendingExplore: null,
         screen: "session",
         sessionId,
         instrumentName: instrument,
@@ -960,6 +1056,29 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
+  exploreMeasure: async (measureNumber: number) => {
+    const scoreId = get().activeScore?.id;
+    if (!scoreId) {
+      // Edge: the recap outlived its score reference — say so instead of a
+      // dead button (S3/S5 review finding 9).
+      set({ bridgeNotice: "that score isn't open anymore — re-import it first" });
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("explore_measure", {
+        scoreId,
+        measureNumber,
+      });
+      // Park it for the next session, then head to the selector — the
+      // session screens clear `explore`, so the handoff uses its own slot.
+      set({ pendingExplore: dto, bridgeNotice: null });
+      get().returnToSelector();
+    } catch (err) {
+      // A calm refusal must not vaporize the recap (S5 review MUST-FIX 3).
+      set({ bridgeNotice: String(err) });
+    }
+  },
+
   exploreLastPhrase: async () => {
     if (get().status !== "listening") {
       return;
@@ -1039,6 +1158,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   returnToSelector: () =>
     set({
       screen: "selector",
+      bridgeNotice: null,
       status: "idle",
       recap: null,
       recapError: null,

@@ -1176,6 +1176,7 @@ mod tests {
 
     fn recap_with(instrument: &str, duration: f64, phrase_count: usize) -> SessionRecap {
         SessionRecap {
+            score_summary: None,
             overall_assessment: format!("Assessment for {instrument}"),
             strengths: vec![
                 "Stable long tones.".to_owned(),
@@ -1256,6 +1257,7 @@ mod tests {
         let id = SessionId::new();
         let now = Utc::now();
         let recap = SessionRecap {
+            score_summary: None,
             fingerprint: Some(MusicalFingerprint {
                 tone: Some(tone::ToneDescriptor {
                     brightness: 0.6,
@@ -1296,6 +1298,7 @@ mod tests {
         let id = SessionId::new();
         let now = Utc::now();
         let recap = SessionRecap {
+            score_summary: None,
             connections: vec![
                 "your laid-back time has the same pocket as a lot of the soul you love".to_owned(),
             ],
@@ -1398,6 +1401,7 @@ mod tests {
         let store = SessionStore::in_memory().unwrap();
         let id = SessionId::new();
         let recap = SessionRecap {
+            score_summary: None,
             overall_assessment: "Solid session overall.".to_owned(),
             strengths: vec!["A".to_owned(), "B".to_owned(), "C".to_owned()],
             areas_to_improve: vec!["X".to_owned(), "Y".to_owned()],

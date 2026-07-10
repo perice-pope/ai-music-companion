@@ -14,6 +14,8 @@ import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
 import ScoreView from "./ScoreView";
+import VerdictStrip from "./VerdictStrip";
+import ScorePhraseCard from "./ScorePhraseCard";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
@@ -234,11 +236,21 @@ export default function PracticeSession() {
       ) : activeScoreXml ? (
         // Score mode: sheet music leads, pitch + tips sit alongside.
         <div className="flex flex-1 flex-col gap-4 p-4 lg:flex-row">
-          <div className="min-h-0 flex-1" data-testid="session-score-pane">
-            <ScoreView
-              musicXml={activeScoreXml}
-              cursorPosition={cursorPosition}
-            />
+          <div
+            className="flex min-h-0 flex-1 flex-col gap-2"
+            data-testid="session-score-pane"
+          >
+            {/* Live hit/near/missed tally (#337 S2) — invisible until the
+              follower judges its first note. */}
+            <VerdictStrip />
+            {/* Latest measure-anchored phrase card (#337 S3, closes #210). */}
+            <ScorePhraseCard />
+            <div className="min-h-0 flex-1">
+              <ScoreView
+                musicXml={activeScoreXml}
+                cursorPosition={cursorPosition}
+              />
+            </div>
           </div>
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />

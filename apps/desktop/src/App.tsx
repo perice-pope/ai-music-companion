@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
+import type { NoteVerdictKind } from "./stores/practiceStore";
 import type {
   AccompanimentStatus,
   PerceptionSnapshot,
@@ -113,6 +114,21 @@ function App() {
         );
       } catch (err: unknown) {
         console.error("Failed to subscribe to score-position-updated:", err);
+      }
+
+      try {
+        unsubs.push(
+          // Live hit/near/missed verdicts (#337 S2) — boundary cadence,
+          // score sessions only.
+          await listen<{ verdict: NoteVerdictKind }>(
+            "note-verdict",
+            ({ payload }) => {
+              usePracticeStore.getState().recordNoteVerdict(payload.verdict);
+            },
+          ),
+        );
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to note-verdict:", err);
       }
 
       try {

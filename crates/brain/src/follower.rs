@@ -63,6 +63,48 @@ impl ScorePosition {
     }
 }
 
+/// How firmly a played note matched the score note the follower aligned it
+/// to (#337 S2). Emitted per SCORE NOTE as the alignment advances — never
+/// per audio frame — so the UI can light passed notes hit/near/missed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Same pitch, within the instrument's cents tolerance.
+    Hit,
+    /// Same pitch but out of tune, or one semitone off.
+    Near,
+    /// Wrong pitch, or the score note was skipped over entirely.
+    Missed,
+}
+
+/// One judged score note: where it lives in the score and how it went.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoteVerdict {
+    pub measure_number: usize,
+    pub beat: f64,
+    pub verdict: Verdict,
+}
+
+/// Tolerances for judging (#337 S2). Profile-driven (founder decision
+/// 2026-07-10): the app derives `hit_cents` from the instrument profile's
+/// vibrato tolerance; this default covers profiles without one.
+#[derive(Debug, Clone, Copy)]
+pub struct VerdictTolerances {
+    /// Same-pitch deviation (cents) still counted as a clean hit.
+    pub hit_cents: f64,
+}
+
+impl Default for VerdictTolerances {
+    fn default() -> Self {
+        Self { hit_cents: 30.0 }
+    }
+}
+
+/// Alignment jumps LARGER than this emit no Missed verdicts for the skipped
+/// notes: a big jump is the follower relocating (repeat, lost-and-found),
+/// not the player skipping — silence beats false accusations.
+const MAX_MISS_RUN: usize = 4;
+
 /// A note event from the score, tagged with its position.
 #[derive(Debug, Clone)]
 struct ScoredNote {
@@ -191,13 +233,18 @@ impl OnlineDtw {
     }
 
     /// Check if a silence gap has occurred.
-    fn check_silence_gap(&mut self, current_time: f64, is_voiced: bool) {
+    /// Returns `true` when the gap reset the DTW state, so the caller can
+    /// reset dependent state (the verdict judge, #337 S2 review S4).
+    fn check_silence_gap(&mut self, current_time: f64, is_voiced: bool) -> bool {
+        let mut did_reset = false;
         if is_voiced {
             if current_time - self.last_voiced_time > self.silence_threshold_secs {
                 self.reset();
+                did_reset = true;
             }
             self.last_voiced_time = current_time;
         }
+        did_reset
     }
 }
 
@@ -221,6 +268,17 @@ pub struct ScoreFollower {
     position: ScorePosition,
     /// Online DTW state.
     dtw: OnlineDtw,
+    /// Verdict engine (#337 S2): last score index judged, verdicts awaiting
+    /// [`Self::take_verdicts`], and the per-instrument tolerances.
+    last_judged_index: Option<usize>,
+    /// A one-frame confirmation gate (#337 S2 review MF3): an advance is
+    /// judged only when the NEXT voiced frame lands on the same score note.
+    /// A lost follower's argmin wanders frame to frame and rarely confirms,
+    /// so playing a different piece stays (mostly) unjudged — the closest
+    /// thing to "locked" an argmin follower has.
+    judge_candidate: Option<usize>,
+    pending_verdicts: Vec<NoteVerdict>,
+    tolerances: VerdictTolerances,
     /// Beats per minute (from score).
     #[allow(dead_code)]
     tempo_bpm: f64,
@@ -272,7 +330,23 @@ impl ScoreFollower {
             score_notes,
             position: ScorePosition::start(),
             dtw,
+            last_judged_index: None,
+            judge_candidate: None,
+            pending_verdicts: Vec::new(),
+            tolerances: VerdictTolerances::default(),
         })
+    }
+
+    /// Set the per-instrument judging tolerances (#337 S2) — derived from
+    /// the active instrument profile by the app layer.
+    pub fn set_verdict_tolerances(&mut self, tolerances: VerdictTolerances) {
+        self.tolerances = tolerances;
+    }
+
+    /// Drain the note verdicts produced since the last call (#337 S2).
+    /// One entry per JUDGED SCORE NOTE, in score order — never per frame.
+    pub fn take_verdicts(&mut self) -> Vec<NoteVerdict> {
+        std::mem::take(&mut self.pending_verdicts)
     }
 
     /// Process a single audio event and return the updated score position.
@@ -282,8 +356,14 @@ impl ScoreFollower {
     pub fn align(&mut self, event: &AudioEvent) -> ScorePosition {
         let is_voiced = event.pitch_hz.is_some() && event.confidence > 0.5;
 
-        // Check for silence gaps and reset if needed.
-        self.dtw.check_silence_gap(event.timestamp_secs, is_voiced);
+        // Check for silence gaps and reset if needed. A reset also clears
+        // the verdict judge: after a pause the alignment restarts, and the
+        // stale watermark would otherwise silence replayed notes and then
+        // emit phantom Missed runs when it re-locked (#337 S2 review).
+        if self.dtw.check_silence_gap(event.timestamp_secs, is_voiced) {
+            self.last_judged_index = None;
+            self.judge_candidate = None;
+        }
 
         if !is_voiced {
             // Not a voiced event — return current position unchanged.
@@ -373,14 +453,89 @@ impl ScoreFollower {
                 self.position.section_name = None; // TODO: extract from score metadata
                 self.position.expected_note = Some(score_note.midi_number);
                 self.dtw.score_index = best_idx;
+                self.judge_advance(best_idx, played_event);
             }
         }
+    }
+
+    /// "Near" reaches one semitone plus a quarter-tone of slack: a note a
+    /// full tone off is not near on any instrument (#337 S2 review S6; the
+    /// spec's "within 1 semitone" plus real-world detector jitter).
+    const NEAR_MAX_SEMITONES: f64 = 1.25;
+
+    /// Judge the alignment advance (#337 S2): each score note the follower
+    /// LANDS on — once the next frame CONFIRMS the landing — is judged
+    /// against what was played; notes skipped in a small forward jump are
+    /// Missed. Regressions, big jumps (the follower relocating), unconfirmed
+    /// one-frame advances (a lost follower's wandering argmin), and a
+    /// mid-piece first alignment judge nothing: silence beats false
+    /// accusations.
+    ///
+    /// Semantics, stated honestly: this grades the note the FOLLOWER LANDED
+    /// ON, not "the next expected note" — a wrong-but-diatonic note can
+    /// align elsewhere and read better than it was played. The counts mean
+    /// "as the app followed along" (documented deviation, spec §4).
+    fn judge_advance(&mut self, best_idx: usize, played: &PlayedEvent) {
+        let from = self.last_judged_index;
+        let advanced = from.is_none_or(|last| best_idx > last);
+        if !advanced {
+            self.judge_candidate = None;
+            return;
+        }
+        // Confirmation gate: judge only when two consecutive voiced frames
+        // agree on the landing (#337 S2 review MF3).
+        if self.judge_candidate != Some(best_idx) {
+            self.judge_candidate = Some(best_idx);
+            return;
+        }
+        self.judge_candidate = None;
+        // First alignment of the session: only a start at the top is
+        // judged. A mid-piece entry (or a wrong opening note aligning to
+        // whatever matches it) sets the watermark silently.
+        if from.is_none() && best_idx != 0 {
+            self.last_judged_index = Some(best_idx);
+            return;
+        }
+        let gap = from.map_or(0, |last| best_idx - last - 1);
+        if from.is_some() && gap > 0 && gap <= MAX_MISS_RUN {
+            for idx in (best_idx - gap)..best_idx {
+                let n = &self.score_notes[idx];
+                self.pending_verdicts.push(NoteVerdict {
+                    measure_number: n.measure_number,
+                    beat: n.beat_in_measure,
+                    verdict: Verdict::Missed,
+                });
+            }
+        }
+        // Judge the landed note only on small advances: a relocation jump
+        // says nothing about how THIS note was played.
+        if gap <= MAX_MISS_RUN {
+            let expected = &self.score_notes[best_idx];
+            let played_fractional = 12.0 * (played.pitch_hz / 440.0).log2() + 69.0;
+            let semis = played_fractional - f64::from(expected.midi_number);
+            let verdict = if semis.abs() * 100.0 <= self.tolerances.hit_cents {
+                Verdict::Hit
+            } else if semis.abs() <= Self::NEAR_MAX_SEMITONES {
+                Verdict::Near
+            } else {
+                Verdict::Missed
+            };
+            self.pending_verdicts.push(NoteVerdict {
+                measure_number: expected.measure_number,
+                beat: expected.beat_in_measure,
+                verdict,
+            });
+        }
+        self.last_judged_index = Some(best_idx);
     }
 
     /// Reset the follower (e.g., when the user stops and restarts).
     pub fn reset(&mut self) {
         self.dtw.reset();
         self.position = ScorePosition::start();
+        self.last_judged_index = None;
+        self.judge_candidate = None;
+        self.pending_verdicts.clear();
     }
 
     /// Get the current position without processing an event.
@@ -510,6 +665,182 @@ mod tests {
 
         let err = ScoreFollower::new(score).unwrap_err();
         assert!(matches!(err, FollowerError::InvalidTempo(0.0)));
+    }
+
+    /// #337 S2 AC3: a scripted pitch stream against a known score produces
+    /// the expected hit/near/missed sequence — in-tune C hits, a 60-cents-
+    /// sharp D is near, an E played as G# misses. Fails if judging drifts
+    /// off the profile tolerance or stops firing per score note.
+    /// Feed one played note as several consecutive frames (real detection
+    /// is ~45 Hz), satisfying the confirmation gate the way live audio does.
+    fn play_note(f: &mut ScoreFollower, hz: f64, t0: f64) {
+        for i in 0..4 {
+            f.align(&create_audio_event(hz, 0.9, t0 + f64::from(i) * 0.02));
+        }
+    }
+
+    #[test]
+    fn scripted_stream_yields_the_expected_verdicts() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        // C4 in tune (261.63 Hz).
+        play_note(&mut f, 261.63, 0.0);
+        // D4 ~60 cents sharp: 293.66 * 2^(0.6/12).
+        play_note(&mut f, 293.66 * 1.0353, 0.2);
+        // E4 played 2 semitones sharp (F#4, 369.99 Hz): nothing in the
+        // 3-note C-D-E score is nearer, so the alignment lands on E and
+        // judges the wrong pitch Missed (review MF1: the whole ladder,
+        // asserted exactly).
+        play_note(&mut f, 369.99, 0.4);
+
+        let verdicts = f.take_verdicts();
+        let kinds: Vec<Verdict> = verdicts.iter().map(|v| v.verdict).collect();
+        assert_eq!(
+            kinds,
+            vec![Verdict::Hit, Verdict::Near, Verdict::Missed],
+            "the full ladder, in order: {verdicts:?}"
+        );
+        assert_eq!(
+            verdicts[0].measure_number, 1,
+            "score coordinates ride along"
+        );
+        // Drained means drained.
+        assert!(f.take_verdicts().is_empty(), "second drain is empty");
+    }
+
+    /// Review MF2: a big alignment jump is the follower RELOCATING, not the
+    /// player skipping — no Missed run, no landed verdict.
+    #[test]
+    fn a_relocation_jump_judges_nothing() {
+        let mut f = ScoreFollower::new(create_two_measure_score()).unwrap();
+        play_note(&mut f, 261.63, 0.0); // C4 → judged at the top
+        let _ = f.take_verdicts();
+        // Leap to the last note (C5, idx 7): gap of 6 > MAX_MISS_RUN.
+        play_note(&mut f, 523.25, 0.2);
+        let after = f.take_verdicts();
+        assert!(
+            after.is_empty(),
+            "a relocation must accuse nobody: {after:?}"
+        );
+    }
+
+    /// Review MF1 (second half): a small forward jump marks the skipped
+    /// notes Missed and still judges the landed note.
+    #[test]
+    fn a_small_skip_marks_the_skipped_notes_missed() {
+        let mut f = ScoreFollower::new(create_two_measure_score()).unwrap();
+        play_note(&mut f, 261.63, 0.0); // C4 (idx 0)
+        let _ = f.take_verdicts();
+        // Jump to F4 (idx 3): skips D4, E4 — gap 2 ≤ MAX_MISS_RUN.
+        play_note(&mut f, 349.23, 0.2);
+        let verdicts = f.take_verdicts();
+        let kinds: Vec<Verdict> = verdicts.iter().map(|v| v.verdict).collect();
+        assert_eq!(
+            kinds,
+            vec![Verdict::Missed, Verdict::Missed, Verdict::Hit],
+            "two skipped + one landed: {verdicts:?}"
+        );
+    }
+
+    /// Review MF3: a single unconfirmed frame — the wandering argmin of a
+    /// lost follower — judges nothing. Only two consecutive frames on the
+    /// same score note do.
+    #[test]
+    fn an_unconfirmed_single_frame_judges_nothing() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        f.align(&create_audio_event(261.63, 0.9, 0.0));
+        assert!(
+            f.take_verdicts().is_empty(),
+            "one frame is a candidate, not a verdict"
+        );
+        f.align(&create_audio_event(261.63, 0.9, 0.02));
+        assert_eq!(f.take_verdicts().len(), 1, "the second frame confirms");
+    }
+
+    /// Review S4: a silence gap resets the judge — replaying from the top
+    /// after a pause judges again and emits no phantom Missed run.
+    #[test]
+    fn a_pause_and_restart_judges_cleanly_from_the_top() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        play_note(&mut f, 261.63, 0.0);
+        play_note(&mut f, 293.66, 0.2);
+        let _ = f.take_verdicts();
+        // Long silence, then start over from C4.
+        play_note(&mut f, 261.63, 10.0);
+        play_note(&mut f, 293.66, 10.2);
+        let verdicts = f.take_verdicts();
+        let kinds: Vec<Verdict> = verdicts.iter().map(|v| v.verdict).collect();
+        assert_eq!(
+            kinds,
+            vec![Verdict::Hit, Verdict::Hit],
+            "a restart re-judges without phantom misses: {verdicts:?}"
+        );
+    }
+
+    /// An 8-note two-measure C major scale, for jump/skip scenarios.
+    fn create_two_measure_score() -> ScoreModel {
+        let midis = [60u8, 62, 64, 65, 67, 69, 71, 72];
+        let hz = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+        let note = |i: usize, start: f64| ScoreNote {
+            pitch_hz: hz[i],
+            midi_number: midis[i],
+            duration_beats: 1.0,
+            start_beat: start,
+            dynamic: None,
+            is_rest: false,
+        };
+        ScoreModel {
+            title: "Two Measures".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            measures: vec![
+                Measure {
+                    number: 1,
+                    notes: (0..4).map(|i| note(i, i as f64)).collect(),
+                },
+                Measure {
+                    number: 2,
+                    notes: (4..8).map(|i| note(i, (i - 4) as f64)).collect(),
+                },
+            ],
+        }
+    }
+
+    /// #337 S2: verdicts are per SCORE NOTE, never per frame — holding one
+    /// note across many frames judges it once.
+    #[test]
+    fn a_held_note_is_judged_once_not_per_frame() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        for i in 0..20 {
+            f.align(&create_audio_event(261.63, 0.9, f64::from(i) * 0.02));
+        }
+        let verdicts = f.take_verdicts();
+        assert_eq!(
+            verdicts.len(),
+            1,
+            "one verdict for one held C: {verdicts:?}"
+        );
+        assert_eq!(verdicts[0].verdict, Verdict::Hit);
+    }
+
+    /// #337 S2: reset clears the judge — no verdicts leak across sessions,
+    /// and judging restarts cleanly.
+    #[test]
+    fn reset_clears_the_verdict_engine() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        play_note(&mut f, 261.63, 0.0);
+        let _ = f.take_verdicts(); // drain whatever fired
+        play_note(&mut f, 293.66, 0.2);
+        f.reset();
+        assert!(
+            f.take_verdicts().is_empty(),
+            "reset must drop undelivered verdicts"
+        );
+        play_note(&mut f, 261.63, 10.0);
+        let after = f.take_verdicts();
+        assert_eq!(after.len(), 1, "judging restarts after reset: {after:?}");
     }
 
     #[test]

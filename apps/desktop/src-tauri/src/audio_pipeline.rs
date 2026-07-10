@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use brain::follower::{ScoreFollower, ScorePosition};
+use brain::follower::{NoteVerdict, ScoreFollower, ScorePosition};
 use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
 use ears::capture::{AudioCapture, CaptureConfig, CaptureError};
 use ears::pitch::{PitchConfig, PitchDetector, PitchError};
@@ -199,7 +199,7 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {})
+        Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {}, |_| {})
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
@@ -216,18 +216,21 @@ impl AudioPipeline {
     /// audio for **offline, end-of-session** idiom analysis. It is filled on
     /// the worker thread (allocation there is fine), never in the realtime
     /// callback, and read by the recap path after the session ends.
-    pub fn start_with_follower<F, P, S>(
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_follower<F, P, S, V>(
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
         idiom_buffer: Option<SharedIdiomBuffer>,
         emit: F,
         emit_phrase: P,
         emit_position: S,
+        emit_verdict: V,
     ) -> Result<Self, PipelineError>
     where
         F: FnMut(AudioEvent) + Send + 'static,
         P: FnMut(PhraseSummary) + Send + 'static,
         S: FnMut(ScorePosition) + Send + 'static,
+        V: FnMut(NoteVerdict) + Send + 'static,
     {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (profile_tx, profile_rx) = std::sync::mpsc::channel::<DetectorProfile>();
@@ -247,6 +250,7 @@ impl AudioPipeline {
                     emit,
                     emit_phrase,
                     emit_position,
+                    emit_verdict,
                 );
             })?;
 
@@ -299,7 +303,7 @@ impl Drop for AudioPipeline {
 /// Opening the capture *here* (not in `start`) is deliberate: on macOS
 /// `cpal::Stream` is `!Send`, so it must never cross a thread boundary.
 #[allow(clippy::too_many_arguments)]
-fn run_worker<F, P, S>(
+fn run_worker<F, P, S, V>(
     initial_profile: DetectorProfile,
     follower: Option<ScoreFollower>,
     idiom_buffer: Option<SharedIdiomBuffer>,
@@ -309,10 +313,12 @@ fn run_worker<F, P, S>(
     mut emit: F,
     mut emit_phrase: P,
     mut emit_position: S,
+    mut emit_verdict: V,
 ) where
     F: FnMut(AudioEvent),
     P: FnMut(PhraseSummary),
     S: FnMut(ScorePosition),
+    V: FnMut(NoteVerdict),
 {
     /// Minimum spacing between live score-position emits. ~10 Hz is smooth
     /// enough for the cursor to glide within a measure without flooding IPC
@@ -466,6 +472,15 @@ fn run_worker<F, P, S>(
             phrase_audio.clear();
             phrase_pitch.clear();
             emit_phrase(phrase);
+        }
+
+        // Note verdicts (#337 S2): drained per event but produced only when
+        // the alignment ADVANCES to a new score note — boundary cadence,
+        // never per-frame. Nothing in free play.
+        if has_follower {
+            for verdict in aggregator.take_note_verdicts() {
+                emit_verdict(verdict);
+            }
         }
 
         // Live cursor: emit the follower's current position at ~10 Hz so it

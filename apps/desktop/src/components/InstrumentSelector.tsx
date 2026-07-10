@@ -33,6 +33,7 @@ export default function InstrumentSelector() {
   const selectedInstrument = useAudioStore((s) => s.selectedInstrument);
   const setInstrument = useAudioStore((s) => s.setInstrument);
   const startSession = usePracticeStore((s) => s.startSession);
+  const pendingExplore = usePracticeStore((s) => s.pendingExplore);
   const practiceMode = usePracticeStore((s) => s.practiceMode);
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const [startError, setStartError] = useState<string | null>(null);
@@ -79,6 +80,30 @@ export default function InstrumentSelector() {
       <h2 className="mb-4 text-center text-xl font-semibold text-gray-200">
         Select Your Instrument
       </h2>
+
+      {/* A recap-made exploration waiting for its session (#337 S5). */}
+      {pendingExplore && (
+        <p
+          className="mb-4 flex items-center justify-center gap-3 rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-center text-sm text-emerald-200"
+          data-testid="pending-explore-banner"
+        >
+          <span>
+            🎲 {pendingExplore.label} is queued — pick an instrument and it
+            starts with your session.
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss queued exploration"
+            data-testid="dismiss-pending-explore"
+            onClick={() =>
+              usePracticeStore.setState({ pendingExplore: null })
+            }
+            className="shrink-0 text-emerald-300 hover:text-emerald-100"
+          >
+            ✕
+          </button>
+        </p>
+      )}
 
       {catalogError && (
         <p

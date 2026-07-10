@@ -14,6 +14,7 @@ const dto: ExploreDto = {
   music_xml: "<score-partwise/>",
   chips: [],
   root_pitch_classes: [2, 9, 4],
+  root_names: ["D", "A", "E"],
   can_undo: false,
   staff: {
     fifths: 0,

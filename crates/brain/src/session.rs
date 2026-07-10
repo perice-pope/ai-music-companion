@@ -275,6 +275,11 @@ pub struct RecapInput {
     /// recap name the piece ("your work on the Haydn") and lean on the
     /// per-phrase `score_position` measure numbers. `None` in free play.
     pub score_title: Option<String>,
+    /// Every note verdict the follower produced this session (#337 S4) —
+    /// the raw material for `SessionRecap.score_summary`. Empty in free
+    /// play or when the follower never judged.
+    #[serde(default)]
+    pub note_verdicts: Vec<crate::follower::NoteVerdict>,
     /// Confidence-gated idiom matches for the session, computed **offline**
     /// on-device from the captured audio (see [`crate::idiom_recap`]). Each is
     /// a grounded audio-similarity proximity ("reminds me of"), never an
@@ -369,6 +374,12 @@ pub struct SessionRecap {
     /// so recaps saved before connections existed still load.
     #[serde(default)]
     pub connections: Vec<String>,
+    /// Score-practice summary (#337 S4): accuracy over the follower's
+    /// judged notes and the measures that need work. `None` for free-play
+    /// sessions or when the follower judged nothing. Additive +
+    /// `serde(default)` — old recaps keep parsing.
+    #[serde(default)]
+    pub score_summary: Option<crate::coaching::ScorePracticeSummary>,
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +489,10 @@ impl CompletedSession {
             phrases: self.all_phrases(),
             tips: self.all_tips(),
             score_title: self.score_title.clone(),
+            // Verdicts live in the app's session buffer, not the recorder —
+            // the Tauri shell attaches them after building this input
+            // (#337 S4), mirroring how idiom notes arrive.
+            note_verdicts: Vec::new(),
             idiom_notes,
             // The taste profile is owned by the persistence layer, not the
             // recorder — it's read from the store and joined to the recap input
@@ -505,7 +520,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, profile, Vec::new())
+        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new())
             .await
     }
 
@@ -520,7 +535,7 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, Vec::new())
+        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new())
             .await
     }
 
@@ -532,7 +547,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         idiom_notes: Vec<IdiomMatch>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, idiom_notes)
+        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new())
             .await
     }
 
@@ -552,9 +567,11 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
         idiom_notes: Vec<IdiomMatch>,
+        note_verdicts: Vec<crate::follower::NoteVerdict>,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
+        input.note_verdicts = note_verdicts;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
@@ -881,6 +898,7 @@ mod tests {
 
     fn canned_recap() -> SessionRecap {
         SessionRecap {
+            score_summary: None,
             overall_assessment: "Solid warm-up with room to grow.".to_owned(),
             strengths: vec![
                 "Consistent tone on middle-register long tones.".to_owned(),
@@ -923,6 +941,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         }
     }
 

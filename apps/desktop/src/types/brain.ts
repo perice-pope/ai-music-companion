@@ -102,6 +102,12 @@ export interface DrillDto {
   target_len: number;
   /** Roots as pitch classes (0-11) in play order — RV's shuffled key cells. */
   root_pitch_classes: number[];
+  /**
+   * Display names for those roots, spelled per the key signature (#335):
+   * flat signatures name flats (Db, not C#) so cells never contradict the
+   * engraved notation. Same order/length as `root_pitch_classes`.
+   */
+  root_names: string[];
 }
 
 /** Trimmed drill grade. Mirrors `commands::DrillScoreDto`. */
@@ -216,6 +222,12 @@ export interface ExploreDto {
   music_xml: string;
   chips: ChipSpec[];
   root_pitch_classes: number[];
+  /**
+   * Display names for those roots, spelled per the key signature (#335):
+   * flat signatures name flats (Db, not C#) so cells never contradict the
+   * engraved notation. Same order/length as `root_pitch_classes`.
+   */
+  root_names: string[];
   staff: CellStaffViewDto;
   can_undo: boolean;
 }
@@ -294,6 +306,15 @@ export interface PhraseSummary {
   key?: KeyEstimate | null;
   /** Onset timestamps (seconds) retained for session-level groove analysis. */
   onsets_secs?: number[];
+  /** Measures this phrase spanned (first, last) — score sessions only (#337 S3). */
+  score_span?: [number, number] | null;
+  /** Verdict tally for the notes judged during this phrase (#337 S3). */
+  verdicts?: { hit: number; near: number; missed: number } | null;
+  /**
+   * Ready-to-show card line, built in Rust ("Measures 5-8 — 6 clean, 1
+   * rough, 2 missed"). Absent in free play or when nothing was judged.
+   */
+  score_card?: string | null;
 }
 
 /**
@@ -475,6 +496,22 @@ export interface SessionRecap {
    * anything was measured. `null`/absent when every dimension's gate failed.
    */
   fingerprint?: MusicalFingerprint | null;
+  /**
+   * Score-practice summary (#337 S4): honest accuracy over the notes the
+   * follower judged and the measures that most need work. Absent for
+   * free-play sessions or when nothing was judged.
+   */
+  score_summary?: {
+    score_title: string;
+    judged: number;
+    accuracy_pct: number;
+    worst_measures: {
+      measure_number: number;
+      hit: number;
+      near: number;
+      missed: number;
+    }[];
+  } | null;
   /**
    * A short, hedged "flavour" line grounded in the reliable signal the app
    * measures — the key's mode + the groove's swing ratio (Rust

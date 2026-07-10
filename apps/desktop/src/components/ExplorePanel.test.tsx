@@ -21,6 +21,7 @@ const dto: ExploreDto = {
     { label: "Different scale", delta: { kind: "different_scale" } },
   ],
   root_pitch_classes: [7, 0, 2],
+  root_names: ["G", "C", "D"],
   can_undo: false,
   staff: {
     fifths: -2,

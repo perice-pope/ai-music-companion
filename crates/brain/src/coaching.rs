@@ -1177,6 +1177,10 @@ All text should be written as a teacher would speak — warm, specific, and acti
         let flavour = theory_flavour(&fingerprint);
 
         let recap = SessionRecap {
+            score_summary: input
+                .score_title
+                .as_deref()
+                .and_then(|t| score_practice_summary(t, &input.note_verdicts)),
             overall_assessment: parsed
                 .get("overall_assessment")
                 .and_then(|v| v.as_str())
@@ -1514,6 +1518,14 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
             );
         }
     }
+    // A score session the follower never judged (§6: player may have been
+    // on a different piece) says so instead of silently showing nothing.
+    if input.score_title.is_some() && input.note_verdicts.is_empty() && !input.phrases.is_empty() {
+        areas.push(
+            "I couldn't follow along with the score this time — was this the right piece?"
+                .to_owned(),
+        );
+    }
     if areas.is_empty() {
         areas.push(
             "Keep recording yourself — each session builds on the last and tracks your progress."
@@ -1576,6 +1588,10 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         strengths,
         areas_to_improve: areas,
         next_session_suggestions: suggestions,
+        score_summary: input
+            .score_title
+            .as_deref()
+            .and_then(|t| score_practice_summary(t, &input.note_verdicts)),
         duration_secs: input.duration_secs,
         phrase_count,
         instrument: input.instrument.clone(),
@@ -1758,6 +1774,84 @@ fn connections_gate_open(input: &RecapInput) -> bool {
         .is_some_and(|p| !describe_taste_profile(p).is_empty());
     let has_signal = fingerprint_for_recap(&input.phrases).is_some();
     has_profile && has_signal
+}
+
+/// Per-measure verdict counts for the score recap (#337 S4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeasureVerdicts {
+    pub measure_number: usize,
+    pub hit: usize,
+    pub near: usize,
+    pub missed: usize,
+}
+
+/// What a score-practice session amounted to (#337 S4): honest accuracy
+/// over the notes the follower actually JUDGED, and the measures that most
+/// need work. Rides `SessionRecap.score_summary` (additive).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScorePracticeSummary {
+    pub score_title: String,
+    /// Notes the follower judged this session — the denominator.
+    pub judged: usize,
+    /// Clean hits as a percentage of judged notes, 0..=100.
+    pub accuracy_pct: f32,
+    /// Up to [`WORST_MEASURES_CAP`] measures ranked worst-first (most
+    /// missed, then most rough). Only measures with a non-clean note appear.
+    pub worst_measures: Vec<MeasureVerdicts>,
+}
+
+/// How many worst measures the recap names — enough to practice, not a wall.
+const WORST_MEASURES_CAP: usize = 3;
+
+/// Aggregate a session's note verdicts into the score recap summary
+/// (#337 S4). `None` when nothing was judged — a session where the follower
+/// never locked says nothing about the piece (silence > lies).
+pub fn score_practice_summary(
+    score_title: &str,
+    verdicts: &[crate::follower::NoteVerdict],
+) -> Option<ScorePracticeSummary> {
+    use crate::follower::Verdict;
+    if verdicts.is_empty() {
+        return None;
+    }
+    let mut per_measure: std::collections::BTreeMap<usize, MeasureVerdicts> =
+        std::collections::BTreeMap::new();
+    let mut hits = 0usize;
+    for v in verdicts {
+        let m = per_measure
+            .entry(v.measure_number)
+            .or_insert(MeasureVerdicts {
+                measure_number: v.measure_number,
+                hit: 0,
+                near: 0,
+                missed: 0,
+            });
+        match v.verdict {
+            Verdict::Hit => {
+                m.hit += 1;
+                hits += 1;
+            }
+            Verdict::Near => m.near += 1,
+            Verdict::Missed => m.missed += 1,
+        }
+    }
+    let judged = verdicts.len();
+    let mut worst: Vec<MeasureVerdicts> = per_measure
+        .into_values()
+        .filter(|m| m.near + m.missed > 0)
+        .collect();
+    worst.sort_by(|a, b| {
+        (b.missed, b.near)
+            .cmp(&(a.missed, a.near))
+            .then(a.measure_number.cmp(&b.measure_number))
+    });
+    worst.truncate(WORST_MEASURES_CAP);
+    Some(ScorePracticeSummary {
+        score_title: score_title.to_owned(),
+        judged,
+        accuracy_pct: (hits as f32 / judged as f32) * 100.0,
+        worst_measures: worst,
+    })
 }
 
 /// Build the session's [`MusicalFingerprint`] from the per-dimension
@@ -2071,6 +2165,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         }
     }
 
@@ -2102,6 +2199,7 @@ mod tests {
             ],
             tips: vec![],
             score_title: Some("Haydn Trumpet Concerto".to_owned()),
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -2132,6 +2230,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -2202,6 +2301,7 @@ mod tests {
             phrases: vec![toned],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -2943,6 +3043,7 @@ mod tests {
             phrases: vec![p],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -3012,6 +3113,7 @@ mod tests {
             phrases,
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile,
         }
@@ -3028,6 +3130,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
         };
@@ -3095,6 +3198,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -3169,6 +3273,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
         };
@@ -4086,6 +4191,7 @@ mod tests {
             phrases: vec![p],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -4186,6 +4292,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -4237,6 +4344,7 @@ mod tests {
             phrases: vec![sample_phrase(); 3],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -4269,6 +4377,7 @@ mod tests {
             phrases: vec![sample_phrase(); 5],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -4309,6 +4418,7 @@ mod tests {
             phrases: vec![sample_phrase(); 2],
             tips: vec![],
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
@@ -4342,6 +4452,7 @@ mod tests {
             phrases,
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         }
@@ -4519,6 +4630,61 @@ mod tests {
         let f = theory_flavour(&fp_with(Some((theory::Mode::Lydian, 0.8)), None))
             .expect("modal key, no swing → Some");
         assert!(f.contains("modal colour"), "got: {f}");
+    }
+
+    /// #337 S4 AC5: with scripted errors in measures 3 and 7, the summary
+    /// names exactly those measures worst-first and the accuracy matches
+    /// the scripted hit rate. Empty input → None (silence > lies).
+    #[test]
+    fn score_summary_ranks_worst_measures_and_reports_honest_accuracy() {
+        use crate::follower::{NoteVerdict, Verdict};
+        let v = |m: usize, verdict: Verdict| NoteVerdict {
+            measure_number: m,
+            beat: 0.0,
+            verdict,
+        };
+        let verdicts = vec![
+            v(1, Verdict::Hit),
+            v(1, Verdict::Hit),
+            v(2, Verdict::Hit),
+            v(3, Verdict::Missed),
+            v(3, Verdict::Near),
+            v(4, Verdict::Hit),
+            v(5, Verdict::Hit),
+            v(7, Verdict::Missed),
+            v(7, Verdict::Missed),
+            v(8, Verdict::Hit),
+        ];
+        let s = score_practice_summary("Haydn", &verdicts).expect("judged notes");
+        assert_eq!(s.judged, 10);
+        assert!(
+            (s.accuracy_pct - 60.0).abs() < 0.01,
+            "6/10 = 60%: {}",
+            s.accuracy_pct
+        );
+        let worst: Vec<usize> = s.worst_measures.iter().map(|m| m.measure_number).collect();
+        assert_eq!(worst, vec![7, 3], "worst-first, clean measures omitted");
+        assert_eq!(s.worst_measures[0].missed, 2);
+
+        assert!(
+            score_practice_summary("Haydn", &[]).is_none(),
+            "nothing judged says nothing"
+        );
+    }
+
+    /// #337 S4: the exercise log's score entries group by piece in insights.
+    #[test]
+    fn insights_shape_names_score_practice() {
+        let shape = crate::insights::exercise_insights(&[crate::store::ExerciseLogEntry {
+            source: "score_practice".to_owned(),
+            label: "Haydn".to_owned(),
+            spec_json: r#"{"score_title":"Haydn"}"#.to_owned(),
+            seed: 0,
+            difficulty: 0,
+            tonic: 0,
+            accuracy: Some(0.6),
+        }]);
+        assert_eq!(shape[0].shape, "score: Haydn");
     }
 
     /// The offline recap must persist the measured fingerprint, not throw it

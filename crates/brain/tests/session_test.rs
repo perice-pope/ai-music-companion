@@ -39,6 +39,7 @@ impl RecapGenerator for MockRecapGenerator {
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         Ok(SessionRecap {
+            score_summary: None,
             overall_assessment: format!(
                 "You played {} phrases on {}.",
                 input.phrases.len(),
@@ -87,6 +88,9 @@ fn phrase_at(idx: usize) -> PhraseSummary {
         tone: None,
         key: None,
         onsets_secs: Vec::new(),
+        score_span: None,
+        verdicts: None,
+        score_card: None,
     }
 }
 
@@ -238,6 +242,7 @@ fn completed_session_persists_without_recap_when_generator_fails() {
     // persist session metadata anyway (this is what a real app would do
     // rather than dropping the session wholesale).
     let fallback_recap = SessionRecap {
+        score_summary: None,
         overall_assessment: "(recap unavailable)".to_owned(),
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),

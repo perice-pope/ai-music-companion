@@ -88,6 +88,8 @@ export default function SessionRecap() {
   const recap = usePracticeStore((s) => s.recap);
   const recapError = usePracticeStore((s) => s.recapError);
   const returnToSelector = usePracticeStore((s) => s.returnToSelector);
+  const exploreMeasure = usePracticeStore((s) => s.exploreMeasure);
+  const bridgeNotice = usePracticeStore((s) => s.bridgeNotice);
 
   // Error path — takes precedence over any partial recap.
   if (recapError) {
@@ -181,6 +183,65 @@ export default function SessionRecap() {
         >
           {recap.overall_assessment}
         </p>
+
+        {/* Score-practice summary (#337 S4): honest accuracy over the notes
+          the follower judged, and the measures that most need work. The
+          worst-measure rows carry the RV bridge (#337 S5): one tap rows
+          that measure through 12 keys. */}
+        {!isEmptyState && recap.score_summary && (
+          <div
+            className="rounded-md border border-gray-700 bg-gray-900/60 p-3"
+            data-testid="recap-score-summary"
+          >
+            <p className="text-sm text-gray-200">
+              <span className="font-semibold">
+                {recap.score_summary.score_title}
+              </span>
+              {" — "}
+              {Math.round(recap.score_summary.accuracy_pct)}% of{" "}
+              {recap.score_summary.judged} notes clean, as the app followed
+              along.
+            </p>
+            {bridgeNotice && (
+              <p
+                className="mt-2 text-xs italic text-amber-300"
+                data-testid="bridge-notice"
+                role="status"
+              >
+                {bridgeNotice}
+              </p>
+            )}
+            {recap.score_summary.worst_measures.length > 0 && (
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {recap.score_summary.worst_measures.map((m) => (
+                  <li
+                    key={m.measure_number}
+                    className="flex items-center justify-between gap-3 text-sm text-gray-300"
+                    data-testid={`worst-measure-${m.measure_number}`}
+                  >
+                    <span>
+                      Measure {m.measure_number} —{" "}
+                      {[
+                        m.missed > 0 ? `${m.missed} missed` : null,
+                        m.near > 0 ? `${m.near} rough` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(", ")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void exploreMeasure(m.measure_number)}
+                      data-testid={`row-measure-${m.measure_number}`}
+                      className="shrink-0 rounded bg-emerald-700/90 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-600"
+                    >
+                      🎲 Row it through 12 keys
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Tone read-out (secondary to the coaching text above). Only shown
           when tone analysis produced a session aggregate. */}

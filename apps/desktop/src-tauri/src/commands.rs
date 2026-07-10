@@ -487,6 +487,10 @@ impl RecapGenerator for MockRecapGenerator {
 impl MockRecapGenerator {
     fn generate_recap_impl(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         Ok(SessionRecap {
+            score_summary: input
+                .score_title
+                .as_deref()
+                .and_then(|t| brain::coaching::score_practice_summary(t, &input.note_verdicts)),
             overall_assessment: format!(
                 "Nice {}-minute session. You kept the tone centered and stayed with the music.",
                 (input.duration_secs / 60.0).round().max(1.0) as u32,
@@ -639,6 +643,10 @@ pub struct AppState {
     /// empty and **every** recap was the "you didn't play" empty state — the
     /// real root cause behind #185 (the confidence gate was only half of it).
     phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
+    /// Note verdicts the follower produced this session (#337 S4) —
+    /// buffered exactly like `phrase_buffer` and drained into the recap
+    /// input at session end for the score-practice summary.
+    verdict_buffer: Arc<std::sync::Mutex<Vec<brain::follower::NoteVerdict>>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -778,6 +786,7 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -807,6 +816,7 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -1021,7 +1031,20 @@ impl AppState {
         source_filename: String,
         bytes: Vec<u8>,
     ) -> Result<ScoreLibraryEntry, String> {
-        let model = brain::score::midi::parse_midi_bytes(&bytes).map_err(|e| e.to_string())?;
+        self.import_midi_track(source_filename, bytes, None)
+    }
+
+    /// Import one track of a multi-part MIDI file (#337 S1) — `track_index`
+    /// comes from [`brain::score::midi::list_midi_parts`]; `None` reads every
+    /// (non-percussion) track, the right call for single-part files.
+    fn import_midi_track(
+        &self,
+        source_filename: String,
+        bytes: Vec<u8>,
+        track_index: Option<usize>,
+    ) -> Result<ScoreLibraryEntry, String> {
+        let model = brain::score::midi::parse_midi_bytes_track(&bytes, track_index)
+            .map_err(|e| e.to_string())?;
 
         let title = if model.title == "Untitled" {
             filename_stem(&source_filename).unwrap_or_else(|| "Untitled".to_string())
@@ -1127,7 +1150,19 @@ impl AppState {
         >,
     {
         let (midi, quality) = guard_transcription(|| transcribe_fn().map_err(|e| e.to_string()))?;
-        let entry = self.import_midi(source_filename, midi)?;
+        // The parser's no-notes refusal speaks MIDI ("drum, click, or marker
+        // track") — for a recording the honest reason is that we couldn't
+        // hear notes in the audio (review MUST-FIX 4).
+        let entry = self
+            .import_midi(source_filename, midi)
+            .map_err(|e| {
+                if e.contains("no playable notes") {
+                    "we couldn't hear any notes in that recording — try a clearer,                      closer take"
+                        .to_string()
+                } else {
+                    e
+                }
+            })?;
         Ok((entry, quality))
     }
 
@@ -1631,9 +1666,21 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     let practice_mode_label = format!("{:?}", session.practice_mode);
     let session_score_id = session.score_id.take();
 
+    // The session's note verdicts (#337 S4) — drained like the phrases so
+    // the recap can rank the worst measures honestly.
+    let note_verdicts: Vec<brain::follower::NoteVerdict> =
+        std::mem::take(&mut *state.verdict_buffer.lock_or_recover());
+
     match session.recorder.complete() {
         Ok(completed) => {
-            let recap = build_recap(&completed, &*generator, taste_profile, idiom_notes).await?;
+            let recap = build_recap(
+                &completed,
+                &*generator,
+                taste_profile,
+                idiom_notes,
+                note_verdicts,
+            )
+            .await?;
             // Persist the completed session so practice history, the stats
             // surface, and (opt-in) cloud sync all have something to read.
             // The store can degrade to in-memory at startup (see `open_stores`),
@@ -1653,6 +1700,13 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                     // after `save` succeeds — and never fail the recap over them.
                     if let Err(e) = store.save_phrases(completed.id, &completed.all_phrases()) {
                         tracing::warn!(error = %e, "could not persist the session's phrases");
+                    }
+                    // Score practice leaves exercise evidence too (#337 S4):
+                    // repertoire work shows up in insights and, later, the
+                    // teacher surfaces — same best-effort posture as every
+                    // other log write.
+                    if let Some(summary) = &recap.score_summary {
+                        log_score_practice_best_effort(&store, summary);
                     }
                     // Session-level debug columns (#201), best-effort like the rest.
                     if let Err(e) = store.record_session_meta(
@@ -1684,9 +1738,10 @@ async fn build_recap(
     generator: &dyn RecapGenerator,
     taste_profile: Option<TasteProfile>,
     idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
+    note_verdicts: Vec<brain::follower::NoteVerdict>,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap_with_context(generator, taste_profile, idiom_notes)
+        .generate_recap_with_context(generator, taste_profile, idiom_notes, note_verdicts)
         .await
         .map_err(CommandError::from)
 }
@@ -1729,6 +1784,7 @@ fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
     };
 
     SessionRecap {
+        score_summary: None,
         overall_assessment,
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),
@@ -1860,7 +1916,22 @@ pub async fn start_practice_session<R: Runtime>(
     // the session, so a missing/bad score degrades to "no cursor" rather
     // than failing the start. `None` when no score, or when the lookup or
     // MusicXML parse failed — `build_follower` logs the reason.
-    let follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    let mut follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    // Verdict tolerances are profile-driven (#337 S2, founder decision
+    // 2026-07-10): the instrument's vibrato tolerance IS its in-tune slack —
+    // voice gets more room than piano. Profiles without one keep the
+    // follower's built-in default.
+    if let (Some(f), Some(inst)) = (
+        follower.as_mut(),
+        state.instruments.iter().find(|i| i.name == instrument),
+    ) {
+        f.set_verdict_tolerances(brain::follower::VerdictTolerances {
+            // The 20-cent floor keeps tight profiles (piano: 10¢) from
+            // grading live mic detection stricter than the detector's own
+            // jitter — a deliberate widening, not profile drift.
+            hit_cents: inst.vibrato_tolerance_cents.max(20.0),
+        });
+    }
     // Cursor diagnostics (#277: "no cursor" reports were undebuggable): log
     // plainly whether this session has a follower at all.
     match (&score_id, follower.is_some()) {
@@ -1896,6 +1967,7 @@ pub async fn start_practice_session<R: Runtime>(
                 let app_for_emit = app.clone();
                 let app_for_phrase = app.clone();
                 let app_for_position = app.clone();
+                let app_for_verdict = app.clone();
                 // Fresh idiom buffer for this session — discard any leftovers
                 // from a prior session, then hand the pipeline its own handle
                 // so it can fill it (offline, off the realtime callback).
@@ -1904,7 +1976,9 @@ pub async fn start_practice_session<R: Runtime>(
                 // Fresh phrase buffer too — the worker fills it as phrases close
                 // so end_practice_session can record them into the recap (#185).
                 state.phrase_buffer.lock_or_recover().clear();
+                state.verdict_buffer.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
+                let verdict_buffer = state.verdict_buffer.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -1958,6 +2032,12 @@ pub async fn start_practice_session<R: Runtime>(
                     },
                     move |position| {
                         emit_score_position_updated(&app_for_position, position);
+                    },
+                    move |verdict| {
+                        // Buffer a copy for the recap's score summary
+                        // (#337 S4), then emit for the live strip.
+                        verdict_buffer.lock_or_recover().push(verdict.clone());
+                        let _ = app_for_verdict.emit("note-verdict", verdict);
                     },
                 ) {
                     Ok(pipeline) => {
@@ -2252,6 +2332,10 @@ pub struct ExploreDto {
     pub chips: Vec<ChipSpec>,
     /// Roots as pitch classes in PLAY order — the RV colored cells (#278).
     pub root_pitch_classes: Vec<u8>,
+    /// Display names for those roots, spelled per the exploration's key
+    /// signature (#335): flat signatures name flats so the cells can never
+    /// contradict the staff. Same order/length as `root_pitch_classes`.
+    pub root_names: Vec<String>,
     /// The dot-staff view (#292): all theory (steps, spelling, accidentals)
     /// computed here; the frontend renders geometry only.
     pub staff: brain::score::cellstaff::CellStaffView,
@@ -2282,6 +2366,11 @@ fn explore_dto(
         music_xml,
         chips,
         root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+        root_names: seq
+            .root_order
+            .iter()
+            .map(|&r| brain::coach::tonic_display_name(r % 12, key.fifths).to_owned())
+            .collect(),
         staff: brain::score::cellstaff::cell_staff_view(seq, key),
         can_undo: !explore.history.is_empty(),
     }
@@ -2297,6 +2386,28 @@ struct ExerciseOutcome<'a> {
     difficulty: u8,
     tonic: u8,
     accuracy: Option<f64>,
+}
+
+/// Append a score-practice session to the exercise log (#337 S4) —
+/// best-effort like every log write. The spec_json is a score reference,
+/// not a VariationSpec; `brain::insights::shape_of` knows the shape.
+fn log_score_practice_best_effort(
+    store: &SessionStore,
+    summary: &brain::coaching::ScorePracticeSummary,
+) {
+    let spec_json = serde_json::json!({ "score_title": summary.score_title }).to_string();
+    let entry = brain::store::ExerciseLogEntry {
+        source: "score_practice".to_owned(),
+        label: summary.score_title.clone(),
+        spec_json,
+        seed: 0,
+        difficulty: 0,
+        tonic: 0,
+        accuracy: Some(f64::from(summary.accuracy_pct) / 100.0),
+    };
+    if let Err(e) = store.log_exercise(&entry) {
+        tracing::warn!(error = %e, "could not log score practice to the exercise log");
+    }
 }
 
 /// Append to the exercise log — best-effort, NEVER blocks the practice loop.
@@ -2560,6 +2671,109 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     Ok(dto)
 }
 
+/// #337 S5 — the RV bridge: lift a MEASURE of a stored score as a cell and
+/// row it through 12 keys via the same explore engine as a lifted lick.
+/// Refuses calmly on empty/rest-only measures or ones past the lift cap.
+pub fn explore_measure_impl(
+    state: &AppState,
+    score_id: &str,
+    measure_number: usize,
+    seed: u64,
+) -> Result<ExploreDto, String> {
+    let id: ScoreId = score_id
+        .parse()
+        .map_err(|_| "that score isn't in the library anymore".to_owned())?;
+    let (music_xml, part_index) = {
+        let store = state.score_store.lock_or_recover();
+        let entry = store
+            .get(id)
+            .map_err(|_| "that score isn't in the library anymore".to_owned())?;
+        (entry.music_xml, entry.part_index)
+    };
+    let model = brain::score::musicxml::parse_musicxml_str_part(&music_xml, part_index)
+        .map_err(|e| e.to_string())?;
+    let measure = model
+        .measures
+        .iter()
+        .find(|m| m.number == measure_number)
+        .ok_or_else(|| format!("measure {measure_number} isn't in this piece"))?;
+    let midis: Vec<u8> = measure
+        .notes
+        .iter()
+        .filter(|n| !n.is_rest)
+        .map(|n| n.midi_number)
+        .collect();
+    if midis.is_empty() {
+        return Err(format!(
+            "measure {measure_number} is all rests — nothing to row"
+        ));
+    }
+    if midis.len() > brain::coach::LIFT_MAX_NOTES {
+        return Err(format!(
+            "measure {measure_number} is too busy to row ({} notes; {} is the ceiling)",
+            midis.len(),
+            brain::coach::LIFT_MAX_NOTES
+        ));
+    }
+    let first = midis[0];
+    // A cell is semitone offsets from its first note — same wire shape as a
+    // lifted lick. Wide leaps octave-FOLD into range (matching
+    // lift_cell_from_pitch_track's documented semantics): the pitch class is
+    // the music; a clamp would quietly reshape it (S5 review finding 4).
+    let cell: Vec<i8> = midis
+        .iter()
+        .map(|&m| {
+            let mut off = i16::from(m) - i16::from(first);
+            while off > 36 {
+                off -= 12;
+            }
+            while off < -36 {
+                off += 12;
+            }
+            off as i8
+        })
+        .collect();
+    let learner = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_cell(cell, first % 12, &learner, seed);
+    let dto = explore_dto(&explore, &seq, &learner);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "measure_bridge",
+                label: &seq.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+/// #337 S5: row one measure of a stored score through 12 keys.
+#[tauri::command]
+pub fn explore_measure(
+    state: State<'_, AppState>,
+    score_id: String,
+    measure_number: usize,
+) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42);
+    explore_measure_impl(&state, &score_id, measure_number, seed)
+}
+
 #[tauri::command]
 pub fn explore_last_phrase(state: State<'_, AppState>) -> Result<ExploreDto, String> {
     let seed = std::time::SystemTime::now()
@@ -2662,6 +2876,11 @@ pub struct DrillDto {
     /// The drill's roots as pitch classes (0–11), in PLAY order — RV's shuffled
     /// key sequence, rendered by the UI as the brand's colored cells (#278).
     pub root_pitch_classes: Vec<u8>,
+    /// Display names for those roots, SPELLED PER THE DRILL'S KEY SIGNATURE
+    /// (#335): a flat signature names flats (Db, not C#) so the cells can
+    /// never contradict the engraved notation. Same order/length as
+    /// `root_pitch_classes`.
+    pub root_names: Vec<String>,
 }
 
 /// The grade of a just-submitted drill, trimmed for the UI.
@@ -2697,11 +2916,9 @@ pub struct LessonStepDto {
 }
 
 fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
-    let model = sequence_to_score_model(
-        &drill.sequence,
-        &drill.sequence.label,
-        brain::coach::key_signature_for(drill.tonic, &drill.mode),
-    );
+    let key = brain::coach::key_signature_for(drill.tonic, &drill.mode);
+    let fifths = key.fifths;
+    let model = sequence_to_score_model(&drill.sequence, &drill.sequence.label, key);
     DrillDto {
         index: drill.index,
         drill_count,
@@ -2718,6 +2935,12 @@ fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
         music_xml: brain::score::emit::score_model_to_musicxml(&model),
         target_len: drill.sequence.target_midi.len(),
         root_pitch_classes: drill.sequence.root_order.iter().map(|&r| r % 12).collect(),
+        root_names: drill
+            .sequence
+            .root_order
+            .iter()
+            .map(|&r| brain::coach::tonic_display_name(r % 12, fifths).to_owned())
+            .collect(),
     }
 }
 
@@ -3076,8 +3299,39 @@ pub fn import_midi_file(
     state: State<'_, AppState>,
     source_filename: String,
     bytes: Vec<u8>,
+    track_index: Option<usize>,
 ) -> Result<ScoreLibraryEntryDto, String> {
-    state.import_midi(source_filename, bytes).map(Into::into)
+    state
+        .import_midi_track(source_filename, bytes, track_index)
+        .map(Into::into)
+}
+
+/// One playable track of a multi-part MIDI file — the picker's choices.
+/// Mirrors `brain::score::midi::MidiPartInfo`.
+#[derive(Debug, Clone, Serialize)]
+pub struct MidiPartDto {
+    pub track_index: usize,
+    pub name: String,
+    pub note_count: usize,
+}
+
+/// List the playable tracks of a MIDI file so the frontend can ask which
+/// part to practice (#337 S1) — the MIDI twin of `list_score_parts`.
+/// Conductor (meta-only) and percussion tracks are omitted.
+#[tauri::command]
+pub fn list_midi_parts(bytes: Vec<u8>) -> Result<Vec<MidiPartDto>, String> {
+    brain::score::midi::list_midi_parts(&bytes)
+        .map(|parts| {
+            parts
+                .into_iter()
+                .map(|p| MidiPartDto {
+                    track_index: p.track_index,
+                    name: p.name,
+                    note_count: p.note_count,
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Decode raw file bytes as a UTF-8 MusicXML string.
@@ -3468,6 +3722,137 @@ mod tests {
         );
     }
 
+    /// #337 S4 end-to-end (review finding 7): verdicts flow
+    /// verdict_buffer-shape → RecapInput.note_verdicts → score_summary →
+    /// exercise_log. Fails if any join in the chain drops the data.
+    #[tokio::test]
+    async fn score_session_verdicts_reach_the_recap_and_the_log() {
+        use brain::follower::{NoteVerdict, Verdict};
+        let s = state();
+        let mut recorder = brain::session::SessionRecorder::new(
+            "trumpet".to_owned(),
+            brain::session::PracticeMode::default(),
+        );
+        recorder.set_score_title(Some("Haydn".to_owned()));
+        // One recorded phrase so the session isn't empty.
+        recorder
+            .record_phrase(sample_phrase())
+            .expect("phrase records");
+        let completed = recorder.complete().expect("session completes");
+        let verdicts = vec![
+            NoteVerdict {
+                measure_number: 1,
+                beat: 0.0,
+                verdict: Verdict::Hit,
+            },
+            NoteVerdict {
+                measure_number: 3,
+                beat: 1.0,
+                verdict: Verdict::Missed,
+            },
+        ];
+        let generator = MockRecapGenerator;
+        let recap = build_recap(&completed, &generator, None, Vec::new(), verdicts)
+            .await
+            .expect("recap builds");
+        let summary = recap
+            .score_summary
+            .as_ref()
+            .expect("verdicts + a score title yield a summary");
+        assert_eq!(summary.judged, 2);
+        assert_eq!(summary.worst_measures[0].measure_number, 3);
+
+        // And the summary leaves exercise evidence.
+        {
+            let store = s.session_store.lock().unwrap();
+            log_score_practice_best_effort(&store, summary);
+        }
+        let log = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert_eq!(log.last().unwrap().source, "score_practice");
+        assert!((log.last().unwrap().accuracy.unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    /// #337 S5 AC6: the RV bridge — a stored score's measure becomes a
+    /// 12-key exploration through the real engine: the cell is the
+    /// measure's notes as offsets, it rows through multiple roots, and the
+    /// staff renders. Unknown and out-of-library cases refuse calmly.
+    #[test]
+    fn explore_measure_rows_a_stored_measure_through_keys() {
+        let s = state();
+        // A 4-note MIDI import gives us a library score with known content.
+        let entry = s
+            .import_midi("bridge.mid".to_string(), build_test_midi(Some("Bridge")))
+            .expect("import fixture");
+        let dto = explore_measure_impl(&s, &entry.id.to_string(), 1, 7).expect("measure 1 rows");
+        assert!(
+            !dto.staff.notes.is_empty(),
+            "the exploration renders on the staff"
+        );
+        assert!(
+            dto.root_pitch_classes.len() >= 3,
+            "rowed through multiple keys: {:?}",
+            dto.root_pitch_classes
+        );
+        // The engine's label names the player's own material.
+        assert!(
+            dto.label.contains("cell"),
+            "a measure rows as a cell: {}",
+            dto.label
+        );
+        // And it left exercise evidence with the bridge's own source tag.
+        let log = s
+            .session_store
+            .lock()
+            .unwrap()
+            .list_exercise_log()
+            .expect("log reads");
+        assert_eq!(log.last().unwrap().source, "measure_bridge");
+
+        // Calm refusals: a measure the piece doesn't have, and a bad id.
+        let err = explore_measure_impl(&s, &entry.id.to_string(), 99, 7).unwrap_err();
+        assert!(err.contains("isn't in this piece"), "got: {err}");
+        let err = explore_measure_impl(&s, "not-a-real-id", 1, 7).unwrap_err();
+        assert!(err.contains("isn't in the library"), "got: {err}");
+    }
+
+    /// Review MUST-FIX 4 (#337 S1): a recording whose transcription hears
+    /// zero notes gets a RECORDING-flavored refusal — never the MIDI
+    /// parser's "drum, click, or marker track" copy, which is a lie for a
+    /// .wav. Fails if the audio seam stops mapping the parser's message.
+    #[test]
+    fn a_silent_recording_refuses_in_recording_terms() {
+        let s = state();
+        // A valid but empty MIDI transcription result (header + bare track).
+        let mut midi = Vec::new();
+        midi.extend_from_slice(b"MThd");
+        midi.extend_from_slice(&6u32.to_be_bytes());
+        midi.extend_from_slice(&0u16.to_be_bytes());
+        midi.extend_from_slice(&1u16.to_be_bytes());
+        midi.extend_from_slice(&480u16.to_be_bytes());
+        midi.extend_from_slice(b"MTrk");
+        midi.extend_from_slice(&4u32.to_be_bytes());
+        midi.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        let result = s.import_audio_with("silence.wav".to_string(), move || {
+            Ok((
+                midi,
+                transcribe::TranscriptionQuality {
+                    note_count: 0,
+                    mean_confidence: 0.0,
+                    polyphony: 0.0,
+                },
+            ))
+        });
+        let err = result.expect_err("empty transcription must refuse");
+        assert!(
+            err.contains("couldn't hear any notes in that recording"),
+            "recording-flavored copy expected, got: {err}"
+        );
+        assert!(
+            !err.contains("MIDI") && !err.contains("marker track"),
+            "MIDI-parser copy must not leak to a .wav user: {err}"
+        );
+    }
+
     /// #253 S2 AC5: the mock coaching service (and the default impl) enrich a
     /// reveal to itself — no network, no change — so tests and the web preview
     /// stay fully offline. Fails if the default `enrich_reveal` ever mutated the
@@ -3535,6 +3920,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         }
     }
 
@@ -4674,6 +5062,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         };
         let phrase_1 = PhraseSummary {
             phrase_index: 1,
@@ -4943,6 +5334,63 @@ mod tests {
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "C Major Scale");
+    }
+
+    /// #337 S1: a multi-track file imports ONE chosen part — the stored
+    /// MusicXML carries only that track's notes, so the score view and
+    /// follower practice the part the player picked, not a band mash-up.
+    #[test]
+    fn import_midi_track_stores_only_the_chosen_part() {
+        // Format-1: track 0 = conductor (tempo only), track 1 = melody
+        // (4 notes), track 2 = countermelody (2 notes).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&480u16.to_be_bytes());
+        let push = |events: Vec<u8>, buf: &mut Vec<u8>| {
+            buf.extend_from_slice(b"MTrk");
+            buf.extend_from_slice(&(events.len() as u32).to_be_bytes());
+            buf.extend_from_slice(&events);
+        };
+        let mut t0 = Vec::new();
+        write_meta_event(&mut t0, 0, 0x51, &[0x07, 0xA1, 0x20]);
+        write_meta_event(&mut t0, 0, 0x2F, &[]);
+        push(t0, &mut bytes);
+        let mut t1 = Vec::new();
+        write_meta_event(&mut t1, 0, 0x03, b"Melody");
+        for pitch in [60_u8, 62, 64, 65] {
+            write_midi_event(&mut t1, 0, 0x90, pitch, 80);
+            write_midi_event(&mut t1, 480, 0x80, pitch, 0);
+        }
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        push(t1, &mut bytes);
+        let mut t2 = Vec::new();
+        write_meta_event(&mut t2, 0, 0x03, b"Counter");
+        for pitch in [72_u8, 74] {
+            write_midi_event(&mut t2, 0, 0x91, pitch, 80);
+            write_midi_event(&mut t2, 480, 0x81, pitch, 0);
+        }
+        write_meta_event(&mut t2, 0, 0x2F, &[]);
+        push(t2, &mut bytes);
+
+        let s = state();
+        let entry = s
+            .import_midi_track("band.mid".to_string(), bytes, Some(2))
+            .expect("import the Counter track");
+        let reparsed = brain::score::musicxml::parse_musicxml_str_part(&entry.music_xml, 0)
+            .expect("stored MusicXML re-parses");
+        let midis: Vec<u8> = reparsed
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter().filter(|n| !n.is_rest).map(|n| n.midi_number))
+            .collect();
+        assert_eq!(
+            midis,
+            vec![72, 74],
+            "only the chosen track's notes: {midis:?}"
+        );
     }
 
     #[test]
@@ -5693,6 +6141,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };
