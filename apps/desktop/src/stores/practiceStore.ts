@@ -68,6 +68,19 @@ export interface QueuedReveal {
   phraseIndex: number;
 }
 
+/** A live note verdict class from the backend (#337 S2). */
+export type NoteVerdictKind = "hit" | "near" | "missed";
+
+const EMPTY_VERDICTS = {
+  hit: 0,
+  near: 0,
+  missed: 0,
+  recent: [] as NoteVerdictKind[],
+};
+
+/** Most recent verdicts kept for the strip — enough to read a trend. */
+const VERDICT_RECENT_CAP = 12;
+
 /**
  * One playable track of a multi-part MIDI file (field names mirror the Rust
  * `MidiPartDto`). `track_index` is the file's original track number — pass it
@@ -173,6 +186,19 @@ export interface PracticeState {
   activeScoreXml: string | null;
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
+  /**
+   * Live note-verdict tally for the current score session (#337 S2):
+   * running counts plus the most recent verdicts (newest last, capped) for
+   * the strip. Reset when a session starts or the score is cleared.
+   */
+  noteVerdicts: {
+    hit: number;
+    near: number;
+    missed: number;
+    recent: NoteVerdictKind[];
+  };
+  /** Fold one backend `note-verdict` event into the tally. */
+  recordNoteVerdict: (verdict: NoteVerdictKind) => void;
 
   // Follow-me accompaniment ("Play with me") ------------------------------
   /**
@@ -472,6 +498,17 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   activeScoreXml: null,
   scoreLibrary: [],
   cursorPosition: null,
+  noteVerdicts: { ...EMPTY_VERDICTS, recent: [] },
+  recordNoteVerdict: (verdict: NoteVerdictKind) =>
+    set((state) => ({
+      noteVerdicts: {
+        ...state.noteVerdicts,
+        [verdict]: state.noteVerdicts[verdict] + 1,
+        recent: [...state.noteVerdicts.recent, verdict].slice(
+          -VERDICT_RECENT_CAP,
+        ),
+      },
+    })),
   accompanimentPlaying: false,
   perception: null,
   keyPinned: false,
@@ -654,7 +691,13 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         `cannot start session from status=${status} — call endSession first`,
       );
     }
-    set({ status: "starting", recap: null, recapError: null });
+    set({
+      status: "starting",
+      recap: null,
+      recapError: null,
+      // Fresh verdict tally per session (#337 S2).
+      noteVerdicts: { hit: 0, near: 0, missed: 0, recent: [] },
+    });
     try {
       const sessionId = await invoke<string>("start_practice_session", {
         instrument,

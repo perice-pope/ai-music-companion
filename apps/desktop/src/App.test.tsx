@@ -37,7 +37,7 @@ describe("App", () => {
   it("sets up the audio-event and phrase-detected listeners on mount", async () => {
     render(<App />);
     await vi.waitFor(() => {
-      expect(mockListen).toHaveBeenCalledTimes(5);
+      expect(mockListen).toHaveBeenCalledTimes(6);
     });
     expect(mockListen).toHaveBeenCalledWith(
       "audio-event",
@@ -49,6 +49,10 @@ describe("App", () => {
     );
     expect(mockListen).toHaveBeenCalledWith(
       "score-position-updated",
+      expect.any(Function),
+    );
+    expect(mockListen).toHaveBeenCalledWith(
+      "note-verdict",
       expect.any(Function),
     );
     expect(mockListen).toHaveBeenCalledWith(

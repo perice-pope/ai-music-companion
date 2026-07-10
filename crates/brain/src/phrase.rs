@@ -247,6 +247,15 @@ impl PhraseAggregator {
         self.current_phrase_start_position = None;
     }
 
+    /// Drain the note verdicts the follower produced since the last call
+    /// (#337 S2) — empty in free play or when the follower judged nothing.
+    pub fn take_note_verdicts(&mut self) -> Vec<crate::follower::NoteVerdict> {
+        self.score_follower
+            .as_mut()
+            .map(|f| f.take_verdicts())
+            .unwrap_or_default()
+    }
+
     /// The follower's current position in the score, if a score is loaded.
     ///
     /// Reflects the most recent alignment from [`push`](Self::push) — i.e.

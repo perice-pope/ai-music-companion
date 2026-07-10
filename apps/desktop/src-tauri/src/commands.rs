@@ -1885,7 +1885,19 @@ pub async fn start_practice_session<R: Runtime>(
     // the session, so a missing/bad score degrades to "no cursor" rather
     // than failing the start. `None` when no score, or when the lookup or
     // MusicXML parse failed — `build_follower` logs the reason.
-    let follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    let mut follower = score_id.as_deref().and_then(|id| state.build_follower(id));
+    // Verdict tolerances are profile-driven (#337 S2, founder decision
+    // 2026-07-10): the instrument's vibrato tolerance IS its in-tune slack —
+    // voice gets more room than piano. Profiles without one keep the
+    // follower's built-in default.
+    if let (Some(f), Some(inst)) = (
+        follower.as_mut(),
+        state.instruments.iter().find(|i| i.name == instrument),
+    ) {
+        f.set_verdict_tolerances(brain::follower::VerdictTolerances {
+            hit_cents: inst.vibrato_tolerance_cents.max(20.0),
+        });
+    }
     // Cursor diagnostics (#277: "no cursor" reports were undebuggable): log
     // plainly whether this session has a follower at all.
     match (&score_id, follower.is_some()) {
@@ -1921,6 +1933,7 @@ pub async fn start_practice_session<R: Runtime>(
                 let app_for_emit = app.clone();
                 let app_for_phrase = app.clone();
                 let app_for_position = app.clone();
+                let app_for_verdict = app.clone();
                 // Fresh idiom buffer for this session — discard any leftovers
                 // from a prior session, then hand the pipeline its own handle
                 // so it can fill it (offline, off the realtime callback).
@@ -1983,6 +1996,9 @@ pub async fn start_practice_session<R: Runtime>(
                     },
                     move |position| {
                         emit_score_position_updated(&app_for_position, position);
+                    },
+                    move |verdict| {
+                        let _ = app_for_verdict.emit("note-verdict", verdict);
                     },
                 ) {
                     Ok(pipeline) => {
