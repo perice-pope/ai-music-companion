@@ -1,3 +1,9 @@
+## [2.16.2](https://github.com/perice-pope/ai-music-companion/compare/v2.16.1...v2.16.2) (2026-07-10)
+
+### Bug Fixes
+
+* **score:** the follow cursor actually paints — positioned stacking-context container, shown only when the follower speaks ([#279](https://github.com/perice-pope/ai-music-companion/issues/279)) ([#333](https://github.com/perice-pope/ai-music-companion/issues/333)) ([80d1479](https://github.com/perice-pope/ai-music-companion/commit/80d1479ee759dcce2252ac96c383766b98e8ff1b))
+
 ## [2.16.1](https://github.com/perice-pope/ai-music-companion/compare/v2.16.0...v2.16.1) (2026-07-08)
 
 ### Bug Fixes
