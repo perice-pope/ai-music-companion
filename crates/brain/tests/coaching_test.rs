@@ -69,6 +69,9 @@ fn make_phrase(
         tone: None,
         key: None,
         onsets_secs: Vec::new(),
+        score_span: None,
+        verdicts: None,
+        score_card: None,
     }
 }
 

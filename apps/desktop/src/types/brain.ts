@@ -306,6 +306,15 @@ export interface PhraseSummary {
   key?: KeyEstimate | null;
   /** Onset timestamps (seconds) retained for session-level groove analysis. */
   onsets_secs?: number[];
+  /** Measures this phrase spanned (first, last) — score sessions only (#337 S3). */
+  score_span?: [number, number] | null;
+  /** Verdict tally for the notes judged during this phrase (#337 S3). */
+  verdicts?: { hit: number; near: number; missed: number } | null;
+  /**
+   * Ready-to-show card line, built in Rust ("Measures 5-8 — 6 clean, 1
+   * rough, 2 missed"). Absent in free play or when nothing was judged.
+   */
+  score_card?: string | null;
 }
 
 /**

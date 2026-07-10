@@ -3585,7 +3585,7 @@ mod tests {
                 },
             ))
         });
-        let err = result.err().expect("empty transcription must refuse");
+        let err = result.expect_err("empty transcription must refuse");
         assert!(
             err.contains("couldn't hear any notes in that recording"),
             "recording-flavored copy expected, got: {err}"
@@ -3663,6 +3663,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         }
     }
 
@@ -4802,6 +4805,9 @@ mod tests {
             tone: None,
             key: None,
             onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
         };
         let phrase_1 = PhraseSummary {
             phrase_index: 1,

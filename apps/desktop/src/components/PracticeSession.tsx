@@ -15,6 +15,7 @@ import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
 import ScoreView from "./ScoreView";
 import VerdictStrip from "./VerdictStrip";
+import ScorePhraseCard from "./ScorePhraseCard";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
@@ -242,6 +243,8 @@ export default function PracticeSession() {
             {/* Live hit/near/missed tally (#337 S2) — invisible until the
               follower judges its first note. */}
             <VerdictStrip />
+            {/* Latest measure-anchored phrase card (#337 S3, closes #210). */}
+            <ScorePhraseCard />
             <div className="min-h-0 flex-1">
               <ScoreView
                 musicXml={activeScoreXml}

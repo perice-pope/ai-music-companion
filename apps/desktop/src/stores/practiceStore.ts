@@ -504,9 +504,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       noteVerdicts: {
         ...state.noteVerdicts,
         [verdict]: state.noteVerdicts[verdict] + 1,
-        recent: [...state.noteVerdicts.recent, verdict].slice(
-          -VERDICT_RECENT_CAP,
-        ),
+        recent: [...state.noteVerdicts.recent, verdict],
       },
     })),
   accompanimentPlaying: false,

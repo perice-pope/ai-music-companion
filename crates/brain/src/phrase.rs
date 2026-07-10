@@ -102,6 +102,15 @@ pub struct DynamicsStats {
     pub dynamic_range: f64,
 }
 
+/// Per-phrase tally of the follower's note verdicts (#337 S3): how the
+/// notes judged DURING this phrase went. `Default` = all zeros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PhraseVerdicts {
+    pub hit: usize,
+    pub near: usize,
+    pub missed: usize,
+}
+
 /// Summary of a completed musical phrase.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhraseSummary {
@@ -155,6 +164,22 @@ pub struct PhraseSummary {
     /// persisted phrases deserialize cleanly.
     #[serde(default)]
     pub onsets_secs: Vec<f64>,
+    /// Measures this phrase spanned — (first, last) from the follower's
+    /// positions bracketing it (#337 S3). `None` in free play or when the
+    /// follower never aligned during the phrase. Additive + `serde(default)`.
+    #[serde(default)]
+    pub score_span: Option<(usize, usize)>,
+    /// Verdict tally for the notes judged during this phrase (#337 S3).
+    /// `None` in free play. Additive + `serde(default)`.
+    #[serde(default)]
+    pub verdicts: Option<PhraseVerdicts>,
+    /// Ready-to-show card line for score sessions (#337 S3, closes #210):
+    /// "Measures 5–8 — 6 clean, 1 rough, 2 missed". Built HERE so the
+    /// frontend renders text, never derives it (house rule: no business
+    /// logic in the frontend). `None` when there's nothing honest to say
+    /// (free play, or no notes were judged). Additive + `serde(default)`.
+    #[serde(default)]
+    pub score_card: Option<String>,
 }
 
 /// What a phrase-closing boundary means for the note pending in the key
@@ -190,6 +215,14 @@ pub struct PhraseAggregator {
     score_follower: Option<ScoreFollower>,
     /// Last known position in the score (for detecting measure changes).
     last_score_measure: Option<usize>,
+    /// Verdicts drained from the follower but not yet handed to the
+    /// pipeline via [`Self::take_note_verdicts`] (#337 S2/S3).
+    verdicts_out: Vec<crate::follower::NoteVerdict>,
+    /// Verdict tally for the phrase currently being assembled (#337 S3).
+    phrase_verdicts: PhraseVerdicts,
+    /// Last measure the follower reported while THIS phrase was open — the
+    /// end of its score span.
+    phrase_end_measure: Option<usize>,
     /// Score position captured at the first aligned event of the current
     /// phrase. Carried into the emitted [`PhraseSummary::score_position`] so
     /// the LLM and OSMD cursor can anchor feedback to where the phrase began.
@@ -223,6 +256,9 @@ impl PhraseAggregator {
             new_phrases_start: 0,
             score_follower: None,
             last_score_measure: None,
+            verdicts_out: Vec::new(),
+            phrase_verdicts: PhraseVerdicts::default(),
+            phrase_end_measure: None,
             current_phrase_start_position: None,
             key_tracker: theory::KeyTracker::new(),
             note_gate: NoteGate::default(),
@@ -250,10 +286,7 @@ impl PhraseAggregator {
     /// Drain the note verdicts the follower produced since the last call
     /// (#337 S2) — empty in free play or when the follower judged nothing.
     pub fn take_note_verdicts(&mut self) -> Vec<crate::follower::NoteVerdict> {
-        self.score_follower
-            .as_mut()
-            .map(|f| f.take_verdicts())
-            .unwrap_or_default()
+        std::mem::take(&mut self.verdicts_out)
     }
 
     /// The follower's current position in the score, if a score is loaded.
@@ -289,6 +322,18 @@ impl PhraseAggregator {
             // rolling profile the cap protects.
             let aligned_position = if let Some(follower) = &mut self.score_follower {
                 let pos = follower.align(event);
+                // Route fresh verdicts to the current phrase's tally AND the
+                // pipeline's out-buffer (#337 S3) — the phrase card and the
+                // live strip must count the same judgments.
+                for verdict in follower.take_verdicts() {
+                    match verdict.verdict {
+                        crate::follower::Verdict::Hit => self.phrase_verdicts.hit += 1,
+                        crate::follower::Verdict::Near => self.phrase_verdicts.near += 1,
+                        crate::follower::Verdict::Missed => self.phrase_verdicts.missed += 1,
+                    }
+                    self.verdicts_out.push(verdict);
+                }
+                self.phrase_end_measure = Some(pos.measure_number);
                 if let Some(last_measure) = self.last_score_measure {
                     if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
                         self.close_current_phrase(NoteGateAtClose::Keep);
@@ -411,6 +456,24 @@ impl PhraseAggregator {
         }
         let key = self.key_tracker.current();
 
+        // Score anchoring (#337 S3): the span runs from the position the
+        // phrase began on to the last measure the follower reported while it
+        // was open. The card only speaks when at least one note was judged —
+        // a phrase the follower never scored says nothing (silence > lies).
+        let start_position = self.current_phrase_start_position.take();
+        let verdicts = std::mem::take(&mut self.phrase_verdicts);
+        let judged = verdicts.hit + verdicts.near + verdicts.missed;
+        let score_span = start_position.as_ref().map(|p| {
+            let start = p.measure_number;
+            let end = self.phrase_end_measure.unwrap_or(start).max(start);
+            (start, end)
+        });
+        self.phrase_end_measure = None;
+        let score_card = match (score_span, judged) {
+            (Some(span), j) if j > 0 => Some(score_phrase_card(span, verdicts)),
+            _ => None,
+        };
+
         let summary = PhraseSummary {
             phrase_index: self.next_phrase_index,
             start_time,
@@ -420,11 +483,14 @@ impl PhraseAggregator {
             pitch_stats,
             dynamics,
             stability,
-            score_position: self.current_phrase_start_position.take(),
+            score_position: start_position,
             // Tone is attached downstream (the aggregator has no raw audio).
             tone: None,
             key,
             onsets_secs,
+            score_span,
+            verdicts: score_span.map(|_| verdicts),
+            score_card,
         };
 
         self.phrases.push(summary);
@@ -432,6 +498,27 @@ impl PhraseAggregator {
         self.current_phrase_events.clear();
         self.phrase_start_time = None;
     }
+}
+
+/// The score-session phrase card line (#337 S3, closes #210): plain words,
+/// measure-anchored, counting only what the follower actually judged.
+fn score_phrase_card(span: (usize, usize), v: PhraseVerdicts) -> String {
+    let measures = if span.0 == span.1 {
+        format!("Measure {}", span.0)
+    } else {
+        format!("Measures {}-{}", span.0, span.1)
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if v.hit > 0 {
+        parts.push(format!("{} clean", v.hit));
+    }
+    if v.near > 0 {
+        parts.push(format!("{} rough", v.near));
+    }
+    if v.missed > 0 {
+        parts.push(format!("{} missed", v.missed));
+    }
+    format!("{measures} — {}", parts.join(", "))
 }
 
 /// Compute pitch statistics from a slice of audio events.
@@ -1004,6 +1091,83 @@ mod tests {
     }
 
     // --- current_score_position tests ---
+
+    /// #337 S3 (closes #210): a score session's phrase carries its measure
+    /// span, verdict tally, and a ready-to-show card naming the measures.
+    /// Fails if the span/tally stop riding the phrase or the card copy
+    /// loses its measure anchor.
+    #[test]
+    fn score_session_phrases_carry_span_verdicts_and_card() {
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let follower = ScoreFollower::from_musicxml_str(xml, 0).expect("fixture parses");
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        agg.set_score_follower(follower);
+
+        // Play the opening notes in tune, then a long silence closes the
+        // phrase (drain path).
+        for (i, hz) in [261.63, 293.66, 329.63, 349.23].iter().enumerate() {
+            for f in 0..4 {
+                agg.push(&voiced_event(*hz, 0.9, i as f64 * 0.4 + f64::from(f) * 0.1));
+            }
+        }
+        agg.flush();
+
+        let phrases = agg.phrases();
+        assert!(!phrases.is_empty(), "the playing formed a phrase");
+        let p = &phrases[0];
+        let span = p.score_span.expect("score session phrases carry a span");
+        assert!(span.0 >= 1 && span.1 >= span.0, "sane span: {span:?}");
+        let v = p.verdicts.expect("verdict tally rides the phrase");
+        assert!(
+            v.hit + v.near + v.missed > 0,
+            "in-tune playing judged something: {v:?}"
+        );
+        let card = p.score_card.as_ref().expect("a judged phrase has a card");
+        assert!(
+            card.starts_with("Measure"),
+            "card anchors to measures: {card}"
+        );
+        assert!(
+            card.contains("clean") || card.contains("rough") || card.contains("missed"),
+            "card counts verdicts in plain words: {card}"
+        );
+    }
+
+    /// #337 S3: free play is untouched — no span, no tally, no card.
+    #[test]
+    fn free_play_phrases_carry_no_score_card() {
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        for f in 0..8 {
+            agg.push(&voiced_event(440.0, 0.9, f64::from(f) * 0.1));
+        }
+        agg.flush();
+        let p = &agg.phrases()[0];
+        assert!(p.score_span.is_none() && p.verdicts.is_none() && p.score_card.is_none());
+    }
+
+    /// #337 S3: the card copy itself — single-measure and range forms, only
+    /// non-zero counts named. Fails if the wording drifts vague.
+    #[test]
+    fn card_copy_names_measures_and_counts() {
+        let card = score_phrase_card(
+            (5, 8),
+            PhraseVerdicts {
+                hit: 6,
+                near: 1,
+                missed: 2,
+            },
+        );
+        assert_eq!(card, "Measures 5-8 — 6 clean, 1 rough, 2 missed");
+        let solo = score_phrase_card(
+            (3, 3),
+            PhraseVerdicts {
+                hit: 4,
+                near: 0,
+                missed: 0,
+            },
+        );
+        assert_eq!(solo, "Measure 3 — 4 clean");
+    }
 
     #[test]
     fn current_score_position_is_none_without_follower() {
