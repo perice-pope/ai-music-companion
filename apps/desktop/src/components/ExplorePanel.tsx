@@ -58,7 +58,9 @@ export default function ExplorePanel() {
             className="inline-flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-sm font-bold text-gray-900 shadow"
             style={{ backgroundColor: colorForPitchClass(pc) }}
           >
-            {nameForPitchClass(pc)}
+            {/* Backend-spelled (#335): flat keys say Db, matching the
+              staff's signature — never a contradicting C#. */}
+            {explore.root_names?.[i] ?? nameForPitchClass(pc)}
           </span>
         ))}
       </div>

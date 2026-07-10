@@ -2265,6 +2265,10 @@ pub struct ExploreDto {
     pub chips: Vec<ChipSpec>,
     /// Roots as pitch classes in PLAY order — the RV colored cells (#278).
     pub root_pitch_classes: Vec<u8>,
+    /// Display names for those roots, spelled per the exploration's key
+    /// signature (#335): flat signatures name flats so the cells can never
+    /// contradict the staff. Same order/length as `root_pitch_classes`.
+    pub root_names: Vec<String>,
     /// The dot-staff view (#292): all theory (steps, spelling, accidentals)
     /// computed here; the frontend renders geometry only.
     pub staff: brain::score::cellstaff::CellStaffView,
@@ -2295,6 +2299,11 @@ fn explore_dto(
         music_xml,
         chips,
         root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
+        root_names: seq
+            .root_order
+            .iter()
+            .map(|&r| brain::coach::tonic_display_name(r % 12, key.fifths).to_owned())
+            .collect(),
         staff: brain::score::cellstaff::cell_staff_view(seq, key),
         can_undo: !explore.history.is_empty(),
     }
@@ -2675,6 +2684,11 @@ pub struct DrillDto {
     /// The drill's roots as pitch classes (0–11), in PLAY order — RV's shuffled
     /// key sequence, rendered by the UI as the brand's colored cells (#278).
     pub root_pitch_classes: Vec<u8>,
+    /// Display names for those roots, SPELLED PER THE DRILL'S KEY SIGNATURE
+    /// (#335): a flat signature names flats (Db, not C#) so the cells can
+    /// never contradict the engraved notation. Same order/length as
+    /// `root_pitch_classes`.
+    pub root_names: Vec<String>,
 }
 
 /// The grade of a just-submitted drill, trimmed for the UI.
@@ -2710,11 +2724,9 @@ pub struct LessonStepDto {
 }
 
 fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
-    let model = sequence_to_score_model(
-        &drill.sequence,
-        &drill.sequence.label,
-        brain::coach::key_signature_for(drill.tonic, &drill.mode),
-    );
+    let key = brain::coach::key_signature_for(drill.tonic, &drill.mode);
+    let fifths = key.fifths;
+    let model = sequence_to_score_model(&drill.sequence, &drill.sequence.label, key);
     DrillDto {
         index: drill.index,
         drill_count,
@@ -2731,6 +2743,12 @@ fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
         music_xml: brain::score::emit::score_model_to_musicxml(&model),
         target_len: drill.sequence.target_midi.len(),
         root_pitch_classes: drill.sequence.root_order.iter().map(|&r| r % 12).collect(),
+        root_names: drill
+            .sequence
+            .root_order
+            .iter()
+            .map(|&r| brain::coach::tonic_display_name(r % 12, fifths).to_owned())
+            .collect(),
     }
 }
 

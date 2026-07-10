@@ -102,6 +102,12 @@ export interface DrillDto {
   target_len: number;
   /** Roots as pitch classes (0-11) in play order — RV's shuffled key cells. */
   root_pitch_classes: number[];
+  /**
+   * Display names for those roots, spelled per the key signature (#335):
+   * flat signatures name flats (Db, not C#) so cells never contradict the
+   * engraved notation. Same order/length as `root_pitch_classes`.
+   */
+  root_names: string[];
 }
 
 /** Trimmed drill grade. Mirrors `commands::DrillScoreDto`. */
@@ -216,6 +222,12 @@ export interface ExploreDto {
   music_xml: string;
   chips: ChipSpec[];
   root_pitch_classes: number[];
+  /**
+   * Display names for those roots, spelled per the key signature (#335):
+   * flat signatures name flats (Db, not C#) so cells never contradict the
+   * engraved notation. Same order/length as `root_pitch_classes`.
+   */
+  root_names: string[];
   staff: CellStaffViewDto;
   can_undo: boolean;
 }

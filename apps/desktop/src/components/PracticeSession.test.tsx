@@ -49,6 +49,7 @@ const LESSON_DRILL = {
   music_xml: "<score-partwise/>",
   target_len: 8,
   root_pitch_classes: [0, 7, 2],
+  root_names: ["C", "G", "D"],
 };
 
 describe("PracticeSession", () => {

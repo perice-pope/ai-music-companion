@@ -593,6 +593,25 @@ fn midi_to_hz(midi: u8) -> f64 {
 /// (Dorian −2, Mixolydian −1, Lydian +1, Phrygian −4, minor family −3,
 /// Locrian −5); chord/interval material uses the tonic's plain major or minor.
 /// The result is clamped into the engravable −7..=7.
+/// Display name for a tonic pitch class under a key signature: flat
+/// signatures name flats — the "C# major" lesson engraves as Db (5 flats),
+/// so its header and colored cells must say "Db", never "C#" (#335; the
+/// #277 self-consistency family: surfaces must not visibly contradict each
+/// other).
+pub fn tonic_display_name(pc: u8, fifths: i8) -> &'static str {
+    const SHARP: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    const FLAT: [&str; 12] = [
+        "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+    ];
+    if fifths < 0 {
+        FLAT[usize::from(pc % 12)]
+    } else {
+        SHARP[usize::from(pc % 12)]
+    }
+}
+
 pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
     /// fifths of the MAJOR key for each tonic pitch class, favoring the flat
     /// spelling where conventional (Db over C#, Eb, Ab, Bb; F# kept for pc 6).
@@ -1647,6 +1666,43 @@ mod tests {
     /// #277 must-fix: the key-signature mapping over the REAL drill-label
     /// space. Any wrong LUT entry, mode offset, family flag, or the
     /// mixolydian-before-lydian ordering trap fails here.
+    #[test]
+    /// #335 — the VA's C#-major lesson drew a FLAT signature under a header
+    /// saying "C#". The display name must follow the SIGNATURE's spelling:
+    /// a sharp name may never sit over a flat signature or vice versa, for
+    /// every tonic × mode family the coach actually deals.
+    #[test]
+    fn tonic_names_agree_with_their_key_signatures() {
+        for label in ["major", "minor", "dorian", "mixolydian", "lydian"] {
+            for pc in 0u8..12 {
+                let fifths = key_signature_for(pc, label).fifths;
+                let name = tonic_display_name(pc, fifths);
+                assert!(
+                    !(name.contains('#') && fifths < 0),
+                    "{name} ({label}) over a {fifths}-fifths (flat) signature"
+                );
+                assert!(
+                    !(name.contains('b') && fifths >= 0),
+                    "{name} ({label}) over a {fifths}-fifths (sharp) signature"
+                );
+            }
+        }
+        // The exact #324/#335 report: pc 1 major engraves flat → names "Db".
+        assert_eq!(
+            tonic_display_name(1, key_signature_for(1, "major").fifths),
+            "Db"
+        );
+        // pc 1 dorian wraps to a SHARP signature (+5) → names "C#".
+        assert_eq!(
+            tonic_display_name(1, key_signature_for(1, "dorian").fifths),
+            "C#"
+        );
+        assert_eq!(
+            tonic_display_name(6, key_signature_for(6, "major").fifths),
+            "F#"
+        );
+    }
+
     #[test]
     fn key_signature_for_maps_the_real_label_space() {
         let ks = |t: u8, l: &str| {

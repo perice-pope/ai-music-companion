@@ -28,6 +28,7 @@ function drill(index = 0): DrillDto {
     music_xml: "<score-partwise/>",
     target_len: 8,
     root_pitch_classes: [0, 7, 2],
+    root_names: ["C", "G", "D"],
   };
 }
 
@@ -117,6 +118,24 @@ describe("LessonPanel", () => {
 
   // #254 review M2: while a submit is in flight the button is disabled, so a
   // double-tap can't grade the next drill against an empty take.
+  // #335 — the VA's C#-major lesson drew a flat signature under cells
+  // saying "C#". Cells render the BACKEND's signature-spelled names: a
+  // flat-key drill says Db, never C#. Fails if the UI re-derives names
+  // from pitch classes with the sharp-only table.
+  it("renders backend-spelled root names — Db, not C#, in flat keys", () => {
+    usePracticeStore.setState({
+      lessonDrill: {
+        ...drill(),
+        root_pitch_classes: [1, 8, 3],
+        root_names: ["Db", "Ab", "Eb"],
+      },
+    });
+    render(<LessonPanel />);
+    expect(screen.getByTestId("root-cell-0")).toHaveTextContent("Db");
+    expect(screen.getByTestId("root-cell-1")).toHaveTextContent("Ab");
+    expect(screen.queryByText("C#")).toBeNull();
+  });
+
   it("disables the grade button while submitting", () => {
     usePracticeStore.setState({ lessonDrill: drill(), lessonSubmitting: true });
     render(<LessonPanel />);
