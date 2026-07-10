@@ -9,8 +9,81 @@ use super::{
     midi_to_hz, KeyMode, KeySignature, Measure, ScoreError, ScoreModel, ScoreNote, TimeSignature,
 };
 
-/// Parse raw MIDI bytes into a [`ScoreModel`].
+/// MIDI channel reserved for percussion in General MIDI (0-indexed 9,
+/// "channel 10"). Drum hits carry note numbers that are kit-piece ids, not
+/// pitches — merged into a melody they render as garbage notes, so note
+/// events on this channel are skipped everywhere (#337 S1).
+const PERCUSSION_CHANNEL: u8 = 9;
+
+/// One playable track of a multi-track MIDI file, for the import part picker
+/// (#337 S1) — the MIDI equivalent of MusicXML's `list_score_parts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiPartInfo {
+    /// Index into the file's ORIGINAL track list — pass back to
+    /// [`parse_midi_bytes_track`] to import just this track.
+    pub track_index: usize,
+    /// The track's `TrackName`, or `"Track N"` (1-based) when unnamed.
+    pub name: String,
+    /// Sounding (non-percussion) notes on the track.
+    pub note_count: usize,
+}
+
+/// List the playable tracks of a MIDI file: every track with at least one
+/// non-percussion note. Meta-only conductor tracks and pure drum tracks are
+/// omitted — they aren't practice material on their own.
+pub fn list_midi_parts(bytes: &[u8]) -> Result<Vec<MidiPartInfo>, ScoreError> {
+    let smf = Smf::parse(bytes).map_err(|e| ScoreError::Midi(e.to_string()))?;
+    let mut parts = Vec::new();
+    for (track_index, track) in smf.tracks.iter().enumerate() {
+        let mut name: Option<String> = None;
+        let mut note_count = 0usize;
+        for event in track {
+            match event.kind {
+                TrackEventKind::Meta(midly::MetaMessage::TrackName(name_bytes))
+                    if name.is_none() =>
+                {
+                    if let Ok(n) = std::str::from_utf8(name_bytes) {
+                        let n = n.trim();
+                        if !n.is_empty() {
+                            name = Some(n.to_string());
+                        }
+                    }
+                }
+                TrackEventKind::Midi {
+                    channel,
+                    message: MidiMessage::NoteOn { vel, .. },
+                } if channel.as_int() != PERCUSSION_CHANNEL && vel.as_int() > 0 => {
+                    note_count += 1;
+                }
+                _ => {}
+            }
+        }
+        if note_count > 0 {
+            parts.push(MidiPartInfo {
+                track_index,
+                name: name.unwrap_or_else(|| format!("Track {}", track_index + 1)),
+                note_count,
+            });
+        }
+    }
+    Ok(parts)
+}
+
+/// Parse raw MIDI bytes into a [`ScoreModel`], reading note events from every
+/// track (percussion excluded). Multi-part files merge — use
+/// [`list_midi_parts`] + [`parse_midi_bytes_track`] to import one part.
 pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
+    parse_midi_bytes_track(bytes, None)
+}
+
+/// Like [`parse_midi_bytes`], but when `track_filter` is `Some(i)` only track
+/// `i`'s NOTE events are read. Meta events (title, tempo, signatures) are
+/// still read from ALL tracks — Format-1 files keep them on a conductor
+/// track the filter would otherwise silence.
+pub fn parse_midi_bytes_track(
+    bytes: &[u8],
+    track_filter: Option<usize>,
+) -> Result<ScoreModel, ScoreError> {
     let smf = Smf::parse(bytes).map_err(|e| ScoreError::Midi(e.to_string()))?;
 
     // `ticks_per_quarter` is the number of MIDI ticks per quarter note, which
@@ -57,13 +130,18 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     // `MetaMessage::Tempo` is defined as microseconds-per-quarter-note,
     // independent of any time signature). We convert to signature-beat
     // BPM at the end so downstream consumers using `time_signature.beat_type`
-    // see consistent units.
-    let mut tempo_quarter_bpm: f64 = 120.0;
+    // see consistent units. `None` until the FIRST Tempo event: the header
+    // tempo is the score's tempo — later events are ritardandos/rubato that
+    // must not retroactively rewrite the whole piece (#337 S1; v1 has no
+    // tempo map).
+    let mut tempo_quarter_bpm: Option<f64> = None;
 
     // Collect all note events with absolute tick positions from all tracks
     let mut raw_notes: Vec<RawNote> = Vec::new();
 
-    for track in smf.tracks.iter() {
+    for (track_index, track) in smf.tracks.iter().enumerate() {
+        // The filter silences a track's NOTES only; meta still applies.
+        let notes_wanted = track_filter.is_none_or(|want| want == track_index);
         let mut abs_tick: u64 = 0;
         // Track active note-on events: (channel, key, velocity, start_tick).
         // Channel is included so that the same MIDI key sounding on two
@@ -84,6 +162,11 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
                 ),
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
+                    // Percussion notes are kit-piece ids, not pitches; a
+                    // filtered-out track contributes no notes at all.
+                    if ch == PERCUSSION_CHANNEL || !notes_wanted {
+                        continue;
+                    }
                     match message {
                         MidiMessage::NoteOn { key, vel } => {
                             if vel.as_int() == 0 {
@@ -126,6 +209,17 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
         }
     }
 
+    // No sounding notes anywhere (drums-only file, click track, wrong track
+    // filter): refuse calmly instead of importing an empty "score" the player
+    // can't practice (#337 S1 — the silent half-score is the product bug).
+    if raw_notes.is_empty() {
+        return Err(ScoreError::Midi(
+            "no playable notes found in this MIDI file — it may be a drum, click, \
+             or marker track; try a different file or part"
+                .to_string(),
+        ));
+    }
+
     // Sort by start_tick for deterministic measure assignment
     raw_notes.sort_by_key(|n| n.start_tick);
 
@@ -165,7 +259,8 @@ pub fn parse_midi_bytes(bytes: &[u8]) -> Result<ScoreModel, ScoreError> {
     // eighth_bpm=240. Formula: tempo_bpm = quarter_bpm * (beat_type / 4).
     // This is the inverse of the ticks_per_beat multiplier above — ticks
     // scale with beat *period*, tempo scales with beat *frequency*.
-    let tempo_bpm = tempo_quarter_bpm * (beat_type / 4.0);
+    // 120 quarter-BPM is MIDI's defined default when no Tempo event exists.
+    let tempo_bpm = tempo_quarter_bpm.unwrap_or(120.0) * (beat_type / 4.0);
 
     Ok(ScoreModel {
         title,
@@ -199,7 +294,7 @@ fn apply_meta_message(
     instrument: &mut Option<String>,
     time_signature: &mut TimeSignature,
     key_signature: &mut KeySignature,
-    tempo_quarter_bpm: &mut f64,
+    tempo_quarter_bpm: &mut Option<f64>,
 ) {
     match meta {
         midly::MetaMessage::TrackName(name_bytes) => {
@@ -216,10 +311,12 @@ fn apply_meta_message(
             }
         }
         midly::MetaMessage::Tempo(t) => {
-            // Microseconds per quarter-note → quarter-note BPM.
+            // Microseconds per quarter-note → quarter-note BPM. FIRST event
+            // wins: the header tempo is the piece's tempo; later Tempo events
+            // (a closing ritardando is the classic) must not rewrite it.
             let uspqn = t.as_int() as f64;
-            if uspqn > 0.0 {
-                *tempo_quarter_bpm = 60_000_000.0 / uspqn;
+            if uspqn > 0.0 && tempo_quarter_bpm.is_none() {
+                *tempo_quarter_bpm = Some(60_000_000.0 / uspqn);
             }
         }
         midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
@@ -493,10 +590,181 @@ mod tests {
         buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
         buf.extend_from_slice(&track);
 
-        let model = parse_midi_bytes(&buf).expect("parse empty-track MIDI");
+        // #337 S1: an empty file is a calm refusal, never a silent empty
+        // "score" the player can't practice.
+        let err = parse_midi_bytes(&buf).unwrap_err();
         assert!(
-            model.measures.is_empty(),
-            "Empty track should produce no measures"
+            matches!(&err, ScoreError::Midi(m) if m.contains("no playable notes")),
+            "empty track should refuse calmly, got: {err:?}"
+        );
+    }
+
+    /// Build a Format-1 band file: conductor track (tempo/meta only),
+    /// "Trumpet" (4 notes, ch0), "Drums" (4 hits, ch9 percussion),
+    /// "Bass" (2 notes, ch1).
+    fn build_band_midi() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes()); // format 1
+        buf.extend_from_slice(&4u16.to_be_bytes()); // 4 tracks
+        buf.extend_from_slice(&480u16.to_be_bytes());
+
+        let mut push_track = |events: Vec<u8>| {
+            buf.extend_from_slice(b"MTrk");
+            buf.extend_from_slice(&(events.len() as u32).to_be_bytes());
+            buf.extend_from_slice(&events);
+        };
+
+        // Track 0: conductor — tempo 120, 4/4, no notes.
+        let mut t0 = Vec::new();
+        write_meta_event(&mut t0, 0, 0x51, &[0x07, 0xA1, 0x20]);
+        write_meta_event(&mut t0, 0, 0x58, &[4, 2, 24, 8]);
+        write_meta_event(&mut t0, 0, 0x2F, &[]);
+        push_track(t0);
+
+        // Track 1: Trumpet — 4 quarter notes on channel 0.
+        let mut t1 = Vec::new();
+        write_meta_event(&mut t1, 0, 0x03, b"Trumpet");
+        for &key in &[60u8, 62, 64, 65] {
+            write_midi_event(&mut t1, 0, 0x90, key, 80);
+            write_midi_event(&mut t1, 480, 0x80, key, 0);
+        }
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        push_track(t1);
+
+        // Track 2: Drums — 4 hits on channel 9 (percussion).
+        let mut t2 = Vec::new();
+        write_meta_event(&mut t2, 0, 0x03, b"Drums");
+        for _ in 0..4 {
+            write_midi_event(&mut t2, 0, 0x99, 36, 100); // ch9 note-on
+            write_midi_event(&mut t2, 480, 0x89, 36, 0); // ch9 note-off
+        }
+        write_meta_event(&mut t2, 0, 0x2F, &[]);
+        push_track(t2);
+
+        // Track 3: Bass — 2 half notes on channel 1.
+        let mut t3 = Vec::new();
+        write_meta_event(&mut t3, 0, 0x03, b"Bass");
+        for &key in &[36u8, 43] {
+            write_midi_event(&mut t3, 0, 0x91, key, 80);
+            write_midi_event(&mut t3, 960, 0x81, key, 0);
+        }
+        write_meta_event(&mut t3, 0, 0x2F, &[]);
+        push_track(t3);
+
+        buf
+    }
+
+    /// #337 S1: percussion (channel 10) never reaches the score — drum-kit
+    /// note numbers are kit pieces, not pitches. A whole-file parse of the
+    /// band fixture contains the trumpet and bass notes, zero drum hits.
+    #[test]
+    fn percussion_channel_notes_are_skipped() {
+        let model = parse_midi_bytes(&build_band_midi()).expect("parse band MIDI");
+        let midis: Vec<u8> = model
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter().filter(|n| !n.is_rest).map(|n| n.midi_number))
+            .collect();
+        assert_eq!(midis.len(), 6, "4 trumpet + 2 bass, no drums: {midis:?}");
+        assert!(
+            !midis
+                .iter()
+                .any(|&m| m == 36 && midis.iter().filter(|&&x| x == 36).count() > 1),
+            "the 4 drum hits on note 36 must not appear (bass has one 36): {midis:?}"
+        );
+    }
+
+    /// #337 S1: a drums-only file has nothing to practice → calm refusal.
+    #[test]
+    fn a_drums_only_file_refuses_calmly() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&480u16.to_be_bytes());
+        let mut track = Vec::new();
+        for _ in 0..4 {
+            write_midi_event(&mut track, 0, 0x99, 38, 100);
+            write_midi_event(&mut track, 480, 0x89, 38, 0);
+        }
+        write_meta_event(&mut track, 0, 0x2F, &[]);
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&track);
+
+        let err = parse_midi_bytes(&buf).unwrap_err();
+        assert!(
+            matches!(&err, ScoreError::Midi(m) if m.contains("no playable notes")),
+            "drums-only must refuse with the calm message, got: {err:?}"
+        );
+    }
+
+    /// #337 S1: `list_midi_parts` is the import picker's source of truth —
+    /// playable tracks only (conductor and drum tracks omitted), with names,
+    /// note counts, and ORIGINAL track indices.
+    #[test]
+    fn list_midi_parts_names_playable_tracks_only() {
+        let parts = list_midi_parts(&build_band_midi()).expect("list parts");
+        let summary: Vec<(usize, &str, usize)> = parts
+            .iter()
+            .map(|p| (p.track_index, p.name.as_str(), p.note_count))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![(1, "Trumpet", 4), (3, "Bass", 2)],
+            "conductor (no notes) and Drums (percussion) must be omitted"
+        );
+    }
+
+    /// #337 S1: importing one part reads only that track's notes while meta
+    /// (tempo, signatures) still comes from the conductor track.
+    #[test]
+    fn track_filter_imports_one_part_with_conductor_meta() {
+        let model = parse_midi_bytes_track(&build_band_midi(), Some(3)).expect("import Bass");
+        let midis: Vec<u8> = model
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter().filter(|n| !n.is_rest).map(|n| n.midi_number))
+            .collect();
+        assert_eq!(midis, vec![36, 43], "only the Bass track's notes");
+        assert!(
+            (model.tempo_bpm - 120.0).abs() < 0.1,
+            "conductor-track tempo still applies to a filtered import"
+        );
+    }
+
+    /// #337 S1: the FIRST tempo event is the piece's tempo — a closing
+    /// ritardando must not rewrite the whole score. Fails if last-wins
+    /// returns.
+    #[test]
+    fn first_tempo_wins_over_a_closing_ritardando() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&480u16.to_be_bytes());
+        let mut track = Vec::new();
+        write_meta_event(&mut track, 0, 0x51, &[0x07, 0xA1, 0x20]); // 120 BPM
+        write_midi_event(&mut track, 0, 0x90, 60, 80);
+        write_midi_event(&mut track, 480, 0x80, 60, 0);
+        // Ritardando: 60 BPM (1_000_000 us/qn = 0x0F4240) near the end.
+        write_meta_event(&mut track, 0, 0x51, &[0x0F, 0x42, 0x40]);
+        write_midi_event(&mut track, 0, 0x90, 62, 80);
+        write_midi_event(&mut track, 480, 0x80, 62, 0);
+        write_meta_event(&mut track, 0, 0x2F, &[]);
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&track);
+
+        let model = parse_midi_bytes(&buf).expect("parse");
+        assert!(
+            (model.tempo_bpm - 120.0).abs() < 0.1,
+            "first tempo (120) must win, got {}",
+            model.tempo_bpm
         );
     }
 

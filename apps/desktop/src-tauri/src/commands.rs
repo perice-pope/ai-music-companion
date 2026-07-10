@@ -1021,7 +1021,20 @@ impl AppState {
         source_filename: String,
         bytes: Vec<u8>,
     ) -> Result<ScoreLibraryEntry, String> {
-        let model = brain::score::midi::parse_midi_bytes(&bytes).map_err(|e| e.to_string())?;
+        self.import_midi_track(source_filename, bytes, None)
+    }
+
+    /// Import one track of a multi-part MIDI file (#337 S1) — `track_index`
+    /// comes from [`brain::score::midi::list_midi_parts`]; `None` reads every
+    /// (non-percussion) track, the right call for single-part files.
+    fn import_midi_track(
+        &self,
+        source_filename: String,
+        bytes: Vec<u8>,
+        track_index: Option<usize>,
+    ) -> Result<ScoreLibraryEntry, String> {
+        let model = brain::score::midi::parse_midi_bytes_track(&bytes, track_index)
+            .map_err(|e| e.to_string())?;
 
         let title = if model.title == "Untitled" {
             filename_stem(&source_filename).unwrap_or_else(|| "Untitled".to_string())
@@ -3076,8 +3089,39 @@ pub fn import_midi_file(
     state: State<'_, AppState>,
     source_filename: String,
     bytes: Vec<u8>,
+    track_index: Option<usize>,
 ) -> Result<ScoreLibraryEntryDto, String> {
-    state.import_midi(source_filename, bytes).map(Into::into)
+    state
+        .import_midi_track(source_filename, bytes, track_index)
+        .map(Into::into)
+}
+
+/// One playable track of a multi-part MIDI file — the picker's choices.
+/// Mirrors `brain::score::midi::MidiPartInfo`.
+#[derive(Debug, Clone, Serialize)]
+pub struct MidiPartDto {
+    pub track_index: usize,
+    pub name: String,
+    pub note_count: usize,
+}
+
+/// List the playable tracks of a MIDI file so the frontend can ask which
+/// part to practice (#337 S1) — the MIDI twin of `list_score_parts`.
+/// Conductor (meta-only) and percussion tracks are omitted.
+#[tauri::command]
+pub fn list_midi_parts(bytes: Vec<u8>) -> Result<Vec<MidiPartDto>, String> {
+    brain::score::midi::list_midi_parts(&bytes)
+        .map(|parts| {
+            parts
+                .into_iter()
+                .map(|p| MidiPartDto {
+                    track_index: p.track_index,
+                    name: p.name,
+                    note_count: p.note_count,
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Decode raw file bytes as a UTF-8 MusicXML string.
@@ -4943,6 +4987,59 @@ mod tests {
         let listed = s.score_store.lock().unwrap().list().expect("list scores");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "C Major Scale");
+    }
+
+    /// #337 S1: a multi-track file imports ONE chosen part — the stored
+    /// MusicXML carries only that track's notes, so the score view and
+    /// follower practice the part the player picked, not a band mash-up.
+    #[test]
+    fn import_midi_track_stores_only_the_chosen_part() {
+        // Format-1: track 0 = conductor (tempo only), track 1 = melody
+        // (4 notes), track 2 = countermelody (2 notes).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&480u16.to_be_bytes());
+        let push = |events: Vec<u8>, buf: &mut Vec<u8>| {
+            buf.extend_from_slice(b"MTrk");
+            buf.extend_from_slice(&(events.len() as u32).to_be_bytes());
+            buf.extend_from_slice(&events);
+        };
+        let mut t0 = Vec::new();
+        write_meta_event(&mut t0, 0, 0x51, &[0x07, 0xA1, 0x20]);
+        write_meta_event(&mut t0, 0, 0x2F, &[]);
+        push(t0, &mut bytes);
+        let mut t1 = Vec::new();
+        write_meta_event(&mut t1, 0, 0x03, b"Melody");
+        for pitch in [60_u8, 62, 64, 65] {
+            write_midi_event(&mut t1, 0, 0x90, pitch, 80);
+            write_midi_event(&mut t1, 480, 0x80, pitch, 0);
+        }
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        push(t1, &mut bytes);
+        let mut t2 = Vec::new();
+        write_meta_event(&mut t2, 0, 0x03, b"Counter");
+        for pitch in [72_u8, 74] {
+            write_midi_event(&mut t2, 0, 0x91, pitch, 80);
+            write_midi_event(&mut t2, 480, 0x81, pitch, 0);
+        }
+        write_meta_event(&mut t2, 0, 0x2F, &[]);
+        push(t2, &mut bytes);
+
+        let s = state();
+        let entry = s
+            .import_midi_track("band.mid".to_string(), bytes, Some(2))
+            .expect("import the Counter track");
+        let reparsed = brain::score::musicxml::parse_musicxml_str_part(&entry.music_xml, 0)
+            .expect("stored MusicXML re-parses");
+        let midis: Vec<u8> = reparsed
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter().filter(|n| !n.is_rest).map(|n| n.midi_number))
+            .collect();
+        assert_eq!(midis, vec![72, 74], "only the chosen track's notes: {midis:?}");
     }
 
     #[test]

@@ -44,14 +44,18 @@ export default function ScoreDropZone() {
   // Set after a PDF is read by OMR — a calm "this came from a scan, check it"
   // note that stays visible after import (it's about the score's provenance).
   const [scanNote, setScanNote] = useState<{ lowContent: boolean } | null>(null);
-  // A multi-part MusicXML file waiting for the user to pick which part to read.
+  // A multi-part file (MusicXML or MIDI) waiting for the user to pick which
+  // part to read. For MIDI, `midiTrackIndices[i]` is the original track
+  // number behind label `parts[i]`; absent for MusicXML (part = list index).
   const [partChoice, setPartChoice] = useState<{
     fileName: string;
     bytes: number[];
     parts: string[];
+    midiTrackIndices?: number[];
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
+  const listMidiParts = usePracticeStore((s) => s.listMidiParts);
   const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
   const listScoreParts = usePracticeStore((s) => s.listScoreParts);
   const importMusicXmlFromFile = usePracticeStore((s) => s.importMusicXmlFromFile);
@@ -100,6 +104,23 @@ export default function ScoreDropZone() {
         setStatus(`Importing ${file.name}…`);
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
+        // A band file has several playable tracks — ask which one to
+        // practice, exactly like multi-part MusicXML (#337 S1). Conductor
+        // and drum tracks are already filtered out by the backend.
+        const midiParts = await listMidiParts(bytes);
+        if (midiParts.length > 1) {
+          setStatus(null);
+          setPartChoice({
+            fileName: file.name,
+            bytes,
+            parts: midiParts.map(
+              (p) =>
+                `${p.name} (${p.note_count} note${p.note_count === 1 ? "" : "s"})`,
+            ),
+            midiTrackIndices: midiParts.map((p) => p.track_index),
+          });
+          return;
+        }
         const entry = await importMidiFromFile(file.name, bytes);
         setStatus(`Imported "${entry.title}".`);
       } catch (err) {
@@ -241,8 +262,8 @@ export default function ScoreDropZone() {
           {isDragging ? "Drop your score here" : "Drag a score or recording here"}
         </h3>
         <p className="mt-2 text-sm text-gray-400">
-          Scores: .musicxml, .mxl, .xml, .mid, .midi, .pdf (beta) — Recordings:
-          .wav, .mp3
+          Reliable: .musicxml, .xml, .mid, .midi scores · Beta, still rough:
+          .pdf scans, .wav/.mp3 recordings
         </p>
 
         <div className="mt-6 flex justify-center gap-4">
@@ -297,9 +318,29 @@ export default function ScoreDropZone() {
             {partChoice.parts.map((name, idx) => (
               <button
                 key={`${name}-${idx}`}
-                onClick={() =>
-                  importMusicXml(partChoice.fileName, partChoice.bytes, idx)
-                }
+                onClick={async () => {
+                  if (partChoice.midiTrackIndices) {
+                    try {
+                      setPartChoice(null);
+                      setStatus(`Importing ${partChoice.fileName}…`);
+                      const entry = await importMidiFromFile(
+                        partChoice.fileName,
+                        partChoice.bytes,
+                        partChoice.midiTrackIndices[idx],
+                      );
+                      setStatus(`Imported "${entry.title}".`);
+                    } catch (err) {
+                      setStatus(null);
+                      setError(`${err instanceof Error ? err.message : err}`);
+                    }
+                  } else {
+                    await importMusicXml(
+                      partChoice.fileName,
+                      partChoice.bytes,
+                      idx,
+                    );
+                  }
+                }}
                 className="text-left rounded bg-gray-800 hover:bg-blue-700 border border-gray-600 px-3 py-2 transition"
               >
                 {name}

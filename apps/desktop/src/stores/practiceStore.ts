@@ -69,6 +69,17 @@ export interface QueuedReveal {
 }
 
 /**
+ * One playable track of a multi-part MIDI file (field names mirror the Rust
+ * `MidiPartDto`). `track_index` is the file's original track number — pass it
+ * back to `importMidiFromFile` to import just that part.
+ */
+export interface MidiPart {
+  track_index: number;
+  name: string;
+  note_count: number;
+}
+
+/**
  * Result of an audio import: the new library entry plus a calm quality
  * signal (field names mirror the Rust `ImportedAudioDto`). We surface
  * approximate-ness; we never show a fake accuracy score.
@@ -209,7 +220,15 @@ export interface PracticeState {
   importMidiFromFile: (
     sourceFilename: string,
     bytes: number[],
+    trackIndex?: number,
   ) => Promise<ScoreLibraryEntry>;
+  /**
+   * List the playable tracks of a MIDI file (read-only, nothing stored) so
+   * the UI can ask which part to practice — the MIDI twin of
+   * `listScoreParts`. Conductor and percussion tracks are omitted; a
+   * single-part file returns one entry so the caller can skip the picker.
+   */
+  listMidiParts: (bytes: number[]) => Promise<MidiPart[]>;
   importAudioFromFile: (
     sourceFilename: string,
     bytes: number[],
@@ -477,11 +496,16 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
   },
 
-  importMidiFromFile: async (sourceFilename: string, bytes: number[]) => {
+  importMidiFromFile: async (
+    sourceFilename: string,
+    bytes: number[],
+    trackIndex?: number,
+  ) => {
     try {
       const entry = await invoke<ScoreLibraryEntry>("import_midi_file", {
         sourceFilename,
         bytes,
+        trackIndex: trackIndex ?? null,
       });
       // Load the freshly-imported MusicXML so ScoreView can render it
       // without a second user action (mirrors loadScoreFromFile).
@@ -526,6 +550,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return await invoke<string[]>("list_score_parts", { bytes });
     } catch (err) {
       throw new Error(`Couldn't read the parts in that file: ${err}`);
+    }
+  },
+
+  listMidiParts: async (bytes: number[]) => {
+    try {
+      return await invoke<MidiPart[]>("list_midi_parts", { bytes });
+    } catch (err) {
+      throw new Error(`Couldn't read the tracks in that file: ${err}`);
     }
   },
 

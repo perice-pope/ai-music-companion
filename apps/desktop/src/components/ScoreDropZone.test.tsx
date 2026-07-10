@@ -53,6 +53,11 @@ function installInvokeMock() {
       });
     // Default: single-part score, so the picker is skipped.
     if (cmd === "list_score_parts") return Promise.resolve(["Flute"]);
+    // Default: single playable MIDI track, so the picker is skipped.
+    if (cmd === "list_midi_parts")
+      return Promise.resolve([
+        { track_index: 0, name: "Track 1", note_count: 4 },
+      ]);
     if (cmd === "get_score")
       return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
     return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
@@ -93,6 +98,7 @@ describe("ScoreDropZone", () => {
       expect(mockInvoke).toHaveBeenCalledWith("import_midi_file", {
         sourceFilename: "scales.mid",
         bytes: [0x4d, 0x54, 0x68, 0x64],
+        trackIndex: null,
       }),
     );
     await screen.findByText(/Imported "scales"/);
@@ -109,6 +115,51 @@ describe("ScoreDropZone", () => {
         expect.objectContaining({ sourceFilename: "piece.midi" }),
       ),
     );
+  });
+
+  // #337 S1: a band MIDI (several playable tracks) asks WHICH part to
+  // practice — same picker as multi-part MusicXML — and imports the chosen
+  // ORIGINAL track index, not the list position.
+  it("asks which track to practice for a multi-track MIDI, then imports the choice", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_midi_parts")
+        return Promise.resolve([
+          { track_index: 1, name: "Trumpet", note_count: 4 },
+          { track_index: 3, name: "Bass", note_count: 2 },
+        ]);
+      if (cmd === "import_midi_file") return Promise.resolve(ENTRY);
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    const file = fileWithBytes("band.mid", [9, 9]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    // The picker names the playable tracks with note counts.
+    await screen.findByText("Bass (2 notes)");
+    expect(
+      mockInvoke.mock.calls.filter((c) => c[0] === "import_midi_file"),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByText("Bass (2 notes)"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("import_midi_file", {
+        sourceFilename: "band.mid",
+        bytes: [9, 9],
+        trackIndex: 3,
+      }),
+    );
+    await screen.findByText(/Imported "scales"/);
+  });
+
+  // #337 S1: the format hint tells the truth about reliability tiers.
+  it("labels the stable and beta format tiers", () => {
+    render(<ScoreDropZone />);
+    expect(
+      screen.getByText(/Reliable: .musicxml, .xml, .mid, .midi/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Beta, still rough/)).toBeInTheDocument();
   });
 
   it("routes a .wav file to import_audio_file with its bytes", async () => {
