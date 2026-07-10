@@ -17,7 +17,7 @@ use theory::{KeyEstimate, KeyTracker, Mode};
 
 /// Minimum pitch-detection confidence before a frame feeds the key tracker —
 /// keeps breath noise and squeaks from skewing the key.
-const MIN_PITCH_CONFIDENCE: f64 = 0.5;
+pub(crate) const MIN_PITCH_CONFIDENCE: f64 = 0.5;
 
 /// A voiced gap longer than this ends the current note.
 const NOTE_GAP_SECS: f64 = 0.25;
@@ -48,8 +48,12 @@ const MAX_NOTE_WEIGHT_SECS: f64 = 2.0;
 /// included — intentional: as key evidence, five staccato tonic hits are one
 /// sustained claim on that pitch class, and a calm display beats per-attack
 /// updates.
+///
+/// Shared with [`crate::phrase`]: the recap's per-phrase key snapshots must
+/// ride the same note discipline as the strip, or the recap votes over
+/// wandering readings the player never watched (#316 / #324).
 #[derive(Debug, Default)]
-struct NoteGate {
+pub(crate) struct NoteGate {
     pending: Option<PendingNote>,
 }
 
@@ -64,7 +68,7 @@ impl NoteGate {
     /// Fold in one confident pitched frame. Returns the completed note
     /// `(pitch class, duration weight)` when this frame ends the previous one
     /// (pitch-class change, or a re-attack after a voiced gap).
-    fn observe(&mut self, pc: u8, t: f64) -> Option<(u8, f32)> {
+    pub(crate) fn observe(&mut self, pc: u8, t: f64) -> Option<(u8, f32)> {
         match self.pending {
             Some(cur) if cur.pc == pc && t - cur.last_seen_secs <= NOTE_GAP_SECS => {
                 self.pending = Some(PendingNote {
@@ -96,6 +100,15 @@ impl NoteGate {
         }
     }
 
+    /// Force-close the pending note — for callers that KNOW no more frames
+    /// belong to it (a phrase boundary), unlike [`flush`](Self::flush) which
+    /// must wait out the voiced gap. Trailing credit stays bounded and the
+    /// glitch gate still discards single-frame evidence.
+    pub(crate) fn drain(&mut self) -> Option<(u8, f32)> {
+        let cur = self.pending.take()?;
+        Self::close(cur, cur.last_seen_secs + MAX_FRAME_DT_SECS)
+    }
+
     fn reset(&mut self) {
         self.pending = None;
     }
@@ -115,7 +128,7 @@ impl NoteGate {
 
 /// Nearest equal-tempered pitch class for a frequency (A4 = 440) — the same
 /// rounding [`theory::PitchClassProfile::add_hz`] applies.
-fn pitch_class_of(hz: f32) -> Option<u8> {
+pub(crate) fn pitch_class_of(hz: f32) -> Option<u8> {
     if hz <= 0.0 {
         return None;
     }
@@ -634,6 +647,43 @@ mod tests {
         assert!(
             (w - MAX_NOTE_WEIGHT_SECS as f32).abs() < 1e-6,
             "a 5 s drone must weigh exactly the cap; got {w}"
+        );
+    }
+
+    /// Draining at a phrase boundary lands the pending note immediately —
+    /// span plus bounded trailing credit, one shot, then empty. Without this,
+    /// a phrase's final note misses that phrase's key snapshot (and the
+    /// session's last phrase loses it entirely).
+    #[test]
+    fn drain_lands_the_pending_note_once() {
+        let mut g = NoteGate::default();
+        let mut t = 0.0;
+        let mut last = 0.0;
+        while t <= 0.4 {
+            let _ = g.observe(7, t);
+            last = t;
+            t += 0.022;
+        }
+        let (pc, w) = g.drain().expect("the held note should land");
+        assert_eq!(pc, 7);
+        let expected = (last + MAX_FRAME_DT_SECS) as f32;
+        assert!(
+            (w - expected).abs() < 1e-4,
+            "drain weight must be span plus bounded trailing credit ({expected}); got {w}"
+        );
+        assert_eq!(g.drain(), None, "a drained gate is empty");
+    }
+
+    /// Drain is not a loophole in the glitch gate: a single-frame reading at
+    /// a phrase boundary is still discarded.
+    #[test]
+    fn drain_discards_a_single_frame_glitch() {
+        let mut g = NoteGate::default();
+        assert_eq!(g.observe(6, 10.0), None);
+        assert_eq!(
+            g.drain(),
+            None,
+            "a phrase boundary must not rescue single-frame evidence"
         );
     }
 
