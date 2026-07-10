@@ -89,6 +89,7 @@ export default function SessionRecap() {
   const recapError = usePracticeStore((s) => s.recapError);
   const returnToSelector = usePracticeStore((s) => s.returnToSelector);
   const exploreMeasure = usePracticeStore((s) => s.exploreMeasure);
+  const bridgeNotice = usePracticeStore((s) => s.bridgeNotice);
 
   // Error path — takes precedence over any partial recap.
   if (recapError) {
@@ -201,6 +202,15 @@ export default function SessionRecap() {
               {recap.score_summary.judged} notes clean, as the app followed
               along.
             </p>
+            {bridgeNotice && (
+              <p
+                className="mt-2 text-xs italic text-amber-300"
+                data-testid="bridge-notice"
+                role="status"
+              >
+                {bridgeNotice}
+              </p>
+            )}
             {recap.score_summary.worst_measures.length > 0 && (
               <ul className="mt-2 flex flex-col gap-1.5">
                 {recap.score_summary.worst_measures.map((m) => (

@@ -1518,6 +1518,14 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
             );
         }
     }
+    // A score session the follower never judged (§6: player may have been
+    // on a different piece) says so instead of silently showing nothing.
+    if input.score_title.is_some() && input.note_verdicts.is_empty() && !input.phrases.is_empty() {
+        areas.push(
+            "I couldn't follow along with the score this time — was this the right piece?"
+                .to_owned(),
+        );
+    }
     if areas.is_empty() {
         areas.push(
             "Keep recording yourself — each session builds on the last and tracks your progress."

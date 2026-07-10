@@ -322,10 +322,21 @@ impl PhraseAggregator {
             // rolling profile the cap protects.
             let aligned_position = if let Some(follower) = &mut self.score_follower {
                 let pos = follower.align(event);
-                // Route fresh verdicts to the current phrase's tally AND the
-                // pipeline's out-buffer (#337 S3) — the phrase card and the
-                // live strip must count the same judgments.
-                for verdict in follower.take_verdicts() {
+                let fresh = follower.take_verdicts();
+                // Close the old phrase at a measure boundary BEFORE folding
+                // this event's verdicts/measure in — otherwise every card
+                // overstates its span by the next measure and boundary-frame
+                // verdicts land in the phrase they didn't come from
+                // (S3 review MUST-FIX 1).
+                if let Some(last_measure) = self.last_score_measure {
+                    if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
+                        self.close_current_phrase(NoteGateAtClose::Keep);
+                    }
+                }
+                // Route fresh verdicts to the (possibly new) phrase's tally
+                // AND the pipeline's out-buffer (#337 S3) — the phrase card
+                // and the live strip must count the same judgments.
+                for verdict in fresh {
                     match verdict.verdict {
                         crate::follower::Verdict::Hit => self.phrase_verdicts.hit += 1,
                         crate::follower::Verdict::Near => self.phrase_verdicts.near += 1,
@@ -334,11 +345,6 @@ impl PhraseAggregator {
                     self.verdicts_out.push(verdict);
                 }
                 self.phrase_end_measure = Some(pos.measure_number);
-                if let Some(last_measure) = self.last_score_measure {
-                    if pos.measure_number > last_measure && !self.current_phrase_events.is_empty() {
-                        self.close_current_phrase(NoteGateAtClose::Keep);
-                    }
-                }
                 self.last_score_measure = Some(pos.measure_number);
                 Some(pos)
             } else {
@@ -426,6 +432,13 @@ impl PhraseAggregator {
             self.current_phrase_events.clear();
             self.phrase_start_time = None;
             self.current_phrase_start_position = None;
+            // A discarded fragment's tally goes with it: folding it into the
+            // NEXT phrase would attribute its verdicts to measures they
+            // didn't come from (S3 review MUST-FIX 2). The session recap
+            // still counts them — it reads per-verdict measure numbers from
+            // its own buffer, not the phrase tallies.
+            self.phrase_verdicts = PhraseVerdicts::default();
+            self.phrase_end_measure = None;
             return;
         }
 
@@ -506,7 +519,7 @@ fn score_phrase_card(span: (usize, usize), v: PhraseVerdicts) -> String {
     let measures = if span.0 == span.1 {
         format!("Measure {}", span.0)
     } else {
-        format!("Measures {}-{}", span.0, span.1)
+        format!("Measures {}–{}", span.0, span.1)
     };
     let mut parts: Vec<String> = Vec::new();
     if v.hit > 0 {
@@ -1133,6 +1146,69 @@ mod tests {
         );
     }
 
+    /// S3 review MUST-FIX 1: a phrase closed at a measure boundary spans
+    /// only the measures it CONTAINED — measure 1's card must not claim
+    /// measure 2. Fails if the end-measure update runs before the close.
+    #[test]
+    fn a_boundary_closed_phrase_does_not_claim_the_next_measure() {
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let follower = ScoreFollower::from_musicxml_str(xml, 0).expect("fixture parses");
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        agg.set_score_follower(follower);
+        // Play straight through both measures of the fixture.
+        for (i, hz) in [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25]
+            .iter()
+            .enumerate()
+        {
+            for f in 0..4 {
+                agg.push(&voiced_event(*hz, 0.9, i as f64 * 0.4 + f64::from(f) * 0.1));
+            }
+        }
+        agg.flush();
+        let phrases = agg.phrases();
+        let first_span = phrases[0].score_span.expect("scored phrase");
+        assert_eq!(
+            first_span,
+            (1, 1),
+            "phrase 1 holds only measure-1 events; card: {:?}",
+            phrases[0].score_card
+        );
+    }
+
+    /// S3 review MUST-FIX 2 (kills mutation a): a discarded short fragment
+    /// takes its verdict tally with it, and a closed phrase RESETS the
+    /// tally — the next phrase counts only its own notes.
+    #[test]
+    fn tallies_never_leak_across_phrases_or_discarded_fragments() {
+        let xml = include_str!("../tests/fixtures/simple_scale.musicxml");
+        let follower = ScoreFollower::from_musicxml_str(xml, 0).expect("fixture parses");
+        let mut agg = PhraseAggregator::new(PhraseConfig::default()).unwrap();
+        agg.set_score_follower(follower);
+        // A judged 2-frame fragment (below min_phrase_events), then a long
+        // silence discards it.
+        agg.push(&voiced_event(261.63, 0.9, 0.0));
+        agg.push(&voiced_event(261.63, 0.9, 0.02));
+        // Real phrase later: 4 held notes.
+        for (i, hz) in [261.63, 293.66, 329.63, 349.23].iter().enumerate() {
+            for f in 0..4 {
+                agg.push(&voiced_event(
+                    *hz,
+                    0.9,
+                    10.0 + i as f64 * 0.4 + f64::from(f) * 0.1,
+                ));
+            }
+        }
+        agg.flush();
+        let phrases = agg.phrases();
+        let last = phrases.last().expect("the real phrase closed");
+        let v = last.verdicts.expect("tally rides the phrase");
+        let total = v.hit + v.near + v.missed;
+        assert!(
+            total <= 4,
+            "the discarded fragment's verdicts must not leak in: {v:?}"
+        );
+    }
+
     /// #337 S3: free play is untouched — no span, no tally, no card.
     #[test]
     fn free_play_phrases_carry_no_score_card() {
@@ -1157,7 +1233,7 @@ mod tests {
                 missed: 2,
             },
         );
-        assert_eq!(card, "Measures 5-8 — 6 clean, 1 rough, 2 missed");
+        assert_eq!(card, "Measures 5–8 — 6 clean, 1 rough, 2 missed");
         let solo = score_phrase_card(
             (3, 3),
             PhraseVerdicts {

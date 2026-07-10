@@ -240,6 +240,62 @@ describe("SessionRecap", () => {
     });
   });
 
+  // Kills review mutation (c): a parked exploration is PROMOTED into the
+  // next session — startSession moves pendingExplore into explore.
+  it("promotes pendingExplore into the next session", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "start_practice_session") return Promise.resolve("sess-1");
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    const dto = {
+      label: "queued cell",
+      music_xml: "<score-partwise/>",
+      chips: [],
+      root_pitch_classes: [0],
+      root_names: ["C"],
+      can_undo: false,
+      staff: { fifths: 0, beats_per_measure: 4, total_beats: 4, notes: [] },
+    };
+    usePracticeStore.setState({
+      pendingExplore: dto as never,
+      status: "idle",
+      screen: "selector",
+    });
+    await usePracticeStore.getState().startSession("trumpet");
+    const st = usePracticeStore.getState();
+    expect(st.explore?.label).toBe("queued cell");
+    expect(st.pendingExplore).toBeNull();
+  });
+
+  // A calm bridge refusal must NOT vaporize the recap (review MUST-FIX 3):
+  // the summary stays, an inline notice explains.
+  it("keeps the recap when the bridge refuses, showing an inline notice", async () => {
+    mockInvoke.mockRejectedValueOnce("measure 7 is all rests — nothing to row");
+    usePracticeStore.setState({
+      activeScore: { id: "score-1", title: "Haydn" } as never,
+      bridgeNotice: null,
+    });
+    seedRecap(
+      fullRecap({
+        score_summary: {
+          score_title: "Haydn",
+          judged: 4,
+          accuracy_pct: 75,
+          worst_measures: [{ measure_number: 7, hit: 0, near: 0, missed: 1 }],
+        },
+      }),
+    );
+    render(<SessionRecap />);
+    fireEvent.click(screen.getByTestId("row-measure-7"));
+    await screen.findByTestId("bridge-notice");
+    expect(screen.getByTestId("bridge-notice")).toHaveTextContent(
+      "all rests",
+    );
+    // The recap and its summary are still standing.
+    expect(screen.getByTestId("recap-score-summary")).toBeInTheDocument();
+    expect(screen.getByTestId("recap-assessment")).toBeInTheDocument();
+  });
+
   it("shows no score section for free-play recaps", () => {
     seedRecap(fullRecap());
     render(<SessionRecap />);

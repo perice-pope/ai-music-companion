@@ -84,11 +84,24 @@ export default function InstrumentSelector() {
       {/* A recap-made exploration waiting for its session (#337 S5). */}
       {pendingExplore && (
         <p
-          className="mb-4 rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-center text-sm text-emerald-200"
+          className="mb-4 flex items-center justify-center gap-3 rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-center text-sm text-emerald-200"
           data-testid="pending-explore-banner"
         >
-          🎲 {pendingExplore.label} is queued — pick an instrument and it
-          starts with your session.
+          <span>
+            🎲 {pendingExplore.label} is queued — pick an instrument and it
+            starts with your session.
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss queued exploration"
+            data-testid="dismiss-pending-explore"
+            onClick={() =>
+              usePracticeStore.setState({ pendingExplore: null })
+            }
+            className="shrink-0 text-emerald-300 hover:text-emerald-100"
+          >
+            ✕
+          </button>
         </p>
       )}
 

@@ -487,7 +487,10 @@ impl RecapGenerator for MockRecapGenerator {
 impl MockRecapGenerator {
     fn generate_recap_impl(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         Ok(SessionRecap {
-            score_summary: None,
+            score_summary: input
+                .score_title
+                .as_deref()
+                .and_then(|t| brain::coaching::score_practice_summary(t, &input.note_verdicts)),
             overall_assessment: format!(
                 "Nice {}-minute session. You kept the tone centered and stayed with the music.",
                 (input.duration_secs / 60.0).round().max(1.0) as u32,
@@ -2714,10 +2717,21 @@ pub fn explore_measure_impl(
     }
     let first = midis[0];
     // A cell is semitone offsets from its first note — same wire shape as a
-    // lifted lick (i16 math so wide measures can't wrap).
+    // lifted lick. Wide leaps octave-FOLD into range (matching
+    // lift_cell_from_pitch_track's documented semantics): the pitch class is
+    // the music; a clamp would quietly reshape it (S5 review finding 4).
     let cell: Vec<i8> = midis
         .iter()
-        .map(|&m| (i16::from(m) - i16::from(first)).clamp(-36, 36) as i8)
+        .map(|&m| {
+            let mut off = i16::from(m) - i16::from(first);
+            while off > 36 {
+                off -= 12;
+            }
+            while off < -36 {
+                off += 12;
+            }
+            off as i8
+        })
         .collect();
     let learner = state
         .session_store
@@ -3706,6 +3720,56 @@ mod tests {
                 .is_some_and(|e| e.contains("Audio import isn't available")),
             "a transcription panic must degrade to the friendly error, got {result:?}"
         );
+    }
+
+    /// #337 S4 end-to-end (review finding 7): verdicts flow
+    /// verdict_buffer-shape → RecapInput.note_verdicts → score_summary →
+    /// exercise_log. Fails if any join in the chain drops the data.
+    #[tokio::test]
+    async fn score_session_verdicts_reach_the_recap_and_the_log() {
+        use brain::follower::{NoteVerdict, Verdict};
+        let s = state();
+        let mut recorder = brain::session::SessionRecorder::new(
+            "trumpet".to_owned(),
+            brain::session::PracticeMode::default(),
+        );
+        recorder.set_score_title(Some("Haydn".to_owned()));
+        // One recorded phrase so the session isn't empty.
+        recorder
+            .record_phrase(sample_phrase())
+            .expect("phrase records");
+        let completed = recorder.complete().expect("session completes");
+        let verdicts = vec![
+            NoteVerdict {
+                measure_number: 1,
+                beat: 0.0,
+                verdict: Verdict::Hit,
+            },
+            NoteVerdict {
+                measure_number: 3,
+                beat: 1.0,
+                verdict: Verdict::Missed,
+            },
+        ];
+        let generator = MockRecapGenerator;
+        let recap = build_recap(&completed, &generator, None, Vec::new(), verdicts)
+            .await
+            .expect("recap builds");
+        let summary = recap
+            .score_summary
+            .as_ref()
+            .expect("verdicts + a score title yield a summary");
+        assert_eq!(summary.judged, 2);
+        assert_eq!(summary.worst_measures[0].measure_number, 3);
+
+        // And the summary leaves exercise evidence.
+        {
+            let store = s.session_store.lock().unwrap();
+            log_score_practice_best_effort(&store, summary);
+        }
+        let log = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert_eq!(log.last().unwrap().source, "score_practice");
+        assert!((log.last().unwrap().accuracy.unwrap() - 0.5).abs() < 1e-6);
     }
 
     /// #337 S5 AC6: the RV bridge — a stored score's measure becomes a

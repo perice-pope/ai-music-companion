@@ -196,6 +196,12 @@ export interface PracticeState {
   /** #337 S5: row one measure of the practiced score through 12 keys. */
   exploreMeasure: (measureNumber: number) => Promise<void>;
   /**
+   * Calm inline notice for the recap's RV-bridge buttons (#337 S5): a
+   * refusal ("measure 9 is all rests") must never replace the recap the
+   * way recapError does — the summary stays, the notice explains.
+   */
+  bridgeNotice: string | null;
+  /**
    * Live note-verdict tally for the current score session (#337 S2):
    * running counts plus the most recent verdicts (newest last, capped) for
    * the strip. Reset when a session starts (the only consumer mounts inside
@@ -509,6 +515,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   scoreLibrary: [],
   cursorPosition: null,
   pendingExplore: null,
+  bridgeNotice: null,
   noteVerdicts: { ...EMPTY_VERDICTS, recent: [] },
   recordNoteVerdict: (verdict: NoteVerdictKind) =>
     set((state) => ({
@@ -1051,7 +1058,12 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   exploreMeasure: async (measureNumber: number) => {
     const scoreId = get().activeScore?.id;
-    if (!scoreId) return;
+    if (!scoreId) {
+      // Edge: the recap outlived its score reference — say so instead of a
+      // dead button (S3/S5 review finding 9).
+      set({ bridgeNotice: "that score isn't open anymore — re-import it first" });
+      return;
+    }
     try {
       const dto = await invoke<ExploreDto>("explore_measure", {
         scoreId,
@@ -1059,10 +1071,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       });
       // Park it for the next session, then head to the selector — the
       // session screens clear `explore`, so the handoff uses its own slot.
-      set({ pendingExplore: dto });
+      set({ pendingExplore: dto, bridgeNotice: null });
       get().returnToSelector();
     } catch (err) {
-      set({ recapError: String(err) });
+      // A calm refusal must not vaporize the recap (S5 review MUST-FIX 3).
+      set({ bridgeNotice: String(err) });
     }
   },
 
@@ -1145,6 +1158,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   returnToSelector: () =>
     set({
       screen: "selector",
+      bridgeNotice: null,
       status: "idle",
       recap: null,
       recapError: null,
