@@ -1,3 +1,9 @@
+## [2.18.0](https://github.com/perice-pope/ai-music-companion/compare/v2.17.0...v2.18.0) (2026-07-10)
+
+### Features
+
+* **brand:** the Wheel — app icon from the new design system ([#345](https://github.com/perice-pope/ai-music-companion/issues/345)) ([0ce0012](https://github.com/perice-pope/ai-music-companion/commit/0ce0012a9b2d869acffbcad32559e2f01a22498b))
+
 ## [2.17.0](https://github.com/perice-pope/ai-music-companion/compare/v2.16.3...v2.17.0) (2026-07-10)
 
 ### Features
