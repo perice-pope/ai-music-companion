@@ -157,6 +157,21 @@ Open the samples folder for her so she can drag a file:
    highlight disappears (no stale cursor); **(c)** it should NOT appear on guided-lesson drill
    notation (that stays static on purpose)." If it still doesn't move, run
    `grep -iE "follower|score-position" ~/amc/.desktop.log | tail -5` and paste the output.
+11b. **The app listens while you practice (NEW — the big one this run).** With the score
+   session from step 11 still going: **(a) Live verdicts:** "As you play along, a small tally
+   should appear above the music — green ✓ for clean notes, amber ~ for rough ones, red ✗ for
+   missed — with little colored dots trailing. Play a few notes right, then play one obviously
+   wrong: does the tally react honestly? It should NOT count anything while you're just
+   noodling something else entirely." **(b) Phrase cards:** "Pause between phrases — a card
+   like 'Measures 1–2 — 4 clean' should appear naming the measures you just played. Does the
+   measure range match where you actually were?" **(c) The score recap:** "End the session.
+   The recap should have a new section: your piece's name, 'X% of N notes clean, as the app
+   followed along', and up to 3 'Measure N — …' rows for the spots that need work. Do those
+   measures match where you actually struggled?" **(d) 🎲 THE BUTTON:** "Each worst-measure row
+   has 'Row it through 12 keys'. Tap one: you should land back at the instrument picker with a
+   green note saying your measure is queued (there's an ✕ to dismiss it). Start a new session —
+   the measure should open as colored dots rowed through different keys, exactly like 'Work on
+   my last lick'. This is the flagship: tell me how it FEELS, not just whether it works."
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
