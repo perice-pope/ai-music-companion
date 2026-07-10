@@ -149,11 +149,14 @@ Open the samples folder for her so she can drag a file:
 10. **Upload a score** — "Go back, click **Practice with Score**, and drag
    **sample-score-c-major-scale.musicxml** from the folder I just opened onto the drop area. Does
    sheet music appear? (If it asks which part, pick the only one.)"
-11. **Practice with it [#277 re-test]** — "Click **Start Practice with This Score**. You should see
-   the sheet music with a moving cursor. Play or hum along — does the cursor follow you down the
-   line?" **If the cursor doesn't move**, don't stop: keep the session going a moment, then run
-   `grep -iE "follower|score-position" ~/amc/.desktop.log | tail -5` and paste the output into the
-   report — the app now logs exactly which part went quiet (#279).
+11. **Practice with it [#279 — THE FIX IS IN, this is the big retest]** — "Click **Start Practice
+   with This Score**. You should see the sheet music, and — for the first time in four runs — a
+   **translucent highlight cursor** should appear over measure 1 within a moment of playing and
+   **follow you down the line** as you play or hum. Also check: **(a)** scroll the score away from
+   the cursor mid-take — it must NOT snap back on every beat; **(b)** end the session — the
+   highlight disappears (no stale cursor); **(c)** it should NOT appear on guided-lesson drill
+   notation (that stays static on purpose)." If it still doesn't move, run
+   `grep -iE "follower|score-position" ~/amc/.desktop.log | tail -5` and paste the output.
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -162,18 +165,22 @@ Open the samples folder for her so she can drag a file:
 13. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
    things like tone, how in-tune you were (a % or 'in tune'), tempo, plus **Strengths**, **Areas to
    work on**, and **Next time, try**? Is it specific and useful, or generic?"
-13b. **The key line is honest now (retest of your 'coin flip' finding)** — the recap's "Key:" line
-   should only be as confident as the app actually was. Two quick sessions:
-   **(a) Stable:** "Play or sing comfortably in ONE key for the whole session, then end it. The
-   recap should state the key plainly (like 'Key: G major') — and it must be the SAME key the
-   'I hear' strip was showing when you stopped."
+13b. **The key line is honest now — AND finally says yes (your #334 'one thing')** — the recap's
+   "Key:" line should be exactly as confident as the app actually was. Two quick sessions:
+   **(a) Stable — IMPORTANT: sing a MELODY, not one held note.** "Sing a simple scale or tune
+   that stays in one key — do-re-mi-fa-sol up and down a few times is perfect — for 30–60
+   seconds, then end. One held note can't name a key (that's why your A# test showed nothing —
+   that was correct), but a melody can. This time the recap should state the key **plainly**
+   ('Key: G major'), it must MATCH what the 'I hear' strip showed, and — new — look for the
+   **confident positive** you asked for: a Strengths line like **'Clear tonal center — the
+   session sat firmly in G major.'** That line existing at all is the fix; tell me if it
+   doesn't appear on a genuinely steady melodic session."
    **(b) Wandering:** "Now noodle around — drift between keys on purpose, maybe settle somewhere
    only right at the end, then end the session. The recap should NOT state a key flatly. It should
    either say **'leaning … toward the end'** or **'kept moving — normal for exploratory
-   playing'**." The one thing to flag hard: the recap flatly naming a key **different** from what
-   the strip showed at the end — that's the exact bug this fixes (was: off by a half-step). Also
-   note whether any Strengths line still says the session "sat firmly" in a key after a wandering
-   session — it shouldn't.
+   playing'**, and NO Strengths line may claim it 'sat firmly' anywhere." Flag hard: a flat key
+   claim that differs from the strip's end state (the original half-step bug), or a hedge on a
+   genuinely steady melodic session (the bug just fixed).
 14. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful,
     specific feedback on the music**? What was missing or wrong?"
 15. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
