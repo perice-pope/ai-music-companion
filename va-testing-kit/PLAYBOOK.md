@@ -8,6 +8,7 @@ Paths (on her machine):
 - Sample files: `$HOME/amc/ai-music-companion/va-testing-kit/samples/`
   - `sample-score-c-major-scale.musicxml` (sheet-music file)
   - `sample-recording-c-major-scale.wav` (audio recording)
+  - `sample-band-c-major.mid` (multi-track band MIDI: Trumpet + Bass + Drums)
 
 Ask one question at a time. Acknowledge warmly. Keep her answers for the report. Offer to skip
 anything she gets stuck on. Never show errors/jargon.
@@ -133,6 +134,13 @@ While the session is running:
 5. **Escape hatch** — "Start one more lesson and tap **'End lesson'** mid-way — it should calmly
    return you to free play."
 
+**Bug hunt (#327 — please do this one deliberately):** the lesson notation sometimes fails with
+"Could not render this score" — it depends on the KEY. Run at least **4 separate lessons** (end
+and restart to get different keys). For every lesson, jot the key name shown in the colored cell
+(like "C#", "G", "Eb"). If the error appears, we need: the exact key name, whether it happened on
+drill 1 or later, and whether ending + starting a new lesson cleared it. If 4+ lessons all render
+clean, say that too — "didn't reproduce in N tries" is real data.
+
 ### A3. Your Keys wheel 🎡 (NEW)
 Back on the **instrument picker screen** (end the session or tap Done first):
 1. "Below the instruments there's a **colorful wheel of 12 keys**. When you first opened the app
@@ -149,6 +157,11 @@ Open the samples folder for her so she can drag a file:
 10. **Upload a score** — "Go back, click **Practice with Score**, and drag
    **sample-score-c-major-scale.musicxml** from the folder I just opened onto the drop area. Does
    sheet music appear? (If it asks which part, pick the only one.)"
+10b. **Upload a BAND file (NEW — MIDI with several instruments).** "Now drag in
+   **sample-band-c-major.mid**. The app should ask **which part you want to practice** and list
+   exactly two: **Trumpet (8 notes)** and **Bass (4 notes)** — the drum track must NOT be offered
+   (drums aren't notes you can practice). Pick Trumpet: does sheet music appear, titled Trumpet?"
+   Flag hard: a 'Drums' option appearing, extra garbage notes in the music, or no picker at all.
 11. **Practice with it [#279 — THE FIX IS IN, this is the big retest]** — "Click **Start Practice
    with This Score**. You should see the sheet music, and — for the first time in four runs — a
    **translucent highlight cursor** should appear over measure 1 within a moment of playing and
@@ -205,6 +218,26 @@ troubleshoot with her.
 
 ---
 
+## INSTALLER smoke test (run when the manager asks — simulates a real pilot user)
+
+This is the exact path a stranger takes, and it has NEVER been human-tested: the packaged app is a
+different build than the dev mode the kit runs (bundled audio engine, no dev server). ~15 minutes
+plus a download.
+
+1. **Download like a stranger:** open https://perice-pope.github.io/ai-music-companion-pitch/ in a
+   browser, scroll to Download, click **Download for macOS**. Note anything scary the browser says.
+2. **Install & first launch:** open the .dmg, drag the app to Applications, then — important —
+   **right-click the app → Open** (double-clicking will be blocked; the site says so — did YOU
+   find that instruction where you needed it?). Approve the microphone prompt.
+3. **Does the packaged app actually work?** Quick pass, no deep testing: pick Voice → start a
+   session → hum — does the pitch meter move? Play steadily — does a reveal appear? Drag in
+   **sample-score-c-major-scale.musicxml** — does it render, does the cursor follow? Drag in
+   **sample-recording-c-major-scale.wav** — does the beta transcription produce anything (this
+   uses the BUNDLED audio engine, the part most likely to differ from dev mode)?
+4. **Report:** every difference from the dev version, every scary dialog, and the version shown
+   anywhere in the app. If the app won't open or crashes at launch, that's a SHIP BLOCKER —
+   screenshot + exact message.
+
 ## Filing her feedback (both modes)
 
 Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
@@ -226,6 +259,8 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - No card on vague/atonal playing (expected): <answer>
 
 ### Upload music & practice with it   (desktop only)
+- **[NEW] Band MIDI picker:** offered exactly Trumpet + Bass (no Drums); chosen part rendered
+  with its own name: <answer>
 - Score (.musicxml) import & render: <answer>
 - Cursor follows while playing: <answer>
 - Audio (.wav) import & transcription: <answer>
@@ -249,6 +284,7 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Keys brightened after lessons; tap-detail showed drills/%/scales: <answer>
 
 ### Guided Lesson 🎓 (desktop only — new feature)
+- **[#327 hunt] Keys tried across 4+ lessons; any render error with its exact key name:** <answer>
 - Lesson started; sheet music + drill header shown: <answer>
 - NEW look: colored cells + transparent notation + a real key signature: <answer>
 - Grades felt roughly fair for how she played: <answer>
@@ -268,6 +304,11 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
   one plain — read both lines aloud): <answer>
 - Did the recap reflect her actual playing: <answer>
 - Helpful & specific vs generic: <answer>
+
+### Installer smoke test (only when run)
+- Download + right-click-Open flow worked as the site describes: <answer>
+- Packaged app: mic / reveals / score+cursor / .wav each worked: <answer>
+- Differences vs the dev version, scary dialogs, version string: <answer>
 
 ### Look, layout & wording
 <answer>

@@ -548,6 +548,20 @@ mod tests {
         buf.push(data2);
     }
 
+    /// The VA kit's committed sample must always work with the part
+    /// picker exactly as the playbook describes (ship-gap coverage).
+    #[test]
+    fn va_sample_band_midi_lists_trumpet_and_bass() {
+        let bytes = include_bytes!("../../../../va-testing-kit/samples/sample-band-c-major.mid");
+        let parts = list_midi_parts(bytes).expect("kit sample parses");
+        let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Trumpet", "Bass"], "drums + conductor omitted");
+        let model =
+            parse_midi_bytes_track(bytes, Some(parts[0].track_index)).expect("trumpet imports");
+        assert_eq!(model.title, "Trumpet");
+        assert!(model.measures.len() >= 2);
+    }
+
     #[test]
     fn parse_midi_extracts_notes() {
         let midi_bytes = build_c_major_scale_midi();
