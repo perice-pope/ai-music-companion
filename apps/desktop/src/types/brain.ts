@@ -497,6 +497,22 @@ export interface SessionRecap {
    */
   fingerprint?: MusicalFingerprint | null;
   /**
+   * Score-practice summary (#337 S4): honest accuracy over the notes the
+   * follower judged and the measures that most need work. Absent for
+   * free-play sessions or when nothing was judged.
+   */
+  score_summary?: {
+    score_title: string;
+    judged: number;
+    accuracy_pct: number;
+    worst_measures: {
+      measure_number: number;
+      hit: number;
+      near: number;
+      missed: number;
+    }[];
+  } | null;
+  /**
    * A short, hedged "flavour" line grounded in the reliable signal the app
    * measures — the key's mode + the groove's swing ratio (Rust
    * `brain::coaching::theory_flavour`). Drives the recap's "Flavour:" line.

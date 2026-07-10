@@ -32,6 +32,12 @@ pub struct ShapeInsight {
 
 /// Canonical shape of a spec — the unit the analysis groups by.
 fn shape_of(spec_json: &str) -> String {
+    // Score practice logs a score reference, not a VariationSpec (#337 S4).
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(spec_json) {
+        if let Some(title) = v.get("score_title").and_then(|t| t.as_str()) {
+            return format!("score: {title}");
+        }
+    }
     let Ok(spec) = serde_json::from_str::<VariationSpec>(spec_json) else {
         return "unparseable".to_owned();
     };

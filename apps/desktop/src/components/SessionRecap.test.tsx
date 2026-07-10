@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import SessionRecap from "./SessionRecap";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { SessionRecap as RecapT } from "../types/brain";
 
+const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 function fullRecap(overrides: Partial<RecapT> = {}): RecapT {
@@ -177,6 +178,72 @@ describe("SessionRecap", () => {
     expect(screen.getByTestId("recap-key").textContent).not.toContain(
       "leaning",
     );
+  });
+
+  // #337 S4+S5: the score summary renders honest accuracy + worst
+  // measures, and the RV bridge button rows a measure through 12 keys —
+  // parking the exploration for the next session.
+  it("renders the score summary and rows a worst measure through 12 keys", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      label: "C · your 4-note cell · 3 roots · 60 BPM",
+      music_xml: "<score-partwise/>",
+      chips: [],
+      root_pitch_classes: [0, 7, 2],
+      root_names: ["C", "G", "D"],
+      can_undo: false,
+      staff: { fifths: 0, beats_per_measure: 4, total_beats: 4, notes: [] },
+    });
+    usePracticeStore.setState({
+      activeScore: {
+        id: "score-123",
+        title: "Haydn",
+        composer: null,
+        source_filename: "haydn.mid",
+        part_index: 0,
+        duration_measures: 12,
+      } as never,
+    });
+    seedRecap(
+      fullRecap({
+        score_summary: {
+          score_title: "Haydn",
+          judged: 10,
+          accuracy_pct: 60,
+          worst_measures: [
+            { measure_number: 7, hit: 0, near: 0, missed: 2 },
+            { measure_number: 3, hit: 0, near: 1, missed: 1 },
+          ],
+        },
+      }),
+    );
+    render(<SessionRecap />);
+    expect(screen.getByTestId("recap-score-summary")).toHaveTextContent(
+      "Haydn — 60% of 10 notes clean",
+    );
+    expect(screen.getByTestId("worst-measure-7")).toHaveTextContent(
+      "Measure 7 — 2 missed",
+    );
+
+    fireEvent.click(screen.getByTestId("row-measure-7"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("explore_measure", {
+        scoreId: "score-123",
+        measureNumber: 7,
+      }),
+    );
+    // The exploration is parked for the next session and we head to the
+    // selector — pendingExplore must survive returnToSelector.
+    await waitFor(() => {
+      const st = usePracticeStore.getState();
+      expect(st.screen).toBe("selector");
+      expect(st.pendingExplore?.label).toContain("your 4-note cell");
+    });
+  });
+
+  it("shows no score section for free-play recaps", () => {
+    seedRecap(fullRecap());
+    render(<SessionRecap />);
+    expect(screen.queryByTestId("recap-score-summary")).toBeNull();
   });
 
   it("says the key kept moving only on an explicit unsettled claim", () => {

@@ -4624,6 +4624,61 @@ mod tests {
         assert!(f.contains("modal colour"), "got: {f}");
     }
 
+    /// #337 S4 AC5: with scripted errors in measures 3 and 7, the summary
+    /// names exactly those measures worst-first and the accuracy matches
+    /// the scripted hit rate. Empty input → None (silence > lies).
+    #[test]
+    fn score_summary_ranks_worst_measures_and_reports_honest_accuracy() {
+        use crate::follower::{NoteVerdict, Verdict};
+        let v = |m: usize, verdict: Verdict| NoteVerdict {
+            measure_number: m,
+            beat: 0.0,
+            verdict,
+        };
+        let verdicts = vec![
+            v(1, Verdict::Hit),
+            v(1, Verdict::Hit),
+            v(2, Verdict::Hit),
+            v(3, Verdict::Missed),
+            v(3, Verdict::Near),
+            v(4, Verdict::Hit),
+            v(5, Verdict::Hit),
+            v(7, Verdict::Missed),
+            v(7, Verdict::Missed),
+            v(8, Verdict::Hit),
+        ];
+        let s = score_practice_summary("Haydn", &verdicts).expect("judged notes");
+        assert_eq!(s.judged, 10);
+        assert!(
+            (s.accuracy_pct - 60.0).abs() < 0.01,
+            "6/10 = 60%: {}",
+            s.accuracy_pct
+        );
+        let worst: Vec<usize> = s.worst_measures.iter().map(|m| m.measure_number).collect();
+        assert_eq!(worst, vec![7, 3], "worst-first, clean measures omitted");
+        assert_eq!(s.worst_measures[0].missed, 2);
+
+        assert!(
+            score_practice_summary("Haydn", &[]).is_none(),
+            "nothing judged says nothing"
+        );
+    }
+
+    /// #337 S4: the exercise log's score entries group by piece in insights.
+    #[test]
+    fn insights_shape_names_score_practice() {
+        let shape = crate::insights::exercise_insights(&[crate::store::ExerciseLogEntry {
+            source: "score_practice".to_owned(),
+            label: "Haydn".to_owned(),
+            spec_json: r#"{"score_title":"Haydn"}"#.to_owned(),
+            seed: 0,
+            difficulty: 0,
+            tonic: 0,
+            accuracy: Some(0.6),
+        }]);
+        assert_eq!(shape[0].shape, "score: Haydn");
+    }
+
     /// The offline recap must persist the measured fingerprint, not throw it
     /// away (`fingerprint: None` was the original bug).
     #[test]

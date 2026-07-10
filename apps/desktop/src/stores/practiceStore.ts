@@ -187,6 +187,15 @@ export interface PracticeState {
   scoreLibrary: ScoreLibraryEntry[];
   cursorPosition: ScorePosition | null;
   /**
+   * An exploration created from the RECAP screen (#337 S5 — "row this
+   * measure through 12 keys") waiting for the next session to start. It
+   * survives returnToSelector (which clears `explore`) and is promoted to
+   * `explore` when the session reaches listening.
+   */
+  pendingExplore: ExploreDto | null;
+  /** #337 S5: row one measure of the practiced score through 12 keys. */
+  exploreMeasure: (measureNumber: number) => Promise<void>;
+  /**
    * Live note-verdict tally for the current score session (#337 S2):
    * running counts plus the most recent verdicts (newest last, capped) for
    * the strip. Reset when a session starts (the only consumer mounts inside
@@ -499,6 +508,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   activeScoreXml: null,
   scoreLibrary: [],
   cursorPosition: null,
+  pendingExplore: null,
   noteVerdicts: { ...EMPTY_VERDICTS, recent: [] },
   recordNoteVerdict: (verdict: NoteVerdictKind) =>
     set((state) => ({
@@ -708,6 +718,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       });
       set({
         status: "listening",
+        // Promote a recap-made exploration (#337 S5) into the live session.
+        explore: get().pendingExplore ?? null,
+        pendingExplore: null,
         screen: "session",
         sessionId,
         instrumentName: instrument,
@@ -1033,6 +1046,23 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       set({ explore: dto });
     } catch (err) {
       console.error("start_explore_variation failed:", err);
+    }
+  },
+
+  exploreMeasure: async (measureNumber: number) => {
+    const scoreId = get().activeScore?.id;
+    if (!scoreId) return;
+    try {
+      const dto = await invoke<ExploreDto>("explore_measure", {
+        scoreId,
+        measureNumber,
+      });
+      // Park it for the next session, then head to the selector — the
+      // session screens clear `explore`, so the handoff uses its own slot.
+      set({ pendingExplore: dto });
+      get().returnToSelector();
+    } catch (err) {
+      set({ recapError: String(err) });
     }
   },
 

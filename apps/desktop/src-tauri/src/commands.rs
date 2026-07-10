@@ -640,6 +640,10 @@ pub struct AppState {
     /// empty and **every** recap was the "you didn't play" empty state — the
     /// real root cause behind #185 (the confidence gate was only half of it).
     phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
+    /// Note verdicts the follower produced this session (#337 S4) —
+    /// buffered exactly like `phrase_buffer` and drained into the recap
+    /// input at session end for the score-practice summary.
+    verdict_buffer: Arc<std::sync::Mutex<Vec<brain::follower::NoteVerdict>>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -779,6 +783,7 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -808,6 +813,7 @@ impl AppState {
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -1657,9 +1663,21 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     let practice_mode_label = format!("{:?}", session.practice_mode);
     let session_score_id = session.score_id.take();
 
+    // The session's note verdicts (#337 S4) — drained like the phrases so
+    // the recap can rank the worst measures honestly.
+    let note_verdicts: Vec<brain::follower::NoteVerdict> =
+        std::mem::take(&mut *state.verdict_buffer.lock_or_recover());
+
     match session.recorder.complete() {
         Ok(completed) => {
-            let recap = build_recap(&completed, &*generator, taste_profile, idiom_notes).await?;
+            let recap = build_recap(
+                &completed,
+                &*generator,
+                taste_profile,
+                idiom_notes,
+                note_verdicts,
+            )
+            .await?;
             // Persist the completed session so practice history, the stats
             // surface, and (opt-in) cloud sync all have something to read.
             // The store can degrade to in-memory at startup (see `open_stores`),
@@ -1679,6 +1697,13 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                     // after `save` succeeds — and never fail the recap over them.
                     if let Err(e) = store.save_phrases(completed.id, &completed.all_phrases()) {
                         tracing::warn!(error = %e, "could not persist the session's phrases");
+                    }
+                    // Score practice leaves exercise evidence too (#337 S4):
+                    // repertoire work shows up in insights and, later, the
+                    // teacher surfaces — same best-effort posture as every
+                    // other log write.
+                    if let Some(summary) = &recap.score_summary {
+                        log_score_practice_best_effort(&store, summary);
                     }
                     // Session-level debug columns (#201), best-effort like the rest.
                     if let Err(e) = store.record_session_meta(
@@ -1710,9 +1735,10 @@ async fn build_recap(
     generator: &dyn RecapGenerator,
     taste_profile: Option<TasteProfile>,
     idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
+    note_verdicts: Vec<brain::follower::NoteVerdict>,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap_with_context(generator, taste_profile, idiom_notes)
+        .generate_recap_with_context(generator, taste_profile, idiom_notes, note_verdicts)
         .await
         .map_err(CommandError::from)
 }
@@ -1947,7 +1973,9 @@ pub async fn start_practice_session<R: Runtime>(
                 // Fresh phrase buffer too — the worker fills it as phrases close
                 // so end_practice_session can record them into the recap (#185).
                 state.phrase_buffer.lock_or_recover().clear();
+                state.verdict_buffer.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
+                let verdict_buffer = state.verdict_buffer.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2003,6 +2031,9 @@ pub async fn start_practice_session<R: Runtime>(
                         emit_score_position_updated(&app_for_position, position);
                     },
                     move |verdict| {
+                        // Buffer a copy for the recap's score summary
+                        // (#337 S4), then emit for the live strip.
+                        verdict_buffer.lock_or_recover().push(verdict.clone());
                         let _ = app_for_verdict.emit("note-verdict", verdict);
                     },
                 ) {
@@ -2354,6 +2385,28 @@ struct ExerciseOutcome<'a> {
     accuracy: Option<f64>,
 }
 
+/// Append a score-practice session to the exercise log (#337 S4) —
+/// best-effort like every log write. The spec_json is a score reference,
+/// not a VariationSpec; `brain::insights::shape_of` knows the shape.
+fn log_score_practice_best_effort(
+    store: &SessionStore,
+    summary: &brain::coaching::ScorePracticeSummary,
+) {
+    let spec_json = serde_json::json!({ "score_title": summary.score_title }).to_string();
+    let entry = brain::store::ExerciseLogEntry {
+        source: "score_practice".to_owned(),
+        label: summary.score_title.clone(),
+        spec_json,
+        seed: 0,
+        difficulty: 0,
+        tonic: 0,
+        accuracy: Some(f64::from(summary.accuracy_pct) / 100.0),
+    };
+    if let Err(e) = store.log_exercise(&entry) {
+        tracing::warn!(error = %e, "could not log score practice to the exercise log");
+    }
+}
+
 /// Append to the exercise log — best-effort, NEVER blocks the practice loop.
 fn log_exercise_best_effort(store: &SessionStore, o: ExerciseOutcome<'_>) {
     let Ok(spec_json) = serde_json::to_string(o.spec) else {
@@ -2613,6 +2666,98 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     }
     *state.active_explore.lock_or_recover() = Some(explore);
     Ok(dto)
+}
+
+/// #337 S5 — the RV bridge: lift a MEASURE of a stored score as a cell and
+/// row it through 12 keys via the same explore engine as a lifted lick.
+/// Refuses calmly on empty/rest-only measures or ones past the lift cap.
+pub fn explore_measure_impl(
+    state: &AppState,
+    score_id: &str,
+    measure_number: usize,
+    seed: u64,
+) -> Result<ExploreDto, String> {
+    let id: ScoreId = score_id
+        .parse()
+        .map_err(|_| "that score isn't in the library anymore".to_owned())?;
+    let (music_xml, part_index) = {
+        let store = state.score_store.lock_or_recover();
+        let entry = store
+            .get(id)
+            .map_err(|_| "that score isn't in the library anymore".to_owned())?;
+        (entry.music_xml, entry.part_index)
+    };
+    let model = brain::score::musicxml::parse_musicxml_str_part(&music_xml, part_index)
+        .map_err(|e| e.to_string())?;
+    let measure = model
+        .measures
+        .iter()
+        .find(|m| m.number == measure_number)
+        .ok_or_else(|| format!("measure {measure_number} isn't in this piece"))?;
+    let midis: Vec<u8> = measure
+        .notes
+        .iter()
+        .filter(|n| !n.is_rest)
+        .map(|n| n.midi_number)
+        .collect();
+    if midis.is_empty() {
+        return Err(format!(
+            "measure {measure_number} is all rests — nothing to row"
+        ));
+    }
+    if midis.len() > brain::coach::LIFT_MAX_NOTES {
+        return Err(format!(
+            "measure {measure_number} is too busy to row ({} notes; {} is the ceiling)",
+            midis.len(),
+            brain::coach::LIFT_MAX_NOTES
+        ));
+    }
+    let first = midis[0];
+    // A cell is semitone offsets from its first note — same wire shape as a
+    // lifted lick (i16 math so wide measures can't wrap).
+    let cell: Vec<i8> = midis
+        .iter()
+        .map(|&m| (i16::from(m) - i16::from(first)).clamp(-36, 36) as i8)
+        .collect();
+    let learner = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_cell(cell, first % 12, &learner, seed);
+    let dto = explore_dto(&explore, &seq, &learner);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "measure_bridge",
+                label: &seq.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+/// #337 S5: row one measure of a stored score through 12 keys.
+#[tauri::command]
+pub fn explore_measure(
+    state: State<'_, AppState>,
+    score_id: String,
+    measure_number: usize,
+) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42);
+    explore_measure_impl(&state, &score_id, measure_number, seed)
 }
 
 #[tauri::command]
@@ -3561,6 +3706,49 @@ mod tests {
                 .is_some_and(|e| e.contains("Audio import isn't available")),
             "a transcription panic must degrade to the friendly error, got {result:?}"
         );
+    }
+
+    /// #337 S5 AC6: the RV bridge — a stored score's measure becomes a
+    /// 12-key exploration through the real engine: the cell is the
+    /// measure's notes as offsets, it rows through multiple roots, and the
+    /// staff renders. Unknown and out-of-library cases refuse calmly.
+    #[test]
+    fn explore_measure_rows_a_stored_measure_through_keys() {
+        let s = state();
+        // A 4-note MIDI import gives us a library score with known content.
+        let entry = s
+            .import_midi("bridge.mid".to_string(), build_test_midi(Some("Bridge")))
+            .expect("import fixture");
+        let dto = explore_measure_impl(&s, &entry.id.to_string(), 1, 7).expect("measure 1 rows");
+        assert!(
+            !dto.staff.notes.is_empty(),
+            "the exploration renders on the staff"
+        );
+        assert!(
+            dto.root_pitch_classes.len() >= 3,
+            "rowed through multiple keys: {:?}",
+            dto.root_pitch_classes
+        );
+        // The engine's label names the player's own material.
+        assert!(
+            dto.label.contains("cell"),
+            "a measure rows as a cell: {}",
+            dto.label
+        );
+        // And it left exercise evidence with the bridge's own source tag.
+        let log = s
+            .session_store
+            .lock()
+            .unwrap()
+            .list_exercise_log()
+            .expect("log reads");
+        assert_eq!(log.last().unwrap().source, "measure_bridge");
+
+        // Calm refusals: a measure the piece doesn't have, and a bad id.
+        let err = explore_measure_impl(&s, &entry.id.to_string(), 99, 7).unwrap_err();
+        assert!(err.contains("isn't in this piece"), "got: {err}");
+        let err = explore_measure_impl(&s, "not-a-real-id", 1, 7).unwrap_err();
+        assert!(err.contains("isn't in the library"), "got: {err}");
     }
 
     /// Review MUST-FIX 4 (#337 S1): a recording whose transcription hears

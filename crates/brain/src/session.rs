@@ -520,7 +520,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, profile, Vec::new())
+        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new())
             .await
     }
 
@@ -535,7 +535,7 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, Vec::new())
+        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new())
             .await
     }
 
@@ -547,7 +547,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         idiom_notes: Vec<IdiomMatch>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, idiom_notes)
+        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new())
             .await
     }
 
@@ -567,9 +567,11 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
         idiom_notes: Vec<IdiomMatch>,
+        note_verdicts: Vec<crate::follower::NoteVerdict>,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
+        input.note_verdicts = note_verdicts;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
