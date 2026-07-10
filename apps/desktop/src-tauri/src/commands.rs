@@ -2356,13 +2356,16 @@ fn explore_dto(
         .map(|m| m.scale.label().to_lowercase())
         .unwrap_or_else(|| "major".to_owned());
     let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
+    // Same rule as the root cells: the label speaks the engraved
+    // signature's spelling, never "C#" over flats (#335).
+    let label = brain::coach::respell_label(&seq.label, key.fifths);
     let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
         seq,
-        &seq.label,
+        &label,
         key.clone(),
     ));
     ExploreDto {
-        label: seq.label.clone(),
+        label,
         music_xml,
         chips,
         root_pitch_classes: seq.root_order.iter().map(|&r| r % 12).collect(),
@@ -2462,7 +2465,7 @@ pub fn start_explore_variation_impl(
             &store,
             ExerciseOutcome {
                 source: "explore",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -2512,7 +2515,7 @@ pub fn apply_variation_delta_impl(
             &store,
             ExerciseOutcome {
                 source: "explore_chip",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &next.spec,
                 seed: next.seed,
                 difficulty: next.difficulty,
@@ -2658,7 +2661,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
             &store,
             ExerciseOutcome {
                 source: "lift",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -2747,7 +2750,7 @@ pub fn explore_measure_impl(
             &store,
             ExerciseOutcome {
                 source: "measure_bridge",
-                label: &seq.label,
+                label: &dto.label,
                 spec: &explore.spec,
                 seed: explore.seed,
                 difficulty: explore.difficulty,
@@ -4290,6 +4293,47 @@ mod tests {
         assert_eq!(back_to_start.staff, dto.staff, "chips are undo-able too");
         // …and only then is history exhausted.
         assert!(undo_explore_edit_impl(&s).is_err(), "history exhausted");
+    }
+
+    /// #335 at the explore surface: a C#-major exploration engraves 5 flats,
+    /// so its label must open with the same "Db" the first root cell shows —
+    /// the header and the cells may never spell the root differently.
+    #[test]
+    fn explore_label_speaks_the_signature_spelling() {
+        let s = state();
+        let dto = start_explore_variation_impl(&s, 1, "major", 42).unwrap();
+        assert!(
+            dto.music_xml.contains("<fifths>-5</fifths>"),
+            "pc-1 major engraves the conventional Db signature"
+        );
+        let head = dto.label.split(' ').next().unwrap();
+        assert_eq!(
+            head, dto.root_names[0],
+            "label head and first root cell must agree, got {:?} vs {:?}",
+            dto.label, dto.root_names
+        );
+        assert!(
+            !dto.label.contains("C#"),
+            "no C# over a flat signature, got {:?}",
+            dto.label
+        );
+        // The engraved score title carries the same spelling…
+        assert!(
+            dto.music_xml.contains("<work-title>Db"),
+            "score title must speak the flat spelling too"
+        );
+        // …and the exercise log records the label the player actually saw.
+        let log = s
+            .session_store
+            .lock()
+            .unwrap()
+            .list_exercise_log()
+            .expect("log reads");
+        assert_eq!(
+            log.last().unwrap().label,
+            dto.label,
+            "exercise log must record the displayed label"
+        );
     }
 
     /// #277: the drill's MusicXML engraves the drill's real key signature —

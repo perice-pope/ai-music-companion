@@ -342,7 +342,11 @@ fn build_drill(lesson: &LessonSpec, index: u8, difficulty: u8, tonic: u8) -> Opt
     let kind = kind_at(index, count)?;
     let d = difficulty.min(MAX_DIFFICULTY);
     let (spec, mode) = spec_for(kind, d, tonic);
-    let sequence = generate(&spec, drill_seed(lesson.seed, index));
+    let mut sequence = generate(&spec, drill_seed(lesson.seed, index));
+    // The label rides everywhere the drill shows (header, recap, score
+    // title) — respell it to the engraved signature so no surface can say
+    // "C#" over flats (#335).
+    sequence.label = respell_label(&sequence.label, key_signature_for(tonic, &mode).fifths);
     Some(Drill {
         index,
         kind,
@@ -584,6 +588,57 @@ fn midi_to_hz(midi: u8) -> f64 {
     440.0 * 2f64.powf((f64::from(midi) - 69.0) / 12.0)
 }
 
+const SHARP_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+const FLAT_NAMES: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+];
+
+/// Display name for a tonic pitch class under a key signature: flat
+/// signatures name flats — the "C# major" lesson engraves as Db (5 flats),
+/// so its header and colored cells must say "Db", never "C#" (#335; the
+/// #277 self-consistency family: surfaces must not visibly contradict each
+/// other).
+pub fn tonic_display_name(pc: u8, fifths: i8) -> &'static str {
+    if fifths < 0 {
+        FLAT_NAMES[usize::from(pc % 12)]
+    } else {
+        SHARP_NAMES[usize::from(pc % 12)]
+    }
+}
+
+/// Pitch class for a note name in either spelling; `None` for non-note words
+/// ("—", "interval", …).
+fn note_name_to_pc(name: &str) -> Option<u8> {
+    SHARP_NAMES
+        .iter()
+        .position(|&n| n == name)
+        .or_else(|| FLAT_NAMES.iter().position(|&n| n == name))
+        .map(|i| i as u8)
+}
+
+/// Respell the leading root-name token of a generated drill label to the key
+/// signature's spelling (#335): over a 5-flat signature, "C# major · up" reads
+/// "Db major · up". The header must speak the engraved notation's language —
+/// the same rule `tonic_display_name` applies to the colored root cells, so
+/// header and cells always name the first root identically. Labels that don't
+/// open with a note name pass through unchanged.
+pub fn respell_label(label: &str, fifths: i8) -> String {
+    let (head, rest) = match label.split_once(' ') {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (label, None),
+    };
+    let Some(pc) = note_name_to_pc(head) else {
+        return label.to_owned();
+    };
+    let spelled = tonic_display_name(pc, fifths);
+    match rest {
+        Some(rest) => format!("{spelled} {rest}"),
+        None => spelled.to_owned(),
+    }
+}
+
 /// Key signature for a drill: `fifths` on the circle plus major/minor family,
 /// derived from the tonic pitch class and the drill's material label (#277
 /// follow-up: drills used to render keyless — an A# figure showed a wall of
@@ -593,25 +648,6 @@ fn midi_to_hz(midi: u8) -> f64 {
 /// (Dorian −2, Mixolydian −1, Lydian +1, Phrygian −4, minor family −3,
 /// Locrian −5); chord/interval material uses the tonic's plain major or minor.
 /// The result is clamped into the engravable −7..=7.
-/// Display name for a tonic pitch class under a key signature: flat
-/// signatures name flats — the "C# major" lesson engraves as Db (5 flats),
-/// so its header and colored cells must say "Db", never "C#" (#335; the
-/// #277 self-consistency family: surfaces must not visibly contradict each
-/// other).
-pub fn tonic_display_name(pc: u8, fifths: i8) -> &'static str {
-    const SHARP: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    const FLAT: [&str; 12] = [
-        "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
-    ];
-    if fifths < 0 {
-        FLAT[usize::from(pc % 12)]
-    } else {
-        SHARP[usize::from(pc % 12)]
-    }
-}
-
 pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
     /// fifths of the MAJOR key for each tonic pitch class, favoring the flat
     /// spelling where conventional (Db over C#, Eb, Ab, Bb; F# kept for pc 6).
@@ -1697,6 +1733,113 @@ mod tests {
             tonic_display_name(6, key_signature_for(6, "major").fifths),
             "F#"
         );
+    }
+
+    /// #335 AC — the header label agrees with the rendered signature for
+    /// every pitch class × major/minor: sweep all 24, asserting the respelled
+    /// label opens with the signature's own spelling of the tonic.
+    #[test]
+    fn respelled_labels_agree_with_their_signatures_for_all_24_keys() {
+        for mode in ["major", "minor"] {
+            for pc in 0u8..12 {
+                let fifths = key_signature_for(pc, mode).fifths;
+                // The generator always spells labels with sharps today.
+                let raw = format!(
+                    "{} {mode} scale · up-down · 12 roots",
+                    SHARP_NAMES[pc as usize]
+                );
+                let respelled = respell_label(&raw, fifths);
+                let head = respelled.split(' ').next().unwrap();
+                assert_eq!(
+                    head,
+                    tonic_display_name(pc, fifths),
+                    "pc {pc} {mode}: label head must match the {fifths}-fifths spelling"
+                );
+                let rest = raw.split_once(' ').unwrap().1;
+                assert!(
+                    respelled.ends_with(rest),
+                    "pc {pc} {mode}: only the root token may change, got {respelled:?}"
+                );
+            }
+        }
+    }
+
+    /// The exact VA #334 report: a C#-major drill must present as "Db …" —
+    /// the header (sequence label) speaks the 5-flat signature's language,
+    /// end to end through build_drill, and the recap inherits it.
+    #[test]
+    fn c_sharp_major_drill_headers_say_db() {
+        let spec = lesson(7);
+        // Difficulty 0 warmup: major scale, single unshuffled root = the tonic.
+        let drill = build_drill(&spec, 0, 0, 1).unwrap();
+        assert_eq!(key_signature_for(1, &drill.mode).fifths, -5);
+        assert!(
+            drill.sequence.label.starts_with("Db "),
+            "header must speak the flat signature, got {:?}",
+            drill.sequence.label
+        );
+        assert!(
+            !drill.sequence.label.contains("C#"),
+            "no surface may say C# over flats, got {:?}",
+            drill.sequence.label
+        );
+        // The recap lists the same label, so it inherits the spelling.
+        let (_, recap) = finish_lesson(
+            &LearnerModel::default(),
+            &[(drill.clone(), perfect_score(&drill))],
+            0,
+        );
+        assert!(
+            recap.drill_labels[0].starts_with("Db "),
+            "got {:?}",
+            recap.drill_labels
+        );
+    }
+
+    /// The header names exactly what the first colored root cell names, for
+    /// every tonic, at an unshuffled and a shuffled-row difficulty (the RV
+    /// shuffle keeps the first root fixed, so both follow the PLAYED order).
+    #[test]
+    fn drill_label_head_matches_the_first_root_cell_for_every_tonic() {
+        for tonic in 0u8..12 {
+            // d=0 (major warmup) and d=7 (melodic-minor, 10 shuffled roots).
+            for difficulty in [0u8, 7] {
+                let drill = build_drill(&lesson(3), 0, difficulty, tonic).unwrap();
+                let fifths = key_signature_for(tonic, &drill.mode).fifths;
+                let first_pc = drill.sequence.root_order[0] % 12;
+                let head = drill.sequence.label.split(' ').next().unwrap();
+                assert_eq!(
+                    head,
+                    tonic_display_name(first_pc, fifths),
+                    "tonic {tonic} d{difficulty}: header vs first root cell"
+                );
+            }
+        }
+    }
+
+    /// respell_label edge cases: non-note leads pass through untouched; the
+    /// flat→sharp direction works (Db-material wrapped to a sharp signature);
+    /// a bare token respells without panicking.
+    #[test]
+    fn respell_label_edges() {
+        // Empty-roots label ("—") and prose leads: unchanged.
+        assert_eq!(respell_label("—", -5), "—");
+        assert_eq!(respell_label("", -5), "");
+        assert_eq!(respell_label("your 5-note cell", -5), "your 5-note cell");
+        // Sharp signature keeps sharp names.
+        assert_eq!(respell_label("F# major · up", 6), "F# major · up");
+        // The zero-fifths boundary spells SHARP: C major's shuffled row may
+        // open on any black key, and it must read C#, never Db.
+        assert_eq!(respell_label("C# major · up", 0), "C# major · up");
+        // Flat→sharp: Db dorian wraps to +5 fifths, so it must read C#.
+        assert_eq!(
+            respell_label("Db · your 3-note cell", 5),
+            "C# · your 3-note cell"
+        );
+        // Naturals never change spelling.
+        assert_eq!(respell_label("C major · up", -5), "C major · up");
+        // A bare note name (no rest) still respells.
+        assert_eq!(respell_label("C#", -5), "Db");
     }
 
     /// #277 must-fix: the key-signature mapping over the REAL drill-label
