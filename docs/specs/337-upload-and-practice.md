@@ -107,8 +107,14 @@ of 1 offset + roots) · very long pieces (verdict/paint state bounded per visibl
 4. Score recap + exercise_log (#337-S4).
 5. `explore_measure` RV bridge (#337-S5, the flagship).
 
-## 9. Open questions (founder)
-1. "Near" tolerance: per-instrument profile values or one global default to start?
-   (Spec assumes profile-driven; global fallback fine for v1.)
-2. Should the RV bridge live on the recap only, or also as a long-press on any
-   measure during practice? (Spec assumes recap-only for v1 — smaller surface.)
+## 9. Resolved questions (founder, 2026-07-10)
+1. **"Near" tolerance comes from the instrument profiles.** Each profile JSON
+   supplies its verdict tolerances (voice looser than piano — the vibrato/attack
+   fields are the starting point); adding an instrument stays "add a JSON file".
+   A profile without the new fields falls back to the built-in default.
+2. **The RV bridge lives in BOTH places: the recap's worst-measure rows AND
+   during practice** (tap/long-press a measure to row it through 12 keys now).
+   Constraint for slice 5: the in-practice gesture is a hit-region OVERLAY
+   positioned above the score view — OSMD itself stays read-only per the
+   standing architecture decision (no OSMD-internal gesture or edit hooks).
+   Slice 5 may split into 5a (recap) + 5b (overlay) if the envelope demands.
