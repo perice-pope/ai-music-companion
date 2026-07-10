@@ -30,70 +30,73 @@ export type OsmdFactory = (container: HTMLElement) => OsmdLike;
  * `ambient` renders the notation in a light ink at a smaller zoom for the
  * transparent, sits-in-the-background treatment (#278).
  */
-const makeDefaultFactory = (ambient: boolean): OsmdFactory => (container) => {
-  // The dynamic import is resolved lazily inside `load` on first use; we
-  // return a thin async proxy so construction itself stays synchronous and
-  // the effect can hold a stable handle.
-  let inner: OsmdLike | null = null;
-  let ctorPromise: Promise<OsmdLike> | null = null;
+const makeDefaultFactory =
+  (ambient: boolean): OsmdFactory =>
+  (container) => {
+    // The dynamic import is resolved lazily inside `load` on first use; we
+    // return a thin async proxy so construction itself stays synchronous and
+    // the effect can hold a stable handle.
+    let inner: OsmdLike | null = null;
+    let ctorPromise: Promise<OsmdLike> | null = null;
 
-  const ensure = async (): Promise<OsmdLike> => {
-    if (inner) return inner;
-    if (!ctorPromise) {
-      ctorPromise = import("opensheetmusicdisplay").then((mod) => {
-        const Ctor =
-          (mod as { OpenSheetMusicDisplay?: unknown }).OpenSheetMusicDisplay ??
-          (mod as { default?: { OpenSheetMusicDisplay?: unknown } }).default
-            ?.OpenSheetMusicDisplay;
-        const OSMD = Ctor as new (
-          el: HTMLElement,
-          opts: Record<string, unknown>,
-        ) => OsmdLike;
-        inner = new OSMD(container, {
-          autoResize: true,
-          backend: "svg",
-          drawingParameters: "compact",
-          // Ambient (#278): light ink so the staff reads on the app's dark
-          // background — the SVG itself is transparent; the old white "page"
-          // was only ever the container's background.
-          ...(ambient ? { defaultColorMusic: "#E2E8F0" } : {}),
+    const ensure = async (): Promise<OsmdLike> => {
+      if (inner) return inner;
+      if (!ctorPromise) {
+        ctorPromise = import("opensheetmusicdisplay").then((mod) => {
+          const Ctor =
+            (mod as { OpenSheetMusicDisplay?: unknown })
+              .OpenSheetMusicDisplay ??
+            (mod as { default?: { OpenSheetMusicDisplay?: unknown } }).default
+              ?.OpenSheetMusicDisplay;
+          const OSMD = Ctor as new (
+            el: HTMLElement,
+            opts: Record<string, unknown>,
+          ) => OsmdLike;
+          inner = new OSMD(container, {
+            autoResize: true,
+            backend: "svg",
+            drawingParameters: "compact",
+            // Ambient (#278): light ink so the staff reads on the app's dark
+            // background — the SVG itself is transparent; the old white "page"
+            // was only ever the container's background.
+            ...(ambient ? { defaultColorMusic: "#E2E8F0" } : {}),
+          });
+          if (ambient) {
+            // Smaller notation for the ambient treatment. OSMD exposes zoom as
+            // a property, applied at the next render().
+            (inner as unknown as { Zoom?: number }).Zoom = 0.75;
+          }
+          return inner;
         });
-        if (ambient) {
-          // Smaller notation for the ambient treatment. OSMD exposes zoom as
-          // a property, applied at the next render().
-          (inner as unknown as { Zoom?: number }).Zoom = 0.75;
-        }
-        return inner;
-      });
-    }
-    return ctorPromise;
-  };
+      }
+      return ctorPromise;
+    };
 
-  return {
-    async load(xml: string) {
-      const osmd = await ensure();
-      return osmd.load(xml);
-    },
-    render() {
-      inner?.render();
-    },
-    clear() {
-      inner?.clear?.();
-    },
-    get cursor() {
-      // Before construction completes there's no cursor; callers guard on
-      // load completion, so this only fires after `inner` is set.
-      return (
-        inner?.cursor ?? {
-          show() {},
-          hide() {},
-          reset() {},
-          next() {},
-        }
-      );
-    },
+    return {
+      async load(xml: string) {
+        const osmd = await ensure();
+        return osmd.load(xml);
+      },
+      render() {
+        inner?.render();
+      },
+      clear() {
+        inner?.clear?.();
+      },
+      get cursor() {
+        // Before construction completes there's no cursor; callers guard on
+        // load completion, so this only fires after `inner` is set.
+        return (
+          inner?.cursor ?? {
+            show() {},
+            hide() {},
+            reset() {},
+            next() {},
+          }
+        );
+      },
+    };
   };
-};
 
 /** Stable factory instances so effect deps don't churn between renders. */
 const pageFactory = makeDefaultFactory(false);
@@ -105,7 +108,10 @@ export interface ScoreViewProps {
   /**
    * Where the player currently is, from `phrase-detected`'s
    * `score_position`. The cursor advances to this measure. `null` parks
-   * the cursor at the start.
+   * the cursor at the start, hidden — a visible cursor always means "the
+   * follower put it there" (#279), so surfaces without live following
+   * (lesson drills, a score loaded before the first position arrives)
+   * show plain notation.
    */
   cursorPosition: ScorePosition | null;
   /**
@@ -141,6 +147,14 @@ export default function ScoreView({
   const [error, setError] = useState<string | null>(null);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
+  /**
+   * Whether we have show()n the cursor for the current score. Real OSMD's
+   * show() re-runs update() — getBoundingClientRect + a smooth
+   * scrollIntoView — so calling it on every ~10 Hz position tick would
+   * snap the pane back to the cursor 10×/second and fight the user's own
+   * scrolling. Only the hidden→shown transition may call show().
+   */
+  const cursorShownRef = useRef(false);
 
   // Effect 1: load + render on MusicXML change.
   useEffect(() => {
@@ -163,7 +177,8 @@ export default function ScoreView({
         if (cancelled) return;
         osmd.render();
         osmd.cursor.reset();
-        osmd.cursor.show();
+        osmd.cursor.hide();
+        cursorShownRef.current = false;
         cursorMeasureRef.current = currentMeasure(osmd);
         setReady(true);
       } catch (err) {
@@ -185,14 +200,29 @@ export default function ScoreView({
     const osmd = osmdRef.current;
     if (!osmd) return;
 
-    // ScorePosition measures are 1-based (MusicXML convention); OSMD's
-    // iterator is 0-based. Park at the start when we have no position.
-    const targetMeasure =
-      cursorPosition === null
-        ? 0
-        : Math.max(0, cursorPosition.measure_number - 1);
+    // No live position (no follower installed, or the session ended):
+    // park at the start and keep the cursor out of sight.
+    if (cursorPosition === null) {
+      if (cursorMeasureRef.current > 0) {
+        osmd.cursor.reset();
+        cursorMeasureRef.current = currentMeasure(osmd);
+      }
+      osmd.cursor.hide();
+      cursorShownRef.current = false;
+      return;
+    }
 
-    moveCursorToMeasure(osmd, targetMeasure, cursorMeasureRef);
+    if (!cursorShownRef.current) {
+      osmd.cursor.show();
+      cursorShownRef.current = true;
+    }
+    // ScorePosition measures are 1-based (MusicXML convention); OSMD's
+    // iterator is 0-based.
+    moveCursorToMeasure(
+      osmd,
+      Math.max(0, cursorPosition.measure_number - 1),
+      cursorMeasureRef,
+    );
   }, [ready, cursorPosition]);
 
   return (
@@ -214,7 +244,19 @@ export default function ScoreView({
           No score loaded.
         </p>
       )}
-      <div ref={containerRef} data-testid="score-view-canvas" />
+      {/* OSMD (1.9.x) appends its follow cursor to this element as an
+          absolutely-positioned <img> with a NEGATIVE z-index, relying on
+          the transparent notation SVG above it. `relative` makes this div
+          the img's offset parent (OSMD computes the img's top/left in
+          container-local coordinates); `z-0` makes it a stacking context,
+          so the negative-z cursor paints above the app's backgrounds
+          instead of behind them. Without both, every cursor move "works"
+          but nothing is ever visible on screen (#279). */}
+      <div
+        ref={containerRef}
+        data-testid="score-view-canvas"
+        className="relative z-0"
+      />
     </div>
   );
 }

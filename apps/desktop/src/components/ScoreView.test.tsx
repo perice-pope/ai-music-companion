@@ -94,27 +94,43 @@ describe("ScoreView — ambient variant (#278)", () => {
 });
 
 describe("ScoreView — wiring with a fake OSMD", () => {
-  it("loads, renders, and shows the cursor when given MusicXML", async () => {
+  it("loads, renders, and parks the cursor hidden while no position exists", async () => {
     const fake = makeFakeOsmd(3);
     render(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={null} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.calls).toContain("render"));
     expect(fake.calls).toContain("reset");
-    expect(fake.calls).toContain("show");
+    // A visible cursor must mean "the follower put it there" (#279):
+    // with no position, lesson drills and just-loaded scores show plain
+    // notation, not a parked highlight.
+    expect(fake.calls).toContain("hide");
+    expect(fake.calls).not.toContain("show");
     cleanup();
   });
 
   it("advances the cursor forward to the live measure (1-based → 0-based)", async () => {
     const fake = makeFakeOsmd(5);
     const { rerender } = render(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={null} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.calls).toContain("render"));
 
     // Move to measure 3 (1-based) → cursor should sit on index 2.
     rerender(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={pos(3)} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(3)}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.currentMeasure()).toBe(2));
     cleanup();
@@ -123,13 +139,21 @@ describe("ScoreView — wiring with a fake OSMD", () => {
   it("does not move backward step-by-step: resets then walks when position rewinds", async () => {
     const fake = makeFakeOsmd(5);
     const { rerender } = render(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={pos(4)} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(4)}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.currentMeasure()).toBe(3));
 
     fake.calls.length = 0; // focus on the rewind behavior
     rerender(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={pos(2)} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(2)}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.currentMeasure()).toBe(1));
     // A rewind must go through reset (forward-only cursor), not assume
@@ -143,7 +167,11 @@ describe("ScoreView — wiring with a fake OSMD", () => {
     const nextSpy = vi.spyOn(fake.osmd.cursor, "next");
     render(
       // Ask for measure 999 — way past the end.
-      <ScoreView musicXml={SCALE_XML} cursorPosition={pos(999)} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(999)}
+        osmdFactory={fake.factory}
+      />,
     );
     await waitFor(() => expect(fake.currentMeasure()).toBe(2));
     // Parked at the last measure; must not have spun the guard cap.
@@ -154,7 +182,11 @@ describe("ScoreView — wiring with a fake OSMD", () => {
   it("renders an empty-state and never constructs OSMD without MusicXML", async () => {
     const fake = makeFakeOsmd(3);
     const { getByTestId } = render(
-      <ScoreView musicXml={null} cursorPosition={null} osmdFactory={fake.factory} />,
+      <ScoreView
+        musicXml={null}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
     );
     expect(getByTestId("score-view-empty")).toBeTruthy();
     expect(fake.calls).toEqual([]);
@@ -170,9 +202,185 @@ describe("ScoreView — wiring with a fake OSMD", () => {
       cursor: { show() {}, hide() {}, reset() {}, next() {} },
     });
     const { getByTestId } = render(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={null} osmdFactory={failing} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={failing}
+      />,
     );
     await waitFor(() => expect(getByTestId("score-view-error")).toBeTruthy());
+    cleanup();
+  });
+});
+
+/**
+ * VA #279 / #324: the backend provably emitted score positions, every
+ * cursor.next() "worked", and the tester still saw no cursor. Real OSMD
+ * (1.9.x, pinned by inspection of the bundle) implements its follow cursor
+ * as an <img> appended to the container with `position: absolute` and a
+ * NEGATIVE z-index (-1/-2), painting *behind* the transparent notation SVG.
+ * That only renders if the container ScoreView hands OSMD is
+ *   1. positioned (`relative`) — OSMD computes the img's top/left in
+ *      container-local coordinates, so the container must be the img's
+ *      offset parent, and
+ *   2. a stacking context (`z-0`) — otherwise the negative-z img paints
+ *      behind the app's opaque backgrounds (the white page wrapper, the
+ *      dark app shell) and is invisible at any coordinates.
+ * jsdom neither lays out nor paints, so the honest assertable surface is
+ * the contract itself: the exact element handed to the OSMD factory must
+ * carry both classes. Removing either re-opens #279 in the real app.
+ */
+describe("ScoreView — the cursor can actually paint (#279)", () => {
+  it.each(["page", "ambient"] as const)(
+    "hands OSMD a positioned stacking-context container (%s variant)",
+    async (variant) => {
+      const fake = makeFakeOsmd(3);
+      let handed: HTMLElement | null = null;
+      const capturing: OsmdFactory = (container) => {
+        handed = container;
+        return fake.osmd;
+      };
+      render(
+        <ScoreView
+          musicXml={SCALE_XML}
+          cursorPosition={null}
+          variant={variant}
+          osmdFactory={capturing}
+        />,
+      );
+      await waitFor(() => expect(handed).not.toBeNull());
+      const classes = (handed as unknown as HTMLElement).className.split(/\s+/);
+      expect(classes).toContain("relative");
+      expect(classes).toContain("z-0");
+      cleanup();
+    },
+  );
+
+  it("shows the cursor when the follower reports, hides it again when the position clears", async () => {
+    const fake = makeFakeOsmd(5);
+    const { rerender } = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.calls).toContain("render"));
+    expect(fake.calls).not.toContain("show");
+
+    // First live position → the cursor appears AND sits on the right measure.
+    rerender(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(3)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(2));
+    expect(fake.calls).toContain("show");
+
+    // Session over (store clears the position) → hidden and re-parked, so a
+    // stale highlight can't linger over measure 3 of a finished take.
+    fake.calls.length = 0;
+    rerender(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.calls).toContain("hide"));
+    expect(fake.currentMeasure()).toBe(0);
+    expect(fake.calls).not.toContain("show");
+    cleanup();
+  });
+
+  it("calls show() once per appearance, not on every position tick", async () => {
+    // Real OSMD's show() re-runs update(): getBoundingClientRect plus a
+    // smooth scrollIntoView. Live following emits ~10 positions/second, so
+    // a show() per tick would snap the pane back to the cursor 10×/second
+    // and fight the user's own scrolling.
+    const fake = makeFakeOsmd(10);
+    const { rerender } = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(2)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(1));
+    for (const m of [3, 4, 4, 5]) {
+      rerender(
+        <ScoreView
+          musicXml={SCALE_XML}
+          cursorPosition={pos(m)}
+          osmdFactory={fake.factory}
+        />,
+      );
+    }
+    await waitFor(() => expect(fake.currentMeasure()).toBe(4));
+    expect(fake.calls.filter((c) => c === "show")).toHaveLength(1);
+    cleanup();
+  });
+
+  it("re-walks to a re-reported measure after the position clears (new take, same spot)", async () => {
+    const fake = makeFakeOsmd(8);
+    const { rerender } = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(5)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(4));
+    rerender(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(0));
+    // The next take reports the SAME measure. The stale-ref trap: if the
+    // null branch reset the iterator but not the measure ref, the target
+    // would equal the stale ref, skip the walk, and visibly park a shown
+    // cursor on measure 1 while the player is at measure 5.
+    rerender(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(5)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(4));
+    cleanup();
+  });
+
+  it("shows the cursor again after the score reloads mid-session", async () => {
+    const fake = makeFakeOsmd(5);
+    const { rerender } = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(2)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(1));
+    // Swap the score with the follower still live: the load effect re-parks
+    // the cursor hidden, so the show-gate must re-arm — gating show() on a
+    // null→position *transition* instead would leave the cursor invisible
+    // for the rest of the session.
+    rerender(
+      <ScoreView
+        musicXml={`${SCALE_XML}<!-- reloaded -->`}
+        cursorPosition={pos(2)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() =>
+      expect(fake.calls.filter((c) => c === "show")).toHaveLength(2),
+    );
+    expect(fake.currentMeasure()).toBe(1);
     cleanup();
   });
 });
@@ -180,8 +388,11 @@ describe("ScoreView — wiring with a fake OSMD", () => {
 describe("ScoreView — against the real OSMD parser", () => {
   beforeAll(() => {
     // OSMD/VexFlow call getBBox during render; jsdom has no layout engine.
-    const proto = (globalThis as unknown as { SVGElement?: { prototype: Record<string, unknown> } })
-      .SVGElement?.prototype;
+    const proto = (
+      globalThis as unknown as {
+        SVGElement?: { prototype: Record<string, unknown> };
+      }
+    ).SVGElement?.prototype;
     if (proto && !proto.getBBox) {
       proto.getBBox = () => ({ x: 0, y: 0, width: 0, height: 0 });
     }
@@ -229,7 +440,11 @@ describe("ScoreView — against the real OSMD parser", () => {
     };
 
     const { queryByTestId } = render(
-      <ScoreView musicXml={SCALE_XML} cursorPosition={null} osmdFactory={realFactory} />,
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={realFactory}
+      />,
     );
     // Give the async load a chance; assert it did NOT land in the error state.
     await new Promise((r) => setTimeout(r, 200));
