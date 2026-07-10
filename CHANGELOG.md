@@ -1,3 +1,9 @@
+## [2.18.1](https://github.com/perice-pope/ai-music-companion/compare/v2.18.0...v2.18.1) (2026-07-10)
+
+### Bug Fixes
+
+* **lessons:** drill and explore headers speak the signature's spelling ([#335](https://github.com/perice-pope/ai-music-companion/issues/335)) ([#346](https://github.com/perice-pope/ai-music-companion/issues/346)) ([e3fde3b](https://github.com/perice-pope/ai-music-companion/commit/e3fde3ba2781f3e594529b41a357e85c5c5c48a2)), closes [C#-major](https://github.com/perice-pope/C/issues/-major)
+
 ## [2.18.0](https://github.com/perice-pope/ai-music-companion/compare/v2.17.0...v2.18.0) (2026-07-10)
 
 ### Features
