@@ -487,6 +487,7 @@ impl RecapGenerator for MockRecapGenerator {
 impl MockRecapGenerator {
     fn generate_recap_impl(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
         Ok(SessionRecap {
+            score_summary: None,
             overall_assessment: format!(
                 "Nice {}-minute session. You kept the tone centered and stayed with the music.",
                 (input.duration_secs / 60.0).round().max(1.0) as u32,
@@ -1754,6 +1755,7 @@ fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
     };
 
     SessionRecap {
+        score_summary: None,
         overall_assessment,
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),
@@ -1895,6 +1897,9 @@ pub async fn start_practice_session<R: Runtime>(
         state.instruments.iter().find(|i| i.name == instrument),
     ) {
         f.set_verdict_tolerances(brain::follower::VerdictTolerances {
+            // The 20-cent floor keeps tight profiles (piano: 10¢) from
+            // grading live mic detection stricter than the detector's own
+            // jitter — a deliberate widening, not profile drift.
             hit_cents: inst.vibrato_tolerance_cents.max(20.0),
         });
     }
@@ -5880,6 +5885,7 @@ mod tests {
             phrases: vec![sample_phrase()],
             tips: Vec::new(),
             score_title: None,
+            note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
         };

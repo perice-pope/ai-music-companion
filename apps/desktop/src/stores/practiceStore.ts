@@ -189,7 +189,8 @@ export interface PracticeState {
   /**
    * Live note-verdict tally for the current score session (#337 S2):
    * running counts plus the most recent verdicts (newest last, capped) for
-   * the strip. Reset when a session starts or the score is cleared.
+   * the strip. Reset when a session starts (the only consumer mounts inside
+   * a session, so stragglers after session end are invisible until then).
    */
   noteVerdicts: {
     hit: number;

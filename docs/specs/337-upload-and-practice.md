@@ -54,6 +54,15 @@ RV method — the product's core loop. "Practice with your music" currently mean
   calls the existing `start_explore_cell` (17-note cap, LIFT_MIN_ROOTS floor apply).
   Refusal copy when a measure is empty/rest-only or over the cap.
 
+### Shipped deviations (S2, documented)
+- **Display:** v1 shows a verdict tally strip (counts + recent dots), not
+  painted noteheads — the paint lands with S5's measure overlay.
+- **Semantics:** verdicts grade the note the follower LANDED ON (argmin
+  alignment, one-frame confirmation gate), not "the next expected note" — a
+  wrong-but-diatonic note can align elsewhere and read better than played.
+  Counts mean "as the app followed along". Copy must not overclaim.
+- **"Near"** = ≤1.25 semitones (one semitone + quarter-tone detector slack).
+
 ## 5. Acceptance criteria (numbered, testable)
 1. **Stable-tier robustness:** every fixture in a new real-world MIDI corpus
    (multi-track with part picking, tempo changes, pickup bar, overlapping/legato
