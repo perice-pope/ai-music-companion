@@ -1,3 +1,9 @@
+## [2.17.0](https://github.com/perice-pope/ai-music-companion/compare/v2.16.3...v2.17.0) (2026-07-10)
+
+### Features
+
+* **score:** [#337](https://github.com/perice-pope/ai-music-companion/issues/337) S2–S5a — the listening loop: live verdicts, phrase cards, score recap, RV bridge ([#342](https://github.com/perice-pope/ai-music-companion/issues/342)) ([3af6b4d](https://github.com/perice-pope/ai-music-companion/commit/3af6b4d79f525951924c0d68f13ef4bf63871c7e)), closes [#335](https://github.com/perice-pope/ai-music-companion/issues/335) [C#-major](https://github.com/perice-pope/C/issues/-major) [#336](https://github.com/perice-pope/ai-music-companion/issues/336) [#210](https://github.com/perice-pope/ai-music-companion/issues/210)
+
 ## [2.16.3](https://github.com/perice-pope/ai-music-companion/compare/v2.16.2...v2.16.3) (2026-07-10)
 
 ### Bug Fixes
