@@ -105,6 +105,19 @@ impl Default for VerdictTolerances {
 /// not the player skipping — silence beats false accusations.
 const MAX_MISS_RUN: usize = 4;
 
+/// Extra cost (cents units) to arrive at a score note from the note AFTER it —
+/// i.e. to step the alignment backward. Playing through a score is forward
+/// motion; a free backward step lets a descending line re-trace its ascending
+/// twin earlier in the score (VA #347: the cursor walked measures 3–4 back
+/// through 2→1). Backward correction stays possible under sustained evidence
+/// (~2 frames of a cheaper match outweigh it); relocation over a distance is
+/// the silence-gap reset's job.
+const BACKWARD_STEP_PENALTY: f64 = 300.0;
+
+/// Cumulative costs within this of the minimum count as tied; ties resolve
+/// by proximity to the current position (see `update_alignment`).
+const COST_TIE_EPSILON: f64 = 1e-6;
+
 /// A note event from the score, tagged with its position.
 #[derive(Debug, Clone)]
 struct ScoredNote {
@@ -133,9 +146,7 @@ impl ScoredNote {
 #[derive(Debug, Clone)]
 struct PlayedEvent {
     midi_number: u8,
-    #[allow(dead_code)]
     pitch_hz: f64,
-    #[allow(dead_code)]
     timestamp_secs: f64,
     #[allow(dead_code)]
     confidence: f64,
@@ -167,28 +178,16 @@ struct DtwCost {
     cumulative: f64,
 }
 
-impl DtwCost {
-    fn new(pitch_distance: f64, prev_cumulative: f64) -> Self {
-        Self {
-            pitch_distance,
-            cumulative: prev_cumulative + pitch_distance,
-        }
-    }
-}
-
 /// Online DTW state tracker.
 #[derive(Debug)]
 struct OnlineDtw {
     /// Window of recent played events (up to 100 events).
-    #[allow(dead_code)]
     played_window: VecDeque<PlayedEvent>,
     /// Previous row of cost matrix (for space efficiency).
-    #[allow(dead_code)]
     prev_cost_row: Vec<DtwCost>,
     /// Current row of cost matrix (being computed).
     curr_cost_row: Vec<DtwCost>,
     /// Index in the score notes sequence.
-    #[allow(dead_code)]
     score_index: usize,
     /// Tempo ratio (actual / expected). Start at 1.0.
     #[allow(dead_code)]
@@ -207,7 +206,12 @@ impl OnlineDtw {
             curr_cost_row: Vec::with_capacity(num_score_notes),
             score_index: 0,
             tempo_ratio: 1.0,
-            silence_threshold_secs: 0.3,
+            // A rehearsal break, not a breath: 0.3 s reset the alignment on
+            // every detached quarter note, wiping the verdict watermark so a
+            // cleanly sung pass judged almost nothing (VA #347). Phrase
+            // segmentation keeps its own tighter gap; relocation needs a gap
+            // no articulation produces.
+            silence_threshold_secs: 1.5,
             last_voiced_time: 0.0,
         }
     }
@@ -225,9 +229,14 @@ impl OnlineDtw {
         }
     }
 
-    /// Reset alignment state (on silence gap or user restart).
+    /// Reset alignment state (on silence gap or user restart). Clears the
+    /// cost rows too: a reset that keeps the cumulative matrix isn't a
+    /// re-alignment at all — the next entry would just continue the old
+    /// path instead of re-anchoring by pure pitch match.
     fn reset(&mut self) {
         self.played_window.clear();
+        self.prev_cost_row.clear();
+        self.curr_cost_row.clear();
         self.score_index = 0;
         self.tempo_ratio = 1.0;
     }
@@ -279,6 +288,10 @@ pub struct ScoreFollower {
     judge_candidate: Option<usize>,
     pending_verdicts: Vec<NoteVerdict>,
     tolerances: VerdictTolerances,
+    /// Timestamp of the last judged advance — the horizon behind which the
+    /// played window can't be used as evidence for a skipped note (see
+    /// [`Self::skipped_note_verdict`]).
+    last_advance_time: f64,
     /// Beats per minute (from score).
     #[allow(dead_code)]
     tempo_bpm: f64,
@@ -334,6 +347,7 @@ impl ScoreFollower {
             judge_candidate: None,
             pending_verdicts: Vec::new(),
             tolerances: VerdictTolerances::default(),
+            last_advance_time: 0.0,
         })
     }
 
@@ -406,15 +420,18 @@ impl ScoreFollower {
                 score_note.midi_number as f64,
             );
 
-            // Cumulative cost: take the best path from previous state
+            // Cumulative cost: take the best path from previous state.
+            // Playing a score is forward motion — advancing and staying are
+            // free transitions, stepping backward pays BACKWARD_STEP_PENALTY
+            // so a descending line can't re-trace its ascending twin earlier
+            // in the score for free (VA #347).
             let cumulative_cost = if self.dtw.prev_cost_row.is_empty() {
                 note_cost
             } else {
-                // Allow continuing from this or nearby score positions in the previous row
-                let prev_cost = if score_idx > 0 {
+                let advance_cost = if score_idx > 0 {
                     self.dtw.prev_cost_row[score_idx - 1].cumulative
                 } else {
-                    self.dtw.prev_cost_row[0].cumulative
+                    f64::INFINITY
                 };
                 let same_cost = self
                     .dtw
@@ -422,31 +439,52 @@ impl ScoreFollower {
                     .get(score_idx)
                     .map(|c| c.cumulative)
                     .unwrap_or(f64::INFINITY);
-                let next_cost = self
+                let backward_cost = self
                     .dtw
                     .prev_cost_row
                     .get(score_idx + 1)
-                    .map(|c| c.cumulative)
+                    .map(|c| c.cumulative + BACKWARD_STEP_PENALTY)
                     .unwrap_or(f64::INFINITY);
 
-                note_cost + prev_cost.min(same_cost).min(next_cost)
+                note_cost + advance_cost.min(same_cost).min(backward_cost)
             };
 
-            self.dtw
-                .curr_cost_row
-                .push(DtwCost::new(note_cost, cumulative_cost));
+            self.dtw.curr_cost_row.push(DtwCost {
+                pitch_distance: note_cost,
+                cumulative: cumulative_cost,
+            });
         }
 
-        // Find the best score position (minimum cumulative cost).
-        if let Some((best_idx, best_cost)) =
-            self.dtw.curr_cost_row.iter().enumerate().min_by(|a, b| {
-                a.1.cumulative
-                    .partial_cmp(&b.1.cumulative)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        {
+        // Find the best score position (minimum cumulative cost). Ties go to
+        // the index nearest the current position, preferring forward — the
+        // old first-minimum rule was a systematic backward bias: any repeated
+        // pitch (a scale's descent, a da-capo) tied with its earlier twin and
+        // lost to it, pinning the cursor at the top of the score (VA #347).
+        let current = self.dtw.score_index;
+        let mut best: Option<(usize, f64)> = None;
+        for (idx, cost) in self.dtw.curr_cost_row.iter().enumerate() {
+            let cumulative = cost.cumulative;
+            let wins = match best {
+                None => true,
+                Some((best_idx, best_cost)) => {
+                    if cumulative + COST_TIE_EPSILON < best_cost {
+                        true
+                    } else if (cumulative - best_cost).abs() <= COST_TIE_EPSILON {
+                        let dist = idx.abs_diff(current);
+                        let best_dist = best_idx.abs_diff(current);
+                        dist < best_dist || (dist == best_dist && idx > best_idx)
+                    } else {
+                        false
+                    }
+                }
+            };
+            if wins {
+                best = Some((idx, cumulative));
+            }
+        }
+        if let Some((best_idx, best_cost)) = best {
             // Update position based on the best-aligned score note.
-            if best_cost.cumulative < f64::INFINITY {
+            if best_cost < f64::INFINITY {
                 let score_note = &self.score_notes[best_idx];
                 self.position.measure_number = score_note.measure_number;
                 self.position.beat = score_note.beat_in_measure;
@@ -494,16 +532,24 @@ impl ScoreFollower {
         // whatever matches it) sets the watermark silently.
         if from.is_none() && best_idx != 0 {
             self.last_judged_index = Some(best_idx);
+            self.last_advance_time = played.timestamp_secs;
             return;
         }
         let gap = from.map_or(0, |last| best_idx - last - 1);
         if from.is_some() && gap > 0 && gap <= MAX_MISS_RUN {
             for idx in (best_idx - gap)..best_idx {
                 let n = &self.score_notes[idx];
+                let (measure_number, beat) = (n.measure_number, n.beat_in_measure);
+                // Alignment doesn't stop on every note of a repeated or fast
+                // figure (a cost tie stays put, then "skips" the twin). If
+                // this note's pitch is in the played window since the last
+                // advance, it WAS played — grade that evidence instead of
+                // accusing (VA #347's phantom misses).
+                let verdict = self.skipped_note_verdict(n.midi_number);
                 self.pending_verdicts.push(NoteVerdict {
-                    measure_number: n.measure_number,
-                    beat: n.beat_in_measure,
-                    verdict: Verdict::Missed,
+                    measure_number,
+                    beat,
+                    verdict,
                 });
             }
         }
@@ -527,6 +573,38 @@ impl ScoreFollower {
             });
         }
         self.last_judged_index = Some(best_idx);
+        self.last_advance_time = played.timestamp_secs;
+    }
+
+    /// Verdict for a score note the alignment skipped over: Hit/Near when
+    /// the played window since the last advance holds its exact rounded
+    /// pitch (graded by that evidence's cents), Missed when nothing near it
+    /// sounded. A neighbouring pitch is NOT evidence — that's the landed
+    /// note's own audio, and crediting it would soften real skips. Known
+    /// generosity: with no onset/duration evidence, one long C and two
+    /// repeated Cs are indistinguishable here, so a genuinely dropped
+    /// repeat of a pitch that did sound is credited rather than accused —
+    /// the same silence-beats-false-accusations trade as `MAX_MISS_RUN`.
+    fn skipped_note_verdict(&self, expected_midi: u8) -> Verdict {
+        let mut best_cents = f64::INFINITY;
+        for e in &self.dtw.played_window {
+            if e.timestamp_secs <= self.last_advance_time
+                || e.midi_number != expected_midi
+                || e.pitch_hz <= 0.0
+            {
+                continue;
+            }
+            let played_fractional = 12.0 * (e.pitch_hz / 440.0).log2() + 69.0;
+            let cents = (played_fractional - f64::from(expected_midi)).abs() * 100.0;
+            best_cents = best_cents.min(cents);
+        }
+        if best_cents <= self.tolerances.hit_cents {
+            Verdict::Hit
+        } else if best_cents <= Self::NEAR_MAX_SEMITONES * 100.0 {
+            Verdict::Near
+        } else {
+            Verdict::Missed
+        }
     }
 
     /// Reset the follower (e.g., when the user stops and restarts).
@@ -536,6 +614,7 @@ impl ScoreFollower {
         self.last_judged_index = None;
         self.judge_candidate = None;
         self.pending_verdicts.clear();
+        self.last_advance_time = 0.0;
     }
 
     /// Get the current position without processing an event.
@@ -776,6 +855,101 @@ mod tests {
         );
     }
 
+    /// Skip-credit evidence must postdate the last judged advance: a pitch
+    /// played EARLIER in the piece (still sitting in the played window) is
+    /// not proof the skipped copy of it sounded. Score D-C-D-F, played
+    /// D, C, F: the skipped second D's only window evidence is the opening
+    /// D, which predates the C advance — it must read Missed, not Hit.
+    #[test]
+    fn stale_window_evidence_does_not_credit_a_skipped_note() {
+        let midis = [62u8, 60, 62, 65]; // D4 C4 D4 F4
+        let hz = [293.66, 261.63, 293.66, 349.23];
+        let note = |i: usize| ScoreNote {
+            pitch_hz: hz[i],
+            midi_number: midis[i],
+            duration_beats: 1.0,
+            start_beat: i as f64,
+            dynamic: None,
+            is_rest: false,
+        };
+        let score = ScoreModel {
+            title: "Skip Evidence".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            measures: vec![Measure {
+                number: 1,
+                notes: (0..4).map(note).collect(),
+            }],
+        };
+        let mut f = ScoreFollower::new(score).unwrap();
+        play_note(&mut f, 293.66, 0.0); // D4 → idx 0
+        play_note(&mut f, 261.63, 0.2); // C4 → idx 1
+        play_note(&mut f, 349.23, 0.4); // F4 → idx 3, skipping idx 2 (D4)
+        let verdicts = f.take_verdicts();
+        let kinds: Vec<Verdict> = verdicts.iter().map(|v| v.verdict).collect();
+        assert_eq!(
+            kinds,
+            vec![Verdict::Hit, Verdict::Hit, Verdict::Missed, Verdict::Hit],
+            "the skipped D was never re-played — stale frames from the \
+             opening D must not credit it: {verdicts:?}"
+        );
+    }
+
+    /// Cost ties resolve to the index nearest the current position. The
+    /// reachable tie: one frame of the PREVIOUS note (a common detector
+    /// artifact at a note release) when the interval back to it is exactly
+    /// 3 semitones — staying on the current note (300 cents wrong) and
+    /// stepping backward (BACKWARD_STEP_PENALTY + perfect match) then cost
+    /// the same. The cursor must hold its ground; the old first-minimum
+    /// rule flicked it backward.
+    #[test]
+    fn a_release_artifact_frame_does_not_flick_the_cursor_back() {
+        // Two notes, 3 semitones apart: C4 then Eb4.
+        let score = ScoreModel {
+            title: "Release".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            measures: vec![Measure {
+                number: 1,
+                notes: vec![
+                    ScoreNote {
+                        pitch_hz: 261.63,
+                        midi_number: 60,
+                        duration_beats: 1.0,
+                        start_beat: 0.0,
+                        dynamic: None,
+                        is_rest: false,
+                    },
+                    ScoreNote {
+                        pitch_hz: 311.13,
+                        midi_number: 63,
+                        duration_beats: 1.0,
+                        start_beat: 1.0,
+                        dynamic: None,
+                        is_rest: false,
+                    },
+                ],
+            }],
+        };
+        let mut f = ScoreFollower::new(score).unwrap();
+        play_note(&mut f, 261.63, 0.0); // C4 → idx 0
+        play_note(&mut f, 311.13, 0.2); // Eb4 → idx 1
+        assert_eq!(f.current_position().expected_note, Some(63));
+        // One stray C4 frame at the release.
+        let pos = f.align(&create_audio_event(261.63, 0.9, 0.4));
+        assert_eq!(
+            pos.expected_note,
+            Some(63),
+            "a single relapsed frame ties the costs and must not move the cursor"
+        );
+    }
+
     /// An 8-note two-measure C major scale, for jump/skip scenarios.
     fn create_two_measure_score() -> ScoreModel {
         let midis = [60u8, 62, 64, 65, 67, 69, 71, 72];
@@ -880,20 +1054,43 @@ mod tests {
 
     #[test]
     fn align_resets_on_silence_gap() {
-        let score = create_simple_score();
-        let mut follower = ScoreFollower::new(score).unwrap();
+        let mut follower = ScoreFollower::new(create_two_measure_score()).unwrap();
 
-        // First event
-        let event1 = create_audio_event(261.63, 0.9, 0.0);
-        let _pos1 = follower.align(&event1);
+        // Play up to A4 (idx 5, measure 2) …
+        for (i, hz) in [261.63, 293.66, 329.63, 349.23, 392.0, 440.0]
+            .iter()
+            .enumerate()
+        {
+            play_note(&mut follower, *hz, i as f64 * 0.1);
+        }
+        assert_eq!(follower.current_position().measure_number, 2);
 
-        // Long silence gap (> 0.3s) followed by a new event
-        let event2 = create_audio_event(293.66, 0.9, 1.0);
-        let pos2 = follower.align(&event2);
+        // … then a real break (> 1.5 s) and a restart from the top. The
+        // reset must clear the cost matrix so the entry re-anchors by pure
+        // pitch match at the start, not continue the old path.
+        let pos = follower.align(&create_audio_event(261.63, 0.9, 10.0));
+        assert_eq!(pos.measure_number, 1);
+        assert_eq!(pos.expected_note, Some(60));
+    }
 
-        // After reset, position should be back near the start.
-        // (The DTW should realign to find the best match, but the silence triggers a reset.)
-        assert_eq!(pos2.measure_number, 1);
+    /// VA #347: a breath between detached notes (≤ ~1 s) is articulation,
+    /// not a rehearsal break — it must NOT reset the alignment or the
+    /// verdict judge. Under the old 0.3 s threshold every detached quarter
+    /// note wiped the watermark and a cleanly sung pass judged almost
+    /// nothing.
+    #[test]
+    fn a_breath_between_notes_does_not_reset_the_judge() {
+        let mut f = ScoreFollower::new(create_simple_score()).unwrap();
+        play_note(&mut f, 261.63, 0.0); // C4
+        let _ = f.take_verdicts();
+        // 1.0 s of silence — a breath, under the 1.5 s relocation threshold.
+        play_note(&mut f, 293.66, 1.1);
+        let verdicts = f.take_verdicts();
+        assert_eq!(
+            verdicts.iter().map(|v| v.verdict).collect::<Vec<_>>(),
+            vec![Verdict::Hit],
+            "the D after a breath is judged, not silently re-anchored: {verdicts:?}"
+        );
     }
 
     #[test]
