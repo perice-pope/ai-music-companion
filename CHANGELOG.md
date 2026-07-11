@@ -1,3 +1,9 @@
+## [2.18.3](https://github.com/perice-pope/ai-music-companion/compare/v2.18.2...v2.18.3) (2026-07-11)
+
+### Bug Fixes
+
+* **follower:** the cursor walks the whole score — forward-biased DTW, breath-proof judging ([#347](https://github.com/perice-pope/ai-music-companion/issues/347)) ([#351](https://github.com/perice-pope/ai-music-companion/issues/351)) ([92cb78e](https://github.com/perice-pope/ai-music-companion/commit/92cb78e71042922675900ef8796c1f3cb5714fd5))
+
 ## [2.18.2](https://github.com/perice-pope/ai-music-companion/compare/v2.18.1...v2.18.2) (2026-07-11)
 
 ### Bug Fixes
