@@ -352,8 +352,43 @@ mod tests {
         );
     }
 
+    /// The non-chord penalty is load-bearing for honesty: a clean triad
+    /// plus TWO strong foreign bins sits at ~0.37 with the penalty (honest
+    /// None) but ~0.65 without it (a lying "C"). This fixture lives in the
+    /// window where only the penalty separates the two — it fails if
+    /// NON_CHORD_PENALTY is zeroed (the mush test below does not: that one
+    /// stays under the gate from /total dilution alone).
+    #[test]
+    fn strong_foreign_bins_force_an_honest_refusal() {
+        // F AND F# both strong over a C triad — the 4 and the #4 together
+        // are unnameable, and (unlike most foreign pairs in this dense
+        // template space) no template absorbs {0,4,5,6,7}.
+        let mut c = chroma_of(&[0, 4, 7]);
+        c[5] = 0.8;
+        c[6] = 0.8;
+        assert!(
+            best_match(&c, None).is_none(),
+            "triad + 2 strong foreign bins must refuse a label: {:?}",
+            best_match(&c, None)
+        );
+    }
+
+    /// Denoise is pinned IN-CRATE (not only via ears' rendered fixtures): a
+    /// four-note chord over a sub-threshold noise floor must still clear
+    /// the confidence gate. Fails if the denoise zeroing is removed.
+    #[test]
+    fn a_noise_floor_does_not_sink_a_clean_four_note_chord() {
+        let mut c = chroma_of(&[0, 4, 7, 10]);
+        for pc in [1usize, 2, 3, 5, 6, 8, 9, 11] {
+            c[pc] = 0.2; // below ACTIVE_BIN_RATIO of max — pure floor
+        }
+        let m = best_match(&c, None).expect("C7 must match over a floor");
+        assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Dom7));
+    }
+
     /// Non-chord energy is punished: a triad drowned in chromatic mush must
-    /// not report confidently. Fails if the penalty is dropped.
+    /// not report confidently. (Kept for the saturated case; the fixture
+    /// above pins the penalty itself.)
     #[test]
     fn chromatic_mush_does_not_read_as_a_confident_triad() {
         let mut c = chroma_of(&[0, 4, 7]);

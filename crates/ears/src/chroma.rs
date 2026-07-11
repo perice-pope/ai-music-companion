@@ -110,14 +110,20 @@ impl ChromaExtractor {
             return None;
         }
 
-        // 1. Per-semitone Goertzel power over that bin's own window.
+        // 1. Per-semitone Goertzel power over that bin's own window. The
+        // ring is walked as (at most) two contiguous slices — no per-sample
+        // modulo in the hot loop.
         for bin in 0..NUM_BINS {
             let n = self.window_len[bin];
             let coeff = self.coeffs[bin];
             let start = (self.write_pos + BUFFER_LEN - n) % BUFFER_LEN;
+            let (first, second) = if start + n <= BUFFER_LEN {
+                (&self.ring[start..start + n], &self.ring[0..0])
+            } else {
+                (&self.ring[start..], &self.ring[..start + n - BUFFER_LEN])
+            };
             let (mut s1, mut s2) = (0.0f32, 0.0f32);
-            for i in 0..n {
-                let x = self.ring[(start + i) % BUFFER_LEN];
+            for &x in first.iter().chain(second) {
                 let s0 = x + coeff * s1 - s2;
                 s2 = s1;
                 s1 = s0;

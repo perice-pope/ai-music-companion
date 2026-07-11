@@ -223,6 +223,11 @@ const CHORD_SWITCH_MARGIN: f32 = 0.05;
 /// A YIN bass reading older than this no longer names an inversion — the
 /// line has moved on even if the chord is still ringing.
 const BASS_FRESH_SECS: f64 = 2.5;
+/// Only a pitch at or below this (~A3) can be a BASS candidate. YIN reports
+/// one predominant pitch with `pitch_class_of` folding the octave away — a
+/// G4 melody note must never mint "C/G" on a root-position C chord (the
+/// slash claims an inversion the player didn't play; silence > lies).
+const BASS_MAX_HZ: f64 = 220.0;
 
 /// Anti-flap hysteresis over raw chord matches: a new identity must win
 /// [`CHORD_PROMOTE_READINGS`] consecutive readings (and roughly match the
@@ -238,8 +243,12 @@ struct ChordTracker {
     unresolved: bool,
 }
 
+/// Chord identity for hysteresis is (root, quality) ONLY — the slash is
+/// display detail. If it were part of the identity, YIN flicker among chord
+/// tones over one held chord (C ↔ C/E ↔ C/G) would reset the dwell each
+/// reading and starve the label entirely.
 fn same_chord(a: &ChordMatch, b: &ChordMatch) -> bool {
-    a.root_pc == b.root_pc && a.quality == b.quality && a.bass_pc == b.bass_pc
+    a.root_pc == b.root_pc && a.quality == b.quality
 }
 
 impl ChordTracker {
@@ -259,7 +268,10 @@ impl ChordTracker {
         self.none_count = 0;
         if let Some(cur) = &mut self.current {
             if same_chord(cur, &m) {
-                cur.confidence = m.confidence;
+                // Same chord: refresh confidence AND the slash from the
+                // freshest reading (its bass already passed the register +
+                // freshness gates), and reset any challenger's dwell.
+                *cur = m;
                 self.candidate = None;
                 self.candidate_count = 0;
                 return;
@@ -308,8 +320,9 @@ pub struct PerceptionTracker {
     smoothed_tempo: Option<f32>,
     /// Chord hysteresis over the ~10 Hz chroma readings (#349 T1).
     chords: ChordTracker,
-    /// Most recent confident YIN pitch class + when it was heard — the bass
-    /// candidate for inversion naming (used only while fresh).
+    /// Most recent confident LOW-register (≤ [`BASS_MAX_HZ`]) pitch class +
+    /// when it was heard — the bass candidate for inversion naming (used
+    /// only while fresh). Melody-register pitches never land here.
     last_bass: Option<(u8, f64)>,
 }
 
@@ -332,7 +345,11 @@ impl PerceptionTracker {
         if let Some(hz) = event.pitch_hz {
             if event.confidence >= MIN_PITCH_CONFIDENCE && hz > 0.0 {
                 if let Some(pc) = pitch_class_of(hz as f32) {
-                    self.last_bass = Some((pc, event.timestamp_secs));
+                    // Only a LOW pitch may name an inversion's bass — a
+                    // melody note's pitch class must not become a slash.
+                    if hz <= BASS_MAX_HZ {
+                        self.last_bass = Some((pc, event.timestamp_secs));
+                    }
                     if let Some((note_pc, weight)) = self.notes.observe(pc, event.timestamp_secs) {
                         self.key.observe_pc(note_pc, weight);
                     }
@@ -973,6 +990,25 @@ mod tests {
         assert_eq!(chord_reading(&slash, -4).label, "Db/F");
     }
 
+    /// A MELODY-register note must never mint a slash: G4 over a
+    /// root-position C chord is "C", not "C/G" — the slash would claim an
+    /// inversion the player didn't play. Fails if the bass register gate
+    /// (BASS_MAX_HZ) is dropped.
+    #[test]
+    fn a_melody_note_never_mints_an_inversion() {
+        let mut p = PerceptionTracker::new();
+        p.observe(&pitched(392.0, 0.0)); // G4 — chord tone, melody register
+        let c_major = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.1 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.5).chord.expect("shown").label,
+            "C",
+            "root-position chord must not carry a melody-note slash"
+        );
+    }
+
     /// #349 T1c AC (inversions, bass freshness): a fresh YIN bass names the
     /// inversion; a stale one (the line moved on seconds ago) does not.
     #[test]
@@ -1094,7 +1130,19 @@ mod tests {
         // A strong F# bin: a true non-chord tone for every F quality in the
         // vocabulary (b2) → sizable penalty, confidence well below 1.0.
         f_smeared[6] = 0.55;
-        for i in 0..(2 * 3) {
+        // At ONE dwell the confidence margin must still hold the incumbent
+        // (the challenger sits well below it) — fails if the margin check
+        // is bypassed.
+        for i in 0..3 {
+            p.observe_chroma(&f_smeared, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.8).chord.expect("shown").label,
+            "C",
+            "the margin must delay a low-confidence challenger at 1x dwell"
+        );
+        // …but at TWO dwells of consistent disagreement it must yield.
+        for i in 3..(2 * 3) {
             p.observe_chroma(&f_smeared, 0.5 + i as f64 * 0.1);
         }
         let after = p.snapshot(1.2).chord.expect("shown");

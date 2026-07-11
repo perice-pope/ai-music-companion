@@ -128,10 +128,14 @@ pub struct ChordReading {
 Matching: normalize chroma → score every (root × template) by weighted
 dot-product with a penalty for strong non-chord bins; subset tolerance for
 shells (dom13 without the 5th still matches); **hysteresis** like the key
-tracker — a new label must beat the incumbent by a margin for 3 consecutive
-readings (block chords change ~1–2/sec; flicker is the enemy). Inversion:
-if YIN's confident fundamental maps to a chord tone ≠ root → slash label;
-if it maps to a non-chord tone, no slash (silence > lies).
+tracker — a new label must roughly match the incumbent's confidence (within
+a small margin; the incumbent's score can be stale) for 3 consecutive
+readings, and 6 consecutive readings of a consistent different chord force
+the switch regardless, so a stale confident incumbent can never pin a wrong
+label (block chords change ~1–2/sec; flicker is the enemy). Inversion: if
+YIN's confident fundamental is LOW-register (bass, ≲A3) and maps to a chord
+tone ≠ root → slash label; a melody-register pitch or a non-chord tone
+never adds a slash (silence > lies).
 Gate: below `MIN_CHORD_CONF` **and** ≥3 simultaneous strong bins → the
 honest fallback state "hearing several notes…" — never a guessed label,
 never silence that reads as deafness.
