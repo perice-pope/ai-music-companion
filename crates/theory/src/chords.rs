@@ -164,13 +164,21 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
         return None;
     }
     let max_bin = chroma.iter().cloned().fold(0.0f32, f32::max);
-    let active = chroma
-        .iter()
-        .filter(|&&v| v >= max_bin * ACTIVE_BIN_RATIO)
-        .count();
+    // Denoise with the same threshold that defines "sounding": bins under
+    // it are analysis-noise floor (leakage, residual harmonics), not
+    // evidence for or against any chord. Without this, a clean four-note
+    // chord over a realistic floor scores below the confidence gate.
+    let mut chroma = *chroma;
+    for v in chroma.iter_mut() {
+        if *v < max_bin * ACTIVE_BIN_RATIO {
+            *v = 0.0;
+        }
+    }
+    let active = chroma.iter().filter(|&&v| v > 0.0).count();
     if active < MIN_CHORD_BINS {
         return None;
     }
+    let total: f32 = chroma.iter().sum();
 
     let mut best: Option<ChordMatch> = None;
     for root in 0u8..12 {

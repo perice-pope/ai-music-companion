@@ -10,6 +10,7 @@
 //!   output engine fed by a lock-free ring buffer ([`output_engine`])
 
 pub mod capture;
+pub mod chroma;
 pub mod onset;
 pub mod output;
 pub mod output_engine;
