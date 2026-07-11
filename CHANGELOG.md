@@ -1,3 +1,9 @@
+## [2.18.2](https://github.com/perice-pope/ai-music-companion/compare/v2.18.1...v2.18.2) (2026-07-11)
+
+### Bug Fixes
+
+* **coach:** mastery accrues per key/scale, not per drill-flavor label ([#347](https://github.com/perice-pope/ai-music-companion/issues/347)) ([#348](https://github.com/perice-pope/ai-music-companion/issues/348)) ([fba8bb5](https://github.com/perice-pope/ai-music-companion/commit/fba8bb5466115bcb3f7a7ce420e60da33bcd7c90))
+
 ## [2.18.1](https://github.com/perice-pope/ai-music-companion/compare/v2.18.0...v2.18.1) (2026-07-10)
 
 ### Bug Fixes
