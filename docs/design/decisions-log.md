@@ -165,6 +165,45 @@ Silence is honest. Generic filler is a little lie that compounds.
 
 ---
 
+## 2026-07-11 — Lesson mastery accrues per key/scale, never per drill-flavor label
+
+**Decision:** `finish_lesson` folds each drill into F2 keyed by `(tonic, mastery_scale)`, where
+`mastery_scale` is the drill's scale label when the material is a scale ("major", "dorian", …) and
+otherwise the major/minor family of the key signature the drill is engraved in (the same
+`key_signature_for` family the player sees). The drill's material label ("interval 4",
+"major triad") stays display/engraving-only.
+
+**Rejected alternatives:**
+- **Keying mastery by the material label** (what shipped with #254). Fragments one lesson's four
+  drills into four one-attempt entries, and the flavor ladder shifts with difficulty
+  ("interval 4" → "interval 5"), so no entry realistically reaches `OWNED_MIN_ATTEMPTS` — combined
+  with `pick_tonic` rotating to the least-practiced key, owning a key was **out of reach for any
+  player below the top of the ladder** (only a sustained-perfect player pinned at max difficulty
+  could stack repeats, ~13+ lessons in). VA test #347 caught it: weeks of drills, "0 of 12 OWNED"
+  forever.
+- **Aggregating `owned` per root in the wheel.** Spec #256 forbids the wheel redefining F2's owned
+  rule; the wheel stays a pure read.
+- **Keying by tonic alone.** Breaks #252's `key_mastery: BTreeMap<KeyScale, _>` contract and loses
+  the scales-unlocked display.
+
+**Reasoning:** #252 keys `key_mastery` per key/**scale**; #254 defines the drill's mastery key as
+"the F2 mastery key this drill trains". A flavor is not a scale. Under the fix, a nailed beginner
+lesson (warmup + arpeggio + interval, all major-family) stacks three attempts on `"t:major"` and
+owns the key — the wheel finally moves, matching what the lesson header ("B Major") promises.
+
+**Consequence:** Existing learner blobs keep their legacy flavor-keyed entries — they still count
+as Learning evidence and sum into per-root attempts; no migration. New drills accrue to scale keys
+only, so the wheel's scales list gradually becomes real scale names (a read-side filter for legacy
+flavors is a possible follow-up). Mid-ladder lessons that cross a scale band while ramping still
+split across 2–3 entries, so ownership accrues slowest for advanced players — reachable everywhere,
+fastest at the beginner band. If an advanced-profile tester re-reports a slow counter, that's this,
+not a regression.
+
+**Related:** #347 (VA report), #256 (wheel), #254 (guided coach), #252 (F2 contract),
+`crates/brain/src/coach.rs` (`mastery_scale`).
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:
