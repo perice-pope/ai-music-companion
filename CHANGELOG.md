@@ -1,3 +1,9 @@
+## [2.19.1](https://github.com/perice-pope/ai-music-companion/compare/v2.19.0...v2.19.1) (2026-07-11)
+
+### Bug Fixes
+
+* **reveals:** the gate rides the note-fed key signal — steady playing reveals again ([#353](https://github.com/perice-pope/ai-music-companion/issues/353)) ([#359](https://github.com/perice-pope/ai-music-companion/issues/359)) ([8c5b0de](https://github.com/perice-pope/ai-music-companion/commit/8c5b0de9932fa26f9c5f39b03abd0aec6f41ffa1)), closes [321/#325](https://github.com/321/ai-music-companion/issues/325) [#347](https://github.com/perice-pope/ai-music-companion/issues/347) [pre-#266](https://github.com/perice-pope/pre-/issues/266)
+
 ## [2.19.0](https://github.com/perice-pope/ai-music-companion/compare/v2.18.3...v2.19.0) (2026-07-11)
 
 ### Features
