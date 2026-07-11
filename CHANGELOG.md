@@ -1,3 +1,9 @@
+## [2.19.0](https://github.com/perice-pope/ai-music-companion/compare/v2.18.3...v2.19.0) (2026-07-11)
+
+### Features
+
+* jazz ears T1 — live chord hearing and labeling ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#358](https://github.com/perice-pope/ai-music-companion/issues/358)) ([72d78af](https://github.com/perice-pope/ai-music-companion/commit/72d78af78f4b0e6975fb08a1e605bd5a8fba2f1d)), closes [7#11](https://github.com/perice-pope/7/issues/11) [#245](https://github.com/perice-pope/ai-music-companion/issues/245) [#4](https://github.com/perice-pope/ai-music-companion/issues/4)
+
 ## [2.18.3](https://github.com/perice-pope/ai-music-companion/compare/v2.18.2...v2.18.3) (2026-07-11)
 
 ### Bug Fixes
