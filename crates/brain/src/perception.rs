@@ -994,4 +994,144 @@ mod tests {
         }
         assert_eq!(p.snapshot(10.5).chord.expect("shown").label, "C");
     }
+
+    /// #349 T1c AC2 (integration): the fifths that spell the chord label
+    /// come from the key the tracker actually HEARD — an Ab-major session
+    /// spells pcs {1,5,8} "Db"; an A-major session spells the same chroma
+    /// "C#". Fails if snapshot() stops deriving fifths from the live key
+    /// (e.g. hardwires 0).
+    #[test]
+    fn chord_spelling_derives_from_the_heard_key() {
+        // (scale frequencies, expected tonic pc, expected chord label)
+        let cases: [(&[f64], u8, &str); 2] = [
+            // Ab major, tonic emphasized: Ab Ab C Eb Bb Db F G Ab → 4 flats.
+            (
+                &[
+                    207.65, 207.65, 261.63, 311.13, 233.08, 277.18, 349.23, 392.0, 207.65,
+                ],
+                8,
+                "Db",
+            ),
+            // A major, tonic emphasized: A A C# E B D F# G# A → 3 sharps.
+            (
+                &[
+                    220.0, 220.0, 277.18, 329.63, 246.94, 293.66, 369.99, 415.30, 220.0,
+                ],
+                9,
+                "C#",
+            ),
+        ];
+        for (scale, want_tonic, want_label) in cases {
+            let mut p = PerceptionTracker::new();
+            let mut t = 0.0;
+            for _ in 0..12 {
+                for &hz in scale {
+                    t = feed_note_frames(&mut p, hz, t, 0.15);
+                }
+            }
+            // Past BASS_FRESH_SECS so the melody's last note can't add a
+            // slash — this test is about the ROOT's spelling.
+            let start = t + 3.0;
+            let db_major = chroma_of(&[1, 5, 8]);
+            for i in 0..4 {
+                p.observe_chroma(&db_major, start + i as f64 * 0.1);
+            }
+            let snap = p.snapshot(start + 0.4);
+            let key = snap.key.expect("key context established");
+            assert_eq!(key.tonic, want_tonic, "key context: {key:?}");
+            assert_eq!(
+                snap.chord.expect("chord shown").label,
+                want_label,
+                "spelling must follow the heard key ({})",
+                key.name
+            );
+        }
+    }
+
+    /// #349 §5.3 anti-flap: strict A-B-A-B alternation must never switch
+    /// the label — re-confirming the incumbent resets the challenger's
+    /// count. Fails if the candidate counter survives interleaved
+    /// confirmations of the current chord.
+    #[test]
+    fn alternating_readings_never_flicker_the_label() {
+        let mut p = PerceptionTracker::new();
+        let a = chroma_of(&[0, 4, 7]); // C
+        let b = chroma_of(&[5, 9, 0]); // F
+        for i in 0..4 {
+            p.observe_chroma(&a, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        // 20 alternating readings: B never gets two in a row.
+        for i in 0..10 {
+            let t = 0.5 + i as f64 * 0.2;
+            p.observe_chroma(&b, t);
+            p.observe_chroma(&a, t + 0.1);
+            assert_eq!(
+                p.snapshot(t + 0.15).chord.expect("still shown").label,
+                "C",
+                "alternation round {i} must not flip the label"
+            );
+        }
+    }
+
+    /// #349 §5.3 forced switch: an incumbent whose (stale) confidence is
+    /// higher than the challenger's must still yield after twice the dwell
+    /// of consistent disagreement — a wrong label may never be pinned by
+    /// its own old score. Fails if the 2×-dwell escape clause is removed.
+    #[test]
+    fn sustained_disagreement_beats_a_stale_confident_incumbent() {
+        let mut p = PerceptionTracker::new();
+        // Pristine C major → confidence ≈ 1.0.
+        let c_clean = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_clean, i as f64 * 0.1);
+        }
+        let first = p.snapshot(0.4).chord.expect("shown");
+        assert_eq!(first.label, "C");
+        // The player moves to F, but voiced with real-world smear: extra
+        // energy keeps its confidence clearly BELOW the stale incumbent's.
+        let mut f_smeared = chroma_of(&[5, 9, 0]);
+        // A strong F# bin: a true non-chord tone for every F quality in the
+        // vocabulary (b2) → sizable penalty, confidence well below 1.0.
+        f_smeared[6] = 0.55;
+        for i in 0..(2 * 3) {
+            p.observe_chroma(&f_smeared, 0.5 + i as f64 * 0.1);
+        }
+        let after = p.snapshot(1.2).chord.expect("shown");
+        assert_eq!(
+            after.label, "F",
+            "consistent disagreement must eventually win (stale conf {})",
+            first.confidence
+        );
+    }
+
+    /// #349 wire contract: the new snapshot fields are ADDITIVE — a payload
+    /// without `chord`/`hearing_polyphony` (an older producer) still
+    /// deserializes, and `None` chord stays off the wire for older
+    /// consumers. Fails if the serde defaults/skip are dropped.
+    #[test]
+    fn snapshot_serde_stays_additively_compatible() {
+        let legacy = r#"{"tempo_bpm":null,"swing_ratio":null,"locked":false,"key":null}"#;
+        let snap: PerceptionSnapshot = serde_json::from_str(legacy).expect("legacy parses");
+        assert_eq!(snap, PerceptionSnapshot::EMPTY);
+        let wire = serde_json::to_string(&PerceptionSnapshot::EMPTY).expect("serializes");
+        assert!(
+            !wire.contains("\"chord\""),
+            "None chord must stay off the wire: {wire}"
+        );
+    }
+
+    /// Two notes are a line, not a chord: a dyad must produce neither a
+    /// label nor the "hearing several notes" state.
+    #[test]
+    fn a_dyad_is_neither_a_chord_nor_polyphony() {
+        let mut p = PerceptionTracker::new();
+        let dyad = chroma_of(&[0, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&dyad, i as f64 * 0.1);
+        }
+        let s = p.snapshot(0.4);
+        assert!(s.chord.is_none());
+        assert!(!s.hearing_polyphony);
+    }
 }
