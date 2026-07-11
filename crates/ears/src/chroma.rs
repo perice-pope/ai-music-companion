@@ -270,6 +270,89 @@ mod tests {
         );
     }
 
+    /// #349 T1b AC1 (extension fixtures): the spec's jazz ladder rendered
+    /// as audio — harmonics, subtraction, compression and folding must not
+    /// mangle extension tones. Where the pitch-class set is genuinely
+    /// quality-ambiguous (Cm7 ≡ Eb6, dim7 rotations, m7b5 ≡ m6) we assert
+    /// the matched template reproduces the exact fed set — enharmonic
+    /// honesty, not a wrong answer; unambiguous sets assert (root, quality).
+    #[test]
+    fn the_rendered_jazz_ladder_survives_the_front_end() {
+        use theory::ChordQuality as Q;
+        // (midis, root pc, quality, exact-quality assertion?)
+        let cases: &[(&[i32], u8, Q, bool)] = &[
+            (&[48, 52, 55, 59], 0, Q::Maj7, true),       // Cmaj7
+            (&[48, 51, 55, 58], 0, Q::Min7, false),      // Cm7 (≡ Eb6)
+            (&[48, 51, 54, 57], 0, Q::Dim7, false),      // Cdim7 (rotations)
+            (&[48, 52, 55, 58, 63], 0, Q::Dom7s9, true), // C7#9
+            (&[54, 57, 60, 64], 6, Q::Min7b5, false),    // F#m7b5 (≡ Am6)
+            (&[46, 50, 55, 56], 10, Q::Dom13, true),     // Bb13 shell, no 5th
+        ];
+        for &(midis, root, quality, exact) in cases {
+            let c = last_chroma(&render(midis, 1.0)).expect("warm");
+            let m = theory::best_match(&c, None)
+                .unwrap_or_else(|| panic!("{quality:?}@{root} unmatched: {c:?}"));
+            if exact {
+                assert_eq!((m.root_pc, m.quality), (root, quality), "chroma {c:?}");
+            } else {
+                let fed: std::collections::BTreeSet<u8> =
+                    midis.iter().map(|&x| (x % 12) as u8).collect();
+                let matched: std::collections::BTreeSet<u8> = m
+                    .quality
+                    .intervals()
+                    .iter()
+                    .map(|&iv| (m.root_pc + iv) % 12)
+                    .collect();
+                assert_eq!(matched, fed, "{quality:?}@{root} matched {m:?}: {c:?}");
+            }
+        }
+    }
+
+    /// A rendered two-note dyad (C3+G3, 5 partials each — C's 5th partial
+    /// lands ON the major third!) must not mint a phantom triad. Fails if
+    /// harmonic subtraction stops covering the dyad case.
+    #[test]
+    fn a_rendered_dyad_never_becomes_a_phantom_triad() {
+        let c = last_chroma(&render(&[48, 55], 1.0)).expect("warm");
+        assert!(
+            theory::best_match(&c, None).is_none(),
+            "dyad must not read as a chord: {c:?}"
+        );
+    }
+
+    /// #349 §7 "never sticks stale": after the chord stops, the smoothed
+    /// picture must decay below the matcher's silence floor within ~1 s of
+    /// silence — through the REAL extractor, pinning the τ/floor interplay
+    /// (hand-zeroed chroma can't catch a floor or smoothing regression).
+    #[test]
+    fn a_stopped_chord_decays_out_of_the_matcher_within_a_second() {
+        let mut ex = ChromaExtractor::new(SR);
+        for w in render(&[48, 52, 55], 1.0).chunks(1024) {
+            ex.feed(w);
+        }
+        assert!(
+            theory::best_match(&ex.chroma().expect("ready"), None).is_some(),
+            "chord readable while ringing"
+        );
+        // One second of silence, read at the production ~10 Hz cadence.
+        let silence = vec![0.0f32; 1024];
+        let mut cleared_at: Option<usize> = None;
+        for i in 0..44 {
+            ex.feed(&silence);
+            if i % 4 == 3 {
+                let c = ex.chroma().expect("ready");
+                if theory::best_match(&c, None).is_none() {
+                    cleared_at = Some(i);
+                    break;
+                }
+            }
+        }
+        assert!(
+            cleared_at.is_some(),
+            "chord must decay out of the matcher within ~1 s of silence"
+        );
+    }
+
     /// Silence produces no reading during warm-up and a near-zero vector
     /// after — never a phantom chord.
     #[test]
@@ -282,8 +365,9 @@ mod tests {
         assert!(theory::best_match(&c, None).is_none(), "phantom: {c:?}");
     }
 
-    /// Smoothing carries state: after a chord stops, the picture decays
-    /// rather than snapping — and reset() clears it entirely.
+    /// reset() clears the smoothed picture entirely and re-enters warm-up
+    /// (the gradual-decay path is pinned by
+    /// `a_stopped_chord_decays_out_of_the_matcher_within_a_second`).
     #[test]
     fn reset_clears_the_smoothed_picture() {
         let audio = render(&[48, 52, 55], 1.0);

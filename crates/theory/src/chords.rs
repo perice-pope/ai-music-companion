@@ -141,6 +141,12 @@ pub struct ChordMatch {
 pub const MIN_CHORD_BINS: usize = 3;
 /// A chroma bin counts as "sounding" above this fraction of the max bin.
 const ACTIVE_BIN_RATIO: f32 = 0.25;
+/// The ROOT bin must clear this (stricter) fraction of the max bin. A tone
+/// barely over the noise gate can legitimately be a chord's extension, but
+/// never its root — without this, a noise bin at ~0.3 lets a 5-note
+/// template (e.g. Dom7b9 rooted on the noise) swallow a clean dim7 whose
+/// every real tone it happens to contain.
+const ROOT_BIN_RATIO: f32 = 0.4;
 /// Weight of the penalty for strong energy OUTSIDE the template.
 const NON_CHORD_PENALTY: f32 = 0.8;
 /// Score penalty per omitted optional tone, so an exact interpretation of
@@ -205,6 +211,9 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
 
     let mut best: Option<ChordMatch> = None;
     for root in 0u8..12 {
+        if chroma[usize::from(root)] < max_bin * ROOT_BIN_RATIO {
+            continue;
+        }
         'quality: for &q in ChordQuality::all() {
             let intervals = q.intervals();
             let optional = q.optional();
@@ -327,6 +336,20 @@ mod tests {
         assert_eq!(best_match(&c, Some(4)).unwrap().bass_pc, Some(4)); // C/E
         assert_eq!(best_match(&c, Some(0)).unwrap().bass_pc, None); // root pos.
         assert_eq!(best_match(&c, Some(1)).unwrap().bass_pc, None); // Db ≠ tone
+    }
+
+    /// A marginal noise bin must not become another chord's ROOT: Cdim7
+    /// with faint F noise reads Cdim7 (or a rotation), never F7b9 rooted on
+    /// the noise. Fails if ROOT_BIN_RATIO is dropped to the active gate.
+    #[test]
+    fn a_noise_bin_cannot_be_a_root() {
+        let mut c = chroma_of(&[0, 3, 6, 9]);
+        c[5] = 0.3; // marginal noise — above ACTIVE, below ROOT threshold
+        let m = best_match(&c, None).expect("dim7 still matches");
+        assert!(
+            m.root_pc.is_multiple_of(3) && m.quality == ChordQuality::Dim7,
+            "must stay a dim7 rotation, got {m:?}"
+        );
     }
 
     /// Non-chord energy is punished: a triad drowned in chromatic mush must

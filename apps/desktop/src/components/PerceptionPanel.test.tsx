@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import PerceptionPanel from "./PerceptionPanel";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { PerceptionSnapshot } from "../types/brain";
+import { colorForPitchClass } from "../lib/rvColors";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -160,10 +161,15 @@ describe("PerceptionPanel", () => {
     render(<PerceptionPanel />);
     const chord = screen.getByTestId("perception-chord");
     expect(chord).toHaveTextContent("Cmaj7");
-    // Root C wears RV red (rvColors: pitch class 0).
+    // The dot must wear EXACTLY the RV colour of the root pitch class —
+    // not just any colour (a hardwired palette entry must fail here).
     const dot = chord.querySelector("span[aria-hidden]");
     expect(dot).not.toBeNull();
-    expect((dot as HTMLElement).style.backgroundColor).not.toBe("");
+    const probe = document.createElement("span");
+    probe.style.backgroundColor = colorForPitchClass(0);
+    expect((dot as HTMLElement).style.backgroundColor).toBe(
+      probe.style.backgroundColor,
+    );
     expect(screen.queryByTestId("perception-polyphony")).toBeNull();
   });
 
