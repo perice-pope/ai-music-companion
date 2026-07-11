@@ -19,6 +19,36 @@ represent simultaneity at all — chord instruments feel unheard the moment
 they stop playing single lines. Naming the chord live is also the cheapest
 trust-builder we have ("it *hears* me") — same lesson as the reveals.
 
+## 2b. Where these ears go — the use-case layer (founder review, 2026-07-11)
+The same engine stack serves four escalating surfaces. Build once, deploy
+everywhere — this section is WHY the tiers are worth it in today's world:
+
+1. **Practice feedback** (T1–T2): the drills and labels above — the core.
+2. **Jam-along — "play any song, see the chords."** The chroma engine is
+   SOURCE-AGNOSTIC: put on a record in the room and the strip labels the
+   harmony live. This is a category consumers already know (Chord AI,
+   Chordify — all cloud); ours is offline and, decisively, wired into the
+   practice loop: **one tap takes the chord you just heard into a 12-key
+   RV row** (the reveal → practice-this-sound gesture, extended to any
+   music playing in the room). The moat isn't the hearing, it's that what
+   you hear becomes what you practice.
+3. **Ensemble / band-level hearing** (live, one mic — #40's long-standing
+   ask): harmony, key, and groove of the WHOLE GROUP. Group-level verdicts
+   are honest from a single mic: chord correctness of the ensemble sound,
+   tempo spread ("the band rushed the bridge"), togetherness (onset
+   scatter). A band director's rehearsal companion — and the natural
+   ensemble surface for the teacher dashboard (#305/#306).
+4. **Per-player band feedback** (offline): a rehearsal recording → local
+   stem separation (#328's already-decided Demucs architecture) → per-stem
+   basic-pitch → per-player verdict reports in the recap. "The trumpets
+   were clean; the trombones missed the F# all rehearsal."
+
+**The honesty line (what we do NOT promise):** live per-instrument
+feedback from one room mic — real-time separation of a full band is
+research-grade; anyone who demos it is cherry-picking. Live = group-level
+only; per-player = offline via stems. This line is stated in product copy
+wherever band features appear.
+
 ## 3. Model / engine decision (assessed 2026-07-11)
 **Tier 1 needs no model.** Chromagram + template matching + a bass note from
 the existing YIN track covers triads, inversions (slash chords), and the
@@ -50,7 +80,9 @@ allegiance.
 - No change to the <25 ms YIN live-meter path — chroma and basic-pitch run
   on the worker thread beside it, never inside it.
 - No polyphonic **score following** (two-hand piano vs score alignment) —
-  explicitly Tier-4 territory, out of scope here.
+  out of scope entirely; revisit only after T1–T4 ship.
+- No LIVE per-instrument separation (§2b honesty line): live band hearing
+  is group-level; per-player detail is offline via #328 stems.
 - No cloud inference of any kind.
 - No chord-symbol *theory pedagogy* (voicing suggestions, substitutions) —
   the coach may use labels later; this spec only hears and labels.
@@ -186,6 +218,42 @@ point if a better Apache/MIT model lands (§3).
    hide and T1/T2 keep working (calm degradation, no crash — #267 guard
    pattern around inference).
 
+### Tier 4 — Room Ears: jam-along + the band (builds on T1–T3, #40, #328)
+**T4a — Jam-along mode.** A deliberate capture mode ("Listen to the room")
+where external music is the SIGNAL, not bleed: the strip shows live chord +
+key + tempo of whatever is playing; a rolling chord lane (last ~8 labels)
+replaces the phrase cards. **One tap on any chord in the lane → the RV
+bridge**: that quality rowed through 12 keys (reuses `start_explore_cell`
+with the chord's template as a stacked cell — T2's machinery). Session recap
+becomes a chord chart sketch: the label sequence with timestamps, honest
+confidence dots per label. No song identification, no audio retention beyond
+the session (privacy copy states it), fully offline.
+**T4b — Ensemble session (live, one mic, group-level).** A session mode for
+bands/sections: group verdicts only — ensemble chord vs expected (when a
+score/drill is loaded: T2 judging over the mix), tempo spread per section of
+the piece (groove tracker already measures this), onset togetherness score
+(std-dev of near-simultaneous onsets), balance trend (band-level dynamics).
+Recap: "the band" as the player. Fulfils #40's group-level scope exactly;
+teacher-dashboard surfaces consume the same recap rows later.
+**T4c — Band report (offline, per-player).** Import/record a rehearsal →
+#328 stem separation (local, already-decided) → per-stem basic-pitch (T3
+engine, batch mode) → per-stem verdicts against the score's parts (#337
+S1 part picker maps stems to parts) → a sectioned recap: per-player
+accuracy + worst measures. Depends on #328 S2+ shipping; the seam is
+`PolyEngine` batch mode over stem files.
+**ACs:**
+1. T4a: a synthetic 4-chord "record" fixture (mixed, with percussion noise
+   bed) yields the 4 labels in order in the chord lane; tapping one rows
+   it; recap carries the timed chord sketch. Zero network assertion.
+2. T4a honesty: dense/atonal mix → "hearing several notes…" lane entries,
+   never fabricated labels; confidence dots pinned.
+3. T4b: two synthetic 'players' (offset onsets, one rushing) → togetherness
+   score degrades and tempo-spread names the rushing section; group chord
+   verdict judged over the mix.
+4. T4c: a 2-stem synthetic rehearsal → per-stem reports with correct
+   attribution; a stem the model can't read degrades calmly per stem.
+5. Every T4 surface carries the §2b honesty copy (group vs per-player).
+
 ## 7. Edge cases & failure modes (all tiers)
 Piano sustain pedal (previous chord rings under the new one — chroma
 smoothing + onset-weighted update; T3's note-offs disambiguate) · guitar
@@ -224,6 +292,12 @@ the strip).
 6. **T3a** `PolyEngine` seam + basic-pitch streaming + benches.
 7. **T3b** voicing-true labels + polyphonic phrase evidence.
 8. **T3c** progression lift + "Work on my last progression".
+9. **T4a** jam-along mode: room-listening capture mode + chord lane +
+   tap-to-row + chord-sketch recap.
+10. **T4b** ensemble session: group verdicts, togetherness, tempo spread
+    (closes #40's group-level scope).
+11. **T4c** band report: stems → per-stem T3 → sectioned recap (gated on
+    #328 S2).
 
 ## 10. Open questions (founder)
 1. T1c label placement: inside the "I hear" strip (recommended — one
@@ -232,3 +306,8 @@ the strip).
    recommended) or triads+sevenths only first?
 3. T3 hardware floor: is a 2020 Intel MacBook Air the oldest machine we
    promise live polyphony on? (Sets the inference budget.)
+4. T4a jam-along: v1 as its own mode on the picker (recommended — it's a
+   different mental posture than practicing) or a toggle inside free play?
+5. T4 priority: jam-along (consumer wow, zero new engine work after T1)
+   before or after T2 chord drills (practice depth)? Recommendation:
+   T4a immediately after T1 — it is almost free and it demos the ears.
