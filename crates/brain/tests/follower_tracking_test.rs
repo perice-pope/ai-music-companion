@@ -161,6 +161,42 @@ fn a_clean_detached_pass_judges_every_note_as_a_hit() {
     );
 }
 
+/// AC4 (#347): one noisy frame must not drag the cursor backward. During
+/// the descent the played C5 pitch also lives in measure 2 — the backward
+/// path to that twin must stay expensive enough that a single singer's
+/// scoop or octave glitch can't regress the display. (The exact-tie
+/// tie-break has its own unit test:
+/// `a_release_artifact_frame_does_not_flick_the_cursor_back`.)
+#[test]
+fn a_stray_frame_does_not_drag_the_cursor_backward() {
+    let mut f = ScoreFollower::new(asc_desc_scale()).unwrap();
+    let scale = asc_desc_scale();
+    let midis: Vec<u8> = scale
+        .measures
+        .iter()
+        .flat_map(|m| m.notes.iter().map(|n| n.midi_number))
+        .collect();
+
+    // Sing cleanly through the B4 of the descent (note 9, measure 3).
+    let mut t = 0.0;
+    for &midi in &midis[..10] {
+        for k in 0..FRAMES_PER_NOTE {
+            f.align(&voiced(midi_to_hz(midi), t + k as f64 * FRAME_SECS));
+        }
+        t += FRAMES_PER_NOTE as f64 * FRAME_SECS + BREATH_SECS;
+    }
+    assert_eq!(f.current_position().measure_number, 3, "descent underway");
+
+    // One stray C5 frame — a scoop. C5 lives in measures 2 AND 3; the
+    // cursor must hold its ground, not jump back to the measure-2 twin.
+    let pos = f.align(&voiced(midi_to_hz(72), t));
+    assert!(
+        pos.measure_number >= 3,
+        "a single noisy frame must not regress the cursor to measure {}",
+        pos.measure_number
+    );
+}
+
 /// AC3 (#347): repeating the scale after a real pause re-anchors at the top
 /// and judges the second pass fully — the session total stays proportional
 /// to notes sung (2 passes = 32 verdicts, never 66-for-16).

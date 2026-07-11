@@ -182,10 +182,8 @@ struct DtwCost {
 #[derive(Debug)]
 struct OnlineDtw {
     /// Window of recent played events (up to 100 events).
-    #[allow(dead_code)]
     played_window: VecDeque<PlayedEvent>,
     /// Previous row of cost matrix (for space efficiency).
-    #[allow(dead_code)]
     prev_cost_row: Vec<DtwCost>,
     /// Current row of cost matrix (being computed).
     curr_cost_row: Vec<DtwCost>,
@@ -580,9 +578,13 @@ impl ScoreFollower {
 
     /// Verdict for a score note the alignment skipped over: Hit/Near when
     /// the played window since the last advance holds its exact rounded
-    /// pitch (graded by that evidence's cents), Missed when it truly never
+    /// pitch (graded by that evidence's cents), Missed when nothing near it
     /// sounded. A neighbouring pitch is NOT evidence — that's the landed
-    /// note's own audio, and crediting it would soften real skips.
+    /// note's own audio, and crediting it would soften real skips. Known
+    /// generosity: with no onset/duration evidence, one long C and two
+    /// repeated Cs are indistinguishable here, so a genuinely dropped
+    /// repeat of a pitch that did sound is credited rather than accused —
+    /// the same silence-beats-false-accusations trade as `MAX_MISS_RUN`.
     fn skipped_note_verdict(&self, expected_midi: u8) -> Verdict {
         let mut best_cents = f64::INFINITY;
         for e in &self.dtw.played_window {
@@ -850,6 +852,101 @@ mod tests {
             kinds,
             vec![Verdict::Hit, Verdict::Hit],
             "a restart re-judges without phantom misses: {verdicts:?}"
+        );
+    }
+
+    /// Skip-credit evidence must postdate the last judged advance: a pitch
+    /// played EARLIER in the piece (still sitting in the played window) is
+    /// not proof the skipped copy of it sounded. Score D-C-D-F, played
+    /// D, C, F: the skipped second D's only window evidence is the opening
+    /// D, which predates the C advance — it must read Missed, not Hit.
+    #[test]
+    fn stale_window_evidence_does_not_credit_a_skipped_note() {
+        let midis = [62u8, 60, 62, 65]; // D4 C4 D4 F4
+        let hz = [293.66, 261.63, 293.66, 349.23];
+        let note = |i: usize| ScoreNote {
+            pitch_hz: hz[i],
+            midi_number: midis[i],
+            duration_beats: 1.0,
+            start_beat: i as f64,
+            dynamic: None,
+            is_rest: false,
+        };
+        let score = ScoreModel {
+            title: "Skip Evidence".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            measures: vec![Measure {
+                number: 1,
+                notes: (0..4).map(note).collect(),
+            }],
+        };
+        let mut f = ScoreFollower::new(score).unwrap();
+        play_note(&mut f, 293.66, 0.0); // D4 → idx 0
+        play_note(&mut f, 261.63, 0.2); // C4 → idx 1
+        play_note(&mut f, 349.23, 0.4); // F4 → idx 3, skipping idx 2 (D4)
+        let verdicts = f.take_verdicts();
+        let kinds: Vec<Verdict> = verdicts.iter().map(|v| v.verdict).collect();
+        assert_eq!(
+            kinds,
+            vec![Verdict::Hit, Verdict::Hit, Verdict::Missed, Verdict::Hit],
+            "the skipped D was never re-played — stale frames from the \
+             opening D must not credit it: {verdicts:?}"
+        );
+    }
+
+    /// Cost ties resolve to the index nearest the current position. The
+    /// reachable tie: one frame of the PREVIOUS note (a common detector
+    /// artifact at a note release) when the interval back to it is exactly
+    /// 3 semitones — staying on the current note (300 cents wrong) and
+    /// stepping backward (BACKWARD_STEP_PENALTY + perfect match) then cost
+    /// the same. The cursor must hold its ground; the old first-minimum
+    /// rule flicked it backward.
+    #[test]
+    fn a_release_artifact_frame_does_not_flick_the_cursor_back() {
+        // Two notes, 3 semitones apart: C4 then Eb4.
+        let score = ScoreModel {
+            title: "Release".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            measures: vec![Measure {
+                number: 1,
+                notes: vec![
+                    ScoreNote {
+                        pitch_hz: 261.63,
+                        midi_number: 60,
+                        duration_beats: 1.0,
+                        start_beat: 0.0,
+                        dynamic: None,
+                        is_rest: false,
+                    },
+                    ScoreNote {
+                        pitch_hz: 311.13,
+                        midi_number: 63,
+                        duration_beats: 1.0,
+                        start_beat: 1.0,
+                        dynamic: None,
+                        is_rest: false,
+                    },
+                ],
+            }],
+        };
+        let mut f = ScoreFollower::new(score).unwrap();
+        play_note(&mut f, 261.63, 0.0); // C4 → idx 0
+        play_note(&mut f, 311.13, 0.2); // Eb4 → idx 1
+        assert_eq!(f.current_position().expected_note, Some(63));
+        // One stray C4 frame at the release.
+        let pos = f.align(&create_audio_event(261.63, 0.9, 0.4));
+        assert_eq!(
+            pos.expected_note,
+            Some(63),
+            "a single relapsed frame ties the costs and must not move the cursor"
         );
     }
 
