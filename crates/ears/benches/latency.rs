@@ -83,5 +83,42 @@ fn bench_analysis_path(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_analysis_path);
+/// #349 AC6: the chroma reading (ring feed + full Goertzel bank + fold)
+/// runs on the same worker thread as the analysis path, once per ~93 ms
+/// hop. It is sequenced AFTER the live pitch emit, so it can't delay an
+/// event — but it still must stay a small fraction of the hop, or the
+/// worker falls behind the capture ring. CI enforces a budget on this
+/// group's mean (latency-bench.yml, CHROMA_BUDGET_MS).
+fn bench_chroma_reading(c: &mut Criterion) {
+    let signal = build_signal();
+    let chunks = windows(&signal, 1024);
+
+    let mut group = c.benchmark_group("chroma_reading");
+    group.throughput(Throughput::Elements(1));
+    group.sample_size(60);
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.warm_up_time(std::time::Duration::from_secs(1));
+
+    group.bench_function("reading_per_hop", |b| {
+        let mut extractor = ears::chroma::ChromaExtractor::new(SAMPLE_RATE);
+        // Warm the ring so every measured reading is a full compute.
+        for chunk in &chunks {
+            extractor.feed(chunk);
+        }
+        let mut idx: usize = 0;
+        b.iter(|| {
+            // One hop's worth of work: four ~23 ms windows fed, one reading.
+            for _ in 0..4 {
+                let chunk = chunks[idx % chunks.len()];
+                idx = idx.wrapping_add(1);
+                extractor.feed(criterion::black_box(chunk));
+            }
+            criterion::black_box(extractor.chroma())
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_analysis_path, bench_chroma_reading);
 criterion_main!(benches);

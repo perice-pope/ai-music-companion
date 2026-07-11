@@ -1,4 +1,5 @@
 import { usePracticeStore } from "../stores/practiceStore";
+import { colorForPitchClass } from "../lib/rvColors";
 
 /** Below this key confidence (0–1), the reading is shown tentatively ("maybe …")
  * rather than asserted. The relative alternative is always offered regardless —
@@ -31,6 +32,8 @@ export default function PerceptionPanel() {
   const tempo = perception?.tempo_bpm ?? null;
   const locked = perception?.locked ?? false;
   const key = perception?.key ?? null;
+  const chord = perception?.chord ?? null;
+  const hearingPolyphony = perception?.hearing_polyphony ?? false;
 
   const tempoText =
     tempo == null
@@ -39,7 +42,8 @@ export default function PerceptionPanel() {
         ? `${Math.round(tempo)} BPM`
         : `~${Math.round(tempo)} BPM · finding the pulse`;
 
-  const nothingHeard = tempoText == null && key == null;
+  const nothingHeard =
+    tempoText == null && key == null && chord == null && !hearingPolyphony;
 
   return (
     <div
@@ -59,6 +63,32 @@ export default function PerceptionPanel() {
       ) : (
         <>
           {tempoText && <span data-testid="perception-tempo">{tempoText}</span>}
+          {/* Live chord label (#349 jazz ears): the root wears its RV colour.
+              When several notes sound but nothing fits confidently, say so
+              honestly instead of guessing a name. */}
+          {chord ? (
+            <span
+              data-testid="perception-chord"
+              className="flex items-center gap-1.5 font-semibold text-gray-100"
+              title={`chord confidence ${Math.round(chord.confidence * 100)}%`}
+            >
+              <span
+                aria-hidden="true"
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: colorForPitchClass(chord.root_pc) }}
+              />
+              {chord.label}
+            </span>
+          ) : (
+            hearingPolyphony && (
+              <span
+                data-testid="perception-polyphony"
+                className="italic text-gray-400"
+              >
+                hearing several notes…
+              </span>
+            )
+          )}
           {key && (
             <span
               data-testid="perception-key"

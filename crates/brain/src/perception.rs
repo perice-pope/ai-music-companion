@@ -13,7 +13,7 @@
 use ears::AudioEvent;
 use groove::LiveClock;
 use serde::{Deserialize, Serialize};
-use theory::{KeyEstimate, KeyTracker, Mode};
+use theory::{ChordMatch, KeyEstimate, KeyTracker, Mode};
 
 /// Minimum pitch-detection confidence before a frame feeds the key tracker —
 /// keeps breath noise and squeaks from skewing the key.
@@ -164,6 +164,20 @@ pub struct KeySnapshot {
     pub alternative: Option<KeyOption>,
 }
 
+/// A named chord the app is hearing right now (#349 T1: jazz ears).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChordReading {
+    /// Root pitch class, 0–11 (C = 0) — drives the RV root colour in the UI.
+    pub root_pc: u8,
+    /// Full display label, spelled per the active key signature:
+    /// "C7", "Bbmaj7", "C7/E".
+    pub label: String,
+    /// The sounding bass pitch class when it names an inversion (the "/E").
+    pub bass_pc: Option<u8>,
+    /// Match confidence, 0–1.
+    pub confidence: f32,
+}
+
 /// A live snapshot of what the app perceives.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerceptionSnapshot {
@@ -175,6 +189,14 @@ pub struct PerceptionSnapshot {
     pub locked: bool,
     /// The current key reading, or `None` until enough pitched material.
     pub key: Option<KeySnapshot>,
+    /// The chord being heard, or `None` in single-line playing / silence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord: Option<ChordReading>,
+    /// True when several notes are clearly sounding but no chord in the
+    /// vocabulary fits confidently — the honest "hearing several notes…"
+    /// state (#349 §5.3): we say that rather than guess a name.
+    #[serde(default)]
+    pub hearing_polyphony: bool,
 }
 
 impl PerceptionSnapshot {
@@ -184,7 +206,105 @@ impl PerceptionSnapshot {
         swing_ratio: None,
         locked: false,
         key: None,
+        chord: None,
+        hearing_polyphony: false,
     };
+}
+
+/// Consecutive chroma readings a chord identity must hold before it is shown
+/// (~300 ms at the ~10 Hz chroma cadence) — the anti-flap dwell, mirroring
+/// [`KeyTracker`]'s per-note dwell.
+const CHORD_PROMOTE_READINGS: u8 = 3;
+/// Consecutive no-chord readings before the shown label clears.
+const CHORD_CLEAR_READINGS: u8 = 3;
+/// How close a challenger's confidence must come to the incumbent's for a
+/// switch (it may be slightly lower — the incumbent's number can be stale).
+const CHORD_SWITCH_MARGIN: f32 = 0.05;
+/// A YIN bass reading older than this no longer names an inversion — the
+/// line has moved on even if the chord is still ringing.
+const BASS_FRESH_SECS: f64 = 2.5;
+/// Only a pitch at or below this (~A3) can be a BASS candidate. YIN reports
+/// one predominant pitch with `pitch_class_of` folding the octave away — a
+/// G4 melody note must never mint "C/G" on a root-position C chord (the
+/// slash claims an inversion the player didn't play; silence > lies).
+const BASS_MAX_HZ: f64 = 220.0;
+
+/// Anti-flap hysteresis over raw chord matches: a new identity must win
+/// [`CHORD_PROMOTE_READINGS`] consecutive readings (and roughly match the
+/// incumbent's confidence) before the label changes, so a passing tone
+/// can't rename the chord for a frame.
+#[derive(Debug, Default)]
+struct ChordTracker {
+    current: Option<ChordMatch>,
+    candidate: Option<ChordMatch>,
+    candidate_count: u8,
+    none_count: u8,
+    /// Last reading heard ≥3 pitch classes but matched nothing confidently.
+    unresolved: bool,
+}
+
+/// Chord identity for hysteresis is (root, quality) ONLY — the slash is
+/// display detail. If it were part of the identity, YIN flicker among chord
+/// tones over one held chord (C ↔ C/E ↔ C/G) would reset the dwell each
+/// reading and starve the label entirely.
+fn same_chord(a: &ChordMatch, b: &ChordMatch) -> bool {
+    a.root_pc == b.root_pc && a.quality == b.quality
+}
+
+impl ChordTracker {
+    fn observe(&mut self, chroma: &[f32; 12], bass_pc: Option<u8>) {
+        let matched = theory::best_match(chroma, bass_pc);
+        self.unresolved =
+            matched.is_none() && theory::active_bin_count(chroma) >= theory::MIN_CHORD_BINS;
+        let Some(m) = matched else {
+            self.candidate = None;
+            self.candidate_count = 0;
+            self.none_count = self.none_count.saturating_add(1);
+            if self.none_count >= CHORD_CLEAR_READINGS {
+                self.current = None;
+            }
+            return;
+        };
+        self.none_count = 0;
+        if let Some(cur) = &mut self.current {
+            if same_chord(cur, &m) {
+                // Same chord: refresh confidence AND the slash from the
+                // freshest reading (its bass already passed the register +
+                // freshness gates), and reset any challenger's dwell.
+                *cur = m;
+                self.candidate = None;
+                self.candidate_count = 0;
+                return;
+            }
+        }
+        let near_incumbent = self
+            .current
+            .is_none_or(|cur| m.confidence + CHORD_SWITCH_MARGIN >= cur.confidence);
+        match &self.candidate {
+            Some(c) if same_chord(c, &m) => {
+                self.candidate = Some(m);
+                self.candidate_count = self.candidate_count.saturating_add(1);
+                // Promote on a sustained consistent reading; the confidence
+                // check only gates the *fast* switch — twice the dwell of
+                // consistent disagreement wins regardless, because the
+                // incumbent's stale confidence must not pin a wrong label.
+                if self.candidate_count >= CHORD_PROMOTE_READINGS && near_incumbent
+                    || self.candidate_count >= 2 * CHORD_PROMOTE_READINGS
+                {
+                    self.current = self.candidate.take();
+                    self.candidate_count = 0;
+                }
+            }
+            _ => {
+                self.candidate = Some(m);
+                self.candidate_count = 1;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Builds [`PerceptionSnapshot`]s from the live analysis event stream.
@@ -198,6 +318,12 @@ pub struct PerceptionTracker {
     /// median IOI steps when onsets enter/leave the window. Does not affect the
     /// band (which runs its own clock).
     smoothed_tempo: Option<f32>,
+    /// Chord hysteresis over the ~10 Hz chroma readings (#349 T1).
+    chords: ChordTracker,
+    /// Most recent confident LOW-register (≤ [`BASS_MAX_HZ`]) pitch class +
+    /// when it was heard — the bass candidate for inversion naming (used
+    /// only while fresh). Melody-register pitches never land here.
+    last_bass: Option<(u8, f64)>,
 }
 
 /// EMA weight for the displayed tempo. Low enough to settle the jitter, high
@@ -219,12 +345,29 @@ impl PerceptionTracker {
         if let Some(hz) = event.pitch_hz {
             if event.confidence >= MIN_PITCH_CONFIDENCE && hz > 0.0 {
                 if let Some(pc) = pitch_class_of(hz as f32) {
+                    // Only a LOW pitch may name an inversion's bass — a
+                    // melody note's pitch class must not become a slash.
+                    if hz <= BASS_MAX_HZ {
+                        self.last_bass = Some((pc, event.timestamp_secs));
+                    }
                     if let Some((note_pc, weight)) = self.notes.observe(pc, event.timestamp_secs) {
                         self.key.observe_pc(note_pc, weight);
                     }
                 }
             }
         }
+    }
+
+    /// Fold one ~10 Hz chroma reading in (#349 T1). The monophonic tracker's
+    /// most recent confident pitch class serves as the bass candidate for
+    /// inversion naming — only while fresh, so a melody note from seconds
+    /// ago can't put a stale slash on a new chord.
+    pub fn observe_chroma(&mut self, chroma: &[f32; 12], now_secs: f64) {
+        let bass = self
+            .last_bass
+            .filter(|&(_, t)| now_secs - t <= BASS_FRESH_SECS)
+            .map(|(pc, _)| pc);
+        self.chords.observe(chroma, bass);
     }
 
     /// Snapshot what's perceived as of `now_secs`.
@@ -248,11 +391,26 @@ impl PerceptionTracker {
                 None
             }
         };
+        let key = self.key.current().map(key_snapshot);
+        // Spell the chord with the accidentals of the key being heard —
+        // pcs {1,5,8} over an Ab vamp read "Db", over an A-major line "C#"
+        // (#335 discipline, same table as the drills).
+        let fifths = self
+            .key
+            .current()
+            .map(|est| crate::coach::key_signature_for(est.tonic, est.mode.label()).fifths)
+            .unwrap_or(0);
         PerceptionSnapshot {
             tempo_bpm,
             swing_ratio: clock.swing_ratio,
             locked: clock.is_locked(),
-            key: self.key.current().map(key_snapshot),
+            key,
+            chord: self
+                .chords
+                .current
+                .as_ref()
+                .map(|m| chord_reading(m, fifths)),
+            hearing_polyphony: self.chords.unresolved,
         }
     }
 
@@ -262,6 +420,28 @@ impl PerceptionTracker {
         self.key.reset();
         self.notes.reset();
         self.smoothed_tempo = None;
+        self.chords.reset();
+        self.last_bass = None;
+    }
+}
+
+/// Build the display [`ChordReading`] for a match: root name spelled per the
+/// active key signature + quality suffix + optional slash bass.
+fn chord_reading(m: &ChordMatch, fifths: i8) -> ChordReading {
+    let root = crate::coach::tonic_display_name(m.root_pc, fifths);
+    let label = match m.bass_pc {
+        Some(bass) => format!(
+            "{root}{}/{}",
+            m.quality.suffix(),
+            crate::coach::tonic_display_name(bass, fifths)
+        ),
+        None => format!("{root}{}", m.quality.suffix()),
+    };
+    ChordReading {
+        root_pc: m.root_pc,
+        label,
+        bass_pc: m.bass_pc,
+        confidence: m.confidence,
     }
 }
 
@@ -719,5 +899,287 @@ mod tests {
         assert!(p.snapshot(t).locked);
         p.reset();
         assert_eq!(p.snapshot(t + 0.01), PerceptionSnapshot::EMPTY);
+    }
+
+    /// A clean chroma with the given pitch classes fully sounding.
+    fn chroma_of(pcs: &[u8]) -> [f32; 12] {
+        let mut c = [0.0f32; 12];
+        for &pc in pcs {
+            c[usize::from(pc % 12)] = 1.0;
+        }
+        c
+    }
+
+    /// #349 T1c AC (hysteresis): the label appears only after
+    /// CHORD_PROMOTE_READINGS consecutive readings, and one divergent
+    /// reading cannot flip it. Fails if the dwell counter is bypassed.
+    #[test]
+    fn chord_label_needs_a_dwell_and_survives_a_passing_tone() {
+        let mut p = PerceptionTracker::new();
+        let c_major = chroma_of(&[0, 4, 7]);
+        let f_major = chroma_of(&[5, 9, 0]);
+        for i in 0..3 {
+            assert!(
+                p.snapshot(i as f64 * 0.1).chord.is_none(),
+                "no label before the dwell is served (reading {i})"
+            );
+            p.observe_chroma(&c_major, i as f64 * 0.1);
+        }
+        let s = p.snapshot(0.3);
+        assert_eq!(s.chord.expect("promoted after dwell").label, "C");
+        // One F-major reading (a passing tone re-voicing) must not rename.
+        p.observe_chroma(&f_major, 0.4);
+        assert_eq!(p.snapshot(0.4).chord.expect("still shown").label, "C");
+        // But a sustained F major takes over.
+        for i in 0..6 {
+            p.observe_chroma(&f_major, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(1.1).chord.expect("switched").label, "F");
+    }
+
+    /// #349 T1c AC (honest clearing): no-chord readings clear the label
+    /// after the clear dwell — a stale chord never outlives the sound.
+    #[test]
+    fn chord_label_clears_after_silence_readings() {
+        let mut p = PerceptionTracker::new();
+        let g7 = chroma_of(&[7, 11, 2, 5]);
+        for i in 0..4 {
+            p.observe_chroma(&g7, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "G7");
+        let silence = [0.0f32; 12];
+        for i in 0..3 {
+            p.observe_chroma(&silence, 0.5 + i as f64 * 0.1);
+        }
+        let s = p.snapshot(0.8);
+        assert!(s.chord.is_none(), "label must clear: {:?}", s.chord);
+        assert!(!s.hearing_polyphony);
+    }
+
+    /// #349 T1c AC (honest fallback): several notes with no confident name
+    /// → `hearing_polyphony`, never a guessed label.
+    #[test]
+    fn unnameable_polyphony_reports_hearing_several_notes() {
+        let mut p = PerceptionTracker::new();
+        // A chromatic cluster: many strong bins, matches nothing.
+        let cluster = chroma_of(&[0, 1, 2, 3, 5, 6, 8, 9, 10, 11]);
+        for i in 0..4 {
+            p.observe_chroma(&cluster, i as f64 * 0.1);
+        }
+        let s = p.snapshot(0.4);
+        assert!(s.chord.is_none());
+        assert!(s.hearing_polyphony, "cluster must report polyphony");
+    }
+
+    /// #349 T1c AC (spelling): pcs {1,5,8} is "Db" in a flat signature and
+    /// "C#" in a sharp one — the #335 discipline extends to chord labels.
+    #[test]
+    fn chord_spelling_follows_the_key_signature() {
+        let m = ChordMatch {
+            root_pc: 1,
+            quality: theory::ChordQuality::Maj,
+            bass_pc: None,
+            confidence: 0.9,
+        };
+        assert_eq!(chord_reading(&m, -4).label, "Db"); // Ab-major context
+        assert_eq!(chord_reading(&m, 3).label, "C#"); // A-major context
+        let slash = ChordMatch {
+            bass_pc: Some(5),
+            ..m
+        };
+        assert_eq!(chord_reading(&slash, -4).label, "Db/F");
+    }
+
+    /// A MELODY-register note must never mint a slash: G4 over a
+    /// root-position C chord is "C", not "C/G" — the slash would claim an
+    /// inversion the player didn't play. Fails if the bass register gate
+    /// (BASS_MAX_HZ) is dropped.
+    #[test]
+    fn a_melody_note_never_mints_an_inversion() {
+        let mut p = PerceptionTracker::new();
+        p.observe(&pitched(392.0, 0.0)); // G4 — chord tone, melody register
+        let c_major = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.1 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.5).chord.expect("shown").label,
+            "C",
+            "root-position chord must not carry a melody-note slash"
+        );
+    }
+
+    /// #349 T1c AC (inversions, bass freshness): a fresh YIN bass names the
+    /// inversion; a stale one (the line moved on seconds ago) does not.
+    #[test]
+    fn fresh_bass_names_the_inversion_stale_bass_does_not() {
+        let mut p = PerceptionTracker::new();
+        // Confident E below a C-major chord → C/E.
+        p.observe(&pitched(164.81, 0.0)); // E3
+        let c_major = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.1 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.5).chord.expect("shown").label, "C/E");
+
+        // Same chord long after the E was heard: the slash must drop.
+        let mut p = PerceptionTracker::new();
+        p.observe(&pitched(164.81, 0.0));
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 10.0 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(10.5).chord.expect("shown").label, "C");
+    }
+
+    /// #349 T1c AC2 (integration): the fifths that spell the chord label
+    /// come from the key the tracker actually HEARD — an Ab-major session
+    /// spells pcs {1,5,8} "Db"; an A-major session spells the same chroma
+    /// "C#". Fails if snapshot() stops deriving fifths from the live key
+    /// (e.g. hardwires 0).
+    #[test]
+    fn chord_spelling_derives_from_the_heard_key() {
+        // (scale frequencies, expected tonic pc, expected chord label)
+        let cases: [(&[f64], u8, &str); 2] = [
+            // Ab major, tonic emphasized: Ab Ab C Eb Bb Db F G Ab → 4 flats.
+            (
+                &[
+                    207.65, 207.65, 261.63, 311.13, 233.08, 277.18, 349.23, 392.0, 207.65,
+                ],
+                8,
+                "Db",
+            ),
+            // A major, tonic emphasized: A A C# E B D F# G# A → 3 sharps.
+            (
+                &[
+                    220.0, 220.0, 277.18, 329.63, 246.94, 293.66, 369.99, 415.30, 220.0,
+                ],
+                9,
+                "C#",
+            ),
+        ];
+        for (scale, want_tonic, want_label) in cases {
+            let mut p = PerceptionTracker::new();
+            let mut t = 0.0;
+            for _ in 0..12 {
+                for &hz in scale {
+                    t = feed_note_frames(&mut p, hz, t, 0.15);
+                }
+            }
+            // Past BASS_FRESH_SECS so the melody's last note can't add a
+            // slash — this test is about the ROOT's spelling.
+            let start = t + 3.0;
+            let db_major = chroma_of(&[1, 5, 8]);
+            for i in 0..4 {
+                p.observe_chroma(&db_major, start + i as f64 * 0.1);
+            }
+            let snap = p.snapshot(start + 0.4);
+            let key = snap.key.expect("key context established");
+            assert_eq!(key.tonic, want_tonic, "key context: {key:?}");
+            assert_eq!(
+                snap.chord.expect("chord shown").label,
+                want_label,
+                "spelling must follow the heard key ({})",
+                key.name
+            );
+        }
+    }
+
+    /// #349 §5.3 anti-flap: strict A-B-A-B alternation must never switch
+    /// the label — re-confirming the incumbent resets the challenger's
+    /// count. Fails if the candidate counter survives interleaved
+    /// confirmations of the current chord.
+    #[test]
+    fn alternating_readings_never_flicker_the_label() {
+        let mut p = PerceptionTracker::new();
+        let a = chroma_of(&[0, 4, 7]); // C
+        let b = chroma_of(&[5, 9, 0]); // F
+        for i in 0..4 {
+            p.observe_chroma(&a, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        // 20 alternating readings: B never gets two in a row.
+        for i in 0..10 {
+            let t = 0.5 + i as f64 * 0.2;
+            p.observe_chroma(&b, t);
+            p.observe_chroma(&a, t + 0.1);
+            assert_eq!(
+                p.snapshot(t + 0.15).chord.expect("still shown").label,
+                "C",
+                "alternation round {i} must not flip the label"
+            );
+        }
+    }
+
+    /// #349 §5.3 forced switch: an incumbent whose (stale) confidence is
+    /// higher than the challenger's must still yield after twice the dwell
+    /// of consistent disagreement — a wrong label may never be pinned by
+    /// its own old score. Fails if the 2×-dwell escape clause is removed.
+    #[test]
+    fn sustained_disagreement_beats_a_stale_confident_incumbent() {
+        let mut p = PerceptionTracker::new();
+        // Pristine C major → confidence ≈ 1.0.
+        let c_clean = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_clean, i as f64 * 0.1);
+        }
+        let first = p.snapshot(0.4).chord.expect("shown");
+        assert_eq!(first.label, "C");
+        // The player moves to F, but voiced with real-world smear: extra
+        // energy keeps its confidence clearly BELOW the stale incumbent's.
+        let mut f_smeared = chroma_of(&[5, 9, 0]);
+        // A strong F# bin: a true non-chord tone for every F quality in the
+        // vocabulary (b2) → sizable penalty, confidence well below 1.0.
+        f_smeared[6] = 0.55;
+        // At ONE dwell the confidence margin must still hold the incumbent
+        // (the challenger sits well below it) — fails if the margin check
+        // is bypassed.
+        for i in 0..3 {
+            p.observe_chroma(&f_smeared, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.8).chord.expect("shown").label,
+            "C",
+            "the margin must delay a low-confidence challenger at 1x dwell"
+        );
+        // …but at TWO dwells of consistent disagreement it must yield.
+        for i in 3..(2 * 3) {
+            p.observe_chroma(&f_smeared, 0.5 + i as f64 * 0.1);
+        }
+        let after = p.snapshot(1.2).chord.expect("shown");
+        assert_eq!(
+            after.label, "F",
+            "consistent disagreement must eventually win (stale conf {})",
+            first.confidence
+        );
+    }
+
+    /// #349 wire contract: the new snapshot fields are ADDITIVE — a payload
+    /// without `chord`/`hearing_polyphony` (an older producer) still
+    /// deserializes, and `None` chord stays off the wire for older
+    /// consumers. Fails if the serde defaults/skip are dropped.
+    #[test]
+    fn snapshot_serde_stays_additively_compatible() {
+        let legacy = r#"{"tempo_bpm":null,"swing_ratio":null,"locked":false,"key":null}"#;
+        let snap: PerceptionSnapshot = serde_json::from_str(legacy).expect("legacy parses");
+        assert_eq!(snap, PerceptionSnapshot::EMPTY);
+        let wire = serde_json::to_string(&PerceptionSnapshot::EMPTY).expect("serializes");
+        assert!(
+            !wire.contains("\"chord\""),
+            "None chord must stay off the wire: {wire}"
+        );
+    }
+
+    /// Two notes are a line, not a chord: a dyad must produce neither a
+    /// label nor the "hearing several notes" state.
+    #[test]
+    fn a_dyad_is_neither_a_chord_nor_polyphony() {
+        let mut p = PerceptionTracker::new();
+        let dyad = chroma_of(&[0, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&dyad, i as f64 * 0.1);
+        }
+        let s = p.snapshot(0.4);
+        assert!(s.chord.is_none());
+        assert!(!s.hearing_polyphony);
     }
 }

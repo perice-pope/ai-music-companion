@@ -596,6 +596,18 @@ export interface KeySnapshot {
   alternative: KeyOption | null;
 }
 
+/** A named chord being heard live (#349 jazz ears). Mirrors `brain::perception::ChordReading`. */
+export interface ChordReading {
+  /** Root pitch class, 0–11 (C = 0) — drives the RV root colour. */
+  root_pc: number;
+  /** Display label spelled per the active key signature: "C7", "Bbmaj7", "C7/E". */
+  label: string;
+  /** Sounding bass pitch class when the label names an inversion. */
+  bass_pc: number | null;
+  /** Match confidence, 0–1. */
+  confidence: number;
+}
+
 /** Payload of the `perception` Tauri event — what the app hears live. Mirrors `brain::perception::PerceptionSnapshot`. */
 export interface PerceptionSnapshot {
   tempo_bpm: number | null;
@@ -603,6 +615,10 @@ export interface PerceptionSnapshot {
   /** A confident, steady pulse is present. */
   locked: boolean;
   key: KeySnapshot | null;
+  /** The chord being heard, absent in single-line playing / silence. */
+  chord?: ChordReading | null;
+  /** Several notes sound but no chord fits confidently — show the honest fallback. */
+  hearing_polyphony?: boolean;
 }
 
 /** Payload of the `segment-changed` Tauri event. */

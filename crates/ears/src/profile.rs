@@ -288,8 +288,8 @@ mod tests {
         // as it guards against accidental addition.
         assert_eq!(
             loaded.len(),
-            9,
-            "expected 9 profiles in {:?}, got {:?}",
+            10,
+            "expected 10 profiles in {:?}, got {:?}",
             profiles_dir,
             loaded.iter().map(|p| &p.name).collect::<Vec<_>>()
         );

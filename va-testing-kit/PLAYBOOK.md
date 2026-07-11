@@ -185,6 +185,17 @@ Open the samples folder for her so she can drag a file:
    green note saying your measure is queued (there's an ✕ to dismiss it). Start a new session —
    the measure should open as colored dots rowed through different keys, exactly like 'Work on
    my last lick'. This is the flagship: tell me how it FEELS, not just whether it works."
+11c. **Jazz ears — it can hear CHORDS now (NEW this run).** Start a free-play session on
+   **Piano** (or Guitar — it's in the instrument list now) near a real piano/guitar, or play a
+   chord recording out loud. "**(a)** Play a plain **C major chord** and hold it: within about
+   half a second the 'I hear' strip at the top should show a **chord name with a small colored
+   dot** — 'C' with a red dot. Play a **G7** — does it say 'G7'? **(b)** Play the same C chord
+   but put an **E in the bass** (lowest note): it should say **'C/E'** — the slash is the app
+   noticing your bass note. **(c)** Play a **single note** — the chord name should NOT appear
+   (one note is not a chord; if it invents one, flag it hard). **(d)** Mash 4–5 random
+   neighboring keys at once: it should say **'hearing several notes…'** rather than making up a
+   chord name — that honesty is the feature. Tell me: did the labels feel right and steady, or
+   did they flicker/lie?"
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -292,6 +303,14 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Recap listed all drills + difficulty movement; 2nd lesson started at the new step: <answer>
 - "End lesson" exits calmly: <answer>
 - Reveal collection counter grows on new reveals only: <answer>
+
+### Jazz ears — live chord labels 🎹 (desktop only — NEW)
+- C major chord → chord name + colored dot appeared in the "I hear" strip within ~½ s: <answer>
+- G7 named correctly: <answer>
+- C chord with E in the bass → "C/E" slash label: <answer>
+- Single note → NO chord label (flag hard if it invents one): <answer>
+- Random cluster → "hearing several notes…" instead of a made-up name: <answer>
+- Labels steady vs flickering; her words on how it felt: <answer>
 
 ### AI critique / recap   (desktop only)
 - **[#277 re-test]** Recap key matches what the live "I hear" strip actually showed during the

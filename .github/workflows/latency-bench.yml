@@ -52,6 +52,11 @@ env:
   # gated at the sum of those two §10 sub-budgets. Excludes capture, IPC,
   # render, and the LLM recap call (not in the latency-critical path).
   INTEGRATED_BUDGET_MS: 9
+  # Chroma reading for the live chord label (#349 AC6): one Goertzel-bank
+  # compute per ~93 ms hop, sequenced after the live emit on the worker
+  # thread. Real cost is well under 1 ms; 5 ms catches an order-of-magnitude
+  # regression while tolerating runner noise.
+  CHROMA_BUDGET_MS: 5
 
 # Single write permission is enough to post the PR comment.
 permissions:
@@ -164,6 +169,7 @@ jobs:
           enforce "latency_per_event"        "${ANALYSIS_BUDGET_MS}"    "analysis"   || rc=1
           enforce "score_align_path"         "${SCORE_ALIGN_BUDGET_MS}" "align"      || rc=1
           enforce "integrated_analysis_path" "${INTEGRATED_BUDGET_MS}"  "integrated" || rc=1
+          enforce "chroma_reading"           "${CHROMA_BUDGET_MS}"      "chroma"     || rc=1
           exit "${rc}"
 
       - name: Post PR comment
