@@ -32,7 +32,8 @@ pub struct Reveal {
 }
 ```
 TS mirror (`types/brain.ts`) adds `tonic: number; mode: string;`. `REVEAL_MIN_CONFIDENCE` is raised
-from `0.6` to `0.72`.
+from `0.6` to `0.72`. *(Superseded by #353 — back to `0.6`, recalibrated to the note-gated signal;
+see §10.)*
 
 ## 5. Acceptance criteria (numbered, testable)
 1. `reveal_for` populates `tonic` with `ctx.tonic` and `mode` with the normalized mode it matched
@@ -71,6 +72,11 @@ Single slice (small): backend field + threshold, TS mirror, card lifecycle, test
 ## 10. Risks / open questions
 - Raising the gate to 0.72 reduces reveal frequency; acceptable — accuracy > volume. Revisit if too
   quiet.
+- **Revisited (#353, 2026-07-11):** after #321/#325 note-gated the key signal, 0.72 muted reveals
+  entirely (steady one-key streams top out ~0.67 on the calm signal). Gate recalibrated back to 0.6;
+  the wrong-key protection stays with this spec's structural fix (AC3's dismiss-on-key-change),
+  which is unchanged. See `docs/design/decisions-log.md` and
+  `crates/brain/tests/reveal_trigger_test.rs`.
 
 ## 11. References
 - #253 (Reveal S1), #265 (VA test), `crates/brain/src/connections.rs`, `RevealCard.tsx`,

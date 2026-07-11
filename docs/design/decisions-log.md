@@ -204,6 +204,43 @@ not a regression.
 
 ---
 
+## 2026-07-11 — Reveal gate rides the note-fed key signal at 0.6; threshold ≠ wrong-key protection
+
+**Decision:** `REVEAL_MIN_CONFIDENCE` goes back to 0.6, recalibrated to the note-gated key signal
+(#321/#325). On that calm signal, steady one-key melodic material reads ≥ ~0.67 (five equal-length
+scale tones — the worst honest case) and semi-chromatic noodling tops out ~0.57; 0.6 splits the
+bands. The trigger conditions are pinned end-to-end (frames → perception → context → reveal) in
+`crates/brain/tests/reveal_trigger_test.rs`.
+
+**Rejected alternatives:**
+- **Keeping 0.72.** Calibrated against the old per-FRAME signal, whose held-note spikes routinely
+  crossed it (measured: 65% of readings on a steady five-note stream, max 0.89). The note-gated
+  signal never spikes — the same stream tops out 0.67 — so 0.72 didn't reduce reveal frequency, it
+  zeroed it: VA #347's "flagship dark" regression (#353).
+- **Adding a `margin` requirement to the gate.** A steady do-re-mi-fa-sol stream is genuinely
+  ambiguous between two keys (margin ≈ 0) yet is exactly the material a reveal should fire on —
+  margin gating re-mutes the honest case.
+- **Boosting the confidence computation itself.** Everything downstream (#316 recap verdicts,
+  hedging) now rides the honest correlation; inflating it to feed one gate would re-poison the rest.
+
+**Reasoning:** #266 raised 0.6 → 0.72 to damp a flappy signal AND shipped the structural fix (the
+card carries its generating key; the UI dismisses it when the live reading moves off it). #321
+removed the flap at the source, which turned the threshold raise from a damper into a mute. The
+structural fix is the real wrong-key protection — measured wandering material still transiently
+spikes past 0.77, so no reachable threshold protects alone — and it is untouched. Spec #266 itself
+said "revisit if too quiet."
+
+**Consequence:** Reveal frequency returns to pre-#325 levels; the atonal-silence bar is now pinned
+by test to the noodling band (~0.57), not just relative to the constant. The frontend's
+`DISMISS_MIN_CONFIDENCE` (0.55) stays below the fire gate, so a fired card remains dismissible by a
+confident contradiction. If a future perception change shifts the signal's bands again, the
+trigger-layer test goes red instead of a VA run going dark.
+
+**Related:** #353 (regression report), #347 (VA test), #266 (spec + structural fix), #321/#325 (note
+gate), `crates/brain/src/connections.rs`, `crates/brain/tests/reveal_trigger_test.rs`.
+
+---
+
 ## How to add to this log
 
 When you make a design call that a future reader would want the reasoning for — add an entry here. Include:

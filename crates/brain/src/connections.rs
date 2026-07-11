@@ -19,9 +19,18 @@
 use serde::{Deserialize, Serialize};
 
 /// Minimum perception confidence before we offer a reveal. Below this we stay
-/// silent rather than guess. Raised from 0.6 to 0.72 (#266) so reveals fire on
-/// more-settled readings and don't name a key the live header has already left.
-pub const REVEAL_MIN_CONFIDENCE: f32 = 0.72;
+/// silent rather than guess.
+///
+/// Calibrated to the note-gated key signal (#321/#325): steady one-key
+/// melodic material correlates ≥ ~0.67 (five equal-length scale tones — the
+/// worst honest case) while semi-chromatic noodling tops out ~0.57, so 0.6
+/// splits them. #266 had raised the gate to 0.72 against the old per-FRAME
+/// signal, whose spikes it was damping — on the calm per-note signal that
+/// value sits above everything but a full tonic-emphasized scale and muted
+/// reveals entirely (#353). Wrong-key protection does not ride this gate:
+/// the card carries its generating key and the UI dismisses it when the
+/// live reading moves off it (#266's structural fix, unchanged).
+pub const REVEAL_MIN_CONFIDENCE: f32 = 0.6;
 
 /// How often a reveal may surface, in completed phrases (at most one per N).
 pub const DEFAULT_REVEAL_CADENCE: usize = 3;
@@ -337,13 +346,23 @@ mod tests {
         assert!(reveal_for(&ctx(7, "dorian", f32::NAN), 0).is_none());
     }
 
-    /// #266 AC2: the gate is 0.72, not the old 0.6 — a reading in the (0.6, 0.72)
-    /// band must stay silent. Pins the *value* of the raise (the boundary tests
-    /// above only pin the direction relative to the constant): reverting
-    /// REVEAL_MIN_CONFIDENCE toward 0.6 turns this red.
+    /// #353: pins the gate's *value* to the note-gated signal's bands (the
+    /// boundary tests above only pin the direction relative to the constant).
+    /// Steady one-key melodic material reads ≥ ~0.67 and must reveal —
+    /// raising the gate back toward 0.72 (calibrated to the old per-frame
+    /// signal) turns the first assert red, which is exactly the #347 "flagship
+    /// dark" regression. Semi-chromatic noodling tops out ~0.57 and must stay
+    /// silent — lowering the gate below it turns the second assert red.
     #[test]
-    fn gate_is_raised_above_point_six() {
-        assert!(reveal_for(&ctx(7, "dorian", 0.70), 0).is_none());
+    fn gate_splits_steady_tonal_from_noodling_bands() {
+        assert!(
+            reveal_for(&ctx(7, "dorian", 0.67), 0).is_some(),
+            "a steady-stream-class reading (0.67) must reveal"
+        );
+        assert!(
+            reveal_for(&ctx(7, "dorian", 0.57), 0).is_none(),
+            "a noodling-class reading (0.57) must stay silent"
+        );
     }
 
     /// AC3: an unknown/unmapped mode yields nothing — never a fabricated match.
