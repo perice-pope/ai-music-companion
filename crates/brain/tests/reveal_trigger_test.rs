@@ -55,6 +55,11 @@ fn context_of(snapshot: &PerceptionSnapshot) -> Option<MusicalContext> {
 #[test]
 fn steady_one_key_stream_fires_a_reveal_context() {
     let mut p = PerceptionTracker::new();
+    // Note: with no tonic emphasis the tracker reads this C-D-E-F-G stream
+    // as F major (tonic 5) — a defensible hearing of the same five notes.
+    // What matters here is that the reveal rides whatever the header shows
+    // (display honesty), so the asserts compare against the snapshot's own
+    // key, never a hard-coded tonic.
     let five = [261.63, 293.66, 329.63, 349.23, 392.0]; // C D E F G
     let mut t = 0.0;
     for _ in 0..20 {
@@ -84,8 +89,11 @@ fn steady_one_key_stream_fires_a_reveal_context() {
 
 /// #353 AC2: atonal noodling still fires nothing. A semi-chromatic walk at
 /// frame rate never earns a reveal, whatever key the tracker tentatively
-/// holds. Fails if the gate drops low enough to fire on directionless
-/// material (the tracker commits keys from 0.4).
+/// holds — checked at EVERY note boundary, because the walk's confidence
+/// transiently peaks early (~0.56, before the rolling window decays it to
+/// ~0.4) and a transient commit is exactly when a wrong card would fire.
+/// Fails if the gate drops into the noodling band on the REAL signal, not
+/// just against a hand-typed constant.
 #[test]
 fn atonal_noodling_fires_no_reveal() {
     let mut p = PerceptionTracker::new();
@@ -93,20 +101,27 @@ fn atonal_noodling_fires_no_reveal() {
     let walk_pcs = [
         0, 1, 3, 2, 4, 6, 5, 7, 9, 8, 10, 11, 9, 7, 8, 6, 4, 5, 3, 1, 2, 0,
     ];
+    let mut committed = 0usize;
     let mut t = 0.0;
     for _ in 0..8 {
         for &pc in &walk_pcs {
             // pc → a frequency in the 4th octave.
             let hz = 440.0 * f64::powf(2.0, (f64::from(pc) - 9.0) / 12.0);
             t = feed_note_frames(&mut p, hz, t, 0.25);
-        }
-        // The gate must hold at EVERY point of the walk, not just the end —
-        // a transient early commit is exactly when a wrong card would fire.
-        if let Some(ctx) = context_of(&p.snapshot(t)) {
-            assert!(
-                reveal_for(&ctx, 0).is_none(),
-                "chromatic noodling must never clear the reveal gate; got {ctx:?}"
-            );
+            if let Some(ctx) = context_of(&p.snapshot(t)) {
+                committed += 1;
+                assert!(
+                    reveal_for(&ctx, 0).is_none(),
+                    "chromatic noodling must never clear the reveal gate; got {ctx:?}"
+                );
+            }
         }
     }
+    // The tracker DOES tentatively commit keys over this material (from
+    // ~0.4 confidence) — if it ever stops, the loop above asserts nothing
+    // and this test must fail rather than pass vacuously.
+    assert!(
+        committed > 0,
+        "the walk must exercise the gate against committed readings"
+    );
 }

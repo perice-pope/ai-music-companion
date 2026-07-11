@@ -32,7 +32,8 @@ pub struct Reveal {
 }
 ```
 TS mirror (`types/brain.ts`) adds `tonic: number; mode: string;`. `REVEAL_MIN_CONFIDENCE` is raised
-from `0.6` to `0.72`.
+from `0.6` to `0.72`. *(Superseded by #353 — back to `0.6`, recalibrated to the note-gated signal;
+see §10.)*
 
 ## 5. Acceptance criteria (numbered, testable)
 1. `reveal_for` populates `tonic` with `ctx.tonic` and `mode` with the normalized mode it matched
