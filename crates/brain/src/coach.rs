@@ -69,7 +69,8 @@ pub struct Drill {
     pub difficulty: u8,
     /// Tonic pitch class this drill trains (0–11).
     pub tonic: u8,
-    /// Material label for the mastery key, e.g. `"dorian"` / `"major triad"`.
+    /// Material label for display + engraving, e.g. `"dorian"` /
+    /// `"major triad"`. Mastery accrues to [`mastery_scale`], not this.
     pub mode: String,
     pub spec: VariationSpec,
     pub sequence: GeneratedSequence,
@@ -543,6 +544,26 @@ pub fn played_notes_from_pitch_track(pitches: &[f64], min_run: usize) -> Vec<Pla
 // Lesson end — fold results into the Learner Model.
 // ---------------------------------------------------------------------------
 
+/// The scale component of the F2 mastery key this drill trains (#347).
+///
+/// F2's `key_mastery` is keyed per key/**scale** (#252), but a drill's
+/// material label ("interval 4", "major triad") is a flavor, not a scale —
+/// keying mastery by flavor fragments a lesson's four drills into four
+/// one-attempt entries, and since the flavor ladder shifts with difficulty
+/// no entry can ever reach `OWNED_MIN_ATTEMPTS`: a key could never be owned.
+/// Scale material names its scale; chord/interval material accrues to the
+/// major/minor family of the signature it is engraved in (the same
+/// `key_signature_for` family the player is shown).
+pub fn mastery_scale(drill: &Drill) -> String {
+    match &drill.spec.scale {
+        Some(s) => s.scale.label().to_lowercase(),
+        None => match key_signature_for(drill.tonic, &drill.mode).mode {
+            KeyMode::Minor => "minor".to_owned(),
+            KeyMode::Major => "major".to_owned(),
+        },
+    }
+}
+
 /// Fold every drill result through F2 and set the final difficulty. Pure given
 /// inputs; `now_epoch_secs` is injected. Returns the new model + the recap.
 pub fn finish_lesson(
@@ -556,7 +577,7 @@ pub fn finish_lesson(
             &next,
             &DrillResult {
                 tonic: drill.tonic,
-                mode: drill.mode.clone(),
+                mode: mastery_scale(drill),
                 accuracy: score.accuracy,
             },
             now_epoch_secs,
@@ -1612,6 +1633,91 @@ mod tests {
         assert_eq!(next.difficulty, 2);
         assert_eq!(next.updated_at_epoch_secs, 99);
         assert_eq!(recap.drill_accuracies.len(), 2);
+    }
+
+    /// #347: a nailed full lesson OWNS its key. Mastery accrues per key/scale
+    /// (#252 F2), so the three major-family drills of a perfect
+    /// beginner lesson stack on one entry and flip `owned` — the wheel's
+    /// "N of 12 owned" counter can actually move. Fails if mastery goes back
+    /// to being keyed by drill-flavor labels (four fragmented one-attempt
+    /// entries, no key ever ownable).
+    #[test]
+    fn a_nailed_lesson_owns_its_key() {
+        let model = LearnerModel::default();
+        let spec = lesson(5);
+        let mut drills = Vec::new();
+        let mut current = build_first(&spec, &model);
+        loop {
+            let score = perfect_score(&current);
+            let next = advance(&current, &score, &spec);
+            drills.push((current, score));
+            match next {
+                Some(d) => current = d,
+                None => break,
+            }
+        }
+        assert_eq!(drills.len(), 4);
+        let tonic = drills[0].0.tonic;
+
+        let (next, _) = finish_lesson(&model, &drills, 99);
+        // Warmup (d0), arpeggio (d1), interval (d2) all train the major
+        // family; the perfect ramp lifts the run-through into mixolydian.
+        let major = &next.key_mastery[&crate::learner::mastery_key(tonic, "major")];
+        assert_eq!(major.attempts, 3, "major-family drills stack on one entry");
+        assert!(major.owned, "a nailed lesson owns the key it advertises");
+        let wheel = crate::wheel::build_wheel(&next, &[]);
+        assert_eq!(wheel.total_owned, 1);
+        assert_eq!(
+            wheel.cells[usize::from(tonic)].state,
+            crate::wheel::KeyState::Owned
+        );
+    }
+
+    /// The mastery-scale mapping, pinned per drill kind and difficulty band:
+    /// scale material names its scale; chord/interval material accrues to its
+    /// engraved major/minor family. Fails if the ladder or the family mapping
+    /// drifts (e.g. minor triads crediting "major").
+    #[test]
+    fn mastery_scale_maps_material_to_a_real_scale() {
+        let spec = lesson(7);
+        let scale_of = |index: u8, difficulty: u8| {
+            mastery_scale(&build_drill(&spec, index, difficulty, 2).unwrap())
+        };
+        assert_eq!(scale_of(0, 0), "major", "beginner warmup scale");
+        assert_eq!(scale_of(0, 5), "dorian", "warmup names its ladder scale");
+        assert_eq!(scale_of(3, 8), "melodic minor", "run-through likewise");
+        assert_eq!(scale_of(1, 0), "major", "major triad → major family");
+        assert_eq!(scale_of(1, 3), "minor", "minor triad → minor family");
+        assert_eq!(scale_of(1, 9), "minor", "half-diminished → minor family");
+        assert_eq!(scale_of(2, 0), "major", "interval drill → engraved family");
+    }
+
+    /// Drill-flavor labels must never become mastery keys: after a full
+    /// lesson every `key_mastery` key is `"pc:scale"`, with no "triad" /
+    /// "interval" flavors. Fails if `finish_lesson` regresses to keying by
+    /// `Drill.mode`.
+    #[test]
+    fn flavor_labels_never_reach_the_mastery_key() {
+        let model = LearnerModel::default();
+        let spec = lesson(11);
+        let mut drills = Vec::new();
+        let mut current = build_first(&spec, &model);
+        loop {
+            let score = perfect_score(&current);
+            let next = advance(&current, &score, &spec);
+            drills.push((current, score));
+            match next {
+                Some(d) => current = d,
+                None => break,
+            }
+        }
+        let (next, _) = finish_lesson(&model, &drills, 99);
+        for key in next.key_mastery.keys() {
+            assert!(
+                !key.contains("triad") && !key.contains("interval"),
+                "flavor label leaked into mastery key: {key}"
+            );
+        }
     }
 
     /// pick_tonic prefers the least-practiced key and is seed-deterministic.
