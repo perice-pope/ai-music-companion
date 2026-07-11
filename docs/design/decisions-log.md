@@ -176,9 +176,11 @@ otherwise the major/minor family of the key signature the drill is engraved in (
 **Rejected alternatives:**
 - **Keying mastery by the material label** (what shipped with #254). Fragments one lesson's four
   drills into four one-attempt entries, and the flavor ladder shifts with difficulty
-  ("interval 4" → "interval 5"), so no entry can ever reach `OWNED_MIN_ATTEMPTS` — combined with
-  `pick_tonic` rotating to the least-practiced key, **no key could ever be owned by any player**.
-  VA test #347 caught it: weeks of drills, "0 of 12 OWNED" forever.
+  ("interval 4" → "interval 5"), so no entry realistically reaches `OWNED_MIN_ATTEMPTS` — combined
+  with `pick_tonic` rotating to the least-practiced key, owning a key was **out of reach for any
+  player below the top of the ladder** (only a sustained-perfect player pinned at max difficulty
+  could stack repeats, ~13+ lessons in). VA test #347 caught it: weeks of drills, "0 of 12 OWNED"
+  forever.
 - **Aggregating `owned` per root in the wheel.** Spec #256 forbids the wheel redefining F2's owned
   rule; the wheel stays a pure read.
 - **Keying by tonic alone.** Breaks #252's `key_mastery: BTreeMap<KeyScale, _>` contract and loses
@@ -191,7 +193,11 @@ owns the key — the wheel finally moves, matching what the lesson header ("B Ma
 
 **Consequence:** Existing learner blobs keep their legacy flavor-keyed entries — they still count
 as Learning evidence and sum into per-root attempts; no migration. New drills accrue to scale keys
-only. The wheel's scales list gradually becomes real scale names.
+only, so the wheel's scales list gradually becomes real scale names (a read-side filter for legacy
+flavors is a possible follow-up). Mid-ladder lessons that cross a scale band while ramping still
+split across 2–3 entries, so ownership accrues slowest for advanced players — reachable everywhere,
+fastest at the beginner band. If an advanced-profile tester re-reports a slow counter, that's this,
+not a regression.
 
 **Related:** #347 (VA report), #256 (wheel), #254 (guided coach), #252 (F2 contract),
 `crates/brain/src/coach.rs` (`mastery_scale`).

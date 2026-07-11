@@ -550,7 +550,8 @@ pub fn played_notes_from_pitch_track(pitches: &[f64], min_run: usize) -> Vec<Pla
 /// material label ("interval 4", "major triad") is a flavor, not a scale —
 /// keying mastery by flavor fragments a lesson's four drills into four
 /// one-attempt entries, and since the flavor ladder shifts with difficulty
-/// no entry can ever reach `OWNED_MIN_ATTEMPTS`: a key could never be owned.
+/// no entry realistically reaches `OWNED_MIN_ATTEMPTS`: owning a key was
+/// out of reach for any player below the top of the ladder.
 /// Scale material names its scale; chord/interval material accrues to the
 /// major/minor family of the signature it is engraved in (the same
 /// `key_signature_for` family the player is shown).
@@ -1686,8 +1687,14 @@ mod tests {
         assert_eq!(scale_of(0, 0), "major", "beginner warmup scale");
         assert_eq!(scale_of(0, 5), "dorian", "warmup names its ladder scale");
         assert_eq!(scale_of(3, 8), "melodic minor", "run-through likewise");
+        assert_eq!(scale_of(0, 9), "harmonic minor", "top-of-ladder warmup");
         assert_eq!(scale_of(1, 0), "major", "major triad → major family");
         assert_eq!(scale_of(1, 3), "minor", "minor triad → minor family");
+        assert_eq!(
+            scale_of(1, 5),
+            "major",
+            "dominant 7 → mixolydian signature, major family"
+        );
         assert_eq!(scale_of(1, 9), "minor", "half-diminished → minor family");
         assert_eq!(scale_of(2, 0), "major", "interval drill → engraved family");
     }
