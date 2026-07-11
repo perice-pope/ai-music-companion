@@ -147,4 +147,60 @@ describe("PerceptionPanel", () => {
     expect(mockInvoke).toHaveBeenCalledWith("clear_accompaniment_key");
     expect(usePracticeStore.getState().keyPinned).toBe(false);
   });
+
+  // #349 T1c AC: the live chord label renders with the RV root colour dot.
+  it("shows the heard chord with its RV root colour", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: {
+        ...LOCKED_G,
+        chord: { root_pc: 0, label: "Cmaj7", bass_pc: null, confidence: 0.82 },
+      },
+    });
+    render(<PerceptionPanel />);
+    const chord = screen.getByTestId("perception-chord");
+    expect(chord).toHaveTextContent("Cmaj7");
+    // Root C wears RV red (rvColors: pitch class 0).
+    const dot = chord.querySelector("span[aria-hidden]");
+    expect(dot).not.toBeNull();
+    expect((dot as HTMLElement).style.backgroundColor).not.toBe("");
+    expect(screen.queryByTestId("perception-polyphony")).toBeNull();
+  });
+
+  // #349 §5.3 honesty: polyphony without a confident name says so — it
+  // never invents a label.
+  it("says 'hearing several notes…' when polyphony has no confident name", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: null,
+        chord: null,
+        hearing_polyphony: true,
+      },
+    });
+    render(<PerceptionPanel />);
+    expect(screen.getByTestId("perception-polyphony")).toHaveTextContent(
+      "hearing several notes",
+    );
+    expect(screen.queryByTestId("perception-chord")).toBeNull();
+    // The honest fallback counts as "hearing something" — no listening state.
+    expect(screen.queryByTestId("perception-listening")).toBeNull();
+  });
+
+  // An inversion label ("C/E") arrives pre-spelled from the backend and
+  // renders verbatim — the frontend must not re-derive or mangle it.
+  it("renders slash-chord labels verbatim", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: {
+        ...LOCKED_G,
+        chord: { root_pc: 0, label: "C7/E", bass_pc: 4, confidence: 0.7 },
+      },
+    });
+    render(<PerceptionPanel />);
+    expect(screen.getByTestId("perception-chord")).toHaveTextContent("C7/E");
+  });
 });

@@ -1994,7 +1994,7 @@ pub async fn start_practice_session<R: Runtime>(
                     profile,
                     follower,
                     Some(idiom_buffer),
-                    move |event| {
+                    move |event, chroma| {
                         // Feed the accompaniment's clock from onset timing before
                         // the event is moved into the emit. Lock is uncontended
                         // (processing thread only) and never touches the realtime
@@ -2007,6 +2007,11 @@ pub async fn start_practice_session<R: Runtime>(
                         // Update perception and emit a throttled snapshot so the
                         // UI shows live tempo/key/feel as the player plays.
                         perception.observe(&event);
+                        // ~10 Hz chroma readings feed the chord tracker
+                        // (#349 T1) — the "I hear Cmaj7" label.
+                        if let Some(c) = chroma {
+                            perception.observe_chroma(&c, event.timestamp_secs);
+                        }
                         let now = event.timestamp_secs;
                         let due = last_perception_secs
                             .is_none_or(|last| now - last >= PERCEPTION_EMIT_INTERVAL_SECS);

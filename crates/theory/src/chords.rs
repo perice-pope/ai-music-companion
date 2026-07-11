@@ -149,6 +149,26 @@ const NON_CHORD_PENALTY: f32 = 0.8;
 const MISSING_TONE_PENALTY: f32 = 0.05;
 /// Minimum score to report anything at all.
 pub const MIN_CHORD_CONF: f32 = 0.5;
+/// Absolute floor on the strongest bin before anything counts as sounding.
+/// Smoothed silence decays toward zero but never reaches it; without this,
+/// twelve near-equal noise bins read as "polyphony". Real playing lands
+/// well above it (a sounding pitch class folds to ≳1.0).
+const CHROMA_SILENCE_FLOOR: f32 = 0.1;
+
+/// How many chroma bins are "sounding" under the matcher's own definition
+/// (≥ [`ACTIVE_BIN_RATIO`] of the strongest bin). Lets callers tell honest
+/// polyphony-without-a-name (≥ [`MIN_CHORD_BINS`] active, no confident
+/// match) apart from single-line playing.
+pub fn active_bin_count(chroma: &[f32; 12]) -> usize {
+    let max_bin = chroma.iter().cloned().fold(0.0f32, f32::max);
+    if max_bin < CHROMA_SILENCE_FLOOR {
+        return 0;
+    }
+    chroma
+        .iter()
+        .filter(|&&v| v >= max_bin * ACTIVE_BIN_RATIO)
+        .count()
+}
 
 /// Match a normalized 12-bin chroma (index = pitch class, C = 0) against
 /// the vocabulary. `bass_pc` is the independently-detected lowest sounding
@@ -164,6 +184,9 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
         return None;
     }
     let max_bin = chroma.iter().cloned().fold(0.0f32, f32::max);
+    if max_bin < CHROMA_SILENCE_FLOOR {
+        return None;
+    }
     // Denoise with the same threshold that defines "sounding": bins under
     // it are analysis-noise floor (leakage, residual harmonics), not
     // evidence for or against any chord. Without this, a clean four-note

@@ -1,0 +1,10 @@
+{
+  "name": "Guitar",
+  "family": "strings",
+  "freq_min_hz": 82.0,
+  "freq_max_hz": 1319.0,
+  "vibrato_tolerance_cents": 25.0,
+  "attack_type": "plucked",
+  "tuning_corrections": [],
+  "emoji": "🎸"
+}

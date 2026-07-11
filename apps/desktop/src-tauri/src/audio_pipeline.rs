@@ -197,7 +197,7 @@ impl AudioPipeline {
     /// drives the score-mode cursor.
     pub fn start<F>(profile: DetectorProfile, emit: F) -> Result<Self, PipelineError>
     where
-        F: FnMut(AudioEvent) + Send + 'static,
+        F: FnMut(AudioEvent, Option<[f32; 12]>) + Send + 'static,
     {
         Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {}, |_| {})
     }
@@ -227,7 +227,7 @@ impl AudioPipeline {
         emit_verdict: V,
     ) -> Result<Self, PipelineError>
     where
-        F: FnMut(AudioEvent) + Send + 'static,
+        F: FnMut(AudioEvent, Option<[f32; 12]>) + Send + 'static,
         P: FnMut(PhraseSummary) + Send + 'static,
         S: FnMut(ScorePosition) + Send + 'static,
         V: FnMut(NoteVerdict) + Send + 'static,
@@ -315,7 +315,7 @@ fn run_worker<F, P, S, V>(
     mut emit_position: S,
     mut emit_verdict: V,
 ) where
-    F: FnMut(AudioEvent),
+    F: FnMut(AudioEvent, Option<[f32; 12]>),
     P: FnMut(PhraseSummary),
     S: FnMut(ScorePosition),
     V: FnMut(NoteVerdict),
@@ -325,6 +325,10 @@ fn run_worker<F, P, S, V>(
     /// (the detect loop runs ~40–50 Hz). Driven off event timestamps, not
     /// wall-clock, so it tracks audio time exactly.
     const POSITION_EMIT_INTERVAL_SECS: f64 = 0.1;
+    /// Samples between chroma readings (#349 T1) — ≈10.8 Hz at 44.1 kHz,
+    /// matching the position cadence. The Goertzel bank costs well under a
+    /// millisecond per reading; at this hop it is noise in the budget.
+    const CHROMA_HOP_SAMPLES: usize = 4096;
 
     // Phrase aggregator groups events into musical phrases. With a score
     // follower attached it also tags each phrase with the score position
@@ -378,6 +382,12 @@ fn run_worker<F, P, S, V>(
     // the widest window we expect (~1500 samples × stereo). ---
     let mut interleaved: Vec<f32> = vec![0.0; 4096];
     let mut mono: Vec<f32> = vec![0.0; 4096];
+
+    // Chroma front end for the live chord label (#349 T1). Fed every
+    // window; computed every CHROMA_HOP_SAMPLES (~10 Hz). All buffers are
+    // pre-allocated inside — nothing here allocates per frame.
+    let mut chroma_extractor = ears::chroma::ChromaExtractor::new(sample_rate);
+    let mut samples_since_chroma: usize = 0;
 
     // Tone accumulation. We gather the current phrase's mono audio and its
     // per-window pitch contour on the processing thread (Vec growth is expected
@@ -438,9 +448,19 @@ fn run_worker<F, P, S, V>(
         };
 
         let event = detector.detect(mono_slice);
+        // Chroma rides the same callback at ~10 Hz (None between readings)
+        // so the chord tracker sees exactly what this window heard.
+        chroma_extractor.feed(mono_slice);
+        samples_since_chroma += mono_slice.len();
+        let chroma = if samples_since_chroma >= CHROMA_HOP_SAMPLES {
+            samples_since_chroma = 0;
+            chroma_extractor.chroma()
+        } else {
+            None
+        };
         // Live pitch goes out first so the meter stays responsive, then
         // the aggregator folds the event into the current phrase.
-        emit(event.clone());
+        emit(event.clone(), chroma);
         let event_time = event.timestamp_secs;
         aggregator.push(&event);
 
