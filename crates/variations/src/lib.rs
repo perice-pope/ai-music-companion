@@ -1393,7 +1393,7 @@ mod tests {
                 .all(|w| w[0].start_beat < w[1].start_beat),
             "the scale run plays melodically, not as a block"
         );
-        assert!(seq.label.contains("major"), "label: {}", seq.label);
+        assert!(seq.label.contains("Major"), "label: {}", seq.label);
     }
 
     /// Stacks respect the playable range: a root at the very top of the
