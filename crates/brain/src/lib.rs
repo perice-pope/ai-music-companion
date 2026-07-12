@@ -8,6 +8,7 @@
 //! - Session recording and persistence (SQLite-backed)
 
 pub mod accompaniment;
+pub mod chord_judge;
 pub mod coach;
 pub mod coaching;
 pub mod connections;

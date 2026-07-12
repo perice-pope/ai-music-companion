@@ -136,6 +136,7 @@ mod tests {
 
     fn seq(midis: &[u8]) -> GeneratedSequence {
         GeneratedSequence {
+            chord_targets: Vec::new(),
             notes: midis
                 .iter()
                 .enumerate()

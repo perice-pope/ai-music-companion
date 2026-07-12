@@ -196,6 +196,17 @@ Open the samples folder for her so she can drag a file:
    neighboring keys at once: it should say **'hearing several notes…'** rather than making up a
    chord name — that honesty is the feature. Tell me: did the labels feel right and steady, or
    did they flicker/lie?"
+11d. **Chord DRILLS — the lesson deals block chords on piano/guitar (NEW this run).** Stay on
+   **Piano** (or Guitar) with the real instrument at hand, then start a **Guided Lesson**. "The
+   second drill's label should say **'… block chords'** and the notation should show **stacked
+   notes** (whole chords, one per measure) instead of a note-by-note arpeggio. **(a)** Play each
+   chord the colored cells ask for, one per measure, then tap grade: does the score feel fair?
+   **(b)** Do one drill where you deliberately play a couple of WRONG chords — the grade should
+   drop honestly, and a 'close' chord (right letter, wrong flavor — like C7 where Cmaj7 was
+   asked) should hurt less than a totally wrong one. **(c)** Tap grade once WITHOUT playing
+   anything: it should calmly say it didn't hear you yet — never a 0% for silence. On Voice or
+   Trumpet the lesson should still deal the old note-by-note arpeggio — chords are only dealt to
+   instruments that can play them."
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -293,6 +304,13 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 ### Your Keys wheel 🎡 (desktop only — NEW)
 - Wheel visible on the picker; dim + "play to light up" before practicing: <answer>
 - Keys brightened after lessons; tap-detail showed drills/%/scales: <answer>
+
+### Chord drills 🎹 (desktop only — NEW, piano/guitar lessons)
+- Lesson on Piano/Guitar dealt a "block chords" drill with stacked notation: <answer>
+- Playing the right chords graded fairly: <answer>
+- Wrong chords dropped the grade; a close chord (right root) hurt less: <answer>
+- Grading silence said "didn't hear you yet", not 0%: <answer>
+- Voice/Trumpet lessons still deal the note-by-note arpeggio: <answer>
 
 ### Guided Lesson 🎓 (desktop only — new feature)
 - **[#327 hunt] Keys tried across 4+ lessons; any render error with its exact key name:** <answer>

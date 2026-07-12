@@ -84,6 +84,24 @@ pub enum ChordType {
 }
 
 impl ChordType {
+    /// #349 T2b: the `theory` quality the T1 chord engine reports when this
+    /// chord is heard — the grading vocabulary bridge. Every variant maps;
+    /// a new ChordType without a mapping is a compile error here, never a
+    /// silent misgrade.
+    pub fn quality(self) -> theory::ChordQuality {
+        match self {
+            ChordType::MajorTriad => theory::ChordQuality::Maj,
+            ChordType::MinorTriad => theory::ChordQuality::Min,
+            ChordType::DiminishedTriad => theory::ChordQuality::Dim,
+            ChordType::AugmentedTriad => theory::ChordQuality::Aug,
+            ChordType::Sus4Triad => theory::ChordQuality::Sus4,
+            ChordType::Major7 => theory::ChordQuality::Maj7,
+            ChordType::Minor7 => theory::ChordQuality::Min7,
+            ChordType::Dominant7 => theory::ChordQuality::Dom7,
+            ChordType::HalfDiminished7 => theory::ChordQuality::Min7b5,
+        }
+    }
+
     /// Semitone offsets from the root, root position.
     pub fn semitones(self) -> &'static [u8] {
         match self {
@@ -151,6 +169,37 @@ impl Enclosure {
             Enclosure::TwoDown => "two down",
             Enclosure::OneUpOneDown => "one up, one down",
             Enclosure::OneDownOneUp => "one down, one up",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #349 T2b (review must-fix): every ChordType's grading quality is
+    /// interval-identical to the tones it deals — a divergent mapping
+    /// systematically misgrades every drill of that type (each correct
+    /// chord would read Near forever). Kills any HalfDim7→Min7-style
+    /// mutation permanently.
+    #[test]
+    fn every_chord_type_grades_as_the_intervals_it_deals() {
+        for ct in [
+            ChordType::MajorTriad,
+            ChordType::MinorTriad,
+            ChordType::DiminishedTriad,
+            ChordType::AugmentedTriad,
+            ChordType::Sus4Triad,
+            ChordType::Major7,
+            ChordType::Minor7,
+            ChordType::Dominant7,
+            ChordType::HalfDiminished7,
+        ] {
+            assert_eq!(
+                ct.quality().intervals(),
+                ct.semitones(),
+                "{ct:?}: dealt tones and graded quality must be the same chord"
+            );
         }
     }
 }
