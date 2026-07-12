@@ -2,27 +2,40 @@
 //!
 //! The melodic follower judges lines; a BLOCK-CHORD drill is judged here
 //! instead: the drill's [`ChordTarget`]s (what the T1 engine should hear,
-//! straight from `variations::generate`) against the stable
-//! [`ChordReading`]s the perception tracker actually promoted. Verdicts
-//! ride the same [`NoteVerdict`] shape as melodic judging, so the strip,
-//! phrase cards, and recap plumbing stay unchanged.
+//! straight from `variations::generate`) against the stable chord readings
+//! the perception tracker actually promoted. Verdicts ride the same
+//! [`NoteVerdict`] shape as melodic judging, so the strip, phrase cards,
+//! and recap plumbing stay unchanged.
 //!
 //! Verdict rules (spec §6 T2):
 //! - **Hit** — same root and quality; when the drill DEMANDS an inversion
 //!   (`target.bass_pc = Some`), the heard bass must match too.
 //! - **Near** — right root, wrong quality (C7 played for Cmaj7), or the
-//!   right chord with the demanded bass wrong/missing.
-//! - **Missed** — different root, or the cell was skipped over entirely.
+//!   right chord with the demanded bass wrong/missing. (Broader than the
+//!   spec's "wrong extension": ANY right-root quality earns Near, because
+//!   a quiet 7th genuinely reads as a triad at the detector — grading that
+//!   as a full miss would punish the microphone, not the player.)
+//! - **Missed** — the cell was never matched by anything the player did.
 //!
-//! Progress is sequential with one cell of lookahead (the same skip-credit
-//! discipline as the melodic follower): a reading that misses the current
-//! target but is a clean HIT on the next one closes the current cell as
-//! Missed and credits the next — a player who fumbles one key and moves on
-//! is never dragged permanently out of alignment.
+//! **Settle-on-evidence (the follower's "silence beats false accusations"
+//! discipline):** a reading settles the current target only when it MATCHES
+//! it (Hit/Near), or when it is a clean HIT on the next target (skip
+//! credit: the fumbled cell closes Missed, the nailed one credits Hit — an
+//! exact next-hit also outranks a Near on current). Anything else — a
+//! noodle, a stray wrong chord, detector mush — settles NOTHING: it can't
+//! accuse the player of missing a cell they may be about to play. Cells
+//! that were truly never played become honest Misses at [`finish`].
+//! Consequence pinned by tests: noodle one wrong chord, then play the
+//! whole drill perfectly → perfect score, not a cascade of misses.
 //!
-//! Pure and deterministic: no clock, no audio — feed it readings, get
-//! verdicts. The session layer owns cadence (readings arrive only when the
-//! chord tracker PROMOTES a stable label, ~chord rate, never per frame).
+//! Pure and deterministic: no clock, no audio. **Session contract:** feed
+//! it chord CHANGES (edge-triggered, exactly as the session's chord buffer
+//! records them — one entry per promoted identity change, with a release
+//! reset so a deliberate re-strike of the same chord arrives again). The
+//! judge itself does not dedup: two identical consecutive entries mean the
+//! player really struck the chord twice.
+//!
+//! [`finish`]: ChordDrillJudge::finish
 
 use serde::{Deserialize, Serialize};
 
@@ -40,13 +53,14 @@ pub struct HeardChord {
     pub bass_pc: Option<u8>,
 }
 
-/// How a heard chord grades against one target.
+/// How a heard chord grades against one target. The `% 12` normalizations
+/// are defensive — both sides are documented 0–11.
 fn classify(heard: &HeardChord, target: &ChordTarget) -> Verdict {
     if heard.root_pc % 12 != target.root_pc % 12 {
         return Verdict::Missed;
     }
     if heard.quality != target.quality {
-        return Verdict::Near; // right root, wrong extension/quality
+        return Verdict::Near; // right root, wrong quality/extension
     }
     match target.bass_pc {
         // Inversion demanded: the heard bass must name it.
@@ -58,24 +72,17 @@ fn classify(heard: &HeardChord, target: &ChordTarget) -> Verdict {
     }
 }
 
-/// Sequential judge over a stacked drill's chord targets.
+/// Sequential settle-on-evidence judge over a stacked drill's targets.
 #[derive(Debug, Clone)]
 pub struct ChordDrillJudge {
     targets: Vec<ChordTarget>,
     /// Next unjudged target index.
     next: usize,
-    /// The last reading judged, so a sustained chord (the tracker refreshes
-    /// its confidence every ~100 ms) is judged ONCE, not per reading.
-    last_heard: Option<HeardChord>,
 }
 
 impl ChordDrillJudge {
     pub fn new(targets: Vec<ChordTarget>) -> Self {
-        Self {
-            targets,
-            next: 0,
-            last_heard: None,
-        }
+        Self { targets, next: 0 }
     }
 
     /// True once every target has been judged.
@@ -83,35 +90,31 @@ impl ChordDrillJudge {
         self.next >= self.targets.len()
     }
 
-    /// Fold in one stable chord reading. Returns the verdicts it settles
-    /// (usually one; two when skip-credit closes a fumbled cell). A repeat
-    /// of the previous reading returns nothing — one chord, one verdict.
+    /// Fold in one heard chord CHANGE (see the module docs for the session
+    /// contract). Returns the verdicts it settles: one on a match, two when
+    /// skip credit closes a fumbled cell — and NONE for a reading that
+    /// matches neither the current nor the next target (held, never an
+    /// accusation).
     pub fn observe(&mut self, heard: HeardChord) -> Vec<NoteVerdict> {
-        if self.is_done() || self.last_heard == Some(heard) {
+        if self.is_done() {
             return Vec::new();
         }
-        self.last_heard = Some(heard);
-
-        let mut out = Vec::new();
-        let current = &self.targets[self.next];
-        match classify(&heard, current) {
-            Verdict::Missed => {
-                // One cell of lookahead: a clean HIT on the next target
-                // closes this one as Missed and credits the next.
-                let skip_hit = self
-                    .targets
-                    .get(self.next + 1)
-                    .is_some_and(|t| classify(&heard, t) == Verdict::Hit);
-                if skip_hit {
-                    out.push(self.settle(Verdict::Missed));
-                    out.push(self.settle(Verdict::Hit));
-                } else {
-                    out.push(self.settle(Verdict::Missed));
-                }
-            }
-            verdict => out.push(self.settle(verdict)),
+        let on_current = classify(&heard, &self.targets[self.next]);
+        let hit_on_next = self
+            .targets
+            .get(self.next + 1)
+            .is_some_and(|t| classify(&heard, t) == Verdict::Hit);
+        match (on_current, hit_on_next) {
+            // A clean hit on the NEXT cell outranks anything short of a hit
+            // on the current one — the player has moved on; holding the
+            // fumbled cell open would misattribute everything after it.
+            (Verdict::Hit, _) => vec![self.settle(Verdict::Hit)],
+            (_, true) => vec![self.settle(Verdict::Missed), self.settle(Verdict::Hit)],
+            (Verdict::Near, false) => vec![self.settle(Verdict::Near)],
+            // No evidence about the current cell: hold. finish() will close
+            // it honestly if nothing ever matches.
+            (Verdict::Missed, false) => Vec::new(),
         }
-        out
     }
 
     /// Close the drill: every unjudged target is an honest Missed — a cell
@@ -142,11 +145,13 @@ impl ChordDrillJudge {
     }
 }
 
-/// Tally a finished chord drill into the lesson's 0..1 accuracy signal:
-/// Hit = 1, Near = ½ (right root is real knowledge — the RV ramp shouldn't
-/// treat C7-for-Cmaj7 like silence), Missed = 0.
-pub fn chord_drill_accuracy(verdicts: &[NoteVerdict]) -> f32 {
-    if verdicts.is_empty() {
+/// Tally a drill into the lesson's 0..1 accuracy signal: Hit = 1, Near = ½
+/// (right root is real knowledge — the RV ramp shouldn't treat
+/// C7-for-Cmaj7 like silence), Missed = 0. Divides by `total_targets`, not
+/// by verdict count, so a caller that forgets [`ChordDrillJudge::finish`]
+/// under-counts instead of silently inflating a one-hit drill to 100%.
+pub fn chord_drill_accuracy(verdicts: &[NoteVerdict], total_targets: usize) -> f32 {
+    if total_targets == 0 {
         return 0.0;
     }
     let score: f32 = verdicts
@@ -157,7 +162,55 @@ pub fn chord_drill_accuracy(verdicts: &[NoteVerdict]) -> f32 {
             Verdict::Missed => 0.0,
         })
         .sum();
-    score / verdicts.len() as f32
+    score / total_targets as f32
+}
+
+/// Grade a finished chord drill for the lesson ladder (#349 T2b): run the
+/// buffered chord changes through the judge, close unplayed cells as
+/// Misses, and shape the result as the [`DrillScore`] the ramp/recap/log
+/// already consume. `per_note.correct` = Hit (a Near still shows as a miss
+/// in the per-cell view but earns its half credit in `accuracy`).
+///
+/// [`DrillScore`]: crate::coach::DrillScore
+pub fn score_chord_drill(
+    targets: &[ChordTarget],
+    heard: &[HeardChord],
+) -> crate::coach::DrillScore {
+    let mut judge = ChordDrillJudge::new(targets.to_vec());
+    let mut verdicts = Vec::new();
+    for &h in heard {
+        verdicts.extend(judge.observe(h));
+    }
+    verdicts.extend(judge.finish());
+    let accuracy = chord_drill_accuracy(&verdicts, targets.len());
+    // Verdicts settle strictly in target order, so zip attributes correctly.
+    let per_note = targets
+        .iter()
+        .zip(&verdicts)
+        .map(|(t, v)| crate::coach::NoteGrade {
+            // Representative pitch for display: the expected root near C4.
+            target_midi: 60 + (t.root_pc % 12),
+            played_hz: None,
+            cents_deviation: None,
+            correct: v.verdict == Verdict::Hit,
+        })
+        .collect();
+    // Steadiness proxy, mirroring the melodic drill's onset-count proxy:
+    // how closely the number of distinct chords heard tracks the number of
+    // cells asked for (noodling many chords or freezing both read as loose).
+    let timing_accuracy = if targets.is_empty() {
+        0.0
+    } else {
+        let heard_n = heard.len() as f32;
+        let want_n = targets.len() as f32;
+        (heard_n.min(want_n) / heard_n.max(want_n)).clamp(0.0, 1.0)
+    };
+    crate::coach::DrillScore {
+        per_note,
+        accuracy,
+        pitch_accuracy: accuracy,
+        timing_accuracy,
+    }
 }
 
 #[cfg(test)]
@@ -182,7 +235,8 @@ mod tests {
     }
 
     /// #349 T2 AC2, the canonical ladder: right chord → Hit; C7 for Cmaj7
-    /// → Near (right root, wrong extension); Am for C → Missed.
+    /// → Near (right root, wrong extension); a wrong-root chord (Am for C)
+    /// settles nothing live and the never-matched cell closes Missed.
     #[test]
     fn hit_near_missed_follow_the_spec_ladder() {
         let mut j = ChordDrillJudge::new(vec![
@@ -194,9 +248,36 @@ mod tests {
         assert_eq!((v[0].measure_number, v[0].verdict), (1, Verdict::Hit));
         let v = j.observe(heard(0, ChordQuality::Dom7)); // C7 for Cmaj7
         assert_eq!(v[0].verdict, Verdict::Near);
-        let v = j.observe(heard(9, ChordQuality::Min)); // Am for C
-        assert_eq!(v[0].verdict, Verdict::Missed);
+        // Am for C: no accusation live — the honest Missed lands at finish.
+        assert!(j.observe(heard(9, ChordQuality::Min)).is_empty());
+        let v = j.finish();
+        assert_eq!((v[0].measure_number, v[0].verdict), (3, Verdict::Missed));
         assert!(j.is_done());
+    }
+
+    /// THE review-round probe, now the spec: noodle one wrong chord, then
+    /// play the whole drill perfectly → perfect score. Fails if the judge
+    /// ever goes back to consuming a target on a non-matching reading (the
+    /// cascade that graded a near-perfect run 0.0).
+    #[test]
+    fn a_noodle_before_a_perfect_run_costs_nothing() {
+        let targets = vec![
+            target(0, 0, ChordQuality::Dom7),
+            target(1, 5, ChordQuality::Dom7),
+            target(2, 10, ChordQuality::Dom7),
+        ];
+        let mut j = ChordDrillJudge::new(targets.clone());
+        assert!(j.observe(heard(9, ChordQuality::Min)).is_empty()); // noodle
+        let mut verdicts = Vec::new();
+        for t in &targets {
+            verdicts.extend(j.observe(heard(t.root_pc, t.quality)));
+        }
+        verdicts.extend(j.finish());
+        assert!(
+            verdicts.iter().all(|v| v.verdict == Verdict::Hit),
+            "noodle must not cascade: {verdicts:?}"
+        );
+        assert!((chord_drill_accuracy(&verdicts, 3) - 1.0).abs() < 1e-6);
     }
 
     /// #349 T2 AC2 (inversions): a drill that demands the bass judges it —
@@ -227,9 +308,9 @@ mod tests {
     }
 
     /// Skip credit: fumble one key, nail the next — the fumbled cell closes
-    /// Missed, the nailed one credits Hit, and alignment continues. Fails
-    /// if the lookahead is removed (the player would be judged against the
-    /// wrong target forever after).
+    /// Missed, the nailed one credits Hit, and alignment continues. An
+    /// exact hit on next also outranks a Near on current (documented
+    /// decision). Fails if the lookahead is removed.
     #[test]
     fn a_fumbled_cell_takes_skip_credit_from_a_clean_next_hit() {
         let mut j = ChordDrillJudge::new(vec![
@@ -244,30 +325,75 @@ mod tests {
         let v = j.observe(heard(10, ChordQuality::Dom7));
         assert_eq!((v[0].measure_number, v[0].verdict), (3, Verdict::Hit));
         assert!(j.is_done());
+
+        // Near-on-current vs exact-Hit-on-next: the hit wins.
+        let mut j = ChordDrillJudge::new(vec![
+            target(0, 0, ChordQuality::Maj7), // heard chord is Near here…
+            target(1, 0, ChordQuality::Dom7), // …but an exact hit here
+        ]);
+        let v = j.observe(heard(0, ChordQuality::Dom7));
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].verdict, Verdict::Missed);
+        assert_eq!(v[1].verdict, Verdict::Hit);
     }
 
-    /// One chord, one verdict: the tracker re-promotes the same reading for
-    /// as long as the chord rings; repeats must not consume targets.
+    /// Repeated identical targets: the session buffer is edge-triggered
+    /// with a release reset, so a deliberate re-strike arrives as a second
+    /// entry and judges the second cell — no dedup deadlock (review-round
+    /// probe). Also covers the skip-credit-then-same-reading case.
     #[test]
-    fn a_sustained_chord_is_judged_once() {
+    fn a_restrike_judges_a_repeated_target() {
         let mut j = ChordDrillJudge::new(vec![
             target(0, 0, ChordQuality::Maj),
-            target(1, 7, ChordQuality::Maj),
+            target(1, 0, ChordQuality::Maj),
         ]);
-        assert_eq!(j.observe(heard(0, ChordQuality::Maj)).len(), 1);
-        assert!(j.observe(heard(0, ChordQuality::Maj)).is_empty());
-        assert!(j.observe(heard(0, ChordQuality::Maj)).is_empty());
-        // A NEW chord judges the next target.
         assert_eq!(
-            j.observe(heard(7, ChordQuality::Maj))[0].verdict,
+            j.observe(heard(0, ChordQuality::Maj))[0].verdict,
             Verdict::Hit
+        );
+        assert_eq!(
+            j.observe(heard(0, ChordQuality::Maj))[0].verdict,
+            Verdict::Hit
+        );
+        assert!(j.is_done());
+
+        // Skip credit into F7, then F7 again for the repeated third target.
+        let mut j = ChordDrillJudge::new(vec![
+            target(0, 0, ChordQuality::Dom7),
+            target(1, 5, ChordQuality::Dom7),
+            target(2, 5, ChordQuality::Dom7),
+        ]);
+        let v = j.observe(heard(5, ChordQuality::Dom7));
+        assert_eq!(v.len(), 2, "skip credit fires");
+        let v = j.observe(heard(5, ChordQuality::Dom7));
+        assert_eq!(
+            (v[0].measure_number, v[0].verdict),
+            (3, Verdict::Hit),
+            "the re-strike judges the repeated target"
         );
     }
 
-    /// finish() closes every unplayed cell as an honest Missed, and the
-    /// accuracy tally weighs Hit=1 / Near=0.5 / Missed=0.
+    /// Edges: empty targets judge nothing; a single-target drill with a
+    /// wrong reading holds (lookahead at the end is safely absent) and
+    /// closes Missed at finish.
     #[test]
-    fn finish_misses_the_unplayed_and_accuracy_tallies() {
+    fn empty_and_single_target_edges_hold_honestly() {
+        let mut j = ChordDrillJudge::new(Vec::new());
+        assert!(j.is_done());
+        assert!(j.observe(heard(0, ChordQuality::Maj)).is_empty());
+        assert!(j.finish().is_empty());
+
+        let mut j = ChordDrillJudge::new(vec![target(0, 0, ChordQuality::Maj)]);
+        assert!(j.observe(heard(6, ChordQuality::Maj)).is_empty());
+        assert_eq!(j.progress(), (0, 1));
+        assert_eq!(j.finish()[0].verdict, Verdict::Missed);
+    }
+
+    /// finish() closes every unplayed cell as an honest Missed, and the
+    /// accuracy tally divides by TOTAL targets — a caller that forgets
+    /// finish() under-counts instead of inflating one hit to 100%.
+    #[test]
+    fn finish_misses_the_unplayed_and_accuracy_divides_by_total() {
         let mut j = ChordDrillJudge::new(vec![
             target(0, 0, ChordQuality::Dom7),
             target(1, 5, ChordQuality::Dom7),
@@ -276,11 +402,33 @@ mod tests {
         ]);
         let mut verdicts = j.observe(heard(0, ChordQuality::Dom7)); // Hit
         verdicts.extend(j.observe(heard(5, ChordQuality::Maj7))); // Near
+                                                                  // Forgotten finish: 1.5/4, never 1.5/2.
+        assert!((chord_drill_accuracy(&verdicts, 4) - 0.375).abs() < 1e-6);
         verdicts.extend(j.finish()); // 2 unplayed → Missed
         assert_eq!(verdicts.len(), 4);
-        assert!(j.is_done());
-        // (1 + 0.5 + 0 + 0) / 4
-        assert!((chord_drill_accuracy(&verdicts) - 0.375).abs() < 1e-6);
+        assert!((chord_drill_accuracy(&verdicts, 4) - 0.375).abs() < 1e-6);
+        assert_eq!(chord_drill_accuracy(&[], 0), 0.0);
+    }
+
+    /// score_chord_drill: the lesson-facing grade — a half-played 12-key
+    /// drill earns exactly its hits, unplayed cells score zero, and the
+    /// count proxy reflects the shortfall.
+    #[test]
+    fn score_chord_drill_grades_a_half_played_drill_honestly() {
+        let targets: Vec<ChordTarget> = (0..4)
+            .map(|i| target(i, (i as u8 * 5) % 12, ChordQuality::Dom7))
+            .collect();
+        // Player nails cells 1 and 2, then stops.
+        let played = vec![heard(0, ChordQuality::Dom7), heard(5, ChordQuality::Dom7)];
+        let s = score_chord_drill(&targets, &played);
+        assert_eq!(s.per_note.len(), 4);
+        assert_eq!(s.per_note.iter().filter(|g| g.correct).count(), 2);
+        assert!((s.accuracy - 0.5).abs() < 1e-6);
+        assert!((s.timing_accuracy - 0.5).abs() < 1e-6);
+        // Empty drill: honest zero, no panic.
+        let empty = score_chord_drill(&[], &played);
+        assert_eq!(empty.per_note.len(), 0);
+        assert_eq!(empty.accuracy, 0.0);
     }
 
     /// Verdicts land on the RV grid: segment k = measure k+1, downbeat —

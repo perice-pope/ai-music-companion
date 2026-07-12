@@ -327,11 +327,15 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
                            // The grading target (#349 T2b): what the T1 engine should hear.
                            // An inversion drill demands its voicing's lowest tone as the
                            // bass; root-position drills leave the bass unjudged.
+                           // The EFFECTIVE inversion (chord_tones wraps oversize values):
+                           // inversion 3 of a triad voices root position and must not
+                           // silently demand a bass (review nit — harsher grading).
+            let effective_inversion = usize::from(c.inversion) % c.chord.semitones().len().max(1);
             chord_targets.push(ChordTarget {
                 segment: segment as u32,
                 root_pc: root % 12,
                 quality: c.chord.quality(),
-                bass_pc: (c.inversion > 0)
+                bass_pc: (effective_inversion > 0)
                     .then(|| tones.first().map(|&m| (m.rem_euclid(12)) as u8))
                     .flatten(),
             });
@@ -1468,6 +1472,22 @@ mod tests {
         let lowest = seq.notes.iter().map(|n| n.midi).min().unwrap();
         assert_eq!(t.bass_pc, Some(lowest % 12));
         assert_ne!(t.bass_pc, Some(t.root_pc), "first inversion: bass != root");
+    }
+
+    /// An OVERSIZE inversion wraps to root position (pinned generator
+    /// behavior) — and must therefore demand NO bass: a nominally
+    /// "inverted" drill that actually deals root position must not grade
+    /// harsher than it plays (review-round nit).
+    #[test]
+    fn a_wrapped_inversion_demands_no_bass() {
+        let spec = VariationSpec {
+            roots: vec![60],
+            ..stacked_spec(ChordType::MajorTriad, 3) // 3 % 3 = root position
+        };
+        let seq = generate(&spec, 1);
+        assert_eq!(seq.chord_targets[0].bass_pc, None);
+        // And the voicing really is root position.
+        assert!(seq.notes[0].is_root);
     }
 
     /// Melodic material carries NO chord targets, and pre-T2b sequences

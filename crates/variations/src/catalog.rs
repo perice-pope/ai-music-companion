@@ -172,3 +172,34 @@ impl Enclosure {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #349 T2b (review must-fix): every ChordType's grading quality is
+    /// interval-identical to the tones it deals — a divergent mapping
+    /// systematically misgrades every drill of that type (each correct
+    /// chord would read Near forever). Kills any HalfDim7→Min7-style
+    /// mutation permanently.
+    #[test]
+    fn every_chord_type_grades_as_the_intervals_it_deals() {
+        for ct in [
+            ChordType::MajorTriad,
+            ChordType::MinorTriad,
+            ChordType::DiminishedTriad,
+            ChordType::AugmentedTriad,
+            ChordType::Sus4Triad,
+            ChordType::Major7,
+            ChordType::Minor7,
+            ChordType::Dominant7,
+            ChordType::HalfDiminished7,
+        ] {
+            assert_eq!(
+                ct.quality().intervals(),
+                ct.semitones(),
+                "{ct:?}: dealt tones and graded quality must be the same chord"
+            );
+        }
+    }
+}

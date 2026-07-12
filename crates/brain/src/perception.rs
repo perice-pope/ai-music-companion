@@ -414,6 +414,20 @@ impl PerceptionTracker {
         }
     }
 
+    /// The currently shown (stable, dwell-promoted) chord as grading
+    /// evidence for chord drills (#349 T2b) — same identity the strip
+    /// displays, so grading can never disagree with what the player saw.
+    pub fn current_heard_chord(&self) -> Option<crate::chord_judge::HeardChord> {
+        self.chords
+            .current
+            .as_ref()
+            .map(|m| crate::chord_judge::HeardChord {
+                root_pc: m.root_pc,
+                quality: m.quality,
+                bass_pc: m.bass_pc,
+            })
+    }
+
     /// Forget all history (e.g. on a new session).
     pub fn reset(&mut self) {
         self.clock.reset();

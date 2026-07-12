@@ -58,6 +58,12 @@ pub struct LessonSpec {
     pub drill_count: u8,
     /// Taken from `LearnerModel.difficulty` at lesson start (clamped on read).
     pub start_difficulty: u8,
+    /// #349 T2b: the session's instrument can sound simultaneous notes
+    /// (keyboard family / plucked strings). Polyphonic lessons deal the
+    /// chord drill as BLOCK chords judged by the T1 chord engine; melodic
+    /// instruments keep the arpeggio walk. Additive: old specs parse false.
+    #[serde(default)]
+    pub polyphonic: bool,
 }
 
 /// One drill: the F1 spec + its generated sequence, tagged with the key/scale
@@ -186,7 +192,12 @@ fn roots_for(tonic: u8, count: usize) -> Vec<u8> {
 }
 
 /// Map one drill kind at one difficulty to a concrete F1 spec.
-fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, String) {
+fn spec_for(
+    kind: DrillKind,
+    difficulty: u8,
+    tonic: u8,
+    polyphonic: bool,
+) -> (VariationSpec, String) {
     let d = difficulty.min(MAX_DIFFICULTY);
     let roots = roots_for(tonic, ROOTS_BY_DIFFICULTY[d as usize]);
     let rhythm = RhythmSpec {
@@ -243,10 +254,16 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
                         ArpeggioPattern::Ascending
                     },
                     inversion: if d >= 7 { 1 } else { 0 },
-                    stacked: false,
+                    // #349 T2b: polyphonic instruments PLAY the chord —
+                    // dealt as a block stack, graded by the chord engine.
+                    // The inversion ladder still applies (a demanded
+                    // inversion judges the bass).
+                    stacked: polyphonic,
                 }),
                 interval: None,
-                enclosure: (d >= 5).then_some(Enclosure::OneDown),
+                // Enclosures are melodic approaches — meaningless into a
+                // simultaneity, so stacked drills never carry one.
+                enclosure: (d >= 5 && !polyphonic).then_some(Enclosure::OneDown),
                 direction,
                 rhythm,
                 randomize_roots,
@@ -343,7 +360,7 @@ fn build_drill(lesson: &LessonSpec, index: u8, difficulty: u8, tonic: u8) -> Opt
     let count = lesson.drill_count.clamp(3, 4);
     let kind = kind_at(index, count)?;
     let d = difficulty.min(MAX_DIFFICULTY);
-    let (spec, mode) = spec_for(kind, d, tonic);
+    let (spec, mode) = spec_for(kind, d, tonic, lesson.polyphonic);
     let mut sequence = generate(&spec, drill_seed(lesson.seed, index));
     // The label rides everywhere the drill shows (header, recap, score
     // title) — respell it to the engraved signature so no surface can say
@@ -892,7 +909,7 @@ pub fn start_explore(
     seed: u64,
 ) -> (ExploreState, GeneratedSequence) {
     let difficulty = model.difficulty.min(MAX_DIFFICULTY);
-    let (mut spec, _) = spec_for(DrillKind::WarmupScale, difficulty, tonic);
+    let (mut spec, _) = spec_for(DrillKind::WarmupScale, difficulty, tonic, false);
     if let (Some(scale), Some(m)) = (scale_for_mode_label(mode), spec.scale.as_mut()) {
         // Explore the sound the player is actually in, not the ladder default.
         m.scale = scale;
@@ -1020,7 +1037,7 @@ pub fn apply_explore_delta(
             let scale = next.spec.scale;
             let cell = next.spec.cell.take();
             let degrees = next.spec.degrees.take();
-            let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic);
+            let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
                 m.scale = prev.scale;
@@ -1370,6 +1387,49 @@ mod tests {
             seed,
             drill_count: 4,
             start_difficulty: 0,
+            polyphonic: false,
+        }
+    }
+
+    /// #349 T2b: a polyphonic lesson deals its chord drill STACKED — block
+    /// cells with grading targets — while the melodic lesson at the same
+    /// seed/difficulty keeps the arpeggio walk (no targets, no groups). At
+    /// enclosure difficulty the stacked drill carries none (an approach
+    /// into a simultaneity is meaningless). Fails if polyphonic dealing or
+    /// the melodic ladder regresses.
+    #[test]
+    fn a_polyphonic_lesson_deals_the_chord_drill_stacked() {
+        let poly = LessonSpec {
+            polyphonic: true,
+            ..lesson(9)
+        };
+        for difficulty in [0u8, 5, 7] {
+            let stacked = build_drill(&poly, 1, difficulty, 0).unwrap();
+            assert_eq!(stacked.kind, DrillKind::ArpeggioEnclosure);
+            assert!(
+                !stacked.sequence.chord_targets.is_empty(),
+                "d={difficulty}: stacked drill carries chord targets"
+            );
+            assert!(stacked
+                .sequence
+                .notes
+                .iter()
+                .all(|n| n.chord_group.is_some()));
+            assert!(stacked.spec.enclosure.is_none(), "d={difficulty}");
+            if difficulty >= 7 {
+                assert!(
+                    stacked.sequence.chord_targets[0].bass_pc.is_some(),
+                    "the inversion ladder still demands its bass"
+                );
+            }
+
+            let melodic = build_drill(&lesson(9), 1, difficulty, 0).unwrap();
+            assert!(melodic.sequence.chord_targets.is_empty());
+            assert!(melodic
+                .sequence
+                .notes
+                .iter()
+                .all(|n| n.chord_group.is_none()));
         }
     }
 
@@ -1464,6 +1524,7 @@ mod tests {
             seed: 8,
             drill_count: 4,
             start_difficulty: 3,
+            polyphonic: false,
         };
         let model = LearnerModel::default();
         let d0 = build_first(&spec, &model);
@@ -1489,6 +1550,7 @@ mod tests {
                 seed: 1,
                 drill_count: requested,
                 start_difficulty: 0,
+                polyphonic: false,
             };
             let mut n = 1;
             let mut drill = build_first(&spec, &model);

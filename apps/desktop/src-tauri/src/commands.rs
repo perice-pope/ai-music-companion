@@ -88,6 +88,11 @@ pub struct InstrumentInfo {
     /// [`InstrumentProfile::voiced_confidence_threshold`]). Carried through so
     /// the phrase aggregator can count quiet singing as practice (#185).
     pub voiced_confidence_threshold: f64,
+    /// #349 T2b: the instrument can sound simultaneous notes (struck or
+    /// plucked attack — piano, guitar). Polyphonic lessons deal the chord
+    /// drill as block chords judged by the T1 chord engine.
+    #[serde(default)]
+    pub polyphonic: bool,
 }
 
 /// Payload of the `session-status` Tauri event.
@@ -647,6 +652,11 @@ pub struct AppState {
     /// buffered exactly like `phrase_buffer` and drained into the recap
     /// input at session end for the score-practice summary.
     verdict_buffer: Arc<std::sync::Mutex<Vec<brain::follower::NoteVerdict>>>,
+    /// Stable chord readings the perception tracker promoted this session
+    /// (#349 T2b) — one entry per chord CHANGE (never per frame). Chord
+    /// drills grade from the slice heard since the drill began, exactly
+    /// like `phrase_buffer` for melodic drills.
+    chord_buffer: Arc<std::sync::Mutex<Vec<brain::chord_judge::HeardChord>>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -787,6 +797,7 @@ impl AppState {
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            chord_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -817,6 +828,7 @@ impl AppState {
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            chord_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -1348,6 +1360,10 @@ fn profile_to_info(profile: &InstrumentProfile) -> InstrumentInfo {
         vibrato_tolerance_cents: profile.vibrato_tolerance_cents,
         emoji: profile.emoji.clone(),
         voiced_confidence_threshold: profile.voiced_confidence_threshold,
+        polyphonic: matches!(
+            profile.attack_type,
+            ears::profile::AttackType::Struck | ears::profile::AttackType::Plucked
+        ),
     }
 }
 
@@ -1447,6 +1463,7 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         // Voice uses a lower gate so quiet singing registers (#185); others
         // keep the 0.5 default.
         voiced_confidence_threshold: if name == "Voice" { 0.3 } else { 0.5 },
+        polyphonic: family == "Keyboard",
     })
     .collect()
 }
@@ -1977,8 +1994,10 @@ pub async fn start_practice_session<R: Runtime>(
                 // so end_practice_session can record them into the recap (#185).
                 state.phrase_buffer.lock_or_recover().clear();
                 state.verdict_buffer.lock_or_recover().clear();
+                state.chord_buffer.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
                 let verdict_buffer = state.verdict_buffer.clone();
+                let chord_buffer = state.chord_buffer.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -1990,6 +2009,9 @@ pub async fn start_practice_session<R: Runtime>(
                 // thread; allocation here is fine (not the realtime callback).
                 let mut perception = PerceptionTracker::new();
                 let mut last_perception_secs: Option<f64> = None;
+                // Last chord pushed to the grading buffer, so a sustained
+                // chord lands once — the buffer records changes, not frames.
+                let mut last_buffered_chord: Option<brain::chord_judge::HeardChord> = None;
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
@@ -2011,6 +2033,21 @@ pub async fn start_practice_session<R: Runtime>(
                         // (#349 T1) — the "I hear Cmaj7" label.
                         if let Some(c) = chroma {
                             perception.observe_chroma(&c, event.timestamp_secs);
+                            // Chord drills grade from the same stable
+                            // readings the strip shows (#349 T2b). Edge-
+                            // triggered with a RELEASE RESET: when the label
+                            // clears, forgetting the last identity lets a
+                            // deliberate re-strike of the same chord land as
+                            // a fresh entry (repeated targets stay judgeable).
+                            match perception.current_heard_chord() {
+                                Some(h) => {
+                                    if last_buffered_chord != Some(h) {
+                                        chord_buffer.lock_or_recover().push(h);
+                                        last_buffered_chord = Some(h);
+                                    }
+                                }
+                                None => last_buffered_chord = None,
+                            }
                         }
                         let now = event.timestamp_secs;
                         let due = last_perception_secs
@@ -2867,6 +2904,9 @@ struct ActiveLesson {
     /// Index into the session phrase buffer where the current drill started —
     /// everything after it is "what the player played for this drill".
     phrase_mark: usize,
+    /// Same mark into the session CHORD buffer (#349 T2b) — the slice a
+    /// stacked drill grades from.
+    chord_mark: usize,
 }
 
 /// One drill as the frontend renders it.
@@ -2941,7 +2981,13 @@ fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
         tempo_bpm: drill.sequence.tempo_bpm,
         difficulty: drill.difficulty,
         music_xml: brain::score::emit::score_model_to_musicxml(&model),
-        target_len: drill.sequence.target_midi.len(),
+        // A stacked drill's unit of work is the CELL (one chord), not the
+        // tone — 12 chords, not 48 notes (#349 T2b).
+        target_len: if drill.sequence.chord_targets.is_empty() {
+            drill.sequence.target_midi.len()
+        } else {
+            drill.sequence.chord_targets.len()
+        },
         root_pitch_classes: drill.sequence.root_order.iter().map(|&r| r % 12).collect(),
         root_names: drill
             .sequence
@@ -2959,7 +3005,11 @@ const DRILL_MIN_PITCH_RUN: usize = 3;
 /// Start a guided lesson: read the Learner Model for the starting difficulty,
 /// build drill 0, and mark the phrase buffer. Pure logic lives in
 /// `brain::coach`; this wires state + persistence.
-pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, CommandError> {
+pub fn start_lesson_impl(
+    state: &AppState,
+    seed: u64,
+    polyphonic: bool,
+) -> Result<LessonStepDto, CommandError> {
     if state.active_lesson.lock_or_recover().is_some() {
         return Err(CommandError::LessonActive);
     }
@@ -2973,15 +3023,18 @@ pub fn start_lesson_impl(state: &AppState, seed: u64) -> Result<LessonStepDto, C
         // Clamped once here; every later consumer reads it verbatim.
         drill_count: 4u8.clamp(3, 4),
         start_difficulty: model.difficulty.min(brain::learner::MAX_DIFFICULTY),
+        polyphonic,
     };
     let first = build_first(&spec, &model);
     let dto = drill_dto(&first, spec.drill_count);
     let phrase_mark = state.phrase_buffer.lock_or_recover().len();
+    let chord_mark = state.chord_buffer.lock_or_recover().len();
     *state.active_lesson.lock_or_recover() = Some(ActiveLesson {
         spec,
         current: first,
         completed: Vec::new(),
         phrase_mark,
+        chord_mark,
     });
     Ok(LessonStepDto {
         seed,
@@ -3014,17 +3067,37 @@ pub fn submit_drill_impl(
         (pitches, onsets)
     };
     let played = played_notes_from_pitch_track(&pitches, DRILL_MIN_PITCH_RUN);
-    // Eager-tap guard: phrases only close after a beat of silence, so a tap
-    // the instant the last note ends can see an empty window — and a take of
-    // sub-threshold pitch flickers collapses to zero NOTES even with samples
-    // present. Grading either as 0% would be a lie about the player — return
-    // a calm "not yet" instead. (Deliberately failing a drill still works:
-    // play wrong notes. Unpitched noise WITH onsets still grades — the app
-    // heard something, it just wasn't the material.)
-    if played.is_empty() && onsets == 0 {
-        return Err(CommandError::DrillNotHeard);
-    }
-    let score = score_drill(&lesson.current.sequence.target_midi, &played, onsets);
+    // #349 T2b: a STACKED drill is judged by the T1 chord engine against
+    // the stable readings heard since the drill began — the monophonic
+    // pitch track can't grade a simultaneity. Melodic drills keep the
+    // existing path, bit-identical.
+    let chord_targets = &lesson.current.sequence.chord_targets;
+    let score = if chord_targets.is_empty() {
+        // Eager-tap guard: phrases only close after a beat of silence, so a
+        // tap the instant the last note ends can see an empty window — and
+        // a take of sub-threshold pitch flickers collapses to zero NOTES
+        // even with samples present. Grading either as 0% would be a lie
+        // about the player — return a calm "not yet" instead. (Deliberately
+        // failing a drill still works: play wrong notes. Unpitched noise
+        // WITH onsets still grades — the app heard something, it just
+        // wasn't the material.)
+        if played.is_empty() && onsets == 0 {
+            return Err(CommandError::DrillNotHeard);
+        }
+        score_drill(&lesson.current.sequence.target_midi, &played, onsets)
+    } else {
+        let heard: Vec<brain::chord_judge::HeardChord> = {
+            let buf = state.chord_buffer.lock_or_recover();
+            buf[lesson.chord_mark.min(buf.len())..].to_vec()
+        };
+        // Same calm "not yet" honesty: nothing heard at all → don't grade
+        // silence as failure. Onsets WITHOUT a nameable chord still grade
+        // (the app heard playing; it wasn't the asked-for chords).
+        if heard.is_empty() && onsets == 0 {
+            return Err(CommandError::DrillNotHeard);
+        }
+        brain::chord_judge::score_chord_drill(chord_targets, &heard)
+    };
     let score_dto = DrillScoreDto::from(&score);
     let seed = lesson.spec.seed;
     // Exercise log (#252 self-improvement): the graded outcome for what the
@@ -3051,6 +3124,7 @@ pub fn submit_drill_impl(
             let completed = std::mem::replace(&mut lesson.current, next);
             lesson.completed.push((completed, score));
             lesson.phrase_mark = state.phrase_buffer.lock_or_recover().len();
+            lesson.chord_mark = state.chord_buffer.lock_or_recover().len();
             Ok(LessonStepDto {
                 seed,
                 score: Some(score_dto),
@@ -3110,7 +3184,7 @@ pub fn end_lesson_impl(state: &AppState, now_epoch_secs: i64) {
 /// Start a guided lesson. `seed` optional — absent, one is derived from the
 /// clock and echoed back so any lesson can be replayed exactly.
 #[tauri::command]
-pub fn start_lesson(
+pub async fn start_lesson(
     state: State<'_, AppState>,
     seed: Option<u64>,
 ) -> Result<LessonStepDto, String> {
@@ -3120,7 +3194,18 @@ pub fn start_lesson(
             .map(|d| d.as_millis() as u64)
             .unwrap_or(1)
     });
-    start_lesson_impl(&state, seed).map_err(|e| e.to_frontend())
+    // #349 T2b: a lesson on a polyphonic instrument (piano, guitar) deals
+    // the chord drill as block chords. Resolved from the LIVE session's
+    // instrument; no session or unknown instrument → melodic ladder.
+    let polyphonic = match state.active_session_instrument().await {
+        Some(name) => state
+            .instruments
+            .iter()
+            .find(|i| i.name == name)
+            .is_some_and(|i| i.polyphonic),
+        None => false,
+    };
+    start_lesson_impl(&state, seed, polyphonic).map_err(|e| e.to_frontend())
 }
 
 /// Grade the just-played drill and step the lesson.
@@ -3934,6 +4019,75 @@ mod tests {
         }
     }
 
+    /// #349 T2b end-to-end at the command layer: a POLYPHONIC lesson deals
+    /// the chord drill as block chords and grades it from the chord buffer
+    /// via the T1-engine judge — while melodic drills in the same lesson
+    /// keep the phrase-buffer path. Fails if the grading fork, the marks,
+    /// or the polyphonic dealing regresses.
+    #[test]
+    fn a_polyphonic_lesson_deals_and_grades_chord_drills() {
+        let s = state();
+        let mut last = start_lesson_impl(&s, 42, true).expect("lesson starts");
+        let mut saw_chord_drill = false;
+        let mut steps = 0;
+        while last.drill.is_some() {
+            let (targets, target_midi) = {
+                let guard = s.active_lesson.lock().unwrap();
+                let cur = &guard.as_ref().unwrap().current;
+                (
+                    cur.sequence.chord_targets.clone(),
+                    cur.sequence.target_midi.clone(),
+                )
+            };
+            if targets.is_empty() {
+                // Melodic drill: the existing phrase path.
+                let mut phrase = sample_phrase();
+                phrase.pitch_stats.pitches = target_midi
+                    .iter()
+                    .flat_map(|&m| {
+                        let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                        std::iter::repeat_n(hz, 5)
+                    })
+                    .collect();
+                phrase.onsets_secs = vec![0.0; target_midi.len()];
+                s.phrase_buffer.lock().unwrap().push(phrase);
+            } else {
+                saw_chord_drill = true;
+                // An empty room must not grade: no chords heard, no onsets.
+                assert!(
+                    matches!(
+                        submit_drill_impl(&s, 1_000),
+                        Err(CommandError::DrillNotHeard)
+                    ),
+                    "silence on a chord drill must be a calm 'not yet'"
+                );
+                // Play every cell right: one stable reading per target.
+                let mut buf = s.chord_buffer.lock().unwrap();
+                for t in &targets {
+                    buf.push(brain::chord_judge::HeardChord {
+                        root_pc: t.root_pc,
+                        quality: t.quality,
+                        bass_pc: t.bass_pc,
+                    });
+                }
+            }
+            last = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+            let score = last.score.as_ref().expect("score present");
+            assert!(
+                score.accuracy > 0.99,
+                "perfect performance grades ~1.0, got {}",
+                score.accuracy
+            );
+            steps += 1;
+            assert!(steps <= 4, "routine must terminate");
+        }
+        assert!(
+            saw_chord_drill,
+            "a polyphonic lesson must deal at least one chord drill"
+        );
+        last.recap.expect("lesson ends in a recap");
+    }
+
     /// #254 end-to-end at the command layer: start a lesson, play each drill
     /// perfectly (synthetic phrases matching the target), submit through all
     /// four drills, and confirm the recap + the persisted Learner Model
@@ -3942,7 +4096,7 @@ mod tests {
     #[test]
     fn lesson_lifecycle_grades_ramps_and_persists() {
         let s = state();
-        let step0 = start_lesson_impl(&s, 42).expect("lesson starts");
+        let step0 = start_lesson_impl(&s, 42, false).expect("lesson starts");
         let drill0 = step0.drill.as_ref().expect("drill 0 present");
         assert_eq!(drill0.index, 0);
         assert!(drill0.music_xml.contains("<score-partwise"));
@@ -3995,7 +4149,7 @@ mod tests {
             .expect("model persisted");
         assert!(!model.key_mastery.is_empty());
         assert_eq!(model.difficulty, recap.end_difficulty);
-        let again = start_lesson_impl(&s, 43).unwrap();
+        let again = start_lesson_impl(&s, 43, false).unwrap();
         assert_eq!(
             again.drill.unwrap().difficulty,
             recap.end_difficulty,
@@ -4009,7 +4163,7 @@ mod tests {
     fn submit_without_lesson_errs_and_end_abandons() {
         let s = state();
         assert!(submit_drill_impl(&s, 0).is_err());
-        start_lesson_impl(&s, 1).unwrap();
+        start_lesson_impl(&s, 1, false).unwrap();
         end_lesson_impl(&s, 10);
         assert!(
             submit_drill_impl(&s, 0).is_err(),
@@ -4051,7 +4205,7 @@ mod tests {
     #[test]
     fn early_end_persists_completed_drills_only() {
         let s = state();
-        start_lesson_impl(&s, 2).unwrap();
+        start_lesson_impl(&s, 2, false).unwrap();
         play_current_drill_perfectly(&s);
         let step = submit_drill_impl(&s, 100).unwrap();
         assert!(step.drill.is_some(), "one drill done, lesson continues");
@@ -4079,7 +4233,7 @@ mod tests {
     #[test]
     fn drill_grading_is_isolated_to_its_own_phrase_window() {
         let s = state();
-        start_lesson_impl(&s, 3).unwrap();
+        start_lesson_impl(&s, 3, false).unwrap();
         play_current_drill_perfectly(&s);
         let step1 = submit_drill_impl(&s, 100).unwrap();
         assert!(step1.score.unwrap().accuracy > 0.99);
@@ -4105,7 +4259,7 @@ mod tests {
     #[test]
     fn heard_but_imperfect_takes_still_grade() {
         let s = state();
-        start_lesson_impl(&s, 12).unwrap();
+        start_lesson_impl(&s, 12, false).unwrap();
         // Unpitched noise WITH onsets: grades (0%), never DrillNotHeard.
         let mut claps = sample_phrase();
         claps.pitch_stats.pitches = Vec::new();
@@ -4131,7 +4285,7 @@ mod tests {
     #[test]
     fn eager_submit_before_any_phrase_is_a_calm_not_yet() {
         let s = state();
-        start_lesson_impl(&s, 12).unwrap();
+        start_lesson_impl(&s, 12, false).unwrap();
         assert!(matches!(
             submit_drill_impl(&s, 100),
             Err(CommandError::DrillNotHeard)
@@ -4149,7 +4303,7 @@ mod tests {
     fn exercises_leave_evidence_in_the_log() {
         let s = state();
         // A graded lesson drill…
-        start_lesson_impl(&s, 12).unwrap();
+        start_lesson_impl(&s, 12, false).unwrap();
         play_current_drill_perfectly(&s);
         submit_drill_impl(&s, 100).unwrap();
         // …an explore deal + a chip…
@@ -4352,6 +4506,7 @@ mod tests {
                 seed: 1,
                 drill_count: 4,
                 start_difficulty: 0,
+                polyphonic: false,
             },
             &{
                 // Practice every tonic except Bb so the picker trains Bb (10).
@@ -4384,9 +4539,9 @@ mod tests {
     #[test]
     fn double_start_lesson_is_refused() {
         let s = state();
-        start_lesson_impl(&s, 4).unwrap();
+        start_lesson_impl(&s, 4, false).unwrap();
         assert!(matches!(
-            start_lesson_impl(&s, 5),
+            start_lesson_impl(&s, 5, false),
             Err(CommandError::LessonActive)
         ));
     }
@@ -4401,7 +4556,7 @@ mod tests {
         start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
             .await
             .expect("session starts");
-        start_lesson_impl(&s, 6).unwrap();
+        start_lesson_impl(&s, 6, false).unwrap();
         play_current_drill_perfectly(&s);
         submit_drill_impl(&s, 100).unwrap();
 
