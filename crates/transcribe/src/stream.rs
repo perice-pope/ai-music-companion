@@ -26,9 +26,11 @@
 //! tracks which midis were still sounding at each hop boundary and
 //! suppresses their onset-less re-detections — a held chord emits each
 //! note ONCE. A real re-strike (fresh onset later in the window) still
-//! lands. Additionally, per-midi last-onset dedup (sample-accurate)
-//! guards the hop boundary itself, where frame quantization could
-//! otherwise double-emit an onset landing exactly on the seam.
+//! lands. An onset landing exactly on the seam emits in the window that
+//! owns it (sample-space cutoff) and rings into the next, where the
+//! continuity rule suppresses its re-detection — verified by mutation:
+//! removing the ringing tracking fails both the held-chord and the
+//! boundary-onset fixtures (no second guard exists to mask it).
 
 use ort::session::Session;
 
@@ -75,9 +77,6 @@ const HOP_SAMPLES: usize = AUDIO_SAMPLE_RATE;
 /// preceding silence, is the continuation of a note ringing across the hop
 /// boundary — energy, not a new attack.
 const CONTINUATION_FRAMES: usize = 3;
-/// Two onsets of the same midi closer than this (samples) are one attack —
-/// the frame-quantization guard at hop seams (~100 ms).
-const REATTACK_GUARD_SAMPLES: usize = AUDIO_SAMPLE_RATE / 10;
 /// Input-buffer hard cap: ~10 windows. A consumer that feeds but never
 /// polls (or whose polls persistently error) stays bounded — the oldest
 /// audio drops, honestly unanalyzed, instead of leaking.
@@ -94,9 +93,6 @@ pub struct StreamingBasicPitch {
     /// Midis still sounding at the last hop boundary (their onset-less
     /// re-detections in the next window are continuations, not notes).
     ringing: [bool; 128],
-    /// Stream-absolute sample of each midi's last EMITTED onset — the
-    /// re-attack guard at hop seams.
-    last_onset: [Option<usize>; 128],
     /// Drift-free incremental resampler state (identity at 22.05 kHz).
     resampler: StreamResampler,
 }
@@ -208,7 +204,6 @@ impl StreamingBasicPitch {
             buf: Vec::new(),
             drained: 0,
             ringing: [false; 128],
-            last_onset: [None; 128],
             resampler: StreamResampler::new(),
         })
     }
@@ -251,14 +246,6 @@ impl StreamingBasicPitch {
                 continue; // onsets past the hop wait for their own window
             }
             let abs_on = window_start + on_sample;
-            // Re-attack guard: frame quantization at the seam must not turn
-            // one attack into two.
-            if let Some(prev) = self.last_onset[midi] {
-                if abs_on.saturating_sub(prev) < REATTACK_GUARD_SAMPLES {
-                    continue;
-                }
-            }
-            self.last_onset[midi] = Some(abs_on);
             out.push(PolyNote {
                 midi: n.midi,
                 on_secs: abs_on as f64 / AUDIO_SAMPLE_RATE as f64,
