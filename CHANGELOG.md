@@ -1,3 +1,9 @@
+## [2.24.1](https://github.com/perice-pope/ai-music-companion/compare/v2.24.0...v2.24.1) (2026-07-12)
+
+### Bug Fixes
+
+* **face:** tips + reveals render at every window width ([#329](https://github.com/perice-pope/ai-music-companion/issues/329)) ([#371](https://github.com/perice-pope/ai-music-companion/issues/371)) ([08a1e59](https://github.com/perice-pope/ai-music-companion/commit/08a1e59a4c772f22d453ad89bbe18df88f5690be))
+
 ## [2.24.0](https://github.com/perice-pope/ai-music-companion/compare/v2.23.0...v2.24.0) (2026-07-12)
 
 ### Features
