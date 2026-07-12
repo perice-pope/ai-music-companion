@@ -1,3 +1,9 @@
+## [2.20.0](https://github.com/perice-pope/ai-music-companion/compare/v2.19.2...v2.20.0) (2026-07-12)
+
+### Features
+
+* stacked chord cells — jazz ears T2a ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#361](https://github.com/perice-pope/ai-music-companion/issues/361)) ([3b4c178](https://github.com/perice-pope/ai-music-companion/commit/3b4c178afb680b6639774e983cf2e72968ffc5af))
+
 ## [2.19.2](https://github.com/perice-pope/ai-music-companion/compare/v2.19.1...v2.19.2) (2026-07-12)
 
 ### Bug Fixes
