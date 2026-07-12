@@ -1,3 +1,9 @@
+## [2.25.0](https://github.com/perice-pope/ai-music-companion/compare/v2.24.1...v2.25.0) (2026-07-12)
+
+### Features
+
+* voicing-true bass on its own thread — jazz ears T3b ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#372](https://github.com/perice-pope/ai-music-companion/issues/372)) ([cff442a](https://github.com/perice-pope/ai-music-companion/commit/cff442a06a8036599cca927a5d9fe380595aca36))
+
 ## [2.24.1](https://github.com/perice-pope/ai-music-companion/compare/v2.24.0...v2.24.1) (2026-07-12)
 
 ### Bug Fixes
