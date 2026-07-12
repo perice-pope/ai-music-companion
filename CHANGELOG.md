@@ -1,3 +1,9 @@
+## [2.24.0](https://github.com/perice-pope/ai-music-companion/compare/v2.23.0...v2.24.0) (2026-07-12)
+
+### Features
+
+* tap any measure to row it — the in-practice RV bridge ([#341](https://github.com/perice-pope/ai-music-companion/issues/341)) ([#369](https://github.com/perice-pope/ai-music-companion/issues/369)) ([468f7bd](https://github.com/perice-pope/ai-music-companion/commit/468f7bda92f4fa1811353a83302c224d51fe136a))
+
 ## [2.23.0](https://github.com/perice-pope/ai-music-companion/compare/v2.22.0...v2.23.0) (2026-07-12)
 
 ### Features
