@@ -1,3 +1,9 @@
+## [2.19.2](https://github.com/perice-pope/ai-music-companion/compare/v2.19.1...v2.19.2) (2026-07-12)
+
+### Bug Fixes
+
+* **score:** emit valid tempo directions so OSMD stops blanking measure 1 ([#356](https://github.com/perice-pope/ai-music-companion/issues/356)) ([#360](https://github.com/perice-pope/ai-music-companion/issues/360)) ([dc126ae](https://github.com/perice-pope/ai-music-companion/commit/dc126ae5ba66e884ee948ab6291d4f41309c3b96))
+
 ## [2.19.1](https://github.com/perice-pope/ai-music-companion/compare/v2.19.0...v2.19.1) (2026-07-11)
 
 ### Bug Fixes
