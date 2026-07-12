@@ -106,12 +106,6 @@ impl PitchDetector {
         self.window_size
     }
 
-    /// Detect pitch from a buffer of f32 samples.
-    ///
-    /// The buffer should contain at least `window_size()` samples.
-    /// Returns an `AudioEvent` with pitch, confidence, amplitude, and onset info.
-    ///
-    /// **Zero heap allocations** — all scratch buffers are pre-allocated.
     /// Seed the running clock (#349 T3b review M1): a mid-session detector
     /// reconfigure (instrument switch) must NOT restart the session clock —
     /// perception freshness, the jam chart's timestamps, and the polyphony
@@ -120,6 +114,12 @@ impl PitchDetector {
         self.timestamp = timestamp_secs;
     }
 
+    /// Detect pitch from a buffer of f32 samples.
+    ///
+    /// The buffer should contain at least `window_size()` samples.
+    /// Returns an `AudioEvent` with pitch, confidence, amplitude, and onset info.
+    ///
+    /// **Zero heap allocations** — all scratch buffers are pre-allocated.
     pub fn detect(&mut self, samples: &[f32]) -> AudioEvent {
         let amplitude = rms(samples);
         let timestamp_secs = self.timestamp;

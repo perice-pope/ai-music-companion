@@ -485,7 +485,10 @@ fn run_worker<F, P, S, V>(
             pending_chroma = chroma_extractor.chroma();
         }
         let event_time = event.timestamp_secs;
-        session_clock = event_time;
+        // The detector's INTERNAL clock has already advanced past this
+        // window; seed a reconfigure with end-of-window so a switch never
+        // back-steps the session clock (review r2 nit).
+        session_clock = event_time + window as f64 / f64::from(sample_rate);
         aggregator.push(&event);
 
         // Accumulate this window's audio + pitch for the in-progress phrase.

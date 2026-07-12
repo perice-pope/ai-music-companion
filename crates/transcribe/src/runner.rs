@@ -376,7 +376,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(2)); // force drops
             }
             fn poll(&mut self) -> Result<Vec<PolyNote>, TranscribeError> {
-                if self.fed_secs >= 5.0 && !self.emitted {
+                if self.fed_secs >= 11.0 && !self.emitted {
                     self.emitted = true;
                     return Ok(vec![PolyNote {
                         midi: 40,
@@ -396,17 +396,21 @@ mod tests {
             emitted: false,
         }))
         .expect("thread spawns");
-        // Burst-feed 6 s of audio — many chunks drop at the sender.
+        // Burst-feed 12 s of audio: 120 chunks against FEED_DEPTH=64, so a
+        // large fraction MUST drop at the sender (review r2 MF-A: the old
+        // 60-chunk shape never filled the queue and pinned nothing). The
+        // emit threshold sits near the stream END (11 s of a 12 s feed):
+        // without the silence replay, the engine's cumulative time tops
+        // out around the queue depth (~6.4 s) and the note NEVER fires —
+        // the deadline below is what a replay-deleting mutant hits
+        // (mutation-verified before commit).
         let chunk = vec![0.0f32; 22_050 / 10]; // 100 ms
-        for _ in 0..60 {
+        for _ in 0..120 {
             runner.feed(&chunk, 22_050);
         }
-        // The note fires when the engine's CUMULATIVE time (replayed
-        // silence included) crosses 5 s — and must answer a query at the
-        // SENDER's clock (~5–6 s), proving the two clocks agree.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if runner.sounding_bass(5.5) == Some(40) {
+            if runner.sounding_bass(11.5) == Some(40) {
                 break;
             }
             assert!(
