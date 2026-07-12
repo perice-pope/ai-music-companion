@@ -169,6 +169,10 @@ pub struct KeySnapshot {
 pub struct ChordReading {
     /// Root pitch class, 0–11 (C = 0) — drives the RV root colour in the UI.
     pub root_pc: u8,
+    /// The matched quality (#349 T4a: lets the jam lane's tap-to-row bridge
+    /// name the template without parsing the label). Additive on the wire.
+    #[serde(default)]
+    pub quality: Option<theory::ChordQuality>,
     /// Full display label, spelled per the active key signature:
     /// "C7", "Bbmaj7", "C7/E".
     pub label: String,
@@ -453,6 +457,7 @@ fn chord_reading(m: &ChordMatch, fifths: i8) -> ChordReading {
     };
     ChordReading {
         root_pc: m.root_pc,
+        quality: Some(m.quality),
         label,
         bass_pc: m.bass_pc,
         confidence: m.confidence,

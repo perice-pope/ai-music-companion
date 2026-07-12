@@ -8,6 +8,11 @@
 //! - Session recording and persistence (SQLite-backed)
 
 pub mod accompaniment;
+/// Re-exported so the desktop shell can name chord qualities (#349 T4a)
+/// without a direct `theory` dependency.
+pub use theory;
+
+pub mod chord_chart;
 pub mod chord_judge;
 pub mod coach;
 pub mod coaching;

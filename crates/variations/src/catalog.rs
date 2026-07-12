@@ -81,6 +81,10 @@ pub enum ChordType {
     Minor7,
     Dominant7,
     HalfDiminished7,
+    /// #349 T4a: sus2 triad — heard by the T1 engine, rowable from the lane.
+    Sus2Triad,
+    /// #349 T4a: full diminished 7 — same reason.
+    Diminished7,
 }
 
 impl ChordType {
@@ -99,6 +103,8 @@ impl ChordType {
             ChordType::Minor7 => theory::ChordQuality::Min7,
             ChordType::Dominant7 => theory::ChordQuality::Dom7,
             ChordType::HalfDiminished7 => theory::ChordQuality::Min7b5,
+            ChordType::Sus2Triad => theory::ChordQuality::Sus2,
+            ChordType::Diminished7 => theory::ChordQuality::Dim7,
         }
     }
 
@@ -114,6 +120,8 @@ impl ChordType {
             ChordType::Minor7 => &[0, 3, 7, 10],
             ChordType::Dominant7 => &[0, 4, 7, 10],
             ChordType::HalfDiminished7 => &[0, 3, 6, 10],
+            ChordType::Sus2Triad => &[0, 2, 7],
+            ChordType::Diminished7 => &[0, 3, 6, 9],
         }
     }
 
@@ -129,6 +137,8 @@ impl ChordType {
             ChordType::Minor7 => "Minor 7",
             ChordType::Dominant7 => "Dominant 7",
             ChordType::HalfDiminished7 => "Half-Diminished 7",
+            ChordType::Sus2Triad => "Sus2 Triad",
+            ChordType::Diminished7 => "Diminished 7",
         }
     }
 }
@@ -194,6 +204,8 @@ mod tests {
             ChordType::Minor7,
             ChordType::Dominant7,
             ChordType::HalfDiminished7,
+            ChordType::Sus2Triad,
+            ChordType::Diminished7,
         ] {
             assert_eq!(
                 ct.quality().intervals(),

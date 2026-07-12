@@ -1191,6 +1191,71 @@ fn hz_to_midi(hz: f64) -> Option<u8> {
 /// and a fresh learner starts at difficulty 0 = 1 root.
 pub const LIFT_MIN_ROOTS: usize = 3;
 
+/// #349 T4a: the PRACTICE template for a heard chord quality — the tap-to-
+/// row bridge's mapping from the T1 engine's 23-quality vocabulary onto the
+/// drillable catalog. Rich extensions row as their base family (a heard C13
+/// rows as C7 block chords: the RV unit is the quality family, and the
+/// label the player sees says exactly what it deals). Exhaustive: a new
+/// quality forces a mapping decision here, never a silent fallback.
+pub fn practice_chord_type(quality: theory::ChordQuality) -> ChordType {
+    use theory::ChordQuality as Q;
+    match quality {
+        Q::Maj | Q::Add9 => ChordType::MajorTriad,
+        Q::Min => ChordType::MinorTriad,
+        Q::Dim => ChordType::DiminishedTriad,
+        Q::Aug => ChordType::AugmentedTriad,
+        Q::Sus2 => ChordType::Sus2Triad,
+        Q::Sus4 => ChordType::Sus4Triad,
+        Q::Maj7 | Q::Maj9 | Q::Maj6 => ChordType::Major7,
+        Q::Min7 | Q::Min9 | Q::Min6 | Q::MinMaj7 => ChordType::Minor7,
+        Q::Dom7 | Q::Dom9 | Q::Dom13 | Q::Dom7b9 | Q::Dom7s9 | Q::Dom7s11 | Q::Dom7Sus4 => {
+            ChordType::Dominant7
+        }
+        Q::Min7b5 => ChordType::HalfDiminished7,
+        Q::Dim7 => ChordType::Diminished7,
+    }
+}
+
+/// #349 T4a — the jam lane's RV bridge: row a HEARD chord through 12 keys
+/// as stacked block cells (T2's machinery), rooted where it was heard.
+/// Same explore engine as a lifted lick, so difficulty/roots/shuffle come
+/// from the learner model.
+pub fn start_explore_chord(
+    root_pc: u8,
+    quality: theory::ChordQuality,
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let chord = practice_chord_type(quality);
+    // Mode label drives the key signature (a dominant rows mixolydian-
+    // spelled, #277) and the recap wording.
+    let (mut state, _) = start_explore(root_pc % 12, &chord.label().to_lowercase(), model, seed);
+    state.spec.cell = None;
+    state.spec.degrees = None;
+    state.spec.scale = None;
+    state.spec.interval = None;
+    state.spec.enclosure = None;
+    state.spec.chord = Some(ChordModifier {
+        chord,
+        pattern: ArpeggioPattern::Ascending,
+        inversion: 0,
+        stacked: true,
+    });
+    if state.spec.roots.len() < LIFT_MIN_ROOTS {
+        state.spec.roots = roots_for(root_pc % 12, LIFT_MIN_ROOTS);
+        state.spec.randomize_roots = true; // the RV shuffle, from the start
+    }
+    let mut sequence = generate(&state.spec, state.seed);
+    // #335 discipline, same as build_drill: the label rides everywhere the
+    // row shows — respell it to the chord family's signature so a Bb
+    // dominant never reads "A#".
+    sequence.label = respell_label(
+        &sequence.label,
+        key_signature_for(root_pc % 12, &chord.label().to_lowercase()).fifths,
+    );
+    (state, sequence)
+}
+
 pub fn start_explore_cell(
     cell: Vec<i8>,
     tonic: u8,
@@ -1389,6 +1454,53 @@ mod tests {
             start_difficulty: 0,
             polyphonic: false,
         }
+    }
+
+    /// #349 T4a: tapping a heard chord rows it as STACKED block cells
+    /// through 12 keys — the lane's RV bridge. A rich extension rows as its
+    /// practice family (heard C13 → C7 block chords) and the label says
+    /// what it deals. Fails if the bridge stops stacking or the mapping
+    /// leaves the family.
+    #[test]
+    fn the_jam_bridge_rows_a_heard_chord_as_stacked_cells() {
+        let model = LearnerModel::default();
+        let (state, seq) = start_explore_chord(10, theory::ChordQuality::Dom13, &model, 5);
+        let spec_chord = state.spec.chord.expect("chord figure");
+        assert!(spec_chord.stacked);
+        assert_eq!(
+            spec_chord.chord,
+            ChordType::Dominant7,
+            "C13 rows as its 7 family"
+        );
+        assert!(state.spec.cell.is_none() && state.spec.scale.is_none());
+        assert!(!seq.chord_targets.is_empty(), "graded like any chord drill");
+        assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Dom7);
+        assert!(seq.root_order.len() >= LIFT_MIN_ROOTS);
+        assert_eq!(seq.root_order[0] % 12, 10, "rooted where it was heard");
+        assert!(
+            seq.label.contains("block chords"),
+            "the label says what it deals: {}",
+            seq.label
+        );
+        // Flat-family spelling: a Bb dominant engraves flat-side (#335).
+        assert!(seq.label.starts_with("Bb"), "label: {}", seq.label);
+    }
+
+    /// The practice mapping keeps every heard quality inside its family:
+    /// direct qualities map to their exact catalog type; extensions reduce
+    /// to the family seventh/triad. Spot-pins the reductions a reviewer
+    /// would question.
+    #[test]
+    fn practice_mapping_stays_in_the_family() {
+        use theory::ChordQuality as Q;
+        assert_eq!(practice_chord_type(Q::Maj7), ChordType::Major7);
+        assert_eq!(practice_chord_type(Q::Min7b5), ChordType::HalfDiminished7);
+        assert_eq!(practice_chord_type(Q::Dim7), ChordType::Diminished7);
+        assert_eq!(practice_chord_type(Q::Sus2), ChordType::Sus2Triad);
+        assert_eq!(practice_chord_type(Q::Maj9), ChordType::Major7);
+        assert_eq!(practice_chord_type(Q::MinMaj7), ChordType::Minor7);
+        assert_eq!(practice_chord_type(Q::Add9), ChordType::MajorTriad);
+        assert_eq!(practice_chord_type(Q::Dom7Sus4), ChordType::Dominant7);
     }
 
     /// #349 T2b: a polyphonic lesson deals its chord drill STACKED — block

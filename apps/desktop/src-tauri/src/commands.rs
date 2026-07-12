@@ -661,6 +661,10 @@ pub struct AppState {
     ///
     /// [`ChordChangeBuffer`]: brain::chord_judge::ChordChangeBuffer
     chord_buffer: Arc<std::sync::Mutex<brain::chord_judge::ChordChangeBuffer>>,
+    /// The jam chord chart (#349 T4a): timed label sequence recorded from
+    /// perception snapshots — the lane's source of truth and the recap's
+    /// chord sketch. Labels + timestamps only; no audio retained.
+    chord_chart: Arc<std::sync::Mutex<brain::chord_chart::ChartRecorder>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -804,6 +808,9 @@ impl AppState {
             chord_buffer: Arc::new(std::sync::Mutex::new(
                 brain::chord_judge::ChordChangeBuffer::new(),
             )),
+            chord_chart: Arc::new(std::sync::Mutex::new(
+                brain::chord_chart::ChartRecorder::new(),
+            )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -836,6 +843,9 @@ impl AppState {
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             chord_buffer: Arc::new(std::sync::Mutex::new(
                 brain::chord_judge::ChordChangeBuffer::new(),
+            )),
+            chord_chart: Arc::new(std::sync::Mutex::new(
+                brain::chord_chart::ChartRecorder::new(),
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
@@ -2003,9 +2013,11 @@ pub async fn start_practice_session<R: Runtime>(
                 state.phrase_buffer.lock_or_recover().clear();
                 state.verdict_buffer.lock_or_recover().clear();
                 state.chord_buffer.lock_or_recover().clear();
+                state.chord_chart.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
                 let verdict_buffer = state.verdict_buffer.clone();
                 let chord_buffer = state.chord_buffer.clone();
+                let chord_chart = state.chord_chart.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2050,7 +2062,11 @@ pub async fn start_practice_session<R: Runtime>(
                         let due = last_perception_secs
                             .is_none_or(|last| now - last >= PERCEPTION_EMIT_INTERVAL_SECS);
                         if due {
-                            let _ = app_for_emit.emit("perception", perception.snapshot(now));
+                            let snap = perception.snapshot(now);
+                            // The jam chart records label CHANGES from the
+                            // same snapshots the strip renders (#349 T4a).
+                            chord_chart.lock_or_recover().observe(&snap, now);
+                            let _ = app_for_emit.emit("perception", snap);
                             last_perception_secs = Some(now);
                         }
                         let _ = app_for_emit.emit("audio-event", event);
@@ -2814,6 +2830,64 @@ pub fn explore_measure(
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(42);
     explore_measure_impl(&state, &score_id, measure_number, seed)
+}
+
+/// #349 T4a — the jam lane's RV bridge: row a chord the room played
+/// through 12 keys as stacked block cells. Same explore engine (and same
+/// live view swap) as "work on my last lick".
+pub fn explore_chord_impl(
+    state: &AppState,
+    root_pc: u8,
+    quality: brain::theory::ChordQuality,
+    seed: u64,
+) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_chord(root_pc % 12, quality, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "jam_bridge",
+                label: &dto.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn explore_chord(
+    state: State<'_, AppState>,
+    root_pc: u8,
+    quality: brain::theory::ChordQuality,
+) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(7);
+    explore_chord_impl(&state, root_pc, quality, seed)
+}
+
+/// #349 T4a — the session's chord chart so far: the timed label sequence
+/// the jam recap sketches. Read-only; cleared at the next session start.
+#[tauri::command]
+pub fn session_chord_chart(
+    state: State<'_, AppState>,
+) -> Result<Vec<brain::chord_chart::ChartEntry>, String> {
+    Ok(state.chord_chart.lock_or_recover().entries().to_vec())
 }
 
 #[tauri::command]
@@ -4413,6 +4487,50 @@ mod tests {
         let edited =
             edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
         assert!(edited.can_undo);
+    }
+
+    /// #349 T4a end-to-end at the command layer: tapping a heard chord in
+    /// the jam lane rows it as stacked block cells through the SAME explore
+    /// machinery as a lifted lick — active exploration installed, staff
+    /// carries the stacks, exercise log gets a jam_bridge row. Fails if the
+    /// bridge command or the stacked handoff breaks.
+    #[test]
+    fn a_tapped_jam_chord_rows_as_stacked_cells() {
+        let s = state();
+        let dto = explore_chord_impl(&s, 10, brain::theory::ChordQuality::Dom13, 42).unwrap();
+        assert!(
+            dto.label.contains("block chords"),
+            "deals blocks: {}",
+            dto.label
+        );
+        assert!(
+            dto.label.starts_with("Bb"),
+            "flat-family spelling: {}",
+            dto.label
+        );
+        assert!(!dto.root_pitch_classes.is_empty());
+        assert_eq!(dto.root_pitch_classes[0], 10, "rooted where it was heard");
+        // The staff really carries simultaneities (stacked dots share beats).
+        let first_beat = dto.staff.notes[0].start_beat;
+        assert!(
+            dto.staff
+                .notes
+                .iter()
+                .filter(|n| n.start_beat == first_beat)
+                .count()
+                >= 3,
+            "stacked cell on the staff"
+        );
+        assert!(
+            s.active_explore.lock().unwrap().is_some(),
+            "exploration is live — same view swap as lift"
+        );
+        // Logged for the self-improvement loop, honestly sourced.
+        let rows = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert!(
+            rows.iter().any(|r| r.source == "jam_bridge"),
+            "exercise log carries the bridge row"
+        );
     }
 
     /// #255: the explore loop end-to-end at the command layer — start seeds a
