@@ -38,7 +38,6 @@ use crate::constants::{AUDIO_N_SAMPLES, AUDIO_SAMPLE_RATE, FFT_HOP};
 use crate::error::TranscribeError;
 use crate::inference::{build_session, infer_with_session};
 use crate::notes::output_to_notes;
-use crate::resample::resample_to_model_rate;
 
 /// One polyphonic note event on the STREAM clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,16 +150,35 @@ impl StreamResampler {
             self.trim_pending(commit_to);
             return Vec::new();
         }
-        // Resample the whole pending block (committed left context included
-        // for the kernel), then take the owed span where the last commit
-        // ended.
-        let block = resample_to_model_rate(&self.pending, sr_in);
+        // Phase-continuous synthesis on the GLOBAL grid (round-2 must-fix:
+        // re-anchoring the kernel per block jumped the phase up to one
+        // input sample every commit, and at 48 kHz the discontinuities
+        // read as phantom attacks). Output sample k lives at global input
+        // position k/ratio, exactly as the batch resampler would place it
+        // over the whole stream.
+        let cutoff = 0.5 * ratio.min(1.0);
         let pending_start_in = self.total_in - self.pending.len() as u64;
-        let already_out_of_block =
-            ((self.committed_in - pending_start_in) as f64 * ratio).floor() as usize;
-        let start = already_out_of_block.min(block.len());
-        let take = (owed as usize).min(block.len().saturating_sub(start));
-        let out = block[start..start + take].to_vec();
+        let mut out = Vec::with_capacity(owed as usize);
+        for k in self.total_out..self.total_out + owed {
+            let center = k as f64 / ratio - pending_start_in as f64;
+            let i0 = center.floor() as isize;
+            let (mut acc, mut norm) = (0.0_f64, 0.0_f64);
+            for j in (i0 - crate::resample::KERNEL_HALF)..=(i0 + crate::resample::KERNEL_HALF) {
+                if j < 0 || j as usize >= self.pending.len() {
+                    continue;
+                }
+                let x = center - j as f64;
+                let w = crate::resample::sinc(2.0 * cutoff * x)
+                    * crate::resample::blackman(x, crate::resample::KERNEL_HALF as f64);
+                acc += f64::from(self.pending[j as usize]) * w;
+                norm += w;
+            }
+            out.push(if norm.abs() > 1e-12 {
+                (acc / norm) as f32
+            } else {
+                0.0
+            });
+        }
         self.total_out += out.len() as u64;
         self.trim_pending(commit_to);
         out
@@ -232,18 +250,25 @@ impl StreamingBasicPitch {
             let midi = usize::from(n.midi);
             let on_sample = n.start_frame * FFT_HOP;
             let end_sample = n.end_frame * FFT_HOP;
-            // Still sounding at the next window's start → its re-detection
-            // there is a continuation.
-            if end_sample >= boundary {
-                next_ringing[midi] = true;
-            }
+            let rings_past_boundary = end_sample >= boundary;
             // A continuation of a note already ringing across THIS window's
-            // start: energy, not a new attack — never re-emitted.
+            // start: energy, not a new attack — never re-emitted (and it
+            // keeps ringing forward if it still crosses the next boundary).
             if n.start_frame < CONTINUATION_FRAMES && self.ringing[midi] {
+                if rings_past_boundary {
+                    next_ringing[midi] = true;
+                }
                 continue;
             }
             if on_sample >= emit_span {
-                continue; // onsets past the hop wait for their own window
+                // Deferred: this onset belongs to the NEXT window, where it
+                // will re-detect near frame 0 — it must NOT be marked as
+                // ringing here, or the continuation rule would swallow it
+                // (round-2 must-fix: a ~25 ms dead band after every hop).
+                continue;
+            }
+            if rings_past_boundary {
+                next_ringing[midi] = true;
             }
             let abs_on = window_start + on_sample;
             out.push(PolyNote {
@@ -339,6 +364,44 @@ mod tests {
         assert!(
             (total_out as i64 - expected as i64).abs() <= 1,
             "drift: produced {total_out}, expected {expected}"
+        );
+    }
+
+    /// Phase continuity (round-2 must-fix): chunked resampling of a SINE
+    /// matches the whole-buffer batch resampler sample-for-sample — no
+    /// kernel re-anchoring jumps at chunk joins (which read as phantom
+    /// attacks at 48 kHz). Count-only tests are structurally blind to this.
+    #[test]
+    fn chunked_resampling_is_phase_continuous_on_a_sine() {
+        let sr_in = 48_000u32;
+        let n = 3 * sr_in as usize;
+        let sine: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f64 / f64::from(sr_in);
+                (2.0 * std::f64::consts::PI * 440.0 * t).sin() as f32
+            })
+            .collect();
+        let whole = crate::resample::resample_to_model_rate(&sine, sr_in);
+
+        let mut r = StreamResampler::new();
+        let mut chunked = Vec::new();
+        for c in sine.chunks(1024) {
+            chunked.extend(r.convert(c, sr_in, false));
+        }
+        chunked.extend(r.convert(&[], sr_in, true));
+
+        let compare = whole.len().min(chunked.len());
+        // Skip the first/last kernel widths (edge handling differs by
+        // design: the batch has hard stream edges, the stream carries
+        // context); the interior must agree to float noise.
+        let skip = 64usize;
+        let mut max_err = 0.0f32;
+        for i in skip..compare - skip {
+            max_err = max_err.max((whole[i] - chunked[i]).abs());
+        }
+        assert!(
+            max_err < 1e-3,
+            "chunk joins must be inaudible: max deviation {max_err}"
         );
     }
 

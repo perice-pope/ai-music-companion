@@ -8,7 +8,7 @@
 use crate::constants::AUDIO_SAMPLE_RATE;
 
 /// Half-width of the sinc kernel, in input samples (→ 2*HALF+1 taps).
-const KERNEL_HALF: isize = 32;
+pub(crate) const KERNEL_HALF: isize = 32;
 
 /// Resample mono `samples` from `sr_in` Hz to the model's 22.05 kHz.
 pub fn resample_to_model_rate(samples: &[f32], sr_in: u32) -> Vec<f32> {
@@ -48,7 +48,7 @@ pub fn resample_to_model_rate(samples: &[f32], sr_in: u32) -> Vec<f32> {
 }
 
 #[inline]
-fn sinc(x: f64) -> f64 {
+pub(crate) fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-9 {
         1.0
     } else {
@@ -59,7 +59,7 @@ fn sinc(x: f64) -> f64 {
 
 /// Blackman window over `[-half, half]`; zero outside.
 #[inline]
-fn blackman(x: f64, half: f64) -> f64 {
+pub(crate) fn blackman(x: f64, half: f64) -> f64 {
     if x.abs() > half {
         return 0.0;
     }

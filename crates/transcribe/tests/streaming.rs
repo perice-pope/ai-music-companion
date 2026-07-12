@@ -152,6 +152,115 @@ fn a_boundary_onset_emits_exactly_once() {
     );
 }
 
+/// Round-2 must-fix 1: the ~25 ms band JUST AFTER a hop boundary is not
+/// a dead zone — an onset at 1.030 s (deferred to its own window) emits
+/// exactly once. Fails if deferred onsets are marked as ringing again.
+#[test]
+fn an_onset_just_after_the_boundary_is_not_swallowed() {
+    if should_skip_inference() {
+        return;
+    }
+    for onset_at in [1.030f64, 1.035] {
+        let mut engine = StreamingBasicPitch::new().expect("runtime present");
+        let mut audio = vec![0.0f32; (onset_at * f64::from(SR)) as usize];
+        audio.extend(chord(&[64], 2.0));
+        let mut notes = Vec::new();
+        for w in audio.chunks(1024) {
+            engine.feed(w, SR);
+            notes.extend(engine.poll().expect("inference runs"));
+        }
+        notes.extend(engine.finish().expect("tail flush"));
+        let hits: Vec<_> = notes
+            .iter()
+            .filter(|n| (i32::from(n.midi) - 64).abs() <= 1)
+            .collect();
+        assert_eq!(hits.len(), 1, "onset at {onset_at}s: {hits:?}");
+    }
+}
+
+/// Round-2 must-fix 2: the PRODUCTION mic rate. At 48 kHz (a non-integer
+/// ratio — phase errors there manufactured phantom attacks: a held chord
+/// emitted 9 notes, one attack at 30 s emitted 6) a held chord emits each
+/// note once and a single late attack lands exactly once.
+#[test]
+fn forty_eight_khz_streams_hear_no_phantoms() {
+    if should_skip_inference() {
+        return;
+    }
+    const SR48: u32 = 48_000;
+    let render = |midis: &[i32], secs: f64| -> Vec<f32> {
+        let n = (secs * f64::from(SR48)) as usize;
+        let mut out = vec![0.0f32; n];
+        for &m in midis {
+            let f = 440.0 * 2f64.powf((m as f64 - 69.0) / 12.0);
+            for (i, o) in out.iter_mut().enumerate() {
+                let t = i as f64 / f64::from(SR48);
+                let env = (t * 50.0).min(1.0);
+                *o += (env * 0.5 * (2.0 * std::f64::consts::PI * f * t).sin()) as f32;
+            }
+        }
+        out
+    };
+    // Held chord: one onset per midi.
+    let mut engine = StreamingBasicPitch::new().expect("runtime present");
+    let audio = render(&[60, 64, 67], 4.0);
+    let mut notes = Vec::new();
+    for w in audio.chunks(1024) {
+        engine.feed(w, SR48);
+        notes.extend(engine.poll().expect("inference runs"));
+    }
+    notes.extend(engine.finish().expect("tail flush"));
+    for m in [60u8, 64, 67] {
+        let count = notes
+            .iter()
+            .filter(|n| (i32::from(n.midi) - i32::from(m)).abs() <= 1)
+            .count();
+        assert_eq!(count, 1, "held midi {m} at 48kHz: {notes:?}");
+    }
+    // One late attack after a long stream: exactly the chord, once.
+    let mut engine = StreamingBasicPitch::new().expect("runtime present");
+    let mut audio = vec![0.0f32; 10 * SR48 as usize];
+    audio.extend(render(&[60, 64, 67], 1.5));
+    let mut notes = Vec::new();
+    for w in audio.chunks(1024) {
+        engine.feed(w, SR48);
+        notes.extend(engine.poll().expect("inference runs"));
+    }
+    notes.extend(engine.finish().expect("tail flush"));
+    assert_eq!(
+        notes.len(),
+        3,
+        "one attack at 10s → exactly the triad: {notes:?}"
+    );
+}
+
+/// A REAL re-strike is never eaten by the continuity rule: the same chord
+/// comped twice (fresh attacks 1.2 s apart) lands both times (round-2
+/// promoted probe — CONTINUATION_FRAMES tuning must not eat real attacks).
+#[test]
+fn a_restruck_chord_lands_both_times() {
+    if should_skip_inference() {
+        return;
+    }
+    let mut engine = StreamingBasicPitch::new().expect("runtime present");
+    let mut audio = chord(&[60, 64, 67], 1.0);
+    audio.extend(std::iter::repeat_n(0.0f32, (0.2 * f64::from(SR)) as usize));
+    audio.extend(chord(&[60, 64, 67], 1.0));
+    let mut notes = Vec::new();
+    for w in audio.chunks(1024) {
+        engine.feed(w, SR);
+        notes.extend(engine.poll().expect("inference runs"));
+    }
+    notes.extend(engine.finish().expect("tail flush"));
+    for m in [60u8, 64, 67] {
+        let count = notes
+            .iter()
+            .filter(|n| (i32::from(n.midi) - i32::from(m)).abs() <= 1)
+            .count();
+        assert_eq!(count, 2, "midi {m} struck twice must land twice: {notes:?}");
+    }
+}
+
 /// The stream's tail is not lost: a chord in the final second (after the
 /// last full window) flushes at finish() — a lifted take keeps its final
 /// chord (round-1 nice-to-have, promoted: T3c depends on it).
