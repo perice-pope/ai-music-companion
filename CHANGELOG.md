@@ -1,3 +1,9 @@
+## [2.23.0](https://github.com/perice-pope/ai-music-companion/compare/v2.22.0...v2.23.0) (2026-07-12)
+
+### Features
+
+* PolyEngine seam + streaming basic-pitch — jazz ears T3a ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#368](https://github.com/perice-pope/ai-music-companion/issues/368)) ([f53db9d](https://github.com/perice-pope/ai-music-companion/commit/f53db9d469a9eb71124f34c2b5baecf76c89ff37)), closes [#267](https://github.com/perice-pope/ai-music-companion/issues/267)
+
 ## [2.22.0](https://github.com/perice-pope/ai-music-companion/compare/v2.21.0...v2.22.0) (2026-07-12)
 
 ### Features
