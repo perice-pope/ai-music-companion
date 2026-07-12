@@ -2503,6 +2503,7 @@ dependencies = [
 name = "transcribe"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "midly",
  "ndarray",
  "ort",

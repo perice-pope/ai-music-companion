@@ -34,3 +34,10 @@ thiserror = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "poly_hop"
+harness = false

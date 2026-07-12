@@ -38,10 +38,31 @@ pub fn infer(samples_22k: &[f32]) -> Result<Activations, TranscribeError> {
         });
     }
 
-    let mut session = Session::builder()
+    let mut session = build_session()?;
+    infer_with_session(&mut session, samples_22k)
+}
+
+/// Build the ONNX session once — the streaming engine (#349 T3a) reuses one
+/// session across hops instead of paying model init per inference.
+pub(crate) fn build_session() -> Result<Session, TranscribeError> {
+    Session::builder()
         .map_err(|e| TranscribeError::Runtime(e.to_string()))?
         .commit_from_memory(MODEL_BYTES)
-        .map_err(|e| TranscribeError::Runtime(e.to_string()))?;
+        .map_err(|e| TranscribeError::Runtime(e.to_string()))
+}
+
+/// Run basic-pitch through an EXISTING session (see [`build_session`]).
+pub(crate) fn infer_with_session(
+    session: &mut Session,
+    samples_22k: &[f32],
+) -> Result<Activations, TranscribeError> {
+    let original_length = samples_22k.len();
+    if original_length == 0 {
+        return Ok(Activations {
+            frames: Matrix::new(Vec::new(), 0, N_FREQ_BINS_NOTES),
+            onsets: Matrix::new(Vec::new(), 0, N_FREQ_BINS_NOTES),
+        });
+    }
 
     // Front-pad with OVERLAP_LEN/2 zeros, then tile into AUDIO_N_SAMPLES windows
     // stepping by HOP_SIZE; the final window is zero-padded.
