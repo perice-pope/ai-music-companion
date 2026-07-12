@@ -169,7 +169,9 @@ jobs:
           p95_ns = per_iter[idx]
           mean_ms = mean_ns / 1e6
           p95_ms = p95_ns / 1e6
-          within = mean_ms <= budget_ms
+          # The budget binds BOTH mean and p95 (spec T3 AC2 gates p95; the
+          # older stages have >2x headroom so the stronger check is safe).
+          within = mean_ms <= budget_ms and p95_ms <= budget_ms
           # Slugify the label for unique GITHUB_OUTPUT keys.
           slug = "".join(c if c.isalnum() else "_" for c in label).lower()
           with open(os.environ["GITHUB_OUTPUT"], "a") as gh:
@@ -207,6 +209,8 @@ jobs:
             | Pitch detection | samples → AudioEvent | ${{ steps.parse.outputs.analysis_mean_ms }}ms | ${{ steps.parse.outputs.analysis_p95_ms }}ms | ${{ steps.parse.outputs.analysis_budget_ms }}ms | ${{ steps.parse.outputs.analysis_within == 'true' && '✅' || '❌' }} |
             | Score alignment | AudioEvent → score position | ${{ steps.parse.outputs.align_mean_ms }}ms | ${{ steps.parse.outputs.align_p95_ms }}ms | ${{ steps.parse.outputs.align_budget_ms }}ms | ${{ steps.parse.outputs.align_within == 'true' && '✅' || '❌' }} |
             | Integrated | samples → … → recap-input | ${{ steps.parse.outputs.integrated_mean_ms }}ms | ${{ steps.parse.outputs.integrated_p95_ms }}ms | ${{ steps.parse.outputs.integrated_budget_ms }}ms | ${{ steps.parse.outputs.integrated_within == 'true' && '✅' || '❌' }} |
+            | Chroma reading | ring → 12-bin chroma | ${{ steps.parse.outputs.chroma_mean_ms }}ms | ${{ steps.parse.outputs.chroma_p95_ms }}ms | ${{ steps.parse.outputs.chroma_budget_ms }}ms | ${{ steps.parse.outputs.chroma_within == 'true' && '✅' || '❌' }} |
+            | Poly hop | 1s feed → basic-pitch window | ${{ steps.parse.outputs.polyhop_mean_ms }}ms | ${{ steps.parse.outputs.polyhop_p95_ms }}ms | ${{ steps.parse.outputs.polyhop_budget_ms }}ms | ${{ steps.parse.outputs.polyhop_within == 'true' && '✅' || '❌' }} |
 
             > Measures the **Rust analysis + alignment path only**. Real-mic
             > capture (~5ms), Tauri IPC serialization, and GPU/SVG render (~5ms)
