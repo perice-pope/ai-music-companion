@@ -243,6 +243,7 @@ fn spec_for(kind: DrillKind, difficulty: u8, tonic: u8) -> (VariationSpec, Strin
                         ArpeggioPattern::Ascending
                     },
                     inversion: if d >= 7 { 1 } else { 0 },
+                    stacked: false,
                 }),
                 interval: None,
                 enclosure: (d >= 5).then_some(Enclosure::OneDown),

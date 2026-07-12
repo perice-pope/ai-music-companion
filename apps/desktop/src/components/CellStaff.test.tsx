@@ -324,4 +324,90 @@ describe("CellStaff — extreme registers (Monday review)", () => {
     expect(minY + height).toBeGreaterThanOrEqual(yLow);
     expect(screen.getAllByTestId("staff-dot")).toHaveLength(2);
   });
+
+  // #349 T2a: a stacked cell (notes sharing a beat) draws as one vertical
+  // stack — same x for every tone — with distinct staff heights.
+  it("renders simultaneous notes as a vertical stack at one x position", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C root
+          note({ midi: 64, step: 0, is_root: false }), // E
+          note({ midi: 67, step: 2, is_root: false }), // G
+          note({ midi: 70, step: 4, accidental: -1, is_root: false }), // Bb
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    expect(dots).toHaveLength(4);
+    const xs = new Set(dots.map((d) => d.getAttribute("cx")));
+    expect(xs.size).toBe(1); // struck together → drawn together
+    const ys = new Set(dots.map((d) => d.getAttribute("cy")));
+    expect(ys.size).toBe(4); // four distinct staff heights
+  });
+
+  // Engraving rule for stacked SECONDS: adjacent-step simultaneous notes
+  // must not overlap — the upper notehead shifts right. Fails if the
+  // second-interval offset is dropped (all dots would share cx).
+  it("offsets the upper note of a stacked second so both read", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C
+          note({ midi: 62, step: -1, is_root: false }), // D — a second above
+          note({ midi: 67, step: 2, is_root: false }), // G — a third+ away
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    // C and G share the column; D (the upper of the second) shifts right.
+    expect(byCx[0]).toBe(byCx[2]);
+    expect(byCx[1]).toBeGreaterThan(byCx[0]);
+  });
+
+  // A CHROMATIC second (same staff step, different pitches — C + C#) must
+  // also offset, or the stack draws two dots perfectly superimposed and
+  // lies about its own size. Fails if the offset rule keys on step
+  // difference alone.
+  it("offsets a chromatic second sharing one staff step", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 72, step: 8 }), // C5
+          note({ midi: 73, step: 8, accidental: 1, is_root: false }), // C#5
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    expect(byCx[1]).toBeGreaterThan(byCx[0]);
+    // Engraving: the accidental stays LEFT of the whole column — it must
+    // not ride the offset onto the lower notehead.
+    const accX = Number(
+      screen.getByTestId("staff-accidental").getAttribute("x"),
+    );
+    expect(accX).toBeLessThan(byCx[0] - 5.5);
+  });
+
+  // MELODIC notes never take the stack offset: adjacent-step neighbors at
+  // DIFFERENT beats keep their own beat-grid columns, unshifted. Fails if
+  // the offset predicate stops requiring simultaneity (every melodic
+  // neighbor would drift +9px off the grid).
+  it("keeps melodic neighbors on the beat grid — no stack offset", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C on beat 0
+          note({ midi: 62, step: -1, start_beat: 1, is_root: false }), // D, beat 1
+          note({ midi: 64, step: 0, start_beat: 2, is_root: false }), // E, beat 2
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    // Strictly increasing AND evenly spaced: pure beat-grid positions.
+    expect(byCx[1] - byCx[0]).toBeCloseTo(byCx[2] - byCx[1], 5);
+    expect(byCx[0]).toBeLessThan(byCx[1]);
+  });
 });
