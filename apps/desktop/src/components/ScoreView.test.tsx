@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, waitFor, cleanup, screen, fireEvent } from "@testing-library/react";
-import ScoreView, { type OsmdLike, type OsmdFactory } from "./ScoreView";
+import ScoreView, {
+  boundsFromGraphicSheet,
+  type OsmdLike,
+  type OsmdFactory,
+  type OsmdStaffMeasure,
+} from "./ScoreView";
 import type { ScorePosition } from "../types/brain";
 
 /**
@@ -524,9 +529,10 @@ describe("ScoreView — measure tap overlay (#341)", () => {
         osmdFactory={withBounds.factory}
       />,
     );
-    await waitFor(() =>
-      expect(screen.queryByTestId("measure-overlay")).toBeNull(),
-    );
+    // Await RENDER COMPLETION first (review T3: asserting absence on the
+    // first tick false-passes before the async load lands), THEN absence.
+    await waitFor(() => expect(withBounds.calls).toContain("render"));
+    expect(screen.queryByTestId("measure-overlay")).toBeNull();
     unmount();
 
     const noBounds = makeFakeOsmd(2);
@@ -538,9 +544,70 @@ describe("ScoreView — measure tap overlay (#341)", () => {
         onMeasureTap={() => {}}
       />,
     );
-    await waitFor(() =>
-      expect(screen.queryByTestId("measure-overlay")).toBeNull(),
+    await waitFor(() => expect(noBounds.calls).toContain("render"));
+    expect(screen.queryByTestId("measure-overlay")).toBeNull();
+  });
+});
+
+describe("boundsFromGraphicSheet — the OSMD-contract math (#341)", () => {
+  const staff = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    xmlNumber?: number,
+  ): OsmdStaffMeasure => ({
+    PositionAndShape: {
+      AbsolutePosition: { x, y },
+      Size: { width: w, height: h },
+    },
+    ...(xmlNumber !== undefined
+      ? { parentSourceMeasure: { MeasureNumberXML: xmlNumber } }
+      : {}),
+  });
+
+  // 10px per unit, scaled by zoom — the exact conversion OSMD's own
+  // cursor uses. The ambient variant runs at Zoom 0.75.
+  it("converts OSMD units at 10px x zoom", () => {
+    const b = boundsFromGraphicSheet([[staff(2, 1, 10, 4)]], 0.75);
+    expect(b).toEqual([
+      { measureNumber: 1, x: 15, y: 7.5, width: 75, height: 30 },
+    ]);
+  });
+
+  // Grand-staff scores: the hit region unions the measure's staves so a
+  // tap anywhere in the system rows that measure.
+  it("unions a measure's staves", () => {
+    const b = boundsFromGraphicSheet(
+      [[staff(0, 0, 10, 4), staff(0, 8, 10, 4)]],
+      1,
     );
+    expect(b[0]).toMatchObject({ y: 0, height: 120 });
+  });
+
+  // Review M3: pickup-bar scores number 0, 1, 2… in the XML, and the
+  // backend matches THAT — the region must carry MeasureNumberXML, not
+  // list order, or every tap rows the following measure.
+  it("carries the XML measure number for pickup-bar scores", () => {
+    const b = boundsFromGraphicSheet(
+      [
+        [staff(0, 0, 5, 4, 0)], // anacrusis: number="0"
+        [staff(5, 0, 10, 4, 1)],
+      ],
+      1,
+    );
+    expect(b.map((r) => r.measureNumber)).toEqual([0, 1]);
+  });
+
+  // Shims without source measures fall back to list order.
+  it("falls back to list order without XML numbers", () => {
+    const b = boundsFromGraphicSheet([[staff(0, 0, 5, 4)]], 1);
+    expect(b[0].measureNumber).toBe(1);
+  });
+
+  it("empty and shape-less inputs yield nothing", () => {
+    expect(boundsFromGraphicSheet(undefined, 1)).toEqual([]);
+    expect(boundsFromGraphicSheet([[{}]], 1)).toEqual([]);
   });
 });
 

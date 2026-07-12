@@ -35,6 +35,7 @@ export default function PracticeSession() {
   const listenToRoom = usePracticeStore((s) => s.listenToRoom);
   const setListenToRoom = usePracticeStore((s) => s.setListenToRoom);
   const exploreMeasureLive = usePracticeStore((s) => s.exploreMeasureLive);
+  const exploreNotice = usePracticeStore((s) => s.exploreNotice);
   const lessonDrill = usePracticeStore((s) => s.lessonDrill);
   const lessonRecap = usePracticeStore((s) => s.lessonRecap);
   const startLesson = usePracticeStore((s) => s.startLesson);
@@ -249,6 +250,17 @@ export default function PracticeSession() {
             <VerdictStrip />
             {/* Latest measure-anchored phrase card (#337 S3, closes #210). */}
             <ScorePhraseCard />
+            {/* #341 review M1: a refused measure tap (all rests, too busy)
+                must SAY so here — the explore panel that normally shows
+                this notice only mounts once an exploration exists. */}
+            {exploreNotice && (
+              <p
+                data-testid="score-explore-notice"
+                className="rounded border border-amber-700/60 bg-amber-900/30 px-3 py-1.5 text-xs text-amber-200"
+              >
+                {exploreNotice}
+              </p>
+            )}
             <div className="min-h-0 flex-1">
               {/* #341: every measure is a tap target — the in-practice RV
                   bridge. Score-follow sessions only; lessons render their

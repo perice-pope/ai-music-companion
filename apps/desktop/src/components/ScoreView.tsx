@@ -112,51 +112,72 @@ const makeDefaultFactory =
         );
       },
       measureBounds() {
-        // OSMD layout units are 10px x Zoom. Union each measure's staves so
-        // the hit region spans the whole system height for that measure.
-        type Shape = {
-          AbsolutePosition: { x: number; y: number };
-          Size: { width: number; height: number };
-        };
-        type StaffMeasure = { PositionAndShape: Shape };
-        const g = (
-          inner as unknown as {
-            GraphicSheet?: { MeasureList?: StaffMeasure[][] };
-            Zoom?: number;
-          } | null
-        );
-        const list = g?.GraphicSheet?.MeasureList;
-        if (!list) {
-          return [];
-        }
-        const unit = 10 * (g?.Zoom ?? 1);
-        const out: MeasureBound[] = [];
-        list.forEach((staves, i) => {
-          let x = Infinity;
-          let y = Infinity;
-          let right = -Infinity;
-          let bottom = -Infinity;
-          for (const staff of staves) {
-            const p = staff?.PositionAndShape;
-            if (!p) continue;
-            x = Math.min(x, p.AbsolutePosition.x);
-            y = Math.min(y, p.AbsolutePosition.y);
-            right = Math.max(right, p.AbsolutePosition.x + p.Size.width);
-            bottom = Math.max(bottom, p.AbsolutePosition.y + p.Size.height);
-          }
-          if (x === Infinity) return;
-          out.push({
-            measureNumber: i + 1,
-            x: x * unit,
-            y: y * unit,
-            width: (right - x) * unit,
-            height: (bottom - y) * unit,
-          });
-        });
-        return out;
+        const g = inner as unknown as {
+          GraphicSheet?: { MeasureList?: OsmdStaffMeasure[][] };
+          Zoom?: number;
+        } | null;
+        return boundsFromGraphicSheet(g?.GraphicSheet?.MeasureList, g?.Zoom);
       },
     };
   };
+
+/** The OSMD-shaped inputs the bounds reader consumes (1.9.x layout). */
+export interface OsmdStaffMeasure {
+  PositionAndShape?: {
+    AbsolutePosition: { x: number; y: number };
+    Size: { width: number; height: number };
+  };
+  /** OSMD's link back to the source measure — carries the XML number. */
+  parentSourceMeasure?: { MeasureNumberXML?: number };
+}
+
+/**
+ * #341: measure hit regions from OSMD's layout. Pure and exported so the
+ * unit math — 10px × Zoom per OSMD unit (the same conversion OSMD's own
+ * cursor uses), per-measure stave union, and MEASURE NUMBERING — is
+ * testable without a real render (jsdom can't run OSMD's renderer).
+ *
+ * Numbering: the backend matches the MusicXML `number` attribute, and
+ * pickup-bar scores start at 0 — so the region carries
+ * `parentSourceMeasure.MeasureNumberXML` when OSMD provides it, falling
+ * back to list order (i+1) only for shims that don't (review M3: index+1
+ * alone rowed the WRONG measure across every pickup-bar etude).
+ */
+export function boundsFromGraphicSheet(
+  list: OsmdStaffMeasure[][] | undefined,
+  zoom: number | undefined,
+): MeasureBound[] {
+  if (!list) {
+    return [];
+  }
+  const unit = 10 * (zoom ?? 1);
+  const out: MeasureBound[] = [];
+  list.forEach((staves, i) => {
+    let x = Infinity;
+    let y = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    let xmlNumber: number | undefined;
+    for (const staff of staves) {
+      xmlNumber ??= staff?.parentSourceMeasure?.MeasureNumberXML;
+      const p = staff?.PositionAndShape;
+      if (!p) continue;
+      x = Math.min(x, p.AbsolutePosition.x);
+      y = Math.min(y, p.AbsolutePosition.y);
+      right = Math.max(right, p.AbsolutePosition.x + p.Size.width);
+      bottom = Math.max(bottom, p.AbsolutePosition.y + p.Size.height);
+    }
+    if (x === Infinity) return;
+    out.push({
+      measureNumber: xmlNumber ?? i + 1,
+      x: x * unit,
+      y: y * unit,
+      width: (right - x) * unit,
+      height: (bottom - y) * unit,
+    });
+  });
+  return out;
+}
 
 /** Stable factory instances so effect deps don't churn between renders. */
 const pageFactory = makeDefaultFactory(false);
@@ -266,6 +287,26 @@ export default function ScoreView({
       cancelled = true;
     };
   }, [musicXml, factory]);
+
+  // #341 review M4: OSMD re-lays-out on window resize (autoResize), so the
+  // hit regions must follow — otherwise a maximized window rows a
+  // different measure than the one under the pointer. Debounced past
+  // OSMD's own debounced re-render.
+  useEffect(() => {
+    if (!ready || !onMeasureTap) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setMeasureRects(osmdRef.current?.measureBounds?.() ?? []);
+      }, 250);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [ready, onMeasureTap]);
 
   // Effect 2: advance the cursor to the live measure.
   useEffect(() => {
