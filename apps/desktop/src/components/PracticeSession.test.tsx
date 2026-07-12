@@ -307,7 +307,12 @@ describe("PracticeSession", () => {
       lessonDrill: null,
       listenToRoom: false,
     });
-    mockInvoke.mockResolvedValue({});
+    // Reject rather than resolve: a resolved bare {} lands in the store
+    // as a malformed ExploreDto and crashes ExplorePanel on the async
+    // re-render (a CI-only timing flake — locally the test unmounted
+    // before the microtask flushed). The command wiring is what this test
+    // pins; dto shapes are the store/commands tests' job.
+    mockInvoke.mockRejectedValue(new Error("not under test"));
     const { unmount } = render(<PracticeSession />);
     fireEvent.click(screen.getByTestId("lift-progression"));
     expect(mockInvoke).toHaveBeenCalledWith("explore_progression", {});
