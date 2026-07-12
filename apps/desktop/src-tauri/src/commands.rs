@@ -2454,8 +2454,34 @@ fn explore_dto(
     // under flats on the RENDERED staff, not just in the edit engine).
     let key = explore_key(explore);
     // Same rule as the root cells: the label speaks the engraved
-    // signature's spelling, never "C#" over flats (#335).
-    let label = brain::coach::respell_label(&seq.label, key.fifths);
+    // signature's spelling, never "C#" over flats (#335). Progression rows
+    // need more than respell_label's leading-token fix: every chip tap
+    // regenerates the label through the sharp-only generator, so the
+    // chord-name segment is REBUILT here from the steps + this key — the
+    // one derivation every rep passes through (T3c review r2).
+    let label = if let Some(steps) = explore.spec.progression.as_ref().filter(|p| !p.is_empty()) {
+        let names: Vec<String> = steps
+            .iter()
+            .map(|st| {
+                format!(
+                    "{}{}",
+                    brain::coach::tonic_display_name((explore.tonic + st.offset) % 12, key.fifths),
+                    st.chord.quality().suffix()
+                )
+            })
+            .collect();
+        // label_for emits "your progression · <names> · <tail…>" — swap
+        // the names part, keep the descriptive tail.
+        let mut parts: Vec<String> = seq.label.split(" · ").map(str::to_owned).collect();
+        if parts.len() >= 2 {
+            parts[1] = names.join(" → ");
+            parts.join(" · ")
+        } else {
+            format!("your progression · {}", names.join(" → "))
+        }
+    } else {
+        brain::coach::respell_label(&seq.label, key.fifths)
+    };
     let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
         seq,
         &label,
@@ -4739,6 +4765,32 @@ mod tests {
             steps.iter().map(|st| st.offset).collect::<Vec<_>>(),
             [0, 2, 3, 5],
             "the trailing 4 (anchor D): D E F G"
+        );
+
+        // A FLAT progression's label survives a chip tap flat (review r2:
+        // regeneration used the sharp-only label path — "Ebm7" re-read
+        // "D#m7" one tap in while the staff stayed correctly flat).
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(3, Q::Min7), 0.0); // Ebm7
+            chart.observe(&snap(8, Q::Dom7), 1.0); // Ab7
+            chart.observe(&snap(1, Q::Maj7), 2.0); // Dbmaj7
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        assert!(dto.label.contains("Ebm7"), "lift label: {}", dto.label);
+        let bumped =
+            apply_variation_delta_impl(&s, VariationDelta::BumpDifficulty { by: 1 }).unwrap();
+        assert!(
+            bumped.label.contains("Ebm7") && !bumped.label.contains('#'),
+            "the label stays flat through a chip tap: {}",
+            bumped.label
+        );
+        let shuffled = apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots).unwrap();
+        assert!(
+            !shuffled.label.contains('#'),
+            "…and through a reshuffle: {}",
+            shuffled.label
         );
 
         // One chord re-struck around silence: 1 distinct → calm refusal.
