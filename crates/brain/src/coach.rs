@@ -1043,8 +1043,9 @@ pub fn apply_explore_delta(
             let degrees = next.spec.degrees.take();
             // A tapped jam chord (#349 T4a) is the player's material too —
             // the ladder rebuild must not turn their Am7 blocks into a
-            // scale run (review M1).
+            // scale run (review M1). Same for a lifted progression (T3c).
             let chord = next.spec.chord.take();
+            let progression = next.spec.progression.take();
             let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
@@ -1061,6 +1062,13 @@ pub fn apply_explore_delta(
                 next.spec.chord = chord;
                 next.spec.enclosure = None;
             }
+            if progression.is_some() {
+                // Progression outranks scale by precedence, but clear the
+                // ladder scale anyway so the spec reads what it deals.
+                next.spec.scale = None;
+                next.spec.progression = progression;
+                next.spec.enclosure = None;
+            }
         }
         VariationDelta::DifferentScale => {
             // With a hand-edited cell the scale figure is shadowed (cell has
@@ -1069,8 +1077,10 @@ pub fn apply_explore_delta(
             // (review M3).
             next.spec.cell = None;
             // Fresh material replaces a tapped jam chord too (#349 T4a) —
-            // never a silent no-op; undo recovers the chord row.
+            // never a silent no-op; undo recovers the chord row. Same for
+            // a lifted progression (T3c).
             next.spec.chord = None;
+            next.spec.progression = None;
             if next.spec.scale.is_none() {
                 next.spec.scale = Some(ScaleModifier {
                     scale: ScaleType::Major,
@@ -1097,6 +1107,7 @@ pub fn apply_explore_delta(
             next.spec.cell = None;
             // Fresh material replaces a tapped jam chord too (#349 T4a).
             next.spec.chord = None;
+            next.spec.progression = None;
             // Degrees need a scale to map through; give a default rather than
             // silently no-op if explore ever seeds from scale-less material.
             if next.spec.scale.is_none() {
@@ -1433,6 +1444,14 @@ pub fn edit_explore_note(
             "this row is a chord — tap a different chord in the lane to change it".to_owned(),
         );
     }
+    if state
+        .spec
+        .progression
+        .as_ref()
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err("this row is a progression — lift a new one to change it".to_owned());
+    }
     let seq = generate(&state.spec, state.seed);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
@@ -1569,6 +1588,42 @@ mod tests {
         assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Min7);
         assert_eq!(seq.chord_targets[1].root_pc, 7);
         assert_eq!(seq.chord_targets[2].root_pc, 0);
+    }
+
+    /// T3c pre-empt of the T4a M1 class: chips must not destroy a lifted
+    /// progression — a difficulty bump keeps it (no ladder scale shadow),
+    /// fresh-material chips REPLACE it visibly, and note edits refuse
+    /// calmly. Fails if any delta path drops spec.progression silently.
+    #[test]
+    fn chips_never_silently_destroy_a_lifted_progression() {
+        let model = LearnerModel::default();
+        let heard = [
+            (2u8, theory::ChordQuality::Min7),
+            (7, theory::ChordQuality::Dom7),
+            (0, theory::ChordQuality::Maj7),
+        ];
+        let (state, _) = start_explore_progression(&heard, &model, 5);
+
+        let (bumped, seq) = apply_explore_delta(&state, &VariationDelta::BumpDifficulty { by: 1 });
+        assert!(
+            bumped
+                .spec
+                .progression
+                .as_ref()
+                .is_some_and(|p| p.len() == 3),
+            "the lifted progression survives the ladder rebuild"
+        );
+        assert!(bumped.spec.scale.is_none(), "no ladder scale may shadow it");
+        assert!(!seq.chord_targets.is_empty());
+
+        let (fresh, seq) = apply_explore_delta(&state, &VariationDelta::DifferentScale);
+        assert!(fresh.spec.progression.is_none(), "visibly replaced");
+        assert!(seq.chord_targets.is_empty());
+
+        let key = key_signature_for(2, "minor 7");
+        let err = edit_explore_note(&state, 0, &NoteEdit::Octaves { by: 1 }, &key)
+            .expect_err("progression rows refuse note edits calmly");
+        assert!(err.contains("progression"), "the refusal names it: {err}");
     }
 
     /// #349 T4a: tapping a heard chord rows it as STACKED block cells

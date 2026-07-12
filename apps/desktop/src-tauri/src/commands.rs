@@ -2540,6 +2540,17 @@ fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
         .scale
         .map(|m| m.scale.label().to_lowercase())
         .or_else(|| explore.spec.chord.map(|c| c.chord.label().to_lowercase()))
+        .or_else(|| {
+            // #349 T3c: a lifted progression engraves in its ANCHOR chord's
+            // family — a Dm7-anchored row must not read in D MAJOR (the
+            // T4a M4 split-brain class, pre-empted this time).
+            explore
+                .spec
+                .progression
+                .as_ref()
+                .and_then(|p| p.first())
+                .map(|st| st.chord.label().to_lowercase())
+        })
         .unwrap_or_else(|| "major".to_owned());
     brain::coach::key_signature_for(explore.tonic, &material)
 }
@@ -4640,6 +4651,13 @@ mod tests {
             dto.label.contains("Dm7") && dto.label.contains("G7") && dto.label.contains("Cmaj7"),
             "label: {}",
             dto.label
+        );
+        // The Dm7-anchored row engraves in the MINOR family — flats, never
+        // D major's sharps (the T4a M4 split-brain class, pre-empted).
+        assert!(
+            dto.staff.fifths < 0,
+            "Dm7 anchor must engrave flat-side, got fifths={}",
+            dto.staff.fifths
         );
         // Stacked cells on the staff, three per key.
         let first_beat = dto.staff.notes[0].start_beat;

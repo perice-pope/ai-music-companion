@@ -58,6 +58,11 @@ fn shape_of(spec_json: &str) -> String {
     if let Some(s) = spec.scale {
         return format!("{} {}", s.scale.label().to_lowercase(), s.pattern.label());
     }
+    if let Some(p) = spec.progression.as_ref().filter(|p| !p.is_empty()) {
+        // #349 T3c: the log names the shape, root-agnostic like the rest.
+        let names: Vec<&str> = p.iter().map(|st| st.chord.quality().suffix()).collect();
+        return format!("{}-chord progression ({})", p.len(), names.join(" "));
+    }
     if let Some(c) = spec.chord {
         // #349 T2b: a stacked spec deals block chords, not an arpeggio —
         // the shape must say what was actually asked (AC4).
