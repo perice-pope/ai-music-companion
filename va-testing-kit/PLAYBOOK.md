@@ -60,6 +60,55 @@ Note for the report: web mode can't test mic, upload, or AI critique.
 
 ## DESKTOP walkthrough (MODE = desktop) — the real test
 
+### ⭐ RUN PLAN — multiple tests back to back (2026-07-12 edition)
+
+This week shipped SIX releases (the app should say **v2.26.0** or later — check and record it).
+Instead of one marathon session, run **five focused runs, back to back**, each with a FRESH
+session (fully **End Session** between runs — the recap must appear each time — then start anew).
+One combined report at the end covers all runs; note per run anything that felt off. If a run
+blocks completely, screenshot it, skip forward, and keep going — a blocked run is a finding, not
+a failure.
+
+**RUN 1 — "Did the fixes land?" (Voice, ~15 min).** The quick health pass over everything fixed
+this week: steps **1–5** (privacy switch, pitch meter, 'I hear' strip, coaching tips, and
+ESPECIALLY **reveals — step 5**: they broke and were fixed this week, so a steady melody MUST
+produce a card again; if no card after ~60–90 seconds of clean playing in one key, that's a
+headline finding). Then steps **6–9** (practice-this-sound, note editing, work-on-my-last-lick,
+mode difference). End the session and check the recap + step **13b(a)** (the confident-positive
+key line on a steady melody).
+
+**RUN 2 — "Jazz ears" (Piano, at a real piano — or chordal music played from your phone,
+~20 min).** The week's headline. Steps **11c** (live chord labels: C major → labeled ~within half
+a second; G7; C/E inversion; single note → NO label; mashed cluster → 'hearing several notes…'),
+then **11e** (Listen to the room: the rolling chord lane, tap-a-chip-to-row, the honest
+'several notes…' chips, and after ending — 'What the room played' in the recap with timestamps),
+then **11g** (Work on my last progression: the chord SEQUENCE dealt through the keys). Feel-notes
+matter more than pass/fail here: does grabbing harmony out of the air feel like magic or like a
+gimmick? Say why.
+
+**RUN 3 — "Sheet music" (any instrument you can play a line on, ~20 min).** Steps **10 → 10b**
+(score + band-MIDI upload with the Trumpet/Bass picker), **11** (the cursor follows you — it was
+overhauled this week: it should track through the WHOLE piece, not stall at measure 1; also
+deliberately skip a measure and confirm it catches up), **11b** (live verdicts ✓/~/✗, phrase
+cards, the score recap, and the 🎲 row-through-12-keys button), **11f** (tap any measure right on
+the notation — NEW), and **12** (the .wav upload; watch for the loading message — a known bug
+hunt: tell me EXACTLY what text appears, or doesn't, the moment you drop the file).
+
+**RUN 4 — "Lessons" (Piano, ~15 min).** Section **B** (steps 1–5: start, play, grade, adapt,
+recap, escape hatch) plus **11d** (chord drills — the lesson's second drill on Piano should say
+'block chords' and show stacked notes; grade honestly, then deliberately fumble). And the **#327
+hunt**: a big notation-rendering fix landed this week that may have cured the intermittent blank
+lesson sheet — run 4+ lessons across different keys and report ANY render error with its exact
+key name (or happily report none).
+
+**RUN 5 — "The stranger test" (installer, ~15 min).** The INSTALLER smoke section below, exactly
+as written — download from the public site like a stranger, right-click-open, quick pass. This is
+the pilot launch gate: a failure here is a SHIP BLOCKER headline.
+
+Between runs: 10 deep breaths, sip of water — fatigue findings ("I stopped noticing X by run 4")
+are real findings too; note them.
+
+
 > **Monday session (#277 re-test):** last time several things didn't pass — this run re-checks each
 > of them explicitly, plus everything new from the weekend (the app looks and behaves differently in
 > places; that's expected). Where a step says **[#277 re-test]**, compare against her last report.
@@ -185,13 +234,18 @@ Open the samples folder for her so she can drag a file:
    green note saying your measure is queued (there's an ✕ to dismiss it). Start a new session —
    the measure should open as colored dots rowed through different keys, exactly like 'Work on
    my last lick'. This is the flagship: tell me how it FEELS, not just whether it works."
-11f. **Tap the sheet music itself (NEW this run).** While the score session is running
+11f. **Tap the sheet music itself (NEW this run — RUN 3).** While the score session is running
    (cursor following you), **tap any measure right on the notation** — a subtle highlight
    appears when you hover. "The app should immediately deal THAT measure through 12 keys as
    colored cells — without ending your session ('Back to listening' returns you to the score).
    Tap a measure that's all rests: it should calmly say there's nothing to row, and you stay
-   right where you were. Does grabbing a measure straight off the page feel natural?"
-11c. **Jazz ears — it can hear CHORDS now (NEW this run).** Start a free-play session on
+   right where you were. Does grabbing a measure straight off the page feel natural?" **Detail
+   to watch:** hover before tapping — a faint highlight should outline exactly ONE measure, the
+   one under your pointer (if the highlight covers the wrong measure or drifts after you resize
+   the window, that's a finding: screenshot with your cursor visible). Note the ✓/~/✗ tally
+   BEFORE you tap; when you come back with 'Back to listening', it should be exactly where you
+   left it — your row practice must never have counted as score practice.
+11c. **Jazz ears — it can hear CHORDS now (NEW this run — RUN 2).** Start a free-play session on
    **Piano** (or Guitar — it's in the instrument list now) near a real piano/guitar, or play a
    chord recording out loud. "**(a)** Play a plain **C major chord** and hold it: within about
    half a second the 'I hear' strip at the top should show a **chord name with a small colored
@@ -201,8 +255,12 @@ Open the samples folder for her so she can drag a file:
    (one note is not a chord; if it invents one, flag it hard). **(d)** Mash 4–5 random
    neighboring keys at once: it should say **'hearing several notes…'** rather than making up a
    chord name — that honesty is the feature. Tell me: did the labels feel right and steady, or
-   did they flicker/lie?"
-11d. **Chord DRILLS — the lesson deals block chords on piano/guitar (NEW this run).** Stay on
+   did they flicker/lie?" **Detail to watch:** the label should appear within about half a second
+   of a clean chord and then hold STEADY while it rings (it may firm up its little slash — 'C'
+   becoming 'C/E' — that's correct). A label that flip-flops between two names on one held chord
+   is a bug: screenshot it and note both names. Sharp/flat spelling should match the key you're
+   in ('Db', never 'C#', when you're playing in flat keys).
+11d. **Chord DRILLS — the lesson deals block chords on piano/guitar (NEW this run — RUN 4).** Stay on
    **Piano** (or Guitar) with the real instrument at hand, then start a **Guided Lesson**. "The
    second drill's label should say **'… block chords'** and the notation should show **stacked
    notes** (whole chords, one per measure) instead of a note-by-note arpeggio. **(a)** Play each
@@ -212,8 +270,11 @@ Open the samples folder for her so she can drag a file:
    asked) should hurt less than a totally wrong one. **(c)** Tap grade once WITHOUT playing
    anything: it should calmly say it didn't hear you yet — never a 0% for silence. On Voice or
    Trumpet the lesson should still deal the old note-by-note arpeggio — chords are only dealt to
-   instruments that can play them."
-11e. **Listen to the room — jam-along (NEW this run).** In a free-play session, tap the
+   instruments that can play them." **Detail to watch:** grading is forgiving in the right ways
+   — noodling a wrong chord BEFORE finding the right one shouldn't tank the score, and a close
+   chord (right letter, wrong flavor) should cost about half. If a drill you played essentially
+   perfectly grades badly, that's a headline finding: note exactly what you played.
+11e. **Listen to the room — jam-along (NEW this run — RUN 2).** In a free-play session, tap the
    **"🎧 Listen to the room"** button under the pitch meter, then play music AT the app —
    a recording on your phone speaker works great (pick something chordal: pop, gospel, jazz).
    "**(a)** Chord chips should roll across the lane as the song plays — each with a colored dot
@@ -224,14 +285,23 @@ Open the samples folder for her so she can drag a file:
    dense or messy: the lane should show italic 'several notes…' chips instead of inventing
    chord names. **(d)** End the session: the recap should include **'What the room played'** —
    the chord sequence with timestamps. **(e)** Check the fine print on the lane: it should say
-   labels only, nothing recorded or sent anywhere."
-11g. **Work on my last progression (NEW this run).** After playing (or playing a recording of)
+   labels only, nothing recorded or sent anywhere." **Detail to watch:** chips should arrive a
+   beat or two AFTER each chord change (that small lag is normal — it's being careful, not slow);
+   each chip carries 1–3 little dots (more dots = more confident — do hesitant chips really look
+   hesitant?); the lane holds about the last 8 things heard. If a chip ever names a chord that
+   was flatly wrong (not just simplified — e.g. it said F when the song was clearly on C), note
+   the song + the moment.
+11g. **Work on my last progression (NEW this run — RUN 2).** After playing (or playing a recording of)
    a few chords in any session — the jam lane is perfect for this — tap **"🎲 Work on my last
    progression"**. "The app should deal the chord SEQUENCE it just heard (like 'Dm7 → G7 →
    Cmaj7') through the keys (3 or more, growing as you level up) — each key plays all the
    chords in a row as block chords. Tap it
    before playing any chords: it should calmly ask you to play a couple first. Does drilling a
-   whole progression through the keys feel like the RV idea leveled up?"
+   whole progression through the keys feel like the RV idea leveled up?" **Detail to watch:**
+   the header should name YOUR chords in order with arrows (like 'your progression · Dm7 → G7 →
+   Cmaj7') and the spelling should stay consistent even after tapping the little variation chips
+   ('Make it spicy' etc.) — if any chord name suddenly changes its sharp/flat spelling after a
+   chip tap, screenshot before/after.
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -294,6 +364,15 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 **Date:** <today>
 **App version (commit):** <COMMIT from launch>
 **Run mode:** <web → "Web preview (look/wording only)" | desktop → "Desktop (live mic, upload, critique)">
+**App version shown:** <from the app — should be v2.26.0+>
+
+### Run log (back-to-back plan)
+- Run 1 (fixes check, Voice): <done / skipped / blocked — one line>
+- Run 2 (jazz ears, Piano): <same>
+- Run 3 (sheet music): <same>
+- Run 4 (lessons + chord drills): <same>
+- Run 5 (installer smoke): <same>
+- Fatigue notes (what you stopped noticing, when): <answer>
 
 ### Practice modes & what the user sees
 <her answers about instruments, the 3 modes, the session view, pitch/'I hear'/tips>
@@ -358,7 +437,8 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Voice/Trumpet lessons still deal the note-by-note arpeggio: <answer>
 
 ### Guided Lesson 🎓 (desktop only — new feature)
-- **[#327 hunt] Keys tried across 4+ lessons; any render error with its exact key name:** <answer>
+- **[#327 hunt — a big notation-render fix landed this week; this may be CURED] Keys tried
+  across 4+ lessons; any render error with its exact key name, or happily none:** <answer>
 - Lesson started; sheet music + drill header shown: <answer>
 - NEW look: colored cells + transparent notation + a real key signature: <answer>
 - Grades felt roughly fair for how she played: <answer>
