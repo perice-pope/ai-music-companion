@@ -297,6 +297,37 @@ describe("PracticeSession", () => {
     );
   });
 
+  // #329: reveals and tips are FLAGSHIP surfaces — they must render at
+  // every window width. jsdom has no lg: breakpoint (no CSS engine), so
+  // the honest pin is structural: the panels' containers carry no `hidden`
+  // class in any session branch. Fails if someone re-hides the column.
+  it("tips and reveals are never behind a breakpoint", () => {
+    // Free play.
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: null,
+      explore: null,
+      lessonDrill: null,
+    });
+    const { unmount } = render(<PracticeSession />);
+    const revealShell = screen.getByTestId(/reveal-card/);
+    expect(revealShell.closest("div.hidden")).toBeNull();
+    expect(screen.getByTestId(/coaching-tip-panel/)).toBeTruthy();
+    unmount();
+
+    // Score mode: same rule.
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: "<score-partwise/>",
+      explore: null,
+      lessonDrill: null,
+    });
+    render(<PracticeSession />);
+    expect(
+      screen.getByTestId(/reveal-card/).closest("div.hidden"),
+    ).toBeNull();
+  });
+
   // #349 T4a: the "Listen to the room" toggle swaps the free-play
   // centerpiece for the jam chord lane (and back). Fails if the mode stops
   // reaching the layout.
