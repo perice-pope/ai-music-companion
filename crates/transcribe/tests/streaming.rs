@@ -297,17 +297,26 @@ fn the_runner_hears_the_true_bass_under_a_voicing() {
     }
     let runner = transcribe::PolyRunner::spawn().expect("runtime present");
     let audio = chord(&[40, 60, 67], 3.0); // E2, C4, G4 — "C/E"
+                                           // TRUE realtime pacing with CONCURRENT polling (review r2 MF-B: 4 ms
+                                           // pacing ran 5.8x realtime — under a contended parallel suite the
+                                           // queue overflowed and the tail honestly became silence, while the
+                                           // backdated query raced past the ring horizon; flaky ~1/3). Feeding at
+                                           // the production rate makes overflow impossible even contended, and
+                                           // polling DURING the feed gives a >=0.5 s observation window — exactly
+                                           // how the session consumes the snapshot.
+    let chunk_secs = 1024.0 / f64::from(SR);
+    let mut bass: Option<u8> = None;
     for w in audio.chunks(1024) {
         runner.feed(w, SR);
-        // Near-realtime pacing: in production windows arrive at ~43 Hz and
-        // the engine keeps up easily; a burst-fed test would overflow the
-        // bounded queue and turn most of the audio into (honest) silence.
-        std::thread::sleep(std::time::Duration::from_millis(4));
+        std::thread::sleep(std::time::Duration::from_secs_f64(chunk_secs));
+        if bass.is_none() {
+            bass = runner.sounding_bass(1.5);
+        }
     }
-    // The engine needs ~2 windows; poll the snapshot with a deadline.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // A short grace for the final hop if it hadn't surfaced mid-feed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let bass = loop {
-        if let Some(m) = runner.sounding_bass(1.5) {
+        if let Some(m) = bass.or_else(|| runner.sounding_bass(1.5)) {
             break m;
         }
         assert!(
