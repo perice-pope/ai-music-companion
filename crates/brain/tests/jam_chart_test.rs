@@ -133,6 +133,11 @@ fn a_four_chord_record_charts_in_order() {
     }
     let times: Vec<f64> = chart.entries().iter().map(|e| e.at_secs).collect();
     assert!(times.windows(2).all(|w| w[0] < w[1]), "timestamps ordered");
+    // A recorder that interleaved spurious "several notes" entries between
+    // every chord would be a real lane-UX regression — bound it (at most
+    // one transition blur across four chord changes).
+    let unresolved = chart.entries().iter().filter(|e| e.unresolved).count();
+    assert!(unresolved <= 1, "{unresolved} spurious unresolved entries");
 }
 
 /// #349 T4a AC2: a dense atonal mix charts HONEST unresolved entries —

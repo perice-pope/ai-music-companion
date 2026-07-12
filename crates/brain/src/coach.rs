@@ -1037,6 +1037,10 @@ pub fn apply_explore_delta(
             let scale = next.spec.scale;
             let cell = next.spec.cell.take();
             let degrees = next.spec.degrees.take();
+            // A tapped jam chord (#349 T4a) is the player's material too —
+            // the ladder rebuild must not turn their Am7 blocks into a
+            // scale run (review M1).
+            let chord = next.spec.chord.take();
             let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
@@ -1046,6 +1050,13 @@ pub fn apply_explore_delta(
             // Degree patterns are the player's material too (#289) — they
             // survive the ladder rebuild exactly like a hand-edited cell.
             next.spec.degrees = degrees;
+            if chord.is_some() {
+                // The chord IS the figure: the rebuilt scale would shadow
+                // it (scale > chord precedence), so drop the ladder scale.
+                next.spec.scale = None;
+                next.spec.chord = chord;
+                next.spec.enclosure = None;
+            }
         }
         VariationDelta::DifferentScale => {
             // With a hand-edited cell the scale figure is shadowed (cell has
@@ -1053,6 +1064,15 @@ pub fn apply_explore_delta(
             // discard the cell, back to the catalog; undo recovers it
             // (review M3).
             next.spec.cell = None;
+            // Fresh material replaces a tapped jam chord too (#349 T4a) —
+            // never a silent no-op; undo recovers the chord row.
+            next.spec.chord = None;
+            if next.spec.scale.is_none() {
+                next.spec.scale = Some(ScaleModifier {
+                    scale: ScaleType::Major,
+                    pattern: ScalePattern::Up,
+                });
+            }
             if let Some(m) = next.spec.scale.as_mut() {
                 let current = m.scale;
                 let idx = (next.seed as usize) % EXPLORE_SCALES.len();
@@ -1071,6 +1091,8 @@ pub fn apply_explore_delta(
             // edited cell — discard the cell (undo recovers it) and pull a
             // pattern from the database, never the one already playing.
             next.spec.cell = None;
+            // Fresh material replaces a tapped jam chord too (#349 T4a).
+            next.spec.chord = None;
             // Degrees need a scale to map through; give a default rather than
             // silently no-op if explore ever seeds from scale-less material.
             if next.spec.scale.is_none() {
@@ -1208,9 +1230,10 @@ pub fn practice_chord_type(quality: theory::ChordQuality) -> ChordType {
         Q::Sus4 => ChordType::Sus4Triad,
         Q::Maj7 | Q::Maj9 | Q::Maj6 => ChordType::Major7,
         Q::Min7 | Q::Min9 | Q::Min6 | Q::MinMaj7 => ChordType::Minor7,
-        Q::Dom7 | Q::Dom9 | Q::Dom13 | Q::Dom7b9 | Q::Dom7s9 | Q::Dom7s11 | Q::Dom7Sus4 => {
-            ChordType::Dominant7
-        }
+        Q::Dom7 | Q::Dom9 | Q::Dom13 | Q::Dom7b9 | Q::Dom7s9 | Q::Dom7s11 => ChordType::Dominant7,
+        // A sus voicing rows AS sus — reducing to a plain dominant would
+        // reintroduce the very 3rd it avoids (review S4).
+        Q::Dom7Sus4 => ChordType::Dominant7Sus4,
         Q::Min7b5 => ChordType::HalfDiminished7,
         Q::Dim7 => ChordType::Diminished7,
     }
@@ -1356,6 +1379,15 @@ pub fn edit_explore_note(
     edit: &NoteEdit,
     key: &crate::score::KeySignature,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
+    // #349 T4a review M2: a stacked chord row has no melodic cell to bake —
+    // dragging one dot would flatten the block into a one-note melody and
+    // silently drop the chord grading. Refuse calmly; the lane is the edit
+    // surface for chords.
+    if state.spec.chord.is_some_and(|c| c.stacked) {
+        return Err(
+            "this row is a chord — tap a different chord in the lane to change it".to_owned(),
+        );
+    }
     let seq = generate(&state.spec, state.seed);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
@@ -1486,6 +1518,40 @@ mod tests {
         assert!(seq.label.starts_with("Bb"), "label: {}", seq.label);
     }
 
+    /// Review M1 (T4a): the chips flow must never destroy the tapped jam
+    /// chord — a difficulty bump keeps the block-chord figure (rebuilding
+    /// tempo/roots around it), and the fresh-material chips REPLACE it
+    /// visibly (scale figure appears), never a silent no-op. Fails if the
+    /// ladder rebuild drops `spec.chord` again.
+    #[test]
+    fn chips_never_silently_destroy_a_tapped_jam_chord() {
+        let model = LearnerModel::default();
+        let (state, _) = start_explore_chord(9, theory::ChordQuality::Min7, &model, 5);
+
+        // Make it spicy: the Am7 blocks survive the ladder rebuild.
+        let (bumped, seq) = apply_explore_delta(&state, &VariationDelta::BumpDifficulty { by: 1 });
+        let chord = bumped.spec.chord.expect("the tapped chord survives");
+        assert!(chord.stacked, "still block cells");
+        assert_eq!(chord.chord, ChordType::Minor7);
+        assert!(
+            bumped.spec.scale.is_none(),
+            "no ladder scale may shadow the chord figure"
+        );
+        assert!(!seq.chord_targets.is_empty(), "still graded as chords");
+        assert!(seq.label.contains("block chords"), "label: {}", seq.label);
+
+        // Fresh material: DifferentScale visibly REPLACES the chord.
+        let (fresh, seq) = apply_explore_delta(&state, &VariationDelta::DifferentScale);
+        assert!(fresh.spec.chord.is_none());
+        assert!(fresh.spec.scale.is_some(), "a scale figure actually deals");
+        assert!(seq.chord_targets.is_empty());
+
+        // TryPattern likewise.
+        let (fresh, _) = apply_explore_delta(&state, &VariationDelta::TryPattern);
+        assert!(fresh.spec.chord.is_none());
+        assert!(fresh.spec.degrees.is_some(), "a pattern actually deals");
+    }
+
     /// The practice mapping keeps every heard quality inside its family:
     /// direct qualities map to their exact catalog type; extensions reduce
     /// to the family seventh/triad. Spot-pins the reductions a reviewer
@@ -1500,7 +1566,7 @@ mod tests {
         assert_eq!(practice_chord_type(Q::Maj9), ChordType::Major7);
         assert_eq!(practice_chord_type(Q::MinMaj7), ChordType::Minor7);
         assert_eq!(practice_chord_type(Q::Add9), ChordType::MajorTriad);
-        assert_eq!(practice_chord_type(Q::Dom7Sus4), ChordType::Dominant7);
+        assert_eq!(practice_chord_type(Q::Dom7Sus4), ChordType::Dominant7Sus4);
     }
 
     /// #349 T2b: a polyphonic lesson deals its chord drill STACKED — block

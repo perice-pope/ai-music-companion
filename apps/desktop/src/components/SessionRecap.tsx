@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
+import { confidenceDots } from "../lib/confidenceDots";
 import type { GrooveDescriptor, IntonationSummary } from "../types/brain";
 import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
@@ -374,7 +375,7 @@ export default function SessionRecap() {
                     <span className="font-semibold text-gray-100">
                       {e.label}
                       <span className="ml-1 text-[9px] tracking-widest text-gray-500">
-                        {"●".repeat(chartDots(e.confidence))}
+                        {confidenceDots(e.confidence)}
                       </span>
                     </span>
                   )}
@@ -400,12 +401,7 @@ function formatChartTime(secs: number): string {
   return `${m}:${ss.toString().padStart(2, "0")}`;
 }
 
-/** Confidence → 1–3 dots (same thresholds as the live lane). */
-function chartDots(confidence: number): number {
-  if (confidence >= 0.75) return 3;
-  if (confidence >= 0.55) return 2;
-  return 1;
-}
+
 
 /**
  * Full-height dark surface for the recap. Every other screen owns its own

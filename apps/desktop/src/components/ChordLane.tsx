@@ -1,13 +1,6 @@
 import { usePracticeStore } from "../stores/practiceStore";
 import { colorForPitchClass } from "../lib/rvColors";
-
-/** Confidence → 1–3 dots. The dots are the honesty cue: a hesitant label
- * shows hesitantly. */
-function dotCount(confidence: number): number {
-  if (confidence >= 0.75) return 3;
-  if (confidence >= 0.55) return 2;
-  return 1;
-}
+import { confidenceDots } from "../lib/confidenceDots";
 
 /**
  * #349 T4a — the jam lane: the last few chords the room played, each one a
@@ -71,7 +64,7 @@ export default function ChordLane() {
                   aria-label={`confidence ${Math.round(entry.confidence * 100)}%`}
                   className="text-[9px] tracking-widest text-gray-400"
                 >
-                  {"●".repeat(dotCount(entry.confidence))}
+                  {confidenceDots(entry.confidence)}
                 </span>
               </button>
             ),

@@ -237,4 +237,26 @@ describe("PracticeSession", () => {
     fireEvent.click(screen.getByTestId("start-lesson"));
     expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
   });
+
+  // #349 T4a: the "Listen to the room" toggle swaps the free-play
+  // centerpiece for the jam chord lane (and back). Fails if the mode stops
+  // reaching the layout.
+  it("listen-to-room swaps the centerpiece for the chord lane", () => {
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: null,
+      explore: null,
+      listenToRoom: false,
+      chordLane: [],
+    });
+    render(<PracticeSession />);
+    expect(screen.queryByTestId("chord-lane")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("listen-to-room-toggle"));
+    expect(screen.getByTestId("chord-lane")).toBeInTheDocument();
+    expect(screen.getByTestId("listen-to-room-toggle")).toHaveTextContent(
+      "Listening to the room",
+    );
+    fireEvent.click(screen.getByTestId("listen-to-room-toggle"));
+    expect(screen.queryByTestId("chord-lane")).not.toBeInTheDocument();
+  });
 });

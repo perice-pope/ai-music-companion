@@ -73,12 +73,23 @@ impl ChartRecorder {
             {
                 if !last_entry.unresolved {
                     last_entry.confidence = c.confidence;
+                    // The freshest display label wins too — a slash arriving
+                    // mid-ring ("C" → "C/E") must not leave the chart naming
+                    // a different chord than the strip showed (review N2).
+                    if last_entry.label != c.label {
+                        last_entry.label.clone_from(&c.label);
+                    }
                 }
             }
             return;
         }
         self.last = state;
         let entry = match (&snapshot.chord, snapshot.hearing_polyphony) {
+            // A labeled chord WITHOUT a quality key is a wire-compat state
+            // (old producer), unreachable live — both the identity match
+            // above and this arm treat it as silence so the recorder can
+            // never disagree with itself (or the lane, which skips it too).
+            (Some(c), _) if c.quality.is_none() => return,
             (Some(c), _) => ChartEntry {
                 label: c.label.clone(),
                 root_pc: Some(c.root_pc),

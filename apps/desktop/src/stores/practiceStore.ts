@@ -109,14 +109,34 @@ function pushLane(
 ): { lane: LaneEntry[]; ringing: boolean } {
   const last = lane[lane.length - 1];
   const chord = p.chord ?? null;
+  // A labeled chord without a quality key can't be rowed and the backend
+  // recorder drops it (wire-compat state only, unreachable live) — treat
+  // it the same here so lane and chart can never disagree.
+  if (chord && chord.quality == null) {
+    return { lane, ringing: false };
+  }
   if (chord) {
-    if (ringing && last && !last.unresolved && last.label === chord.label) {
-      // Same label ringing: refresh confidence in place.
-      if (last.confidence === chord.confidence) {
+    // Identity = (root, quality), mirroring the backend recorder's rule —
+    // a slash arriving mid-ring ("C" → "C/E") refreshes the chip in place,
+    // never a duplicate entry the recap chart won't have.
+    const sameIdentity =
+      ringing &&
+      last &&
+      !last.unresolved &&
+      last.rootPc === chord.root_pc &&
+      last.quality === (chord.quality ?? null);
+    if (sameIdentity) {
+      if (
+        last.confidence === chord.confidence &&
+        last.label === chord.label
+      ) {
         return { lane, ringing: true };
       }
       return {
-        lane: [...lane.slice(0, -1), { ...last, confidence: chord.confidence }],
+        lane: [
+          ...lane.slice(0, -1),
+          { ...last, confidence: chord.confidence, label: chord.label },
+        ],
         ringing: true,
       };
     }
@@ -314,6 +334,10 @@ export interface PracticeState {
   chordLane: LaneEntry[];
   /** The last lane entry is still ringing (no silence since it landed). */
   laneRinging: boolean;
+  /** Session time (secs) the room mode was FIRST enabled — the recap
+   * sketch filters to entries after this, so pre-toggle practice chords
+   * never masquerade as "what the room played". */
+  jamStartSecs: number | null;
   /**
    * The finished jam's chord chart (#349 T4a), fetched from the backend at
    * session end when the room mode was on — the recap sketch's data.
@@ -624,6 +648,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   listenToRoom: false,
   chordLane: [],
   laneRinging: false,
+  jamStartSecs: null,
   jamChart: null,
   keyPinned: false,
   pinnedKey: null,
@@ -815,6 +840,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       listenToRoom: false,
       chordLane: [],
       laneRinging: false,
+      jamStartSecs: null,
       jamChart: null,
     });
     try {
@@ -881,7 +907,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       if (wasJam) {
         try {
           const chart = await invoke<ChartEntry[]>("session_chord_chart");
-          jamChart = chart.length > 0 ? chart : null;
+          // Only what played AFTER the room mode came on — the player's
+          // own pre-toggle practice is not "what the room played".
+          const since = get().jamStartSecs ?? 0;
+          const roomChart = chart.filter((e) => e.at_secs >= since);
+          jamChart = roomChart.length > 0 ? roomChart : null;
         } catch {
           jamChart = null;
         }
@@ -955,9 +985,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }),
 
   setListenToRoom: (on) =>
-    set(
+    set((s) =>
       on
-        ? { listenToRoom: true }
+        ? {
+            listenToRoom: true,
+            // First enable marks where "the room" begins for the recap
+            // sketch; re-enables keep the original mark.
+            jamStartSecs: s.jamStartSecs ?? s.elapsedSecs,
+          }
         : { listenToRoom: false, chordLane: [], laneRinging: false },
     ),
 

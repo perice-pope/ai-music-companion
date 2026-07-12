@@ -1995,6 +1995,11 @@ pub async fn start_practice_session<R: Runtime>(
             if let Some(active) = state.active_session.lock().await.as_mut() {
                 active.score_id = score_id;
             }
+            // The jam chart is served AFTER a session ends (recap sketch),
+            // so it must clear at the next session's COMMIT — even one that
+            // never opens a pipeline — or a no-mic session could recap the
+            // previous session's chart (review nice-to-have).
+            state.chord_chart.lock_or_recover().clear();
             // Spin up the pipeline only after state-machine commit —
             // if we can't open the mic we at least want the recorder
             // in a consistent state.
@@ -2013,7 +2018,6 @@ pub async fn start_practice_session<R: Runtime>(
                 state.phrase_buffer.lock_or_recover().clear();
                 state.verdict_buffer.lock_or_recover().clear();
                 state.chord_buffer.lock_or_recover().clear();
-                state.chord_chart.lock_or_recover().clear();
                 let phrase_buffer = state.phrase_buffer.clone();
                 let verdict_buffer = state.verdict_buffer.clone();
                 let chord_buffer = state.chord_buffer.clone();
@@ -2489,12 +2493,17 @@ fn log_exercise_best_effort(store: &SessionStore, o: ExerciseOutcome<'_>) {
 
 /// The active explore key signature (for the edit engine's staff-step math).
 fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
-    let scale_label = explore
+    // The signature follows the FIGURE the row actually deals (#335): a
+    // scale explore engraves in its scale's family; a chord explore (the
+    // jam bridge, #349 T4a) in its chord family — an Am7 row must not
+    // engrave in A MAJOR and drown every stack in accidentals (review S1).
+    let material = explore
         .spec
         .scale
         .map(|m| m.scale.label().to_lowercase())
+        .or_else(|| explore.spec.chord.map(|c| c.chord.label().to_lowercase()))
         .unwrap_or_else(|| "major".to_owned());
-    brain::coach::key_signature_for(explore.tonic, &scale_label)
+    brain::coach::key_signature_for(explore.tonic, &material)
 }
 
 /// Start (or restart) a free-play exploration from the live key. Reads the
@@ -5202,6 +5211,39 @@ mod tests {
         let session = guard.as_ref().unwrap();
         // The currently-open segment must be the new one.
         assert_eq!(session.recorder.current_instrument(), Some("Piano"));
+    }
+
+    /// #349 T4a (test-auditor gap): the chart survives session END — the
+    /// store fetches it after end_practice_session returns, so a tidy-
+    /// minded clear at session end would silently kill the recap sketch.
+    /// Cleared only at the NEXT session start (glue in the pipeline block;
+    /// the lifecycle contract is pinned here at the readable half).
+    #[tokio::test]
+    async fn the_chord_chart_survives_session_end() {
+        let s = state();
+        start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .unwrap();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(
+                &brain::perception::PerceptionSnapshot {
+                    chord: Some(brain::perception::ChordReading {
+                        root_pc: 0,
+                        quality: Some(brain::theory::ChordQuality::Maj),
+                        label: "C".to_owned(),
+                        bass_pc: None,
+                        confidence: 0.8,
+                    }),
+                    ..brain::perception::PerceptionSnapshot::EMPTY
+                },
+                1.0,
+            );
+        }
+        end_practice_session_impl(&s).await.unwrap();
+        let entries = s.chord_chart.lock().unwrap().entries().to_vec();
+        assert_eq!(entries.len(), 1, "the recap sketch's data must survive");
+        assert_eq!(entries[0].label, "C");
     }
 
     #[tokio::test]

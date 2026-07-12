@@ -125,6 +125,91 @@ describe("practiceStore — state machine", () => {
     expect(s.recapError).toBeNull();
   });
 
+  // #349 T4a: a jam session's endSession fetches the chord chart for the
+  // recap sketch; a chart failure must not dent the recap; and a normal
+  // session never even asks. Fails if the wasJam fetch or the swallow
+  // breaks.
+  it("endSession fetches the jam chart in room mode — best effort", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Piano");
+    useStore.getState().setListenToRoom(true);
+
+    const chart = [
+      {
+        label: "C",
+        root_pc: 0,
+        quality: "maj",
+        confidence: 0.8,
+        at_secs: 1.0,
+        unresolved: false,
+      },
+    ];
+    mockInvoke.mockResolvedValueOnce({
+      overall_assessment: "x",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 5,
+      phrase_count: 0,
+      instrument: "Piano",
+    });
+    mockInvoke.mockResolvedValueOnce(chart);
+    await useStore.getState().endSession();
+    expect(mockInvoke).toHaveBeenCalledWith("session_chord_chart");
+    expect(useStore.getState().jamChart).toEqual(chart);
+
+    // startSession resets the jam state — mode is a deliberate choice.
+    mockInvoke.mockResolvedValueOnce("sid2");
+    await useStore.getState().startSession("Piano");
+    const st = useStore.getState();
+    expect(st.listenToRoom).toBe(false);
+    expect(st.chordLane).toHaveLength(0);
+    expect(st.jamChart).toBeNull();
+  });
+
+  it("a chart fetch failure never dents the recap", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Piano");
+    useStore.getState().setListenToRoom(true);
+    mockInvoke.mockResolvedValueOnce({
+      overall_assessment: "x",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 5,
+      phrase_count: 0,
+      instrument: "Piano",
+    });
+    mockInvoke.mockRejectedValueOnce(new Error("chart gone"));
+    await useStore.getState().endSession();
+    const s = useStore.getState();
+    expect(s.screen).toBe("recap");
+    expect(s.recap).not.toBeNull();
+    expect(s.recapError).toBeNull();
+    expect(s.jamChart).toBeNull();
+  });
+
+  it("a normal session never asks for the chart", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    mockInvoke.mockResolvedValueOnce({
+      overall_assessment: "x",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 5,
+      phrase_count: 0,
+      instrument: "Trumpet",
+    });
+    await useStore.getState().endSession();
+    const calls = mockInvoke.mock.calls.map((c) => c[0]);
+    expect(calls).not.toContain("session_chord_chart");
+    expect(useStore.getState().jamChart).toBeNull();
+  });
+
   it("endSession failure still navigates to recap but sets recapError", async () => {
     // Design invariant: never fail loudly on a recap. The session
     // happened — the UI must still acknowledge it.

@@ -123,4 +123,42 @@ describe("ChordLane (#349 T4a)", () => {
     usePracticeStore.getState().setPerception(hearing("C", 0, "maj"));
     expect(usePracticeStore.getState().chordLane).toHaveLength(0);
   });
+
+  // Honesty is not tappable: an unresolved chip has nothing to row —
+  // clicking it must never invoke the bridge. Fails if unresolved entries
+  // become buttons (test-auditor probe: this mutation survived before).
+  it("unresolved chips are not tappable", () => {
+    usePracticeStore.getState().setPerception(SEVERAL);
+    render(<ChordLane />);
+    fireEvent.click(screen.getByTestId("lane-unresolved"));
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  // The confidence dots ARE the honesty cue (AC2 "confidence dots
+  // pinned"): a hesitant label shows fewer dots. Fails if dotCount stops
+  // reflecting confidence (that mutation survived before this test).
+  it("draws dots that reflect the label's confidence", () => {
+    const set = usePracticeStore.getState().setPerception;
+    set(hearing("C", 0, "maj", 0.9)); // 3 dots
+    set(hearing("F", 5, "maj", 0.6)); // 2 dots
+    set(hearing("G", 7, "maj", 0.4)); // 1 dot
+    render(<ChordLane />);
+    const dots = screen
+      .getAllByTestId("lane-confidence")
+      .map((d) => d.textContent);
+    expect(dots).toEqual(["●●●", "●●", "●"]);
+  });
+
+  // A slash arriving mid-ring ("C" → "C/E") refreshes the chip in place —
+  // same (root, quality) identity rule as the backend recorder, so the
+  // lane and the recap chart can never disagree (test-auditor probe).
+  it("refreshes a slash change in place, never a duplicate chip", () => {
+    const set = usePracticeStore.getState().setPerception;
+    set(hearing("C", 0, "maj", 0.8));
+    set(hearing("C/E", 0, "maj", 0.8));
+    render(<ChordLane />);
+    const chords = screen.getAllByTestId("lane-chord");
+    expect(chords).toHaveLength(1);
+    expect(chords[0]).toHaveTextContent("C/E");
+  });
 });
