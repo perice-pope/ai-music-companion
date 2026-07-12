@@ -15,6 +15,7 @@ fn stacked_c7_spec() -> VariationSpec {
         roots: (60..72).collect(),
         cell: None,
         degrees: None,
+        progression: None,
         scale: None,
         chord: Some(ChordModifier {
             chord: ChordType::Dominant7,

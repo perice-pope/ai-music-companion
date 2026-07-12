@@ -2928,6 +2928,65 @@ pub fn explore_chord(
     explore_chord_impl(&state, root_pc, quality, seed)
 }
 
+/// #349 T3c — "work on my last progression": lift the chart's trailing
+/// chord sequence (consecutive duplicates collapsed, unresolved stretches
+/// skipped) and row it through 12 keys as stacked cells. Same live view
+/// swap as the lick lift; refuses calmly under two distinct chords.
+pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
+    /// The most recent chords worth rowing — a phrase of harmony, not a set.
+    const MAX_PROGRESSION_CHORDS: usize = 4;
+    let chords: Vec<(u8, brain::theory::ChordQuality)> = {
+        let chart = state.chord_chart.lock_or_recover();
+        let mut seq: Vec<(u8, brain::theory::ChordQuality)> = Vec::new();
+        for e in chart.entries().iter().filter(|e| !e.unresolved) {
+            if let (Some(pc), Some(q)) = (e.root_pc, e.quality) {
+                if seq.last() != Some(&(pc, q)) {
+                    seq.push((pc, q));
+                }
+            }
+        }
+        let skip = seq.len().saturating_sub(MAX_PROGRESSION_CHORDS);
+        seq.split_off(skip)
+    };
+    if chords.len() < 2 {
+        return Err("play a couple of chords first — then I can lift the progression".to_owned());
+    }
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_progression(&chords, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "progression_lift",
+                label: &dto.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn explore_progression(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(11);
+    explore_progression_impl(&state, seed)
+}
+
 /// #349 T4a — the session's chord chart so far: the timed label sequence
 /// the jam recap sketches. Read-only; cleared at the next session start.
 #[tauri::command]
@@ -4534,6 +4593,68 @@ mod tests {
         let edited =
             edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
         assert!(edited.can_undo);
+    }
+
+    /// #349 T3 AC3 at the command layer: the chart's trailing chords lift
+    /// into a rowed progression (consecutive dupes collapsed, unresolved
+    /// skipped, capped at 4), logged as progression_lift; fewer than two
+    /// distinct chords refuses calmly.
+    #[test]
+    fn the_charts_trailing_chords_lift_as_a_progression() {
+        let s = state();
+        assert!(
+            explore_progression_impl(&s, 42)
+                .unwrap_err()
+                .contains("play a couple of chords"),
+            "empty chart → calm refusal"
+        );
+        // The room played Dm7 (twice re-promoted), a messy stretch, G7,
+        // Cmaj7 — the lift sees [Dm7, G7, Cmaj7].
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            let snap = |pc: u8, q: brain::theory::ChordQuality, label: &str| {
+                brain::perception::PerceptionSnapshot {
+                    chord: Some(brain::perception::ChordReading {
+                        root_pc: pc,
+                        quality: Some(q),
+                        label: label.to_owned(),
+                        bass_pc: None,
+                        confidence: 0.8,
+                    }),
+                    ..brain::perception::PerceptionSnapshot::EMPTY
+                }
+            };
+            let unresolved = brain::perception::PerceptionSnapshot {
+                hearing_polyphony: true,
+                ..brain::perception::PerceptionSnapshot::EMPTY
+            };
+            chart.observe(&snap(2, brain::theory::ChordQuality::Min7, "Dm7"), 0.0);
+            chart.observe(&brain::perception::PerceptionSnapshot::EMPTY, 1.0);
+            chart.observe(&snap(2, brain::theory::ChordQuality::Min7, "Dm7"), 1.5);
+            chart.observe(&unresolved, 2.5);
+            chart.observe(&snap(7, brain::theory::ChordQuality::Dom7, "G7"), 3.0);
+            chart.observe(&snap(0, brain::theory::ChordQuality::Maj7, "Cmaj7"), 4.0);
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        assert!(
+            dto.label.contains("Dm7") && dto.label.contains("G7") && dto.label.contains("Cmaj7"),
+            "label: {}",
+            dto.label
+        );
+        // Stacked cells on the staff, three per key.
+        let first_beat = dto.staff.notes[0].start_beat;
+        assert!(
+            dto.staff
+                .notes
+                .iter()
+                .filter(|n| n.start_beat == first_beat)
+                .count()
+                >= 3,
+            "stacked cells"
+        );
+        assert!(s.active_explore.lock().unwrap().is_some());
+        let rows = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert!(rows.iter().any(|r| r.source == "progression_lift"));
     }
 
     /// #349 T4a end-to-end at the command layer: tapping a heard chord in

@@ -141,6 +141,7 @@ mod tests {
             roots: vec![60],
             cell: None,
             degrees: None,
+            progression: None,
             scale: Some(variations::ScaleModifier {
                 scale: variations::ScaleType::Major,
                 pattern: variations::ScalePattern::UpDown,
@@ -217,6 +218,7 @@ mod tests {
             roots: vec![60],
             cell: None,
             degrees: None,
+            progression: None,
             scale: None,
             chord: Some(variations::ChordModifier {
                 chord: variations::ChordType::Dominant7,

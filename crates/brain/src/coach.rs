@@ -23,7 +23,7 @@ pub use variations::VariationSpec;
 
 use variations::{
     generate, ArpeggioPattern, ChordModifier, ChordType, DirectionMode, Enclosure,
-    IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
+    IntervalModifier, ProgressionStep, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
 };
 
 /// The canonical drill kinds, in play order.
@@ -222,6 +222,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: if d >= 3 {
@@ -245,6 +246,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: None,
                 chord: Some(ChordModifier {
                     chord,
@@ -276,6 +278,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: None,
                 chord: None,
                 interval: Some(IntervalModifier {
@@ -297,6 +300,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: ScalePattern::UpDown,
@@ -1239,6 +1243,47 @@ pub fn practice_chord_type(quality: theory::ChordQuality) -> ChordType {
     }
 }
 
+/// #349 T3c — "work on my last progression": the chart's chord sequence,
+/// anchored on its FIRST chord's root, rowed through 12 keys as stacked
+/// block cells. Each chord becomes a key-relative offset + its practice
+/// family (a heard C13 rows as its 7 family, same rule as the single-chord
+/// bridge). At least two chords; the caller enforces and refuses calmly.
+pub fn start_explore_progression(
+    chords: &[(u8, theory::ChordQuality)],
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let anchor = chords.first().map(|&(pc, _)| pc % 12).unwrap_or(0);
+    let steps: Vec<ProgressionStep> = chords
+        .iter()
+        .map(|&(pc, q)| ProgressionStep {
+            offset: (i16::from(pc % 12) - i16::from(anchor)).rem_euclid(12) as u8,
+            chord: practice_chord_type(q),
+        })
+        .collect();
+    // The first chord's family names the signature the whole row engraves
+    // in (#335) — a Dm7-anchored progression reads flat-side minor.
+    let family = steps
+        .first()
+        .map(|s| s.chord.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    let (mut state, _) = start_explore(anchor, &family, model, seed);
+    state.spec.cell = None;
+    state.spec.degrees = None;
+    state.spec.scale = None;
+    state.spec.chord = None;
+    state.spec.interval = None;
+    state.spec.enclosure = None;
+    state.spec.progression = Some(steps);
+    if state.spec.roots.len() < LIFT_MIN_ROOTS {
+        state.spec.roots = roots_for(anchor, LIFT_MIN_ROOTS);
+        state.spec.randomize_roots = true; // the RV shuffle, from the start
+    }
+    let mut sequence = generate(&state.spec, state.seed);
+    sequence.label = respell_label(&sequence.label, key_signature_for(anchor, &family).fifths);
+    (state, sequence)
+}
+
 /// #349 T4a — the jam lane's RV bridge: row a HEARD chord through 12 keys
 /// as stacked block cells (T2's machinery), rooted where it was heard.
 /// Same explore engine as a lifted lick, so difficulty/roots/shuffle come
@@ -1486,6 +1531,44 @@ mod tests {
             start_difficulty: 0,
             polyphonic: false,
         }
+    }
+
+    /// #349 T3 AC3: a heard ii–V–I (Dm7 G7 Cmaj7) lifts into a rowed
+    /// progression — the label names all three (spelled per the anchor's
+    /// signature), the row deals 3 stacked cells per key, and the offsets
+    /// re-root correctly. Fails if the anchor/offset math or spelling
+    /// drifts.
+    #[test]
+    fn a_heard_two_five_one_lifts_and_rows() {
+        let model = LearnerModel::default();
+        let heard = [
+            (2u8, theory::ChordQuality::Min7), // Dm7
+            (7, theory::ChordQuality::Dom7),   // G7
+            (0, theory::ChordQuality::Maj7),   // Cmaj7
+        ];
+        let (state, seq) = start_explore_progression(&heard, &model, 9);
+        let steps = state.spec.progression.as_ref().expect("progression set");
+        assert_eq!(
+            steps.iter().map(|s| s.offset).collect::<Vec<_>>(),
+            [0, 5, 10],
+            "offsets are key-relative to the Dm7 anchor"
+        );
+        assert!(
+            seq.label.contains("Dm7") && seq.label.contains("G7") && seq.label.contains("Cmaj7"),
+            "label names the progression: {}",
+            seq.label
+        );
+        assert_eq!(
+            seq.chord_targets.len(),
+            seq.root_order.len() * 3,
+            "three cells per key"
+        );
+        // First key IS the anchor: its first target is the heard Dm7.
+        assert_eq!(seq.root_order[0] % 12, 2);
+        assert_eq!(seq.chord_targets[0].root_pc, 2);
+        assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Min7);
+        assert_eq!(seq.chord_targets[1].root_pc, 7);
+        assert_eq!(seq.chord_targets[2].root_pc, 0);
     }
 
     /// #349 T4a: tapping a heard chord rows it as STACKED block cells
@@ -1998,6 +2081,7 @@ mod tests {
             roots: vec![60, 62],
             cell: None,
             degrees: None,
+            progression: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,

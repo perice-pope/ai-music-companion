@@ -14,6 +14,7 @@ import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
 import ChordLane from "./ChordLane";
+import LiftProgressionButton from "./LiftProgressionButton";
 import ScoreView from "./ScoreView";
 import VerdictStrip from "./VerdictStrip";
 import ScorePhraseCard from "./ScorePhraseCard";
@@ -295,6 +296,10 @@ export default function PracticeSession() {
           <div className="flex flex-col items-center gap-6">
             {listenToRoom ? <ChordLane /> : <PitchDisplay />}
             {listenToRoom ? null : <LiftLickButton />}
+            {/* #349 T3c: the progression lift lives beside the lick lift
+                (free play) AND under the jam lane — anywhere chords were
+                heard, the sequence is one tap from a 12-key row. */}
+            <LiftProgressionButton />
             <button
               type="button"
               data-testid="listen-to-room-toggle"
