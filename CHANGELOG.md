@@ -1,3 +1,9 @@
+## [2.26.0](https://github.com/perice-pope/ai-music-companion/compare/v2.25.0...v2.26.0) (2026-07-12)
+
+### Features
+
+* the progression lift — jazz ears T3c ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#373](https://github.com/perice-pope/ai-music-companion/issues/373)) ([1d51e4e](https://github.com/perice-pope/ai-music-companion/commit/1d51e4ec77c63332d2c86457d041510c62f50b74)), closes [#335](https://github.com/perice-pope/ai-music-companion/issues/335) [D#m7](https://github.com/perice-pope/D/issues/m7) [G#7](https://github.com/perice-pope/G/issues/7) [#335](https://github.com/perice-pope/ai-music-companion/issues/335) [D#m7](https://github.com/perice-pope/D/issues/m7)
+
 ## [2.25.0](https://github.com/perice-pope/ai-music-companion/compare/v2.24.1...v2.25.0) (2026-07-12)
 
 ### Features
