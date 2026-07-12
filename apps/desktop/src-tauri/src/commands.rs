@@ -2409,12 +2409,11 @@ fn explore_dto(
     model: &brain::learner::LearnerModel,
 ) -> ExploreDto {
     let chips = brain::coach::suggest_chips(explore, model);
-    let scale_label = explore
-        .spec
-        .scale
-        .map(|m| m.scale.label().to_lowercase())
-        .unwrap_or_else(|| "major".to_owned());
-    let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
+    // ONE key derivation for everything the player sees or edits —
+    // explore_key follows the figure's family (scale, else the jam
+    // chord, #349 T4a review M4-r2: a heard Cm7 must engrave Eb/Bb
+    // under flats on the RENDERED staff, not just in the edit engine).
+    let key = explore_key(explore);
     // Same rule as the root cells: the label speaks the engraved
     // signature's spelling, never "C#" over flats (#335).
     let label = brain::coach::respell_label(&seq.label, key.fifths);
@@ -4540,6 +4539,27 @@ mod tests {
             rows.iter().any(|r| r.source == "jam_bridge"),
             "exercise log carries the bridge row"
         );
+    }
+
+    /// #349 T4a review M4-r2: the RENDERED staff follows the chord family —
+    /// a heard Cm7 engraves flat-side (Eb/Bb under a flat signature), never
+    /// D#/A# under fifths=0. The Bb-rooted test masks this (its plain major
+    /// is already flat); C minor is the trap case.
+    #[test]
+    fn a_tapped_minor_chord_engraves_flat_side() {
+        let s = state();
+        let dto = explore_chord_impl(&s, 0, brain::theory::ChordQuality::Min7, 42).unwrap();
+        assert!(
+            dto.staff.fifths < 0,
+            "C minor 7 must engrave under flats, got fifths={}",
+            dto.staff.fifths
+        );
+        assert!(
+            !dto.staff.notes.iter().any(|n| n.accidental == Some(1)),
+            "no sharp accidentals on a C minor stack: {:?}",
+            dto.staff.notes
+        );
+        assert!(dto.label.starts_with('C'), "label: {}", dto.label);
     }
 
     /// #255: the explore loop end-to-end at the command layer — start seeds a

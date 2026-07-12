@@ -221,6 +221,31 @@ mod tests {
         assert_eq!(r.entries().len(), 2, "re-entry is a new timeline moment");
     }
 
+    /// A slash arriving mid-ring ("C" → "C/E", same root+quality) refreshes
+    /// the entry's LABEL in place — the chart must never name a different
+    /// chord than the strip showed (review M3, recorder side). And a
+    /// quality-less labeled reading (wire-compat state) is silence in BOTH
+    /// arms — recorded nowhere, breaking no dedup.
+    #[test]
+    fn slash_refreshes_in_place_and_quality_none_is_silence() {
+        let mut r = ChartRecorder::new();
+        r.observe(&labeled(0, ChordQuality::Maj, "C", 0.7), 0.0);
+        r.observe(&labeled(0, ChordQuality::Maj, "C/E", 0.9), 0.4);
+        assert_eq!(r.entries().len(), 1, "same identity: no duplicate");
+        assert_eq!(r.entries()[0].label, "C/E", "freshest display label wins");
+        assert_eq!(r.entries()[0].confidence, 0.9);
+
+        // quality-None: dropped consistently (both arms), and it does not
+        // count as a state change that would dedup-block the next chord.
+        let mut r = ChartRecorder::new();
+        let mut no_quality = labeled(0, ChordQuality::Maj, "C", 0.8);
+        no_quality.chord.as_mut().unwrap().quality = None;
+        r.observe(&no_quality, 0.0);
+        assert!(r.entries().is_empty(), "quality-less label records nothing");
+        r.observe(&labeled(0, ChordQuality::Maj, "C", 0.8), 0.5);
+        assert_eq!(r.entries().len(), 1, "the real reading still lands");
+    }
+
     /// The cap drops the OLDEST entries — a marathon jam keeps its ending.
     #[test]
     fn the_cap_keeps_the_end_of_a_marathon() {
