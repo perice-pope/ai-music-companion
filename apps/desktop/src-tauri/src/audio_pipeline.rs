@@ -175,6 +175,34 @@ impl DetectorProfile {
     }
 }
 
+/// The worker loop's view of an audio input: what the loop needs from a
+/// capture and nothing more. Production is the cpal-backed [`AudioCapture`];
+/// tests drive the loop with scripted PCM instead, so the emission contract
+/// (positions/verdicts/phrases actually leave the loop — #354's VA logs
+/// showed a follower installed but zero position events, and nothing below
+/// the mic could prove which side was broken) is pinned without a device.
+trait CaptureSource {
+    fn sample_rate(&self) -> u32;
+    fn channels(&self) -> u16;
+    fn available(&self) -> usize;
+    fn read_samples(&mut self, out: &mut [f32]) -> usize;
+}
+
+impl CaptureSource for AudioCapture {
+    fn sample_rate(&self) -> u32 {
+        AudioCapture::sample_rate(self)
+    }
+    fn channels(&self) -> u16 {
+        AudioCapture::channels(self)
+    }
+    fn available(&self) -> usize {
+        AudioCapture::available(self)
+    }
+    fn read_samples(&mut self, out: &mut [f32]) -> usize {
+        AudioCapture::read_samples(self, out)
+    }
+}
+
 /// Handle to a running pipeline. Drop (or explicit `stop`) joins the
 /// worker thread and releases the mic.
 pub struct AudioPipeline {
@@ -313,11 +341,61 @@ fn run_worker<F, P, S, V>(
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
+    emit: F,
+    emit_phrase: P,
+    emit_position: S,
+    emit_verdict: V,
+) where
+    F: FnMut(AudioEvent, Option<[f32; 12]>),
+    P: FnMut(PhraseSummary),
+    S: FnMut(ScorePosition),
+    V: FnMut(NoteVerdict),
+{
+    // --- Open capture. Bail early if the mic is unavailable. ---
+    let capture = match AudioCapture::new(CaptureConfig::default()) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = startup_tx.send(Err(PipelineError::Capture(e)));
+            return;
+        }
+    };
+    worker_loop(
+        capture,
+        initial_profile,
+        follower,
+        idiom_buffer,
+        poly,
+        profile_rx,
+        shutdown,
+        startup_tx,
+        emit,
+        emit_phrase,
+        emit_position,
+        emit_verdict,
+    );
+}
+
+/// The worker's detect-and-emit loop, generic over the sample source so
+/// tests can feed scripted PCM through the *real* path — detector →
+/// aggregator → follower → emit gates. Everything observable about a
+/// session (audio-events, phrases, positions, verdicts) leaves through
+/// the four callbacks here.
+#[allow(clippy::too_many_arguments)]
+fn worker_loop<C, F, P, S, V>(
+    mut capture: C,
+    initial_profile: DetectorProfile,
+    follower: Option<ScoreFollower>,
+    idiom_buffer: Option<SharedIdiomBuffer>,
+    poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
+    profile_rx: Receiver<DetectorProfile>,
+    shutdown: Arc<AtomicBool>,
+    startup_tx: Sender<Result<(), PipelineError>>,
     mut emit: F,
     mut emit_phrase: P,
     mut emit_position: S,
     mut emit_verdict: V,
 ) where
+    C: CaptureSource,
     F: FnMut(AudioEvent, Option<[f32; 12]>),
     P: FnMut(PhraseSummary),
     S: FnMut(ScorePosition),
@@ -350,14 +428,6 @@ fn run_worker<F, P, S, V>(
     // Timestamp of the last position emit, for 10 Hz downsampling. `None`
     // until the first emit so the cursor moves immediately on first audio.
     let mut last_position_emit_secs: Option<f64> = None;
-    // --- Open capture. Bail early if the mic is unavailable. ---
-    let mut capture = match AudioCapture::new(CaptureConfig::default()) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = startup_tx.send(Err(PipelineError::Capture(e)));
-            return;
-        }
-    };
     let sample_rate = capture.sample_rate();
     let channels = capture.channels();
 
@@ -732,11 +802,266 @@ mod tests {
         assert!(buf.snapshot().0.is_empty());
     }
 
-    // Note on full-pipeline tests: running `AudioPipeline::start` inside
-    // CI would require a mic device, which GitHub Actions runners don't
-    // have. Coverage of the capture→detect→emit plumbing lives in
-    // `crates/ears/tests/audio_thread_output_test.rs` (capture-level)
-    // and `crates/ears/tests/pitch_test.rs` (detector-level). What's
-    // left to test here is pure logic — downmix + channel discipline —
-    // above.
+    // -----------------------------------------------------------------
+    // Emission-contract tests (#354): drive the REAL worker loop —
+    // detector → aggregator → follower → emit gates — with scripted PCM.
+    // `AudioPipeline::start` still can't run in CI (no mic device on the
+    // runners); the `CaptureSource` seam exists so everything below the
+    // mic is pinned here anyway.
+    // -----------------------------------------------------------------
+
+    use brain::follower::ScoreFollower;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    const TEST_SAMPLE_RATE: u32 = 44_100;
+
+    /// A finite, mono, pre-recorded "mic". When drained it flips the
+    /// worker's own shutdown flag, so the loop exits exactly like a real
+    /// session ending — final flush included.
+    struct ScriptedCapture {
+        samples: Vec<f32>,
+        cursor: usize,
+        shutdown: Arc<AtomicBool>,
+        /// Consecutive `available()` calls with samples left but nothing
+        /// consumed — see the starvation guard below.
+        stalls: Cell<u32>,
+        last_cursor: Cell<usize>,
+    }
+
+    impl CaptureSource for ScriptedCapture {
+        fn sample_rate(&self) -> u32 {
+            TEST_SAMPLE_RATE
+        }
+        fn channels(&self) -> u16 {
+            1
+        }
+        fn available(&self) -> usize {
+            let left = self.samples.len() - self.cursor;
+            if left == 0 {
+                self.shutdown.store(true, Ordering::Relaxed);
+            } else if self.last_cursor.get() == self.cursor {
+                // Starvation guard: if the loop keeps asking without ever
+                // consuming (a trailing partial window, or a future change
+                // to the loop's read unit), fail loudly instead of hanging
+                // the test on eternal 5 ms sleeps.
+                let stalls = self.stalls.get() + 1;
+                assert!(
+                    stalls < 1_000,
+                    "worker loop starved: {left} samples left but none consumed"
+                );
+                self.stalls.set(stalls);
+            } else {
+                self.last_cursor.set(self.cursor);
+                self.stalls.set(0);
+            }
+            left
+        }
+        fn read_samples(&mut self, out: &mut [f32]) -> usize {
+            let n = out.len().min(self.samples.len() - self.cursor);
+            out[..n].copy_from_slice(&self.samples[self.cursor..self.cursor + n]);
+            self.cursor += n;
+            n
+        }
+    }
+
+    fn test_profile() -> DetectorProfile {
+        DetectorProfile {
+            threshold: 0.15,
+            freq_min_hz: 60.0,
+            freq_max_hz: 2000.0,
+            voiced_confidence_threshold: 0.5,
+        }
+    }
+
+    /// The detector window the loop will run at for [`test_profile`], in
+    /// samples. Scripted audio is built in whole windows so the capture
+    /// drains to exactly zero (a trailing partial window would starve the
+    /// loop forever instead of ending it).
+    fn detector_window() -> usize {
+        PitchDetector::new(test_profile().into_pitch_config(TEST_SAMPLE_RATE))
+            .expect("test profile is valid")
+            .window_size()
+    }
+
+    fn scale_follower() -> ScoreFollower {
+        let xml = include_str!("../../../../crates/brain/tests/fixtures/simple_scale.musicxml");
+        ScoreFollower::from_musicxml_str(xml, 0).expect("fixture parses")
+    }
+
+    /// Whole-window sine renderings of the fixture scale (C4..C5, the same
+    /// notes `simple_scale.musicxml` engraves), ~0.35 s per note.
+    fn played_scale(window: usize) -> Vec<f32> {
+        const SCALE_HZ: [f64; 8] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+        let windows_per_note =
+            ((0.35 * f64::from(TEST_SAMPLE_RATE)) / window as f64).ceil() as usize;
+        let mut out = Vec::new();
+        for hz in SCALE_HZ {
+            out.extend(ears::pitch::generate_sine(
+                hz,
+                TEST_SAMPLE_RATE,
+                windows_per_note * window,
+            ));
+        }
+        out
+    }
+
+    /// Everything the loop emitted, in arrival order.
+    #[derive(Default)]
+    struct EmitLog {
+        events: Cell<usize>,
+        /// (events seen when this position left the loop, the position).
+        positions: RefCell<Vec<(usize, ScorePosition)>>,
+        verdicts: Cell<usize>,
+        phrases: Cell<usize>,
+    }
+
+    /// Run the real worker loop over `samples` and record what it emits.
+    fn drive_loop(samples: Vec<f32>, follower: Option<ScoreFollower>) -> Rc<EmitLog> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let capture = ScriptedCapture {
+            samples,
+            cursor: 0,
+            shutdown: Arc::clone(&shutdown),
+            stalls: Cell::new(0),
+            last_cursor: Cell::new(0),
+        };
+        let (_profile_tx, profile_rx) = std::sync::mpsc::channel();
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let log = Rc::new(EmitLog::default());
+        let (ev, pos, ver, phr) = (
+            Rc::clone(&log),
+            Rc::clone(&log),
+            Rc::clone(&log),
+            Rc::clone(&log),
+        );
+        worker_loop(
+            capture,
+            test_profile(),
+            follower,
+            None,
+            None,
+            profile_rx,
+            shutdown,
+            startup_tx,
+            move |_event, _chroma| ev.events.set(ev.events.get() + 1),
+            move |_phrase| phr.phrases.set(phr.phrases.get() + 1),
+            move |p| pos.positions.borrow_mut().push((pos.events.get(), p)),
+            move |_verdict| ver.verdicts.set(ver.verdicts.get() + 1),
+        );
+        assert!(
+            matches!(startup_rx.try_recv(), Ok(Ok(()))),
+            "worker loop must signal successful startup"
+        );
+        log
+    }
+
+    /// #354's exact symptom: 'score follower installed' with ZERO position
+    /// emissions. The contract this pins: a score session ticks positions
+    /// from the very first window and keeps ticking for the whole session,
+    /// even if the player never makes a sound — a stuck-at-Measure-1
+    /// follower still reports Measure 1. Total emission absence is a bug
+    /// below the IPC layer, and this test is where it goes red.
+    #[test]
+    fn score_session_emits_positions_from_first_window_even_in_silence() {
+        let window = detector_window();
+        let n_windows = 40;
+        let samples = vec![0.0_f32; window * n_windows];
+        let duration_secs = (window * n_windows) as f64 / f64::from(TEST_SAMPLE_RATE);
+
+        let log = drive_loop(samples, Some(scale_follower()));
+
+        let positions = log.positions.borrow();
+        assert_eq!(log.events.get(), n_windows, "every window becomes an event");
+        assert!(
+            !positions.is_empty(),
+            "a session with a follower must emit score positions (#354: \
+             installed follower, zero emissions)"
+        );
+        assert_eq!(
+            positions[0].0, 1,
+            "the cursor must move on the FIRST audio window, not wait for \
+             alignment or voicing"
+        );
+        // Silence never advances alignment: honest Measure 1 throughout.
+        assert!(
+            positions.iter().all(|(_, p)| p.measure_number == 1),
+            "silence must not advance the reported measure"
+        );
+        // The ~10 Hz cadence, asserted as time-based contract bounds (not a
+        // re-derivation of the gate): at most one emit per 0.1 s of audio
+        // (+1 for the immediate first tick), and no long dead stretches —
+        // each tick lands at most one window late.
+        let window_secs = window as f64 / f64::from(TEST_SAMPLE_RATE);
+        let max_emits = (duration_secs / 0.1).floor() as usize + 1;
+        let min_emits = (duration_secs / (0.1 + window_secs)).floor() as usize;
+        assert!(
+            positions.len() <= max_emits,
+            "position emits must be throttled to ~10 Hz: {} > {}",
+            positions.len(),
+            max_emits
+        );
+        assert!(
+            positions.len() >= min_emits.max(2),
+            "positions must keep ticking across the session: {} < {}",
+            positions.len(),
+            min_emits.max(2)
+        );
+    }
+
+    /// The #347 log shape — judged verdicts in the recap but a dead cursor —
+    /// must be impossible from one loop run: when a played scale produces
+    /// verdicts, positions flowed too, and they advanced with the playing.
+    #[test]
+    fn played_scale_advances_positions_and_verdicts_together() {
+        let window = detector_window();
+        let log = drive_loop(played_scale(window), Some(scale_follower()));
+
+        let positions = log.positions.borrow();
+        assert!(
+            log.verdicts.get() > 0,
+            "playing the score's own notes must produce note verdicts"
+        );
+        assert!(
+            !positions.is_empty(),
+            "verdicts without positions is the impossible #347 shape"
+        );
+        assert!(
+            positions.iter().any(|(_, p)| p.measure_number >= 2),
+            "playing through the two-measure scale must advance the live \
+             cursor past measure 1; got measures {:?}",
+            positions
+                .iter()
+                .map(|(_, p)| p.measure_number)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Free play (no follower) must stay silent on the score channels —
+    /// no positions, no verdicts — while audio events still flow.
+    #[test]
+    fn free_play_emits_no_positions_or_verdicts() {
+        let window = detector_window();
+        let log = drive_loop(played_scale(window), None);
+
+        assert!(log.events.get() > 0, "audio events must still flow");
+        assert!(
+            log.positions.borrow().is_empty(),
+            "free play must never emit a score position"
+        );
+        assert_eq!(
+            log.verdicts.get(),
+            0,
+            "free play must never emit a note verdict"
+        );
+        // The stream is voiced to its final sample with no silence gap and
+        // (without a follower) no measure boundaries, so it forms exactly
+        // one phrase — deliverable ONLY by the end-of-session flush. Zero
+        // here means the last bar of a real session gets dropped.
+        assert_eq!(
+            log.phrases.get(),
+            1,
+            "the end-of-session flush must deliver the trailing phrase"
+        );
+    }
 }
