@@ -1,3 +1,9 @@
+## [2.21.0](https://github.com/perice-pope/ai-music-companion/compare/v2.20.0...v2.21.0) (2026-07-12)
+
+### Features
+
+* chord drills judged by the T1 engine — jazz ears T2b ([#349](https://github.com/perice-pope/ai-music-companion/issues/349)) ([#362](https://github.com/perice-pope/ai-music-companion/issues/362)) ([aed7c84](https://github.com/perice-pope/ai-music-companion/commit/aed7c846751a7d65a29e1baa0bfc40ff9f583752))
+
 ## [2.20.0](https://github.com/perice-pope/ai-music-companion/compare/v2.19.2...v2.20.0) (2026-07-12)
 
 ### Features
