@@ -2454,8 +2454,34 @@ fn explore_dto(
     // under flats on the RENDERED staff, not just in the edit engine).
     let key = explore_key(explore);
     // Same rule as the root cells: the label speaks the engraved
-    // signature's spelling, never "C#" over flats (#335).
-    let label = brain::coach::respell_label(&seq.label, key.fifths);
+    // signature's spelling, never "C#" over flats (#335). Progression rows
+    // need more than respell_label's leading-token fix: every chip tap
+    // regenerates the label through the sharp-only generator, so the
+    // chord-name segment is REBUILT here from the steps + this key — the
+    // one derivation every rep passes through (T3c review r2).
+    let label = if let Some(steps) = explore.spec.progression.as_ref().filter(|p| !p.is_empty()) {
+        let names: Vec<String> = steps
+            .iter()
+            .map(|st| {
+                format!(
+                    "{}{}",
+                    brain::coach::tonic_display_name((explore.tonic + st.offset) % 12, key.fifths),
+                    st.chord.quality().suffix()
+                )
+            })
+            .collect();
+        // label_for emits "your progression · <names> · <tail…>" — swap
+        // the names part, keep the descriptive tail.
+        let mut parts: Vec<String> = seq.label.split(" · ").map(str::to_owned).collect();
+        if parts.len() >= 2 {
+            parts[1] = names.join(" → ");
+            parts.join(" · ")
+        } else {
+            format!("your progression · {}", names.join(" → "))
+        }
+    } else {
+        brain::coach::respell_label(&seq.label, key.fifths)
+    };
     let music_xml = brain::score::emit::score_model_to_musicxml(&sequence_to_score_model(
         seq,
         &label,
@@ -2540,6 +2566,17 @@ fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
         .scale
         .map(|m| m.scale.label().to_lowercase())
         .or_else(|| explore.spec.chord.map(|c| c.chord.label().to_lowercase()))
+        .or_else(|| {
+            // #349 T3c: a lifted progression engraves in its ANCHOR chord's
+            // family — a Dm7-anchored row must not read in D MAJOR (the
+            // T4a M4 split-brain class, pre-empted this time).
+            explore
+                .spec
+                .progression
+                .as_ref()
+                .and_then(|p| p.first())
+                .map(|st| st.chord.label().to_lowercase())
+        })
         .unwrap_or_else(|| "major".to_owned());
     brain::coach::key_signature_for(explore.tonic, &material)
 }
@@ -2926,6 +2963,65 @@ pub fn explore_chord(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(7);
     explore_chord_impl(&state, root_pc, quality, seed)
+}
+
+/// #349 T3c — "work on my last progression": lift the chart's trailing
+/// chord sequence (consecutive duplicates collapsed, unresolved stretches
+/// skipped) and row it through 12 keys as stacked cells. Same live view
+/// swap as the lick lift; refuses calmly under two distinct chords.
+pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
+    /// The most recent chords worth rowing — a phrase of harmony, not a set.
+    const MAX_PROGRESSION_CHORDS: usize = 4;
+    let chords: Vec<(u8, brain::theory::ChordQuality)> = {
+        let chart = state.chord_chart.lock_or_recover();
+        let mut seq: Vec<(u8, brain::theory::ChordQuality)> = Vec::new();
+        for e in chart.entries().iter().filter(|e| !e.unresolved) {
+            if let (Some(pc), Some(q)) = (e.root_pc, e.quality) {
+                if seq.last() != Some(&(pc, q)) {
+                    seq.push((pc, q));
+                }
+            }
+        }
+        let skip = seq.len().saturating_sub(MAX_PROGRESSION_CHORDS);
+        seq.split_off(skip)
+    };
+    if chords.len() < 2 {
+        return Err("play a couple of chords first — then I can lift the progression".to_owned());
+    }
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_progression(&chords, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "progression_lift",
+                label: &dto.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn explore_progression(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(11);
+    explore_progression_impl(&state, seed)
 }
 
 /// #349 T4a — the session's chord chart so far: the timed label sequence
@@ -4534,6 +4630,183 @@ mod tests {
         let edited =
             edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
         assert!(edited.can_undo);
+    }
+
+    /// #349 T3 AC3 at the command layer: the chart's trailing chords lift
+    /// into a rowed progression (consecutive dupes collapsed, unresolved
+    /// skipped, capped at 4), logged as progression_lift; fewer than two
+    /// distinct chords refuses calmly.
+    #[test]
+    fn the_charts_trailing_chords_lift_as_a_progression() {
+        let s = state();
+        assert!(
+            explore_progression_impl(&s, 42)
+                .unwrap_err()
+                .contains("play a couple of chords"),
+            "empty chart → calm refusal"
+        );
+        // The room played Dm7 (twice re-promoted), a messy stretch, G7,
+        // Cmaj7 — the lift sees [Dm7, G7, Cmaj7].
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            let snap = |pc: u8, q: brain::theory::ChordQuality, label: &str| {
+                brain::perception::PerceptionSnapshot {
+                    chord: Some(brain::perception::ChordReading {
+                        root_pc: pc,
+                        quality: Some(q),
+                        label: label.to_owned(),
+                        bass_pc: None,
+                        confidence: 0.8,
+                    }),
+                    ..brain::perception::PerceptionSnapshot::EMPTY
+                }
+            };
+            let unresolved = brain::perception::PerceptionSnapshot {
+                hearing_polyphony: true,
+                ..brain::perception::PerceptionSnapshot::EMPTY
+            };
+            chart.observe(&snap(2, brain::theory::ChordQuality::Min7, "Dm7"), 0.0);
+            chart.observe(&brain::perception::PerceptionSnapshot::EMPTY, 1.0);
+            chart.observe(&snap(2, brain::theory::ChordQuality::Min7, "Dm7"), 1.5);
+            chart.observe(&unresolved, 2.5);
+            chart.observe(&snap(7, brain::theory::ChordQuality::Dom7, "G7"), 3.0);
+            chart.observe(&snap(0, brain::theory::ChordQuality::Maj7, "Cmaj7"), 4.0);
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        assert!(
+            dto.label.contains("Dm7") && dto.label.contains("G7") && dto.label.contains("Cmaj7"),
+            "label: {}",
+            dto.label
+        );
+        // The Dm7-anchored row engraves in the MINOR family — flats, never
+        // D major's sharps (the T4a M4 split-brain class, pre-empted).
+        assert!(
+            dto.staff.fifths < 0,
+            "Dm7 anchor must engrave flat-side, got fifths={}",
+            dto.staff.fifths
+        );
+        // Stacked cells on the staff, three per key.
+        let first_beat = dto.staff.notes[0].start_beat;
+        assert!(
+            dto.staff
+                .notes
+                .iter()
+                .filter(|n| n.start_beat == first_beat)
+                .count()
+                >= 3,
+            "stacked cells"
+        );
+        assert!(s.active_explore.lock().unwrap().is_some());
+        let rows = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert!(rows.iter().any(|r| r.source == "progression_lift"));
+    }
+
+    /// Review MF2: the chart-shaping contract, pinned against its three
+    /// surviving mutations — A→B→A keeps its return chord (only
+    /// CONSECUTIVE dupes collapse), a 5-chord chart lifts its TRAILING 4,
+    /// and one repeated chord (dedup → 1 distinct) refuses calmly.
+    #[test]
+    fn chart_shaping_keeps_returns_trails_and_refuses() {
+        let snap = |pc: u8, q: brain::theory::ChordQuality| brain::perception::PerceptionSnapshot {
+            chord: Some(brain::perception::ChordReading {
+                root_pc: pc,
+                quality: Some(q),
+                label: format!("pc{pc}"),
+                bass_pc: None,
+                confidence: 0.8,
+            }),
+            ..brain::perception::PerceptionSnapshot::EMPTY
+        };
+        use brain::theory::ChordQuality as Q;
+
+        // A→B→A: the return chord survives.
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(0, Q::Maj), 0.0);
+            chart.observe(&snap(5, Q::Maj), 1.0);
+            chart.observe(&snap(0, Q::Maj), 2.0);
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        let steps = s
+            .active_explore
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .spec
+            .progression
+            .clone()
+            .unwrap();
+        assert_eq!(steps.len(), 3, "A-B-A keeps the return: {}", dto.label);
+        assert_eq!(steps[2].offset, 0, "…back to the anchor");
+
+        // 5 distinct chords: the TRAILING 4 lift (anchor = 2nd played).
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            for (i, pc) in [0u8, 2, 4, 5, 7].iter().enumerate() {
+                chart.observe(&snap(*pc, Q::Maj), i as f64);
+            }
+        }
+        explore_progression_impl(&s, 42).unwrap();
+        let steps = s
+            .active_explore
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .spec
+            .progression
+            .clone()
+            .unwrap();
+        assert_eq!(steps.len(), 4, "capped at 4");
+        assert_eq!(
+            steps.iter().map(|st| st.offset).collect::<Vec<_>>(),
+            [0, 2, 3, 5],
+            "the trailing 4 (anchor D): D E F G"
+        );
+
+        // A FLAT progression's label survives a chip tap flat (review r2:
+        // regeneration used the sharp-only label path — "Ebm7" re-read
+        // "D#m7" one tap in while the staff stayed correctly flat).
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(3, Q::Min7), 0.0); // Ebm7
+            chart.observe(&snap(8, Q::Dom7), 1.0); // Ab7
+            chart.observe(&snap(1, Q::Maj7), 2.0); // Dbmaj7
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        assert!(dto.label.contains("Ebm7"), "lift label: {}", dto.label);
+        let bumped =
+            apply_variation_delta_impl(&s, VariationDelta::BumpDifficulty { by: 1 }).unwrap();
+        assert!(
+            bumped.label.contains("Ebm7") && !bumped.label.contains('#'),
+            "the label stays flat through a chip tap: {}",
+            bumped.label
+        );
+        let shuffled = apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots).unwrap();
+        assert!(
+            !shuffled.label.contains('#'),
+            "…and through a reshuffle: {}",
+            shuffled.label
+        );
+
+        // One chord re-struck around silence: 1 distinct → calm refusal.
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(2, Q::Min7), 0.0);
+            chart.observe(&brain::perception::PerceptionSnapshot::EMPTY, 1.0);
+            chart.observe(&snap(2, Q::Min7), 2.0);
+        }
+        assert!(
+            explore_progression_impl(&s, 42)
+                .unwrap_err()
+                .contains("play a couple of chords"),
+            "one distinct chord refuses"
+        );
     }
 
     /// #349 T4a end-to-end at the command layer: tapping a heard chord in

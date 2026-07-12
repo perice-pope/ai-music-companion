@@ -23,7 +23,7 @@ pub use variations::VariationSpec;
 
 use variations::{
     generate, ArpeggioPattern, ChordModifier, ChordType, DirectionMode, Enclosure,
-    IntervalModifier, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
+    IntervalModifier, ProgressionStep, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
 };
 
 /// The canonical drill kinds, in play order.
@@ -222,6 +222,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: if d >= 3 {
@@ -245,6 +246,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: None,
                 chord: Some(ChordModifier {
                     chord,
@@ -276,6 +278,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: None,
                 chord: None,
                 interval: Some(IntervalModifier {
@@ -297,6 +300,7 @@ fn spec_for(
                 roots,
                 cell: None,
                 degrees: None,
+                progression: None,
                 scale: Some(ScaleModifier {
                     scale,
                     pattern: ScalePattern::UpDown,
@@ -1039,8 +1043,9 @@ pub fn apply_explore_delta(
             let degrees = next.spec.degrees.take();
             // A tapped jam chord (#349 T4a) is the player's material too —
             // the ladder rebuild must not turn their Am7 blocks into a
-            // scale run (review M1).
+            // scale run (review M1). Same for a lifted progression (T3c).
             let chord = next.spec.chord.take();
+            let progression = next.spec.progression.take();
             let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
@@ -1057,6 +1062,13 @@ pub fn apply_explore_delta(
                 next.spec.chord = chord;
                 next.spec.enclosure = None;
             }
+            if progression.is_some() {
+                // Progression outranks scale by precedence, but clear the
+                // ladder scale anyway so the spec reads what it deals.
+                next.spec.scale = None;
+                next.spec.progression = progression;
+                next.spec.enclosure = None;
+            }
         }
         VariationDelta::DifferentScale => {
             // With a hand-edited cell the scale figure is shadowed (cell has
@@ -1065,8 +1077,10 @@ pub fn apply_explore_delta(
             // (review M3).
             next.spec.cell = None;
             // Fresh material replaces a tapped jam chord too (#349 T4a) —
-            // never a silent no-op; undo recovers the chord row.
+            // never a silent no-op; undo recovers the chord row. Same for
+            // a lifted progression (T3c).
             next.spec.chord = None;
+            next.spec.progression = None;
             if next.spec.scale.is_none() {
                 next.spec.scale = Some(ScaleModifier {
                     scale: ScaleType::Major,
@@ -1093,6 +1107,7 @@ pub fn apply_explore_delta(
             next.spec.cell = None;
             // Fresh material replaces a tapped jam chord too (#349 T4a).
             next.spec.chord = None;
+            next.spec.progression = None;
             // Degrees need a scale to map through; give a default rather than
             // silently no-op if explore ever seeds from scale-less material.
             if next.spec.scale.is_none() {
@@ -1237,6 +1252,56 @@ pub fn practice_chord_type(quality: theory::ChordQuality) -> ChordType {
         Q::Min7b5 => ChordType::HalfDiminished7,
         Q::Dim7 => ChordType::Diminished7,
     }
+}
+
+/// #349 T3c — "work on my last progression": the chart's chord sequence,
+/// anchored on its FIRST chord's root, rowed through 12 keys as stacked
+/// block cells. Each chord becomes a key-relative offset + its practice
+/// family (a heard C13 rows as its 7 family, same rule as the single-chord
+/// bridge). At least two chords; the caller enforces and refuses calmly.
+pub fn start_explore_progression(
+    chords: &[(u8, theory::ChordQuality)],
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let anchor = chords.first().map(|&(pc, _)| pc % 12).unwrap_or(0);
+    let steps: Vec<ProgressionStep> = chords
+        .iter()
+        .map(|&(pc, q)| ProgressionStep {
+            offset: (i16::from(pc % 12) - i16::from(anchor)).rem_euclid(12) as u8,
+            chord: practice_chord_type(q),
+        })
+        .collect();
+    // The first chord's family names the signature the whole row engraves
+    // in (#335) — a Dm7-anchored progression reads flat-side minor.
+    let family = steps
+        .first()
+        .map(|s| s.chord.label().to_lowercase())
+        .unwrap_or_else(|| "major".to_owned());
+    let (mut state, _) = start_explore(anchor, &family, model, seed);
+    state.spec.cell = None;
+    state.spec.degrees = None;
+    state.spec.scale = None;
+    state.spec.chord = None;
+    state.spec.interval = None;
+    state.spec.enclosure = None;
+    state.spec.progression = Some(steps);
+    if state.spec.roots.len() < LIFT_MIN_ROOTS {
+        state.spec.roots = roots_for(anchor, LIFT_MIN_ROOTS);
+        state.spec.randomize_roots = true; // the RV shuffle, from the start
+    }
+    let mut sequence = generate(&state.spec, state.seed);
+    // #335 (review MF1): respell_label only fixes a label's LEADING note
+    // token — useless for "your progression · D#m7 → …". Build the whole
+    // label here, every chord name spelled per the engraved signature, so
+    // an Eb-minor progression can never read sharp over a flat staff.
+    let fifths = key_signature_for(anchor, &family).fifths;
+    let names: Vec<String> = chords
+        .iter()
+        .map(|&(pc, q)| format!("{}{}", tonic_display_name(pc % 12, fifths), q.suffix()))
+        .collect();
+    sequence.label = format!("your progression · {}", names.join(" → "));
+    (state, sequence)
 }
 
 /// #349 T4a — the jam lane's RV bridge: row a HEARD chord through 12 keys
@@ -1388,6 +1453,14 @@ pub fn edit_explore_note(
             "this row is a chord — tap a different chord in the lane to change it".to_owned(),
         );
     }
+    if state
+        .spec
+        .progression
+        .as_ref()
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err("this row is a progression — lift a new one to change it".to_owned());
+    }
     let seq = generate(&state.spec, state.seed);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
@@ -1486,6 +1559,101 @@ mod tests {
             start_difficulty: 0,
             polyphonic: false,
         }
+    }
+
+    /// #349 T3 AC3: a heard ii–V–I (Dm7 G7 Cmaj7) lifts into a rowed
+    /// progression — the label names all three (spelled per the anchor's
+    /// signature), the row deals 3 stacked cells per key, and the offsets
+    /// re-root correctly. Fails if the anchor/offset math or spelling
+    /// drifts.
+    #[test]
+    fn a_heard_two_five_one_lifts_and_rows() {
+        let model = LearnerModel::default();
+        let heard = [
+            (2u8, theory::ChordQuality::Min7), // Dm7
+            (7, theory::ChordQuality::Dom7),   // G7
+            (0, theory::ChordQuality::Maj7),   // Cmaj7
+        ];
+        let (state, seq) = start_explore_progression(&heard, &model, 9);
+        let steps = state.spec.progression.as_ref().expect("progression set");
+        assert_eq!(
+            steps.iter().map(|s| s.offset).collect::<Vec<_>>(),
+            [0, 5, 10],
+            "offsets are key-relative to the Dm7 anchor"
+        );
+        assert!(
+            seq.label.contains("Dm7") && seq.label.contains("G7") && seq.label.contains("Cmaj7"),
+            "label names the progression: {}",
+            seq.label
+        );
+        assert_eq!(
+            seq.chord_targets.len(),
+            seq.root_order.len() * 3,
+            "three cells per key"
+        );
+        // First key IS the anchor: its first target is the heard Dm7.
+        assert_eq!(seq.root_order[0] % 12, 2);
+        assert_eq!(seq.chord_targets[0].root_pc, 2);
+        assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Min7);
+        assert_eq!(seq.chord_targets[1].root_pc, 7);
+        assert_eq!(seq.chord_targets[2].root_pc, 0);
+    }
+
+    /// Review MF1: a FLAT-family progression's label spells flat — heard
+    /// Ebm7 → Ab7 → Dbmaj7 must read exactly that, never "D#m7 → G#7 →
+    /// C#maj7" over a flat staff (the accidental-free ii–V–I fixture was
+    /// blind to this). Fails if the label stops spelling per signature.
+    #[test]
+    fn a_flat_progression_labels_flat() {
+        let model = LearnerModel::default();
+        let heard = [
+            (3u8, theory::ChordQuality::Min7), // Ebm7
+            (8, theory::ChordQuality::Dom7),   // Ab7
+            (1, theory::ChordQuality::Maj7),   // Dbmaj7
+        ];
+        let (_, seq) = start_explore_progression(&heard, &model, 5);
+        assert!(
+            seq.label.contains("Ebm7") && seq.label.contains("Ab7") && seq.label.contains("Dbmaj7"),
+            "flat spelling throughout: {}",
+            seq.label
+        );
+        assert!(!seq.label.contains('#'), "no sharps: {}", seq.label);
+    }
+
+    /// T3c pre-empt of the T4a M1 class: chips must not destroy a lifted
+    /// progression — a difficulty bump keeps it (no ladder scale shadow),
+    /// fresh-material chips REPLACE it visibly, and note edits refuse
+    /// calmly. Fails if any delta path drops spec.progression silently.
+    #[test]
+    fn chips_never_silently_destroy_a_lifted_progression() {
+        let model = LearnerModel::default();
+        let heard = [
+            (2u8, theory::ChordQuality::Min7),
+            (7, theory::ChordQuality::Dom7),
+            (0, theory::ChordQuality::Maj7),
+        ];
+        let (state, _) = start_explore_progression(&heard, &model, 5);
+
+        let (bumped, seq) = apply_explore_delta(&state, &VariationDelta::BumpDifficulty { by: 1 });
+        assert!(
+            bumped
+                .spec
+                .progression
+                .as_ref()
+                .is_some_and(|p| p.len() == 3),
+            "the lifted progression survives the ladder rebuild"
+        );
+        assert!(bumped.spec.scale.is_none(), "no ladder scale may shadow it");
+        assert!(!seq.chord_targets.is_empty());
+
+        let (fresh, seq) = apply_explore_delta(&state, &VariationDelta::DifferentScale);
+        assert!(fresh.spec.progression.is_none(), "visibly replaced");
+        assert!(seq.chord_targets.is_empty());
+
+        let key = key_signature_for(2, "minor 7");
+        let err = edit_explore_note(&state, 0, &NoteEdit::Octaves { by: 1 }, &key)
+            .expect_err("progression rows refuse note edits calmly");
+        assert!(err.contains("progression"), "the refusal names it: {err}");
     }
 
     /// #349 T4a: tapping a heard chord rows it as STACKED block cells
@@ -1998,6 +2166,7 @@ mod tests {
             roots: vec![60, 62],
             cell: None,
             degrees: None,
+            progression: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,

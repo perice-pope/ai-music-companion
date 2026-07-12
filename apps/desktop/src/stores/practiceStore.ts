@@ -448,6 +448,9 @@ export interface PracticeState {
   setListenToRoom: (on: boolean) => void;
   /** #349 T4a — tap a lane chord: row it through 12 keys as block cells. */
   exploreChord: (rootPc: number, quality: string) => Promise<void>;
+  /** #349 T3c — lift the chart's chord sequence and row it through 12
+   * keys as stacked cells. Calm refusal under two distinct chords. */
+  exploreProgression: () => Promise<void>;
   /** #341 — tap a measure MID-PRACTICE: row it through 12 keys without
    * ending the session (the in-practice half of the RV bridge; the recap
    * half is `exploreMeasure`, which parks a pending handoff instead). */
@@ -1273,6 +1276,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("explore_last_phrase", {});
+      set({ explore: dto, exploreNotice: null });
+    } catch (err) {
+      // The backend's message is written for the player — show it.
+      set({ exploreNotice: String(err) });
+    }
+  },
+
+  exploreProgression: async () => {
+    if (get().status !== "listening") {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("explore_progression", {});
       set({ explore: dto, exploreNotice: null });
     } catch (err) {
       // The backend's message is written for the player — show it.

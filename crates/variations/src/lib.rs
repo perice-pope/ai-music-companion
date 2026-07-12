@@ -183,6 +183,12 @@ pub struct VariationSpec {
     /// Precedence: cell > degrees > the scale's own pattern. Empty = ignored.
     #[serde(default)]
     pub degrees: Option<Vec<u8>>,
+    /// #349 T3c: a lifted chord PROGRESSION — each step deals as a stacked
+    /// block cell (one per measure), re-rooted per key. The player's own
+    /// material, like `cell`: precedence cell > progression > scale >
+    /// chord. Empty = ignored; additive on the wire.
+    #[serde(default)]
+    pub progression: Option<Vec<ProgressionStep>>,
     pub scale: Option<ScaleModifier>,
     pub chord: Option<ChordModifier>,
     pub interval: Option<IntervalModifier>,
@@ -212,6 +218,21 @@ pub struct GeneratedNote {
     /// segment's index in play order — unique per stacked cell.
     #[serde(default)]
     pub chord_group: Option<u32>,
+}
+
+/// #349 T3c: one chord of a lifted PROGRESSION, relative to the row's key
+/// root — "the ii chord, minor 7" is `offset: 2, chord: Minor7`, and it
+/// re-roots in every key exactly like a cell's semitone offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressionStep {
+    /// Semitones above the key root, 0..12. Register note: offsets always
+    /// realize ABOVE the key root, so descending root motion (C → Am)
+    /// renders its A a 6th up rather than a 3rd down — the harmonic
+    /// identity is what one-cell-per-measure drills practice; nearest-
+    /// realization (signed) offsets are a possible later refinement.
+    pub offset: u8,
+    /// The practice template for this chord.
+    pub chord: ChordType,
 }
 
 /// #349 T2b: the grading target for one STACKED cell — what the T1 chord
@@ -314,8 +335,57 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         None
     };
 
+    // #349 T3c: a lifted progression is the player's material — it outranks
+    // catalog figures (cell still wins: cell > progression > scale > chord).
+    let progression = if spec.cell.as_ref().is_none_or(|c| c.is_empty()) {
+        spec.progression.as_deref().filter(|p| !p.is_empty())
+    } else {
+        None
+    };
+
     let mut chord_targets: Vec<ChordTarget> = Vec::new();
     for (segment, &root) in roots.iter().enumerate() {
+        // Progression row (#349 T3c): every step deals as a stacked block
+        // cell — one chord per measure, re-rooted from THIS key's root by
+        // its offset. chord_group stays unique per dealt cell so renderers
+        // and grading attribute stacks correctly.
+        if let Some(steps) = progression {
+            for (step_idx, step) in steps.iter().enumerate() {
+                let step_root = i16::from(root) + i16::from(step.offset % 12);
+                let mut tones = chord_tones(
+                    ChordModifier {
+                        chord: step.chord,
+                        pattern: ArpeggioPattern::Ascending,
+                        inversion: 0,
+                        stacked: true,
+                    },
+                    step_root,
+                );
+                fold_into_range(&mut tones);
+                tones.sort_unstable();
+                tones.dedup();
+                let group = (segment * steps.len() + step_idx) as u32;
+                chord_targets.push(ChordTarget {
+                    segment: group,
+                    root_pc: (step_root.rem_euclid(12)) as u8,
+                    quality: step.chord.quality(),
+                    bass_pc: None,
+                });
+                for &m in &tones {
+                    notes.push(GeneratedNote {
+                        midi: m as u8,
+                        start_beat: cursor_beat,
+                        duration_beats: f64::from(BEATS_PER_MEASURE),
+                        // RV color rule: THIS cell's root pc colors; the
+                        // other chord tones draw white.
+                        is_root: m.rem_euclid(12) == step_root.rem_euclid(12),
+                        chord_group: Some(group),
+                    });
+                }
+                cursor_beat += f64::from(BEATS_PER_MEASURE);
+            }
+            continue;
+        }
         // Block chord: every tone struck on the measure's downbeat, held for
         // the measure — one stacked cell per measure. Direction and
         // enclosure describe melodic order; a simultaneity has none.
@@ -557,6 +627,22 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
     let figure = if spec.cell.as_ref().is_some_and(|c| !c.is_empty()) {
         let n = spec.cell.as_ref().map(Vec::len).unwrap_or(0);
         format!("{first_root} · your {n}-note cell")
+    } else if let Some(steps) = spec.progression.as_ref().filter(|p| !p.is_empty()) {
+        // Chord names spelled sharp here; the coach respells the whole
+        // label to the engraved signature (#335), same as every row.
+        let names: Vec<String> = steps
+            .iter()
+            .map(|st| {
+                let root = roots.first().copied().unwrap_or(60);
+                let pc = (root + st.offset) % 12;
+                format!(
+                    "{}{}",
+                    theory::pitch_class_name(pc),
+                    st.chord.quality().suffix()
+                )
+            })
+            .collect();
+        format!("your progression · {}", names.join(" → "))
     } else if let (Some(pat), Some(s)) = (
         spec.degrees.as_ref().filter(|d| !d.is_empty()),
         spec.scale.as_ref(),
@@ -615,6 +701,7 @@ mod tests {
             roots: vec![60], // C4
             cell: None,
             degrees: None,
+            progression: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,
@@ -1296,6 +1383,7 @@ mod tests {
     fn stacked_spec(chord: ChordType, inversion: u8) -> VariationSpec {
         VariationSpec {
             roots: chromatic_roots(),
+            progression: None,
             scale: None,
             chord: Some(ChordModifier {
                 chord,
@@ -1366,6 +1454,7 @@ mod tests {
     fn melodic_figures_carry_no_chord_groups() {
         let spec = VariationSpec {
             roots: chromatic_roots(),
+            progression: None,
             scale: None,
             chord: Some(ChordModifier {
                 chord: ChordType::Dominant7,
@@ -1416,6 +1505,7 @@ mod tests {
     #[test]
     fn a_scale_shadows_a_stacked_chord() {
         let spec = VariationSpec {
+            progression: None,
             scale: Some(ScaleModifier {
                 scale: ScaleType::Major,
                 pattern: ScalePattern::Up,
@@ -1488,6 +1578,108 @@ mod tests {
         assert_eq!(seq.chord_targets[0].bass_pc, None);
         // And the voicing really is root position.
         assert!(seq.notes[0].is_root);
+    }
+
+    /// #349 T3c AC: a lifted ii–V–I rows through 12 keys — each key deals
+    /// its three chords as consecutive stacked cells (one per measure),
+    /// re-rooted by the step offsets, with grading targets to match. Fails
+    /// if the re-rooting, grid, grouping, or targets drift.
+    #[test]
+    fn a_progression_rows_through_twelve_keys() {
+        let spec = VariationSpec {
+            progression: Some(vec![
+                ProgressionStep {
+                    offset: 2,
+                    chord: ChordType::Minor7,
+                }, // ii
+                ProgressionStep {
+                    offset: 7,
+                    chord: ChordType::Dominant7,
+                }, // V
+                ProgressionStep {
+                    offset: 0,
+                    chord: ChordType::Major7,
+                }, // I
+            ]),
+            roots: chromatic_roots(),
+            ..base_spec_no_scale()
+        };
+        let seq = generate(&spec, 7);
+        assert_eq!(seq.chord_targets.len(), 36, "12 keys x 3 chords");
+        assert_eq!(seq.notes.len(), 36 * 4, "4 tones per 7th chord");
+        for (k, &key_root) in seq.root_order.iter().enumerate() {
+            for (j, (off, q)) in [
+                (2u8, theory::ChordQuality::Min7),
+                (7, theory::ChordQuality::Dom7),
+                (0, theory::ChordQuality::Maj7),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let t = seq.chord_targets[k * 3 + j];
+                assert_eq!(t.root_pc, (key_root + off) % 12, "key {k} step {j}");
+                assert_eq!(t.quality, *q);
+                assert_eq!(t.segment as usize, k * 3 + j);
+                // The dealt cell sits in its own measure on the RV grid.
+                let cell: Vec<_> = seq
+                    .notes
+                    .iter()
+                    .filter(|n| n.chord_group == Some(t.segment))
+                    .collect();
+                assert_eq!(cell.len(), 4);
+                let downbeat = (t.segment as usize * 4) as f64;
+                assert!(cell.iter().all(|n| n.start_beat == downbeat));
+                assert_eq!(cell.iter().filter(|n| n.is_root).count(), 1);
+            }
+        }
+        assert!(
+            seq.label.contains("your progression"),
+            "label: {}",
+            seq.label
+        );
+    }
+
+    /// Precedence: the player's CELL still shadows a progression, and a
+    /// progression shadows scale/chord catalog figures. Wire-additive: old
+    /// specs without the field parse.
+    #[test]
+    fn progression_precedence_and_wire_compat() {
+        let steps = vec![ProgressionStep {
+            offset: 0,
+            chord: ChordType::MajorTriad,
+        }];
+        let spec = VariationSpec {
+            cell: Some(vec![0, 4]),
+            progression: Some(steps.clone()),
+            ..base_spec_no_scale()
+        };
+        let seq = generate(&spec, 1);
+        assert!(seq.chord_targets.is_empty(), "cell wins");
+
+        let spec = VariationSpec {
+            progression: Some(steps),
+            scale: Some(ScaleModifier {
+                scale: ScaleType::Major,
+                pattern: ScalePattern::Up,
+            }),
+            ..base_spec_no_scale()
+        };
+        let seq = generate(&spec, 1);
+        assert!(
+            !seq.chord_targets.is_empty(),
+            "progression outranks the scale"
+        );
+
+        let old_wire = r#"{"roots":[60],"scale":null,"chord":null,"interval":null,"enclosure":null,"direction":"forward","rhythm":{"notes_per_beat":2,"tempo_bpm":80.0,"rest_beats_between_roots":1.0},"randomize_roots":false}"#;
+        let parsed: VariationSpec = serde_json::from_str(old_wire).expect("old wire parses");
+        assert!(parsed.progression.is_none());
+    }
+
+    fn base_spec_no_scale() -> VariationSpec {
+        VariationSpec {
+            scale: None,
+            ..base_spec()
+        }
     }
 
     /// Melodic material carries NO chord targets, and pre-T2b sequences

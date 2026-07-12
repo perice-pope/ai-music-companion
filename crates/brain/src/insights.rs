@@ -55,6 +55,11 @@ fn shape_of(spec_json: &str) -> String {
             s.scale.label().to_lowercase()
         );
     }
+    if let Some(p) = spec.progression.as_ref().filter(|p| !p.is_empty()) {
+        // #349 T3c: the log names the shape, root-agnostic like the rest.
+        let names: Vec<&str> = p.iter().map(|st| st.chord.quality().suffix()).collect();
+        return format!("{}-chord progression ({})", p.len(), names.join(" "));
+    }
     if let Some(s) = spec.scale {
         return format!("{} {}", s.scale.label().to_lowercase(), s.pattern.label());
     }
@@ -141,6 +146,7 @@ mod tests {
             roots: vec![60],
             cell: None,
             degrees: None,
+            progression: None,
             scale: Some(variations::ScaleModifier {
                 scale: variations::ScaleType::Major,
                 pattern: variations::ScalePattern::UpDown,
@@ -209,6 +215,49 @@ mod tests {
         assert!(shapes.contains(&"unparseable".to_owned()));
     }
 
+    /// #349 T3c: a progression spec's shape names the shape — deleting the
+    /// arm would regress the exercise log to a scale/roots misreport with
+    /// green CI (review N5).
+    #[test]
+    fn progression_specs_shape_as_progressions() {
+        let spec = variations::VariationSpec {
+            roots: vec![62],
+            cell: None,
+            degrees: None,
+            progression: Some(vec![
+                variations::ProgressionStep {
+                    offset: 0,
+                    chord: variations::ChordType::Minor7,
+                },
+                variations::ProgressionStep {
+                    offset: 5,
+                    chord: variations::ChordType::Dominant7,
+                },
+                variations::ProgressionStep {
+                    offset: 10,
+                    chord: variations::ChordType::Major7,
+                },
+            ]),
+            scale: None,
+            chord: None,
+            interval: None,
+            enclosure: None,
+            direction: variations::DirectionMode::Forward,
+            rhythm: variations::RhythmSpec::default(),
+            randomize_roots: false,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let log = vec![entry(&json, None)];
+        let shapes: Vec<String> = exercise_insights(&log)
+            .into_iter()
+            .map(|i| i.shape)
+            .collect();
+        assert!(
+            shapes.contains(&"3-chord progression (m7 7 maj7)".to_owned()),
+            "got {shapes:?}"
+        );
+    }
+
     /// #349 T2b AC4: a STACKED chord spec's shape says "block chords" — an
     /// exercise-log row must not call a block drill an arpeggio.
     #[test]
@@ -217,6 +266,7 @@ mod tests {
             roots: vec![60],
             cell: None,
             degrees: None,
+            progression: None,
             scale: None,
             chord: Some(variations::ChordModifier {
                 chord: variations::ChordType::Dominant7,

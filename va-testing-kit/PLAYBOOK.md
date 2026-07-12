@@ -225,6 +225,13 @@ Open the samples folder for her so she can drag a file:
    chord names. **(d)** End the session: the recap should include **'What the room played'** —
    the chord sequence with timestamps. **(e)** Check the fine print on the lane: it should say
    labels only, nothing recorded or sent anywhere."
+11g. **Work on my last progression (NEW this run).** After playing (or playing a recording of)
+   a few chords in any session — the jam lane is perfect for this — tap **"🎲 Work on my last
+   progression"**. "The app should deal the chord SEQUENCE it just heard (like 'Dm7 → G7 →
+   Cmaj7') through the keys (3 or more, growing as you level up) — each key plays all the
+   chords in a row as block chords. Tap it
+   before playing any chords: it should calmly ask you to play a couple first. Does drilling a
+   whole progression through the keys feel like the RV idea leveled up?"
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -328,6 +335,12 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - "Back to listening" returned to the score session: <answer>
 - Rest-only measure refused calmly (no crash, no navigation): <answer>
 - Scrolling the score still works normally (the overlay never blocks it): <answer>
+
+### Progression lift 🎲 (desktop only — NEW)
+- The heard chord sequence dealt through 12 keys as block chords: <answer>
+- Label named the actual progression (e.g. Dm7 → G7 → Cmaj7): <answer>
+- Tapping with no chords heard refused calmly: <answer>
+- Her words on how progression-through-12-keys FELT: <answer>
 
 ### Jam-along — Listen to the room 🎧 (desktop only — NEW)
 - Chord chips rolled by and roughly tracked the song's changes: <answer>

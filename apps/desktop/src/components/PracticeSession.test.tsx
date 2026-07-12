@@ -297,6 +297,39 @@ describe("PracticeSession", () => {
     );
   });
 
+  // #349 T3c: the progression lift is reachable in BOTH hearing surfaces
+  // — plain free play and the jam lane — and fires the backend command.
+  it("the progression lift fires from free play and jam mode", () => {
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: null,
+      explore: null,
+      lessonDrill: null,
+      listenToRoom: false,
+    });
+    // Reject rather than resolve: a resolved bare {} lands in the store
+    // as a malformed ExploreDto and crashes ExplorePanel on the async
+    // re-render (a CI-only timing flake — locally the test unmounted
+    // before the microtask flushed). The command wiring is what this test
+    // pins; dto shapes are the store/commands tests' job.
+    mockInvoke.mockRejectedValue(new Error("not under test"));
+    const { unmount } = render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("lift-progression"));
+    expect(mockInvoke).toHaveBeenCalledWith("explore_progression", {});
+    unmount();
+
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: null,
+      explore: null,
+      lessonDrill: null,
+      listenToRoom: true,
+      chordLane: [],
+    });
+    render(<PracticeSession />);
+    expect(screen.getByTestId("lift-progression")).toBeInTheDocument();
+  });
+
   // #329: reveals and tips are FLAGSHIP surfaces — they must render at
   // every window width. jsdom has no lg: breakpoint (no CSS engine), so
   // the honest pin is structural: the panels' containers carry no `hidden`
