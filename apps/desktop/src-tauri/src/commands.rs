@@ -653,10 +653,14 @@ pub struct AppState {
     /// input at session end for the score-practice summary.
     verdict_buffer: Arc<std::sync::Mutex<Vec<brain::follower::NoteVerdict>>>,
     /// Stable chord readings the perception tracker promoted this session
-    /// (#349 T2b) — one entry per chord CHANGE (never per frame). Chord
-    /// drills grade from the slice heard since the drill began, exactly
-    /// like `phrase_buffer` for melodic drills.
-    chord_buffer: Arc<std::sync::Mutex<Vec<brain::chord_judge::HeardChord>>>,
+    /// (#349 T2b) — the edge-triggered recorder ([`ChordChangeBuffer`]:
+    /// one entry per chord CHANGE, slash corrections refreshed in place,
+    /// release-reset for re-strikes). Chord drills grade from the slice
+    /// heard since the drill began, exactly like `phrase_buffer` for
+    /// melodic drills.
+    ///
+    /// [`ChordChangeBuffer`]: brain::chord_judge::ChordChangeBuffer
+    chord_buffer: Arc<std::sync::Mutex<brain::chord_judge::ChordChangeBuffer>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -797,7 +801,9 @@ impl AppState {
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
-            chord_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            chord_buffer: Arc::new(std::sync::Mutex::new(
+                brain::chord_judge::ChordChangeBuffer::new(),
+            )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -828,7 +834,9 @@ impl AppState {
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
-            chord_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            chord_buffer: Arc::new(std::sync::Mutex::new(
+                brain::chord_judge::ChordChangeBuffer::new(),
+            )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -2009,9 +2017,6 @@ pub async fn start_practice_session<R: Runtime>(
                 // thread; allocation here is fine (not the realtime callback).
                 let mut perception = PerceptionTracker::new();
                 let mut last_perception_secs: Option<f64> = None;
-                // Last chord pushed to the grading buffer, so a sustained
-                // chord lands once — the buffer records changes, not frames.
-                let mut last_buffered_chord: Option<brain::chord_judge::HeardChord> = None;
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
@@ -2034,20 +2039,12 @@ pub async fn start_practice_session<R: Runtime>(
                         if let Some(c) = chroma {
                             perception.observe_chroma(&c, event.timestamp_secs);
                             // Chord drills grade from the same stable
-                            // readings the strip shows (#349 T2b). Edge-
-                            // triggered with a RELEASE RESET: when the label
-                            // clears, forgetting the last identity lets a
-                            // deliberate re-strike of the same chord land as
-                            // a fresh entry (repeated targets stay judgeable).
-                            match perception.current_heard_chord() {
-                                Some(h) => {
-                                    if last_buffered_chord != Some(h) {
-                                        chord_buffer.lock_or_recover().push(h);
-                                        last_buffered_chord = Some(h);
-                                    }
-                                }
-                                None => last_buffered_chord = None,
-                            }
+                            // readings the strip shows (#349 T2b). The
+                            // buffer owns the edge-trigger/release/slash-
+                            // refresh contract — see ChordChangeBuffer.
+                            chord_buffer
+                                .lock_or_recover()
+                                .observe(perception.current_heard_chord());
                         }
                         let now = event.timestamp_secs;
                         let due = last_perception_secs
@@ -3088,7 +3085,7 @@ pub fn submit_drill_impl(
     } else {
         let heard: Vec<brain::chord_judge::HeardChord> = {
             let buf = state.chord_buffer.lock_or_recover();
-            buf[lesson.chord_mark.min(buf.len())..].to_vec()
+            buf.heard()[lesson.chord_mark.min(buf.len())..].to_vec()
         };
         // Same calm "not yet" honesty: nothing heard at all → don't grade
         // silence as failure. Onsets WITHOUT a nameable chord still grade
@@ -4061,14 +4058,16 @@ mod tests {
                     ),
                     "silence on a chord drill must be a calm 'not yet'"
                 );
-                // Play every cell right: one stable reading per target.
+                // Play every cell right, through the REAL edge-trigger:
+                // strike (observe Some), then release (observe None).
                 let mut buf = s.chord_buffer.lock().unwrap();
                 for t in &targets {
-                    buf.push(brain::chord_judge::HeardChord {
+                    buf.observe(Some(brain::chord_judge::HeardChord {
                         root_pc: t.root_pc,
                         quality: t.quality,
                         bass_pc: t.bass_pc,
-                    });
+                    }));
+                    buf.observe(None);
                 }
             }
             last = submit_drill_impl(&s, 1_000).expect("submit succeeds");

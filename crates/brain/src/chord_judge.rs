@@ -72,6 +72,12 @@ fn classify(heard: &HeardChord, target: &ChordTarget) -> Verdict {
     }
 }
 
+/// How many cells ahead a clean Hit can rescue alignment (the melodic
+/// follower's MAX_MISS_RUN discipline): dropping two cells then playing on
+/// settles the dropped ones Missed and credits the rest — never a zeroed
+/// remainder.
+const MAX_SKIP_WINDOW: usize = 4;
+
 /// Sequential settle-on-evidence judge over a stacked drill's targets.
 #[derive(Debug, Clone)]
 pub struct ChordDrillJudge {
@@ -100,20 +106,26 @@ impl ChordDrillJudge {
             return Vec::new();
         }
         let on_current = classify(&heard, &self.targets[self.next]);
-        let hit_on_next = self
-            .targets
-            .get(self.next + 1)
-            .is_some_and(|t| classify(&heard, t) == Verdict::Hit);
-        match (on_current, hit_on_next) {
-            // A clean hit on the NEXT cell outranks anything short of a hit
-            // on the current one — the player has moved on; holding the
-            // fumbled cell open would misattribute everything after it.
+        // A clean Hit within the skip window means the player has MOVED ON —
+        // it outranks anything short of a Hit on the current cell; holding
+        // the fumbled cells open would misattribute everything after them.
+        let window_hit = (self.next + 1..=self.next + MAX_SKIP_WINDOW)
+            .take_while(|&i| i < self.targets.len())
+            .find(|&i| classify(&heard, &self.targets[i]) == Verdict::Hit);
+        match (on_current, window_hit) {
             (Verdict::Hit, _) => vec![self.settle(Verdict::Hit)],
-            (_, true) => vec![self.settle(Verdict::Missed), self.settle(Verdict::Hit)],
-            (Verdict::Near, false) => vec![self.settle(Verdict::Near)],
+            (_, Some(hit_at)) => {
+                let mut out = Vec::new();
+                while self.next < hit_at {
+                    out.push(self.settle(Verdict::Missed));
+                }
+                out.push(self.settle(Verdict::Hit));
+                out
+            }
+            (Verdict::Near, None) => vec![self.settle(Verdict::Near)],
             // No evidence about the current cell: hold. finish() will close
             // it honestly if nothing ever matches.
-            (Verdict::Missed, false) => Vec::new(),
+            (Verdict::Missed, None) => Vec::new(),
         }
     }
 
@@ -142,6 +154,74 @@ impl ChordDrillJudge {
             beat: 0.0,
             verdict,
         }
+    }
+}
+
+/// The session's chord-evidence recorder (#349 T2b), extracted from the
+/// audio-worker closure so the edge-trigger contract the judge depends on
+/// is TESTED, not glue. Feed it the tracker's current stable chord every
+/// reading tick:
+/// - a NEW (root, quality) identity appends an entry;
+/// - the SAME identity refreshes the last entry's slash in place (a late
+///   bass correction on an inversion drill must be able to upgrade the
+///   cell — judging is submit-time, so in-place is safe) — and never
+///   inflates the count the timing proxy reads;
+/// - `None` (label cleared) arms a release, so a deliberate re-strike of
+///   the same chord lands as a fresh entry.
+#[derive(Debug, Default)]
+pub struct ChordChangeBuffer {
+    entries: Vec<HeardChord>,
+    /// The last entry is still ringing (no release since it was pushed).
+    live: bool,
+}
+
+impl ChordChangeBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold in one reading tick's promoted chord (or its absence).
+    pub fn observe(&mut self, current: Option<HeardChord>) {
+        let Some(h) = current else {
+            self.live = false;
+            return;
+        };
+        let sustains = self.live
+            && self
+                .entries
+                .last()
+                .is_some_and(|l| l.root_pc == h.root_pc && l.quality == h.quality);
+        if sustains {
+            // Slash refresh: the freshest NAMED bass wins; a bass that
+            // merely faded to unnamed must not erase a real reading.
+            if h.bass_pc.is_some() {
+                if let Some(last) = self.entries.last_mut() {
+                    last.bass_pc = h.bass_pc;
+                }
+            }
+        } else {
+            self.entries.push(h);
+            self.live = true;
+        }
+    }
+
+    /// Everything heard so far, in change order.
+    pub fn heard(&self) -> &[HeardChord] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Forget everything (new session).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.live = false;
     }
 }
 
@@ -429,6 +509,78 @@ mod tests {
         let empty = score_chord_drill(&[], &played);
         assert_eq!(empty.per_note.len(), 0);
         assert_eq!(empty.accuracy, 0.0);
+    }
+
+    /// The round-2 review probe, now the spec: drop TWO cells, play the
+    /// rest perfectly → the dropped cells grade Missed and the remainder
+    /// grades Hit (0.6), never a zeroed drill. Fails if the skip window
+    /// shrinks back to one cell.
+    #[test]
+    fn dropping_two_cells_never_zeroes_the_remainder() {
+        let targets: Vec<ChordTarget> = [0u8, 5, 10, 3, 8]
+            .iter()
+            .enumerate()
+            .map(|(i, &r)| target(i as u32, r, ChordQuality::Dom7))
+            .collect();
+        let mut j = ChordDrillJudge::new(targets.clone());
+        let mut verdicts = Vec::new();
+        for t in &targets[2..] {
+            verdicts.extend(j.observe(heard(t.root_pc, t.quality)));
+        }
+        verdicts.extend(j.finish());
+        assert_eq!(verdicts.len(), 5);
+        assert_eq!(
+            verdicts
+                .iter()
+                .filter(|v| v.verdict == Verdict::Hit)
+                .count(),
+            3,
+            "the played remainder must credit: {verdicts:?}"
+        );
+        assert!((chord_drill_accuracy(&verdicts, 5) - 0.6).abs() < 1e-6);
+    }
+
+    /// ChordChangeBuffer (round-2 review): the edge-trigger contract the
+    /// judge depends on, tested as a pure struct instead of closure glue.
+    /// Sustain → one entry; release + re-strike → a fresh entry; a slash
+    /// CORRECTION refreshes the last entry in place (so a late bass read
+    /// can still upgrade a demanded-inversion cell) and a bass that fades
+    /// to unnamed doesn't erase a real reading.
+    #[test]
+    fn the_change_buffer_records_changes_not_frames() {
+        let c = |b: Option<u8>| HeardChord {
+            root_pc: 0,
+            quality: ChordQuality::Maj,
+            bass_pc: b,
+        };
+        let mut buf = ChordChangeBuffer::new();
+        // Sustained chord over many ticks: one entry.
+        for _ in 0..5 {
+            buf.observe(Some(c(None)));
+        }
+        assert_eq!(buf.len(), 1);
+        // Wrong first slash read, corrected while ringing: refreshed in
+        // place — count unchanged, bass upgraded.
+        buf.observe(Some(c(Some(7))));
+        buf.observe(Some(c(Some(4))));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.heard()[0].bass_pc, Some(4));
+        // Bass fading to unnamed keeps the named reading.
+        buf.observe(Some(c(None)));
+        assert_eq!(buf.heard()[0].bass_pc, Some(4));
+        // Release, then re-strike the SAME chord: a fresh entry.
+        buf.observe(None);
+        buf.observe(Some(c(None)));
+        assert_eq!(buf.len(), 2);
+        // A different chord while ringing: a fresh entry too.
+        buf.observe(Some(HeardChord {
+            root_pc: 7,
+            quality: ChordQuality::Maj,
+            bass_pc: None,
+        }));
+        assert_eq!(buf.len(), 3);
+        buf.clear();
+        assert!(buf.is_empty());
     }
 
     /// Verdicts land on the RV grid: segment k = measure k+1, downbeat —
