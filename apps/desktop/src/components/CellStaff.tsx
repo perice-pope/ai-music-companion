@@ -295,6 +295,19 @@ export default function CellStaff({
       ({ n }) =>
         n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
     );
+  // #349 T2a: notes sharing a beat draw as a vertical stack for free (same
+  // x). The one engraving rule stacks need: when two simultaneous notes sit
+  // a SECOND apart (adjacent steps), the upper notehead shifts right so
+  // both stay readable instead of overlapping.
+  const secondOffset = (note: CellStaffNoteDto) =>
+    visible.some(
+      ({ n: other }) =>
+        other !== note &&
+        other.start_beat === note.start_beat &&
+        note.step - other.step === 1,
+    )
+      ? 9
+      : 0;
   const [vbMinY, vbHeight] = viewBoxFor(visible.map(({ n }) => n.step));
   vbHeightRef.current = vbHeight;
   const sigSteps =
@@ -369,7 +382,7 @@ export default function CellStaff({
           <Dot
             key={`${n.midi}-${n.start_beat}`}
             note={n}
-            x={xFor(n.start_beat)}
+            x={xFor(n.start_beat) + secondOffset(n)}
             showRhythms={showRhythms}
             selected={selected === index}
             ghostSteps={drag.current?.index === index ? ghostSteps : 0}

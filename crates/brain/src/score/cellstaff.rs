@@ -146,6 +146,7 @@ mod tests {
                     // The generator flags roots per cell; this fixture mirrors
                     // its single-root shape (first pitch class = the root).
                     is_root: m % 12 == midis.first().copied().unwrap_or(60) % 12,
+                    chord_group: None,
                 })
                 .collect(),
             target_midi: midis.to_vec(),

@@ -94,6 +94,13 @@ pub struct ChordModifier {
     pub pattern: ArpeggioPattern,
     /// 0 = root position; n rotates n chord tones up an octave.
     pub inversion: u8,
+    /// #349 T2a: emit the chord as a BLOCK — all tones struck together on
+    /// the measure's downbeat and held for the measure (one stacked cell
+    /// per measure, the RV grid rule) — instead of an arpeggio walk.
+    /// `pattern`, `direction`, and `enclosure` describe melodic order and
+    /// are ignored for a simultaneity; `inversion` still voices the stack.
+    #[serde(default)]
+    pub stacked: bool,
 }
 
 /// Broken-interval expansion: each root becomes (root, root ± interval).
@@ -156,9 +163,9 @@ impl Default for RhythmSpec {
 ///
 /// Deferred from the epic-spec sketch (documented drift, #252 §4): instrument
 /// `transpose` (C/Bb/A/G/F/Eb views — lands with the notation adapter in #254,
-/// where spelling/transposition belong), `stacked` chord/interval rendering
-/// (needs chord rendering in the score path), and per-*note* random direction
-/// (per-root is the RV behavior the coach wants).
+/// where spelling/transposition belong) and per-*note* random direction
+/// (per-root is the RV behavior the coach wants). `stacked` chord rendering
+/// landed with #349 T2a ([`ChordModifier::stacked`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariationSpec {
     /// Root notes as MIDI numbers (e.g. the 12 chromatic roots from C4).
@@ -199,6 +206,12 @@ pub struct GeneratedNote {
     /// class is somebody's root, but inside C's cell only the C's are roots.
     #[serde(default)]
     pub is_root: bool,
+    /// #349 T2a: notes sharing a group sound TOGETHER (a block chord).
+    /// Renderers draw them as one vertical stack; MusicXML marks the 2nd+
+    /// with `<chord/>`. `None` = ordinary melodic note. Group ids are the
+    /// segment's index in play order — unique per stacked cell.
+    #[serde(default)]
+    pub chord_group: Option<u32>,
 }
 
 /// The generated drill: playable notes, the exact grading target, and a human
@@ -272,7 +285,37 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
     let step = 1.0 / f64::from(spec.rhythm.notes_per_beat.max(1));
     let mut cursor_beat = 0.0_f64;
 
-    for &root in &roots {
+    // #349 T2a: a stacked chord is the effective figure only when the chord
+    // modifier IS the figure (cell and scale take precedence, same order as
+    // `figure_for`).
+    let stacked_chord = if spec.cell.as_ref().is_none_or(|c| c.is_empty()) && spec.scale.is_none() {
+        spec.chord.filter(|c| c.stacked)
+    } else {
+        None
+    };
+
+    for (segment, &root) in roots.iter().enumerate() {
+        // Block chord: every tone struck on the measure's downbeat, held for
+        // the measure — one stacked cell per measure. Direction and
+        // enclosure describe melodic order; a simultaneity has none.
+        if let Some(c) = stacked_chord {
+            let mut tones = chord_tones(c, i16::from(root));
+            fold_into_range(&mut tones);
+            tones.sort_unstable();
+            tones.dedup(); // range-clamping a too-wide voicing can collide tones
+            for &m in &tones {
+                notes.push(GeneratedNote {
+                    midi: m as u8,
+                    start_beat: cursor_beat,
+                    duration_beats: f64::from(BEATS_PER_MEASURE),
+                    is_root: m.rem_euclid(12) == i16::from(root).rem_euclid(12),
+                    chord_group: Some(segment as u32),
+                });
+            }
+            cursor_beat += f64::from(BEATS_PER_MEASURE);
+            continue;
+        }
+
         let mut figure = figure_for(spec, root);
 
         let reversed = match spec.direction {
@@ -306,6 +349,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
                 // approach notes and scale neighbors stay non-root even when
                 // some other cell in the row is anchored on their pitch class.
                 is_root: (*m).rem_euclid(12) == i16::from(root).rem_euclid(12),
+                chord_group: None,
             });
             cursor_beat += step;
         }
@@ -335,6 +379,23 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
 
 /// Expand one root into its figure (before direction/enclosure), as i16 so
 /// intermediate math can't wrap.
+/// The voiced chord tones for a root: template intervals with `inversion`
+/// tones rotated up an octave, in ascending playing order.
+fn chord_tones(c: ChordModifier, root: i16) -> Vec<i16> {
+    let mut tones: Vec<i16> = c
+        .chord
+        .semitones()
+        .iter()
+        .map(|&t| root + i16::from(t))
+        .collect();
+    let n = usize::from(c.inversion) % tones.len().max(1);
+    for tone in tones.iter_mut().take(n) {
+        *tone += 12;
+    }
+    tones.rotate_left(n);
+    tones
+}
+
 fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     let root = i16::from(root);
 
@@ -396,18 +457,7 @@ fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     }
 
     if let Some(c) = spec.chord {
-        let mut tones: Vec<i16> = c
-            .chord
-            .semitones()
-            .iter()
-            .map(|&t| root + i16::from(t))
-            .collect();
-        // Inversion: rotate n tones up an octave.
-        let n = usize::from(c.inversion) % tones.len().max(1);
-        for tone in tones.iter_mut().take(n) {
-            *tone += 12;
-        }
-        tones.rotate_left(n);
+        let mut tones = chord_tones(c, root);
         return match c.pattern {
             ArpeggioPattern::Ascending => tones,
             ArpeggioPattern::Descending => {
@@ -486,11 +536,13 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
         } else {
             String::new()
         };
-        format!(
-            "{first_root} {}{inv} · {}",
-            c.chord.label(),
+        // A stack has no melodic order — say "block chords", not a pattern.
+        let motion = if c.stacked {
+            "block chords"
+        } else {
             c.pattern.label()
-        )
+        };
+        format!("{first_root} {}{inv} · {}", c.chord.label(), motion)
     } else if let Some(iv) = spec.interval {
         let dir = if iv.ascending { "up" } else { "down" };
         format!("{first_root} · interval of {} {dir}", iv.semitones)
@@ -650,6 +702,7 @@ mod tests {
             chord: ChordType::MajorTriad,
             pattern: ArpeggioPattern::Ascending,
             inversion: 1,
+            stacked: false,
         });
         assert_eq!(generate(&spec, 0).target_midi, vec![64, 67, 72]);
     }
@@ -881,6 +934,7 @@ mod tests {
                 chord,
                 pattern: ArpeggioPattern::Ascending,
                 inversion: 0,
+                stacked: false,
             });
             generate(&spec, 0).target_midi
         };
@@ -979,6 +1033,7 @@ mod tests {
             chord: ChordType::MajorTriad,
             pattern: ArpeggioPattern::Ascending,
             inversion: 3,
+            stacked: false,
         });
         assert_eq!(generate(&spec, 0).target_midi, vec![60, 64, 67]);
     }
@@ -1197,5 +1252,121 @@ mod tests {
         let seq_back: GeneratedSequence =
             serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
         assert_eq!(seq_back, seq);
+    }
+
+    fn stacked_spec(chord: ChordType, inversion: u8) -> VariationSpec {
+        VariationSpec {
+            roots: chromatic_roots(),
+            scale: None,
+            chord: Some(ChordModifier {
+                chord,
+                pattern: ArpeggioPattern::Ascending,
+                inversion,
+                stacked: true,
+            }),
+            ..base_spec()
+        }
+    }
+
+    /// #349 T2a AC1: a "C7 in all 12 keys" stacked drill deals 12 block
+    /// cells — one measure each, every tone struck on the downbeat, held
+    /// for the measure, sharing that segment's chord_group. Fails if the
+    /// stack path walks tones melodically or breaks the one-cell-per-
+    /// measure grid.
+    #[test]
+    fn a_stacked_drill_deals_one_block_chord_per_measure() {
+        let seq = generate(&stacked_spec(ChordType::Dominant7, 0), 7);
+        assert_eq!(seq.notes.len(), 48, "12 roots x 4 tones");
+        for (segment, chunk) in seq.notes.chunks(4).enumerate() {
+            let downbeat = (segment * usize::from(BEATS_PER_MEASURE)) as f64;
+            for n in chunk {
+                assert_eq!(n.start_beat, downbeat, "struck together: {n:?}");
+                assert_eq!(n.duration_beats, f64::from(BEATS_PER_MEASURE));
+                assert_eq!(n.chord_group, Some(segment as u32));
+            }
+            // Ascending voicing, root position: the root is the lowest tone
+            // and the only is_root in its cell.
+            assert!(chunk.windows(2).all(|w| w[0].midi < w[1].midi));
+            assert_eq!(
+                chunk.iter().filter(|n| n.is_root).count(),
+                1,
+                "one root per dominant-7 cell"
+            );
+            assert!(chunk[0].is_root, "root position: lowest tone is the root");
+        }
+        assert!(
+            seq.label.contains("block chords"),
+            "label must say what it deals: {}",
+            seq.label
+        );
+    }
+
+    /// Inversion still voices the stack: first inversion puts the 3rd in
+    /// the bass (root no longer lowest). Fails if `stacked` ignores the
+    /// inversion.
+    #[test]
+    fn a_stacked_inversion_revoices_the_block() {
+        let spec = VariationSpec {
+            roots: vec![60],
+            ..stacked_spec(ChordType::MajorTriad, 1)
+        };
+        let seq = generate(&spec, 1);
+        assert_eq!(seq.notes.len(), 3);
+        assert!(
+            !seq.notes[0].is_root,
+            "first inversion: the bass is the 3rd, not the root: {:?}",
+            seq.notes
+        );
+        assert_eq!(seq.notes.iter().filter(|n| n.is_root).count(), 1);
+    }
+
+    /// Melodic figures are untouched by T2a: an ordinary arpeggio spec
+    /// (stacked = false) carries no chord groups anywhere. Guards AC3
+    /// (free play and melodic drills bit-identical).
+    #[test]
+    fn melodic_figures_carry_no_chord_groups() {
+        let spec = VariationSpec {
+            roots: chromatic_roots(),
+            scale: None,
+            chord: Some(ChordModifier {
+                chord: ChordType::Dominant7,
+                pattern: ArpeggioPattern::UpDown,
+                inversion: 0,
+                stacked: false,
+            }),
+            ..base_spec()
+        };
+        let seq = generate(&spec, 7);
+        assert!(seq.notes.iter().all(|n| n.chord_group.is_none()));
+        // And the walk is still melodic: consecutive distinct beats.
+        assert!(seq
+            .notes
+            .windows(2)
+            .all(|w| w[0].start_beat < w[1].start_beat));
+    }
+
+    /// Wire compat: specs and sequences persisted BEFORE T2a (no `stacked`,
+    /// no `chord_group`) still parse — the exercise log must keep replaying.
+    #[test]
+    fn t2a_fields_are_additive_on_the_wire() {
+        let old_modifier = r#"{"chord":"dominant7","pattern":"ascending","inversion":0}"#;
+        let m: ChordModifier = serde_json::from_str(old_modifier).expect("old modifier parses");
+        assert!(!m.stacked);
+        let old_note = r#"{"midi":60,"start_beat":0.0,"duration_beats":1.0,"is_root":true}"#;
+        let n: GeneratedNote = serde_json::from_str(old_note).expect("old note parses");
+        assert_eq!(n.chord_group, None);
+    }
+
+    /// Precedence holds: a cell (the RV primitive) shadows a stacked chord
+    /// modifier entirely — no stray groups from the ignored modifier.
+    #[test]
+    fn a_cell_shadows_a_stacked_chord() {
+        let spec = VariationSpec {
+            cell: Some(vec![0, 4, 2]),
+            ..stacked_spec(ChordType::Dominant7, 0)
+        };
+        let seq = generate(&spec, 3);
+        assert!(seq.notes.iter().all(|n| n.chord_group.is_none()));
+        assert!(seq.label.contains("cell"), "label: {}", seq.label);
     }
 }

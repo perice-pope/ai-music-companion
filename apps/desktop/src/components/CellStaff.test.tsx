@@ -324,4 +324,45 @@ describe("CellStaff — extreme registers (Monday review)", () => {
     expect(minY + height).toBeGreaterThanOrEqual(yLow);
     expect(screen.getAllByTestId("staff-dot")).toHaveLength(2);
   });
+
+  // #349 T2a: a stacked cell (notes sharing a beat) draws as one vertical
+  // stack — same x for every tone — with distinct staff heights.
+  it("renders simultaneous notes as a vertical stack at one x position", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C root
+          note({ midi: 64, step: 0, is_root: false }), // E
+          note({ midi: 67, step: 2, is_root: false }), // G
+          note({ midi: 70, step: 4, accidental: -1, is_root: false }), // Bb
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    expect(dots).toHaveLength(4);
+    const xs = new Set(dots.map((d) => d.getAttribute("cx")));
+    expect(xs.size).toBe(1); // struck together → drawn together
+    const ys = new Set(dots.map((d) => d.getAttribute("cy")));
+    expect(ys.size).toBe(4); // four distinct staff heights
+  });
+
+  // Engraving rule for stacked SECONDS: adjacent-step simultaneous notes
+  // must not overlap — the upper notehead shifts right. Fails if the
+  // second-interval offset is dropped (all dots would share cx).
+  it("offsets the upper note of a stacked second so both read", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C
+          note({ midi: 62, step: -1, is_root: false }), // D — a second above
+          note({ midi: 67, step: 2, is_root: false }), // G — a third+ away
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    // C and G share the column; D (the upper of the second) shifts right.
+    expect(byCx[0]).toBe(byCx[2]);
+    expect(byCx[1]).toBeGreaterThan(byCx[0]);
+  });
 });
