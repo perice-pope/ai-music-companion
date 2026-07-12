@@ -328,6 +328,11 @@ pub struct PerceptionTracker {
     /// when it was heard — the bass candidate for inversion naming (used
     /// only while fresh). Melody-register pitches never land here.
     last_bass: Option<(u8, f64)>,
+    /// #349 T3b: the VOICING-TRUE bass — the lowest note the polyphonic
+    /// engine hears actually sounding. When fresh it outranks the YIN
+    /// register heuristic entirely: the lowest sounding note IS the bass
+    /// by definition, whatever register the chord sits in.
+    poly_bass: Option<(u8, f64)>,
 }
 
 /// EMA weight for the displayed tempo. Low enough to settle the jitter, high
@@ -362,16 +367,27 @@ impl PerceptionTracker {
         }
     }
 
-    /// Fold one ~10 Hz chroma reading in (#349 T1). The monophonic tracker's
-    /// most recent confident pitch class serves as the bass candidate for
-    /// inversion naming — only while fresh, so a melody note from seconds
-    /// ago can't put a stale slash on a new chord.
+    /// Fold one ~10 Hz chroma reading in (#349 T1). Bass candidate for
+    /// inversion naming, best evidence first: the polyphonic engine's
+    /// voicing-true bass when fresh (#349 T3b), else the monophonic
+    /// tracker's low-register heuristic — each only while fresh, so a note
+    /// from seconds ago can't put a stale slash on a new chord.
     pub fn observe_chroma(&mut self, chroma: &[f32; 12], now_secs: f64) {
-        let bass = self
-            .last_bass
-            .filter(|&(_, t)| now_secs - t <= BASS_FRESH_SECS)
-            .map(|(pc, _)| pc);
+        let fresh = |cand: Option<(u8, f64)>| {
+            cand.filter(|&(_, t)| now_secs - t <= BASS_FRESH_SECS)
+                .map(|(pc, _)| pc)
+        };
+        let bass = fresh(self.poly_bass).or_else(|| fresh(self.last_bass));
         self.chords.observe(chroma, bass);
+    }
+
+    /// #349 T3b: the polyphonic engine's lowest currently-sounding note —
+    /// the voicing-true bass. `midi` is the actual sounding note; only its
+    /// pitch class names the slash. Arrives ~1–2 s behind real time, which
+    /// is fine: a ringing label's slash refreshes in place, so a late true
+    /// bass upgrades "C" → "C/E" while the chord still sounds.
+    pub fn observe_poly_bass(&mut self, midi: u8, now_secs: f64) {
+        self.poly_bass = Some((midi % 12, now_secs));
     }
 
     /// Snapshot what's perceived as of `now_secs`.
@@ -440,6 +456,7 @@ impl PerceptionTracker {
         self.smoothed_tempo = None;
         self.chords.reset();
         self.last_bass = None;
+        self.poly_bass = None;
     }
 }
 
@@ -1026,6 +1043,47 @@ mod tests {
             "C",
             "root-position chord must not carry a melody-note slash"
         );
+    }
+
+    /// #349 T3b: the voicing-true poly bass OUTRANKS the YIN heuristic —
+    /// even when YIN heard only the melody register, a poly-heard low E
+    /// names "C/E"; and once the poly picture ages out, the heuristic (or
+    /// nothing) takes back over. Fails if the priority order flips or
+    /// freshness stops applying.
+    #[test]
+    fn poly_bass_outranks_the_yin_heuristic_and_expires() {
+        let mut p = PerceptionTracker::new();
+        // YIN heard only a G4 melody note (above BASS_MAX_HZ — no slash
+        // from it); the poly engine hears a true E2 sounding.
+        p.observe(&pitched(392.0, 0.0));
+        p.observe_poly_bass(40, 0.1); // E2
+        let c_major = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.2 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.6).chord.expect("shown").label,
+            "C/E",
+            "the true lowest sounding note names the slash"
+        );
+
+        // Stale poly picture: past BASS_FRESH_SECS the override expires and
+        // (with no fresh YIN bass either) the slash drops.
+        let mut p = PerceptionTracker::new();
+        p.observe_poly_bass(40, 0.0);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 5.0 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(5.5).chord.expect("shown").label, "C");
+
+        // Disagreement: fresh poly bass (G2) wins over a fresh YIN E3.
+        let mut p = PerceptionTracker::new();
+        p.observe(&pitched(164.81, 0.0)); // E3 — YIN low-register candidate
+        p.observe_poly_bass(43, 0.1); // G2 — but the engine hears LOWER
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.2 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.6).chord.expect("shown").label, "C/G");
     }
 
     /// #349 T1c AC (inversions, bass freshness): a fresh YIN bass names the

@@ -2042,10 +2042,24 @@ pub async fn start_practice_session<R: Runtime>(
                 // thread; allocation here is fine (not the realtime callback).
                 let mut perception = PerceptionTracker::new();
                 let mut last_perception_secs: Option<f64> = None;
+                // #349 T3b: polyphonic hearing for this session — kill-
+                // switch honest: no ONNX runtime → None, everything else
+                // runs exactly as before (voicing-true slashes just don't
+                // upgrade). Arc-shared: the worker feeds it, this closure
+                // reads it; the LAST drop joins the inference thread.
+                let poly = transcribe::PolyRunner::spawn()
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "session runs without polyphonic hearing");
+                        e
+                    })
+                    .ok()
+                    .map(std::sync::Arc::new);
+                let poly_for_emit = poly.clone();
                 match AudioPipeline::start_with_follower(
                     profile,
                     follower,
                     Some(idiom_buffer),
+                    poly,
                     move |event, chroma| {
                         // Feed the accompaniment's clock from onset timing before
                         // the event is moved into the emit. Lock is uncontended
@@ -2062,6 +2076,14 @@ pub async fn start_practice_session<R: Runtime>(
                         // ~10 Hz chroma readings feed the chord tracker
                         // (#349 T1) — the "I hear Cmaj7" label.
                         if let Some(c) = chroma {
+                            // #349 T3b: the voicing-true bass (the lowest
+                            // note the poly engine hears sounding) refines
+                            // the slash before the chroma reading lands.
+                            if let Some(p) = &poly_for_emit {
+                                if let Some(midi) = p.sounding_bass(event.timestamp_secs) {
+                                    perception.observe_poly_bass(midi, event.timestamp_secs);
+                                }
+                            }
                             perception.observe_chroma(&c, event.timestamp_secs);
                             // Chord drills grade from the same stable
                             // readings the strip shows (#349 T2b). The

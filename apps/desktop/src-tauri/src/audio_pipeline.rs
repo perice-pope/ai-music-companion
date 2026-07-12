@@ -199,7 +199,7 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent, Option<[f32; 12]>) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {}, |_| {})
+        Self::start_with_follower(profile, None, None, None, emit, |_| {}, |_| {}, |_| {})
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
@@ -221,6 +221,7 @@ impl AudioPipeline {
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
         idiom_buffer: Option<SharedIdiomBuffer>,
+        poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
         emit: F,
         emit_phrase: P,
         emit_position: S,
@@ -244,6 +245,7 @@ impl AudioPipeline {
                     profile,
                     follower,
                     idiom_buffer,
+                    poly,
                     profile_rx,
                     shutdown_worker,
                     startup_tx,
@@ -307,6 +309,7 @@ fn run_worker<F, P, S, V>(
     initial_profile: DetectorProfile,
     follower: Option<ScoreFollower>,
     idiom_buffer: Option<SharedIdiomBuffer>,
+    poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
@@ -461,6 +464,12 @@ fn run_worker<F, P, S, V>(
         // Now (with the live emit already out the door) fold this window
         // into the chroma ring and, at the ~10 Hz hop, compute the reading
         // the next emit will carry.
+        // #349 T3b: the polyphony runner gets the same window — feed()
+        // NEVER blocks (bounded channel, drops on backpressure), so the
+        // ~38 ms inference lives entirely on its own thread.
+        if let Some(p) = &poly {
+            p.feed(mono_slice, sample_rate);
+        }
         chroma_extractor.feed(mono_slice);
         samples_since_chroma += mono_slice.len();
         if samples_since_chroma >= CHROMA_HOP_SAMPLES {

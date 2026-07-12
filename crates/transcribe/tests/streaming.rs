@@ -286,6 +286,43 @@ fn finish_flushes_the_final_chord() {
     }
 }
 
+/// #349 T3b: the runner end to end with REAL inference — an E-in-the-bass
+/// voicing (E2 under C4/G4) surfaces E as the lowest sounding note at the
+/// stream clock. This is the voicing-true slash's evidence source: YIN's
+/// single-pitch track cannot see this bass under the upper voices.
+#[test]
+fn the_runner_hears_the_true_bass_under_a_voicing() {
+    if should_skip_inference() {
+        return;
+    }
+    let runner = transcribe::PolyRunner::spawn().expect("runtime present");
+    let audio = chord(&[40, 60, 67], 3.0); // E2, C4, G4 — "C/E"
+    for w in audio.chunks(1024) {
+        runner.feed(w, SR);
+        // Near-realtime pacing: in production windows arrive at ~43 Hz and
+        // the engine keeps up easily; a burst-fed test would overflow the
+        // bounded queue and turn most of the audio into (honest) silence.
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+    // The engine needs ~2 windows; poll the snapshot with a deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let bass = loop {
+        if let Some(m) = runner.sounding_bass(1.5) {
+            break m;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the true bass never surfaced"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    assert!(
+        (i32::from(bass) - 40).abs() <= 1,
+        "lowest sounding note is the E2 bass, got midi {bass}"
+    );
+    runner.stop();
+}
+
 /// #349 T3 AC4 (kill switch): construction NEVER panics — with the runtime
 /// present it succeeds; absent, it returns a calm error a caller can show.
 /// This test runs in both environments and fails if ort's dlopen panic

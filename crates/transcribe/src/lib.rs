@@ -24,11 +24,13 @@ mod inference;
 mod midi_out;
 mod notes;
 mod resample;
+pub mod runner;
 pub mod stream;
 
 pub use decode::decode_audio;
 pub use error::TranscribeError;
 pub use notes::NoteEvent;
+pub use runner::PolyRunner;
 pub use stream::{PolyEngine, PolyNote, StreamingBasicPitch};
 
 use inference::infer;
