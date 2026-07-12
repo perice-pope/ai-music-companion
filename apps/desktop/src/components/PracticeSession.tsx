@@ -34,6 +34,7 @@ export default function PracticeSession() {
   const cursorPosition = usePracticeStore((s) => s.cursorPosition);
   const listenToRoom = usePracticeStore((s) => s.listenToRoom);
   const setListenToRoom = usePracticeStore((s) => s.setListenToRoom);
+  const exploreMeasureLive = usePracticeStore((s) => s.exploreMeasureLive);
   const lessonDrill = usePracticeStore((s) => s.lessonDrill);
   const lessonRecap = usePracticeStore((s) => s.lessonRecap);
   const startLesson = usePracticeStore((s) => s.startLesson);
@@ -249,9 +250,13 @@ export default function PracticeSession() {
             {/* Latest measure-anchored phrase card (#337 S3, closes #210). */}
             <ScorePhraseCard />
             <div className="min-h-0 flex-1">
+              {/* #341: every measure is a tap target — the in-practice RV
+                  bridge. Score-follow sessions only; lessons render their
+                  own notation without the overlay. */}
               <ScoreView
                 musicXml={activeScoreXml}
                 cursorPosition={cursorPosition}
+                onMeasureTap={exploreMeasureLive}
               />
             </div>
           </div>

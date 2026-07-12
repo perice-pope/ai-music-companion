@@ -125,6 +125,40 @@ describe("practiceStore — state machine", () => {
     expect(s.recapError).toBeNull();
   });
 
+  // #341: tapping a measure MID-PRACTICE swaps to the exploration WITHOUT
+  // ending the session (status stays listening, screen stays session) —
+  // and a calm backend refusal (rest-only measure) shows a notice, never
+  // navigation. Fails if the live path regresses to the recap handoff.
+  it("exploreMeasureLive rows in place; refusals stay calm", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    useStore.setState({
+      activeScore: { id: "score-1", title: "Etude" } as never,
+    });
+
+    const dto = { label: "C · your 4-note cell" } as never;
+    mockInvoke.mockResolvedValueOnce(dto);
+    await useStore.getState().exploreMeasureLive(3);
+    expect(mockInvoke).toHaveBeenCalledWith("explore_measure", {
+      scoreId: "score-1",
+      measureNumber: 3,
+    });
+    let s = useStore.getState();
+    expect(s.explore).toEqual(dto);
+    expect(s.status).toBe("listening");
+    expect(s.screen).toBe("session");
+
+    // Calm refusal: notice set, exploration unchanged, still in session.
+    useStore.setState({ explore: null, exploreNotice: null });
+    mockInvoke.mockRejectedValueOnce("measure 4 is all rests — nothing to row");
+    await useStore.getState().exploreMeasureLive(4);
+    s = useStore.getState();
+    expect(s.explore).toBeNull();
+    expect(s.exploreNotice).toContain("all rests");
+    expect(s.status).toBe("listening");
+  });
+
   // #349 T4a: a jam session's endSession fetches the chord chart for the
   // recap sketch; a chart failure must not dent the recap; and a normal
   // session never even asks. Fails if the wasJam fetch or the swallow

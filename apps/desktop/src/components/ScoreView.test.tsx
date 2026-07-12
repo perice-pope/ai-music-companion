@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, waitFor, cleanup } from "@testing-library/react";
+import { render, waitFor, cleanup, screen, fireEvent } from "@testing-library/react";
 import ScoreView, { type OsmdLike, type OsmdFactory } from "./ScoreView";
 import type { ScorePosition } from "../types/brain";
 
@@ -47,6 +47,20 @@ function makeFakeOsmd(measureCount: number) {
     currentMeasure: () => measure,
     factory: (() => osmd) as OsmdFactory,
   };
+}
+
+/** A fake with measure hit regions (#341) — three side-by-side measures. */
+function makeFakeOsmdWithBounds(measureCount: number) {
+  const base = makeFakeOsmd(measureCount);
+  base.osmd.measureBounds = () =>
+    Array.from({ length: measureCount }, (_, i) => ({
+      measureNumber: i + 1,
+      x: i * 100,
+      y: 0,
+      width: 100,
+      height: 40,
+    }));
+  return base;
 }
 
 const SCALE_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -452,3 +466,81 @@ describe("ScoreView — against the real OSMD parser", () => {
     cleanup();
   });
 });
+
+describe("ScoreView — measure tap overlay (#341)", () => {
+  // AC: tapping a measure fires the bridge with ITS number — hit regions
+  // come from the layout, positioned over the notation.
+  it("renders a tap target per measure and reports the tapped number", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    const taps: number[] = [];
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={(m) => taps.push(m)}
+      />,
+    );
+    await screen.findByTestId("measure-overlay");
+    expect(screen.getAllByTestId(/measure-hit-/)).toHaveLength(3);
+    fireEvent.click(screen.getByTestId("measure-hit-2"));
+    expect(taps).toEqual([2]);
+    const hit = screen.getByTestId("measure-hit-2");
+    expect(hit).toHaveAttribute(
+      "aria-label",
+      "Row measure 2 through 12 keys",
+    );
+    expect(hit.style.left).toBe("100px");
+  });
+
+  // AC: the overlay never intercepts scroll — the wrapper ignores pointers
+  // entirely; only the buttons themselves accept a tap.
+  it("the overlay wrapper passes pointer events through", async () => {
+    const fake = makeFakeOsmdWithBounds(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    const overlay = await screen.findByTestId("measure-overlay");
+    expect(overlay.className).toContain("pointer-events-none");
+    for (const hit of screen.getAllByTestId(/measure-hit-/)) {
+      expect(hit.className).toContain("pointer-events-auto");
+    }
+  });
+
+  // AC: surfaces that don't pass the handler get NO overlay (lessons,
+  // drills, read-only previews) — and a fake without bounds renders none
+  // either (older shims degrade to plain notation).
+  it("no handler or no bounds → no overlay", async () => {
+    const withBounds = makeFakeOsmdWithBounds(2);
+    const { unmount } = render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={withBounds.factory}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("measure-overlay")).toBeNull(),
+    );
+    unmount();
+
+    const noBounds = makeFakeOsmd(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={noBounds.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("measure-overlay")).toBeNull(),
+    );
+  });
+});
+

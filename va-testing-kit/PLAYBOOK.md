@@ -185,6 +185,12 @@ Open the samples folder for her so she can drag a file:
    green note saying your measure is queued (there's an ✕ to dismiss it). Start a new session —
    the measure should open as colored dots rowed through different keys, exactly like 'Work on
    my last lick'. This is the flagship: tell me how it FEELS, not just whether it works."
+11f. **Tap the sheet music itself (NEW this run).** While the score session is running
+   (cursor following you), **tap any measure right on the notation** — a subtle highlight
+   appears when you hover. "The app should immediately deal THAT measure through 12 keys as
+   colored cells — without ending your session ('Back to listening' returns you to the score).
+   Tap a measure that's all rests: it should calmly say there's nothing to row, and you stay
+   right where you were. Does grabbing a measure straight off the page feel natural?"
 11c. **Jazz ears — it can hear CHORDS now (NEW this run).** Start a free-play session on
    **Piano** (or Guitar — it's in the instrument list now) near a real piano/guitar, or play a
    chord recording out loud. "**(a)** Play a plain **C major chord** and hold it: within about
@@ -316,6 +322,12 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 ### Your Keys wheel 🎡 (desktop only — NEW)
 - Wheel visible on the picker; dim + "play to light up" before practicing: <answer>
 - Keys brightened after lessons; tap-detail showed drills/%/scales: <answer>
+
+### Tap-the-page measure bridge 🎼 (desktop only — NEW)
+- Tapping a measure on the notation dealt it through 12 keys mid-session: <answer>
+- "Back to listening" returned to the score session: <answer>
+- Rest-only measure refused calmly (no crash, no navigation): <answer>
+- Scrolling the score still works normally (the overlay never blocks it): <answer>
 
 ### Jam-along — Listen to the room 🎧 (desktop only — NEW)
 - Chord chips rolled by and roughly tracked the song's changes: <answer>
