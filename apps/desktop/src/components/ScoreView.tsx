@@ -18,6 +18,22 @@ export interface OsmdLike {
     next(): void;
     readonly iterator?: { readonly currentMeasureIndex?: number };
   };
+  /**
+   * #341: per-measure hit regions in container pixels, read from OSMD's
+   * layout after render. Optional — surfaces without the overlay (and
+   * older fakes) simply have no tap targets.
+   */
+  measureBounds?(): MeasureBound[];
+}
+
+/** One measure's hit region, container-pixel coordinates (#341). */
+export interface MeasureBound {
+  /** 1-based measure number, as the score model and backend count. */
+  measureNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** Factory for an OSMD-like instance bound to a container element. */
@@ -95,8 +111,73 @@ const makeDefaultFactory =
           }
         );
       },
+      measureBounds() {
+        const g = inner as unknown as {
+          GraphicSheet?: { MeasureList?: OsmdStaffMeasure[][] };
+          Zoom?: number;
+        } | null;
+        return boundsFromGraphicSheet(g?.GraphicSheet?.MeasureList, g?.Zoom);
+      },
     };
   };
+
+/** The OSMD-shaped inputs the bounds reader consumes (1.9.x layout). */
+export interface OsmdStaffMeasure {
+  PositionAndShape?: {
+    AbsolutePosition: { x: number; y: number };
+    Size: { width: number; height: number };
+  };
+  /** OSMD's link back to the source measure — carries the XML number. */
+  parentSourceMeasure?: { MeasureNumberXML?: number };
+}
+
+/**
+ * #341: measure hit regions from OSMD's layout. Pure and exported so the
+ * unit math — 10px × Zoom per OSMD unit (the same conversion OSMD's own
+ * cursor uses), per-measure stave union, and MEASURE NUMBERING — is
+ * testable without a real render (jsdom can't run OSMD's renderer).
+ *
+ * Numbering: the backend matches the MusicXML `number` attribute, and
+ * pickup-bar scores start at 0 — so the region carries
+ * `parentSourceMeasure.MeasureNumberXML` when OSMD provides it, falling
+ * back to list order (i+1) only for shims that don't (review M3: index+1
+ * alone rowed the WRONG measure across every pickup-bar etude).
+ */
+export function boundsFromGraphicSheet(
+  list: OsmdStaffMeasure[][] | undefined,
+  zoom: number | undefined,
+): MeasureBound[] {
+  if (!list) {
+    return [];
+  }
+  const unit = 10 * (zoom ?? 1);
+  const out: MeasureBound[] = [];
+  list.forEach((staves, i) => {
+    let x = Infinity;
+    let y = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    let xmlNumber: number | undefined;
+    for (const staff of staves) {
+      xmlNumber ??= staff?.parentSourceMeasure?.MeasureNumberXML;
+      const p = staff?.PositionAndShape;
+      if (!p) continue;
+      x = Math.min(x, p.AbsolutePosition.x);
+      y = Math.min(y, p.AbsolutePosition.y);
+      right = Math.max(right, p.AbsolutePosition.x + p.Size.width);
+      bottom = Math.max(bottom, p.AbsolutePosition.y + p.Size.height);
+    }
+    if (x === Infinity) return;
+    out.push({
+      measureNumber: xmlNumber ?? i + 1,
+      x: x * unit,
+      y: y * unit,
+      width: (right - x) * unit,
+      height: (bottom - y) * unit,
+    });
+  });
+  return out;
+}
 
 /** Stable factory instances so effect deps don't churn between renders. */
 const pageFactory = makeDefaultFactory(false);
@@ -122,6 +203,13 @@ export interface ScoreViewProps {
   variant?: "page" | "ambient";
   /** Test seam — defaults to the real lazy-loaded OSMD. */
   osmdFactory?: OsmdFactory;
+  /**
+   * #341: when set, every measure grows an invisible tap target — tapping
+   * rows THAT measure through 12 keys mid-practice (the in-practice half
+   * of the RV bridge). Only score-follow sessions pass this; lessons and
+   * drills never do.
+   */
+  onMeasureTap?: (measureNumber: number) => void;
 }
 
 /**
@@ -138,6 +226,7 @@ export default function ScoreView({
   cursorPosition,
   variant = "page",
   osmdFactory,
+  onMeasureTap,
 }: ScoreViewProps) {
   const factory =
     osmdFactory ?? (variant === "ambient" ? ambientFactory : pageFactory);
@@ -145,6 +234,8 @@ export default function ScoreView({
   const osmdRef = useRef<OsmdLike | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** #341: measure hit regions, container pixels; empty until rendered. */
+  const [measureRects, setMeasureRects] = useState<MeasureBound[]>([]);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
   /**
@@ -180,6 +271,9 @@ export default function ScoreView({
         osmd.cursor.hide();
         cursorShownRef.current = false;
         cursorMeasureRef.current = currentMeasure(osmd);
+        // #341: read the layout's measure regions once per render — the
+        // overlay is geometry over a static layout, not a live listener.
+        setMeasureRects(osmd.measureBounds?.() ?? []);
         setReady(true);
       } catch (err) {
         if (!cancelled) {
@@ -193,6 +287,26 @@ export default function ScoreView({
       cancelled = true;
     };
   }, [musicXml, factory]);
+
+  // #341 review M4: OSMD re-lays-out on window resize (autoResize), so the
+  // hit regions must follow — otherwise a maximized window rows a
+  // different measure than the one under the pointer. Debounced past
+  // OSMD's own debounced re-render.
+  useEffect(() => {
+    if (!ready || !onMeasureTap) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setMeasureRects(osmdRef.current?.measureBounds?.() ?? []);
+      }, 250);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [ready, onMeasureTap]);
 
   // Effect 2: advance the cursor to the live measure.
   useEffect(() => {
@@ -252,11 +366,41 @@ export default function ScoreView({
           so the negative-z cursor paints above the app's backgrounds
           instead of behind them. Without both, every cursor move "works"
           but nothing is ever visible on screen (#279). */}
-      <div
-        ref={containerRef}
-        data-testid="score-view-canvas"
-        className="relative z-0"
-      />
+      <div className="relative">
+        <div
+          ref={containerRef}
+          data-testid="score-view-canvas"
+          className="relative z-0"
+        />
+        {/* #341: the tap overlay — transparent hit regions positioned over
+            the rendered measures. The WRAPPER ignores pointers entirely
+            (scroll and drag pass through untouched); only the per-measure
+            buttons accept a tap. OSMD itself stays read-only. */}
+        {onMeasureTap && measureRects.length > 0 && (
+          <div
+            data-testid="measure-overlay"
+            className="pointer-events-none absolute inset-0"
+          >
+            {measureRects.map((r) => (
+              <button
+                key={r.measureNumber}
+                type="button"
+                data-testid={`measure-hit-${r.measureNumber}`}
+                aria-label={`Row measure ${r.measureNumber} through 12 keys`}
+                title={`Row measure ${r.measureNumber} through 12 keys`}
+                onClick={() => onMeasureTap(r.measureNumber)}
+                className="pointer-events-auto absolute rounded bg-transparent hover:bg-blue-400/10 focus-visible:bg-blue-400/15"
+                style={{
+                  left: r.x,
+                  top: r.y,
+                  width: r.width,
+                  height: r.height,
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

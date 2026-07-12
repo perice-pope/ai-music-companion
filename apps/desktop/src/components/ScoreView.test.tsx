@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, waitFor, cleanup } from "@testing-library/react";
-import ScoreView, { type OsmdLike, type OsmdFactory } from "./ScoreView";
+import { render, waitFor, cleanup, screen, fireEvent } from "@testing-library/react";
+import ScoreView, {
+  boundsFromGraphicSheet,
+  type OsmdLike,
+  type OsmdFactory,
+  type OsmdStaffMeasure,
+} from "./ScoreView";
 import type { ScorePosition } from "../types/brain";
 
 /**
@@ -47,6 +52,20 @@ function makeFakeOsmd(measureCount: number) {
     currentMeasure: () => measure,
     factory: (() => osmd) as OsmdFactory,
   };
+}
+
+/** A fake with measure hit regions (#341) — three side-by-side measures. */
+function makeFakeOsmdWithBounds(measureCount: number) {
+  const base = makeFakeOsmd(measureCount);
+  base.osmd.measureBounds = () =>
+    Array.from({ length: measureCount }, (_, i) => ({
+      measureNumber: i + 1,
+      x: i * 100,
+      y: 0,
+      width: 100,
+      height: 40,
+    }));
+  return base;
 }
 
 const SCALE_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -452,3 +471,143 @@ describe("ScoreView — against the real OSMD parser", () => {
     cleanup();
   });
 });
+
+describe("ScoreView — measure tap overlay (#341)", () => {
+  // AC: tapping a measure fires the bridge with ITS number — hit regions
+  // come from the layout, positioned over the notation.
+  it("renders a tap target per measure and reports the tapped number", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    const taps: number[] = [];
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={(m) => taps.push(m)}
+      />,
+    );
+    await screen.findByTestId("measure-overlay");
+    expect(screen.getAllByTestId(/measure-hit-/)).toHaveLength(3);
+    fireEvent.click(screen.getByTestId("measure-hit-2"));
+    expect(taps).toEqual([2]);
+    const hit = screen.getByTestId("measure-hit-2");
+    expect(hit).toHaveAttribute(
+      "aria-label",
+      "Row measure 2 through 12 keys",
+    );
+    expect(hit.style.left).toBe("100px");
+  });
+
+  // AC: the overlay never intercepts scroll — the wrapper ignores pointers
+  // entirely; only the buttons themselves accept a tap.
+  it("the overlay wrapper passes pointer events through", async () => {
+    const fake = makeFakeOsmdWithBounds(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    const overlay = await screen.findByTestId("measure-overlay");
+    expect(overlay.className).toContain("pointer-events-none");
+    for (const hit of screen.getAllByTestId(/measure-hit-/)) {
+      expect(hit.className).toContain("pointer-events-auto");
+    }
+  });
+
+  // AC: surfaces that don't pass the handler get NO overlay (lessons,
+  // drills, read-only previews) — and a fake without bounds renders none
+  // either (older shims degrade to plain notation).
+  it("no handler or no bounds → no overlay", async () => {
+    const withBounds = makeFakeOsmdWithBounds(2);
+    const { unmount } = render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={withBounds.factory}
+      />,
+    );
+    // Await RENDER COMPLETION first (review T3: asserting absence on the
+    // first tick false-passes before the async load lands), THEN absence.
+    await waitFor(() => expect(withBounds.calls).toContain("render"));
+    expect(screen.queryByTestId("measure-overlay")).toBeNull();
+    unmount();
+
+    const noBounds = makeFakeOsmd(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={noBounds.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    await waitFor(() => expect(noBounds.calls).toContain("render"));
+    expect(screen.queryByTestId("measure-overlay")).toBeNull();
+  });
+});
+
+describe("boundsFromGraphicSheet — the OSMD-contract math (#341)", () => {
+  const staff = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    xmlNumber?: number,
+  ): OsmdStaffMeasure => ({
+    PositionAndShape: {
+      AbsolutePosition: { x, y },
+      Size: { width: w, height: h },
+    },
+    ...(xmlNumber !== undefined
+      ? { parentSourceMeasure: { MeasureNumberXML: xmlNumber } }
+      : {}),
+  });
+
+  // 10px per unit, scaled by zoom — the exact conversion OSMD's own
+  // cursor uses. The ambient variant runs at Zoom 0.75.
+  it("converts OSMD units at 10px x zoom", () => {
+    const b = boundsFromGraphicSheet([[staff(2, 1, 10, 4)]], 0.75);
+    expect(b).toEqual([
+      { measureNumber: 1, x: 15, y: 7.5, width: 75, height: 30 },
+    ]);
+  });
+
+  // Grand-staff scores: the hit region unions the measure's staves so a
+  // tap anywhere in the system rows that measure.
+  it("unions a measure's staves", () => {
+    const b = boundsFromGraphicSheet(
+      [[staff(0, 0, 10, 4), staff(0, 8, 10, 4)]],
+      1,
+    );
+    expect(b[0]).toMatchObject({ y: 0, height: 120 });
+  });
+
+  // Review M3: pickup-bar scores number 0, 1, 2… in the XML, and the
+  // backend matches THAT — the region must carry MeasureNumberXML, not
+  // list order, or every tap rows the following measure.
+  it("carries the XML measure number for pickup-bar scores", () => {
+    const b = boundsFromGraphicSheet(
+      [
+        [staff(0, 0, 5, 4, 0)], // anacrusis: number="0"
+        [staff(5, 0, 10, 4, 1)],
+      ],
+      1,
+    );
+    expect(b.map((r) => r.measureNumber)).toEqual([0, 1]);
+  });
+
+  // Shims without source measures fall back to list order.
+  it("falls back to list order without XML numbers", () => {
+    const b = boundsFromGraphicSheet([[staff(0, 0, 5, 4)]], 1);
+    expect(b[0].measureNumber).toBe(1);
+  });
+
+  it("empty and shape-less inputs yield nothing", () => {
+    expect(boundsFromGraphicSheet(undefined, 1)).toEqual([]);
+    expect(boundsFromGraphicSheet([[{}]], 1)).toEqual([]);
+  });
+});
+

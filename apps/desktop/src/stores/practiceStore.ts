@@ -448,6 +448,10 @@ export interface PracticeState {
   setListenToRoom: (on: boolean) => void;
   /** #349 T4a — tap a lane chord: row it through 12 keys as block cells. */
   exploreChord: (rootPc: number, quality: string) => Promise<void>;
+  /** #341 — tap a measure MID-PRACTICE: row it through 12 keys without
+   * ending the session (the in-practice half of the RV bridge; the recap
+   * half is `exploreMeasure`, which parks a pending handoff instead). */
+  exploreMeasureLive: (measureNumber: number) => Promise<void>;
   /** Pin the band to a specific key (correcting the auto-read). */
   setAccompanimentKey: (tonic: number, minor: boolean) => Promise<void>;
   /** Freeze the band on its current auto-detected key. */
@@ -1272,6 +1276,29 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       set({ explore: dto, exploreNotice: null });
     } catch (err) {
       // The backend's message is written for the player — show it.
+      set({ exploreNotice: String(err) });
+    }
+  },
+
+  exploreMeasureLive: async (measureNumber) => {
+    if (get().status !== "listening") {
+      return;
+    }
+    const scoreId = get().activeScore?.id;
+    if (!scoreId) {
+      return; // no score, no overlay — belt and braces
+    }
+    try {
+      const dto = await invoke<ExploreDto>("explore_measure", {
+        scoreId,
+        measureNumber,
+      });
+      // The exploration takes the stage IN the running session — same view
+      // swap as "work on my last lick"; "Back to listening" returns.
+      set({ explore: dto, exploreNotice: null });
+    } catch (err) {
+      // Calm refusal (rest-only measure, too busy, …) — written for the
+      // player by the backend; show it without leaving the score.
       set({ exploreNotice: String(err) });
     }
   },

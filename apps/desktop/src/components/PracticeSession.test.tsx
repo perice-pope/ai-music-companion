@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import PracticeSession from "./PracticeSession";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { InstrumentInfo } from "../stores/audioStore";
@@ -8,6 +8,17 @@ const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
+// #341: capture what the session passes to the score surface — the
+// wiring/exclusion AC lives here, not inside ScoreView (real OSMD can't
+// render in jsdom).
+const scoreViewProps: Array<Record<string, unknown>> = [];
+vi.mock("./ScoreView", () => ({
+  default: (props: Record<string, unknown>) => {
+    scoreViewProps.push(props);
+    return <div data-testid="score-view-stub" />;
+  },
+}));
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
@@ -236,6 +247,54 @@ describe("PracticeSession", () => {
     render(<PracticeSession />);
     fireEvent.click(screen.getByTestId("start-lesson"));
     expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
+  });
+
+  // #341 wiring AC: the SCORE branch hands ScoreView the measure-tap
+  // bridge; the lesson branch never does (its notation must stay inert).
+  // Kills the delete-the-handler and overlay-everywhere mutations that
+  // survived review round 1.
+  it("score sessions get the measure bridge; lessons never do", () => {
+    scoreViewProps.length = 0;
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: "<score-partwise/>",
+      explore: null,
+      lessonDrill: null,
+    });
+    render(<PracticeSession />);
+    expect(scoreViewProps.length).toBeGreaterThan(0);
+    expect(typeof scoreViewProps.at(-1)?.onMeasureTap).toBe("function");
+    cleanup();
+
+    // Lesson branch: notation renders WITHOUT the bridge.
+    scoreViewProps.length = 0;
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: null,
+      explore: null,
+      lessonDrill: LESSON_DRILL as never,
+    });
+    render(<PracticeSession />);
+    for (const props of scoreViewProps) {
+      expect(props.onMeasureTap).toBeUndefined();
+    }
+  });
+
+  // #341 M1: a refused measure tap SAYS so in the score pane — the
+  // explore panel that usually shows the notice only mounts once an
+  // exploration exists, which a refusal never creates.
+  it("a measure-tap refusal renders its notice in the score pane", () => {
+    seedListeningSession();
+    usePracticeStore.setState({
+      activeScoreXml: "<score-partwise/>",
+      explore: null,
+      lessonDrill: null,
+      exploreNotice: "measure 4 is all rests — nothing to row",
+    });
+    render(<PracticeSession />);
+    expect(screen.getByTestId("score-explore-notice")).toHaveTextContent(
+      "all rests",
+    );
   });
 
   // #349 T4a: the "Listen to the room" toggle swaps the free-play

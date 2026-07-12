@@ -692,7 +692,7 @@ pub struct AppState {
     active_lesson: std::sync::Mutex<Option<ActiveLesson>>,
     /// The in-flight free-play exploration (#255), if any. Same locking rules
     /// as `active_lesson`.
-    active_explore: std::sync::Mutex<Option<ExploreState>>,
+    active_explore: Arc<std::sync::Mutex<Option<ExploreState>>>,
 }
 
 /// A running follow-me accompaniment.
@@ -815,7 +815,7 @@ impl AppState {
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
-            active_explore: std::sync::Mutex::new(None),
+            active_explore: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -851,7 +851,7 @@ impl AppState {
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
-            active_explore: std::sync::Mutex::new(None),
+            active_explore: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -2022,6 +2022,15 @@ pub async fn start_practice_session<R: Runtime>(
                 let verdict_buffer = state.verdict_buffer.clone();
                 let chord_buffer = state.chord_buffer.clone();
                 let chord_chart = state.chord_chart.clone();
+                // #341 review M2: while an exploration overlays the running
+                // score session (tap-a-measure), the follower must not keep
+                // judging — the rowed cell is near-identical to the score,
+                // so it would align, advance, and pollute the recap with
+                // verdicts about music the player wasn't playing AT the
+                // score. Gate verdicts and cursor emits on the live
+                // exploration; both resume at "Back to listening".
+                let explore_gate_verdict = state.active_explore.clone();
+                let explore_gate_position = state.active_explore.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2090,9 +2099,17 @@ pub async fn start_practice_session<R: Runtime>(
                         emit_phrase_detected(&app_for_phrase, phrase);
                     },
                     move |position| {
+                        if explore_gate_position.lock_or_recover().is_some() {
+                            return; // exploration on stage — the cursor rests
+                        }
                         emit_score_position_updated(&app_for_position, position);
                     },
                     move |verdict| {
+                        // #341 M2: no score judging while the exploration is
+                        // on stage — neither live strip nor recap buffer.
+                        if explore_gate_verdict.lock_or_recover().is_some() {
+                            return;
+                        }
                         // Buffer a copy for the recap's score summary
                         // (#337 S4), then emit for the live strip.
                         verdict_buffer.lock_or_recover().push(verdict.clone());
