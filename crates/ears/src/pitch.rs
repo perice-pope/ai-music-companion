@@ -344,7 +344,6 @@ mod tests {
         assert!(rms(&samples) < 0.001);
     }
 
-    #[test]
     /// #349 T3b review M1: set_clock seeds the running clock so a
     /// reconfigured detector CONTINUES the session's time instead of
     /// restarting at zero (poly-bass lookups, freshness checks, and chart
