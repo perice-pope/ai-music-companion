@@ -77,13 +77,19 @@ function accidentalGlyph(alter: number): string {
 function Dot({
   note,
   x,
+  headOffset = 0,
   showRhythms,
   selected,
   ghostSteps,
   onPointerDown,
 }: {
   note: CellStaffNoteDto;
+  /** The beat column's x. Accidentals engrave against THIS (column-left). */
   x: number;
+  /** #349 T2a: rightward notehead shift for the upper note of a stacked
+   * second. Moves the head/halo/stem — never the accidental, which stays
+   * left of the whole chord column per engraving convention. */
+  headOffset?: number;
   showRhythms: boolean;
   selected: boolean;
   /** Live drag preview: diatonic steps the ghost has moved (0 = at rest). */
@@ -91,10 +97,11 @@ function Dot({
   onPointerDown?: (e: React.PointerEvent) => void;
 }) {
   const y = yFor(note.step + ghostSteps);
+  const headX = x + headOffset;
   // Rhythm layer (#292 slice 2): stems/flags are drawn ON the same dot at the
   // same position — the layer NEVER moves a notehead. Whole notes stay bare.
   const stemUp = note.step < 4;
-  const stemX = stemUp ? x + 5 : x - 5;
+  const stemX = stemUp ? headX + 5 : headX - 5;
   const stemY2 = stemUp ? y - 3.2 * LINE_GAP : y + 3.2 * LINE_GAP;
   const wantsStem = showRhythms && note.duration_beats < 4;
   const wantsFlag = showRhythms && note.duration_beats < 1;
@@ -107,8 +114,8 @@ function Dot({
       {ledgerSteps(note.step).map((s) => (
         <line
           key={s}
-          x1={x - 9}
-          x2={x + 9}
+          x1={headX - 9}
+          x2={headX + 9}
           y1={yFor(s)}
           y2={yFor(s)}
           stroke="#9CA3AF"
@@ -130,7 +137,7 @@ function Dot({
       )}
       {selected && (
         <circle
-          cx={x}
+          cx={headX}
           cy={y}
           r={9}
           fill="none"
@@ -143,7 +150,7 @@ function Dot({
         other note draws white so the roots pop and the cell reads as
         shape-around-a-root. `is_root` is computed by the Rust core. */}
       <ellipse
-        cx={x}
+        cx={headX}
         cy={y}
         rx={5.5}
         ry={4.2}
@@ -153,7 +160,7 @@ function Dot({
       />
       {/* Half notes read as a ring: an inner void, color untouched. */}
       {showRhythms && note.duration_beats >= 2 && note.duration_beats < 4 && (
-        <ellipse cx={x} cy={y} rx={2.6} ry={1.8} fill="#111827" />
+        <ellipse cx={headX} cy={y} rx={2.6} ry={1.8} fill="#111827" />
       )}
       {wantsStem && (
         <line
@@ -296,15 +303,19 @@ export default function CellStaff({
         n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
     );
   // #349 T2a: notes sharing a beat draw as a vertical stack for free (same
-  // x). The one engraving rule stacks need: when two simultaneous notes sit
-  // a SECOND apart (adjacent steps), the upper notehead shifts right so
-  // both stay readable instead of overlapping.
+  // x). The one engraving rule stacks need: when two simultaneous notes
+  // collide — adjacent steps (a second) or the SAME step with different
+  // pitches (a chromatic second like C + C#) — the upper notehead shifts
+  // right so both stay readable. (A cluster of consecutive seconds, e.g.
+  // add9's C-D-E, shifts both uppers to one offset column; acceptable until
+  // the T2 vocabulary actually deals clusters.)
   const secondOffset = (note: CellStaffNoteDto) =>
     visible.some(
       ({ n: other }) =>
         other !== note &&
         other.start_beat === note.start_beat &&
-        note.step - other.step === 1,
+        (note.step - other.step === 1 ||
+          (note.step === other.step && note.midi > other.midi)),
     )
       ? 9
       : 0;
@@ -382,7 +393,8 @@ export default function CellStaff({
           <Dot
             key={`${n.midi}-${n.start_beat}`}
             note={n}
-            x={xFor(n.start_beat) + secondOffset(n)}
+            x={xFor(n.start_beat)}
+            headOffset={secondOffset(n)}
             showRhythms={showRhythms}
             selected={selected === index}
             ghostSteps={drag.current?.index === index ? ghostSteps : 0}

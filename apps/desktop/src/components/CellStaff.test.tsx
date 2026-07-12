@@ -365,4 +365,49 @@ describe("CellStaff — extreme registers (Monday review)", () => {
     expect(byCx[0]).toBe(byCx[2]);
     expect(byCx[1]).toBeGreaterThan(byCx[0]);
   });
+
+  // A CHROMATIC second (same staff step, different pitches — C + C#) must
+  // also offset, or the stack draws two dots perfectly superimposed and
+  // lies about its own size. Fails if the offset rule keys on step
+  // difference alone.
+  it("offsets a chromatic second sharing one staff step", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 72, step: 8 }), // C5
+          note({ midi: 73, step: 8, accidental: 1, is_root: false }), // C#5
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    expect(byCx[1]).toBeGreaterThan(byCx[0]);
+    // Engraving: the accidental stays LEFT of the whole column — it must
+    // not ride the offset onto the lower notehead.
+    const accX = Number(
+      screen.getByTestId("staff-accidental").getAttribute("x"),
+    );
+    expect(accX).toBeLessThan(byCx[0] - 5.5);
+  });
+
+  // MELODIC notes never take the stack offset: adjacent-step neighbors at
+  // DIFFERENT beats keep their own beat-grid columns, unshifted. Fails if
+  // the offset predicate stops requiring simultaneity (every melodic
+  // neighbor would drift +9px off the grid).
+  it("keeps melodic neighbors on the beat grid — no stack offset", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }), // C on beat 0
+          note({ midi: 62, step: -1, start_beat: 1, is_root: false }), // D, beat 1
+          note({ midi: 64, step: 0, start_beat: 2, is_root: false }), // E, beat 2
+        ])}
+      />,
+    );
+    const dots = screen.getAllByTestId("staff-dot");
+    const byCx = dots.map((d) => Number(d.getAttribute("cx")));
+    // Strictly increasing AND evenly spaced: pure beat-grid positions.
+    expect(byCx[1] - byCx[0]).toBeCloseTo(byCx[2] - byCx[1], 5);
+    expect(byCx[0]).toBeLessThan(byCx[1]);
+  });
 });

@@ -396,6 +396,8 @@ fn chord_tones(c: ChordModifier, root: i16) -> Vec<i16> {
     tones
 }
 
+/// Expand one root into its melodic figure (cell > scale > chord >
+/// interval > bare root), as MIDI values before range folding.
 fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     let root = i16::from(root);
 
@@ -1368,5 +1370,49 @@ mod tests {
         let seq = generate(&spec, 3);
         assert!(seq.notes.iter().all(|n| n.chord_group.is_none()));
         assert!(seq.label.contains("cell"), "label: {}", seq.label);
+    }
+
+    /// The other half of the precedence order (cell > SCALE > chord): a
+    /// scale modifier shadows a stacked chord too — the drill deals the
+    /// scale run, melodically, with no stray groups. Fails if the stacked
+    /// guard stops checking `spec.scale`.
+    #[test]
+    fn a_scale_shadows_a_stacked_chord() {
+        let spec = VariationSpec {
+            scale: Some(ScaleModifier {
+                scale: ScaleType::Major,
+                pattern: ScalePattern::Up,
+            }),
+            ..stacked_spec(ChordType::Dominant7, 0)
+        };
+        let seq = generate(&spec, 3);
+        assert!(seq.notes.iter().all(|n| n.chord_group.is_none()));
+        assert!(
+            seq.notes
+                .windows(2)
+                .all(|w| w[0].start_beat < w[1].start_beat),
+            "the scale run plays melodically, not as a block"
+        );
+        assert!(seq.label.contains("major"), "label: {}", seq.label);
+    }
+
+    /// Stacks respect the playable range: a root at the very top of the
+    /// range (MIDI 96 is legal) folds its voicing down instead of emitting
+    /// tones above C7. Fails if the stacked branch skips fold_into_range.
+    #[test]
+    fn a_stacked_voicing_at_the_range_top_folds_down() {
+        let spec = VariationSpec {
+            roots: vec![MIDI_MAX],
+            ..stacked_spec(ChordType::Dominant7, 0)
+        };
+        let seq = generate(&spec, 1);
+        assert_eq!(seq.notes.len(), 4);
+        for n in &seq.notes {
+            assert!(
+                (MIDI_MIN..=MIDI_MAX).contains(&n.midi),
+                "tone {} escapes the playable range",
+                n.midi
+            );
+        }
     }
 }
