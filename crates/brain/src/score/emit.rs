@@ -58,7 +58,16 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     }
 
     // ── Part list ──
-    let part_name = model.instrument.as_deref().unwrap_or("Music");
+    // #356: the staff label. A filtered MIDI import carries the chosen part's
+    // name as the TITLE (instrument stays None so other tracks' names can't
+    // leak), so the title is the honest second choice — "Music" would show
+    // OSMD's anonymous default over a part the player picked by name.
+    let part_name = model
+        .instrument
+        .as_deref()
+        .or(Some(model.title.as_str()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("Music");
     out.push_str("  <part-list>\n");
     out.push_str("    <score-part id=\"P1\">\n");
     out.push_str(&format!(
@@ -109,7 +118,25 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
             out.push_str("        </time>\n");
             out.push_str("      </attributes>\n");
 
+            // #356: a <direction> with no <direction-type> child is invalid
+            // MusicXML, and OSMD 1.9.x reacts by silently dropping EVERY note
+            // of the measure that contains it — imports rendered with a blank
+            // first measure ("half the notes" on a two-measure score). The
+            // metronome mark makes the element valid (and shows the tempo);
+            // <sound tempo> stays because the parser round-trips from it.
             out.push_str("      <direction placement=\"above\">\n");
+            out.push_str("        <direction-type>\n");
+            out.push_str("          <metronome>\n");
+            out.push_str(&format!(
+                "            <beat-unit>{}</beat-unit>\n",
+                beat_unit_name(model.time_signature.beat_type)
+            ));
+            out.push_str(&format!(
+                "            <per-minute>{}</per-minute>\n",
+                fmt_f64(model.tempo_bpm)
+            ));
+            out.push_str("          </metronome>\n");
+            out.push_str("        </direction-type>\n");
             out.push_str(&format!(
                 "        <sound tempo=\"{}\"/>\n",
                 fmt_f64(model.tempo_bpm)
@@ -239,6 +266,21 @@ pub(crate) fn midi_to_pitch(midi: u8, flats: bool) -> (char, i8, i8) {
         SHARP_CLASSES[pc]
     };
     (step, alter, octave)
+}
+
+/// MusicXML `<beat-unit>` note-value name for a time signature's beat type.
+///
+/// The model's `tempo_bpm` is in signature-beat units (see the MIDI parser),
+/// so the metronome mark pairs that number with the signature's beat unit.
+fn beat_unit_name(beat_type: u8) -> &'static str {
+    match beat_type {
+        1 => "whole",
+        2 => "half",
+        8 => "eighth",
+        16 => "16th",
+        32 => "32nd",
+        _ => "quarter",
+    }
 }
 
 /// MusicXML element tag for a [`Dynamic`].
@@ -544,6 +586,121 @@ mod tests {
         assert_eq!(reparsed.measures[1].notes[0].midi_number, 67);
         // Time/key/tempo declared only in measure 1 still apply throughout.
         assert_eq!(reparsed.tempo_bpm, 120.0);
+    }
+
+    /// #356: every emitted `<direction>` must carry a `<direction-type>`
+    /// child. A bare `<direction><sound/></direction>` is invalid MusicXML
+    /// and OSMD 1.9.x silently drops every note of the measure containing
+    /// it — the "half the notes render" VA finding. Fails if the tempo
+    /// direction loses its metronome wrapper.
+    #[test]
+    fn every_direction_carries_a_direction_type() {
+        let mut model = c_major_scale();
+        model.measures[0].notes[0].dynamic = Some(Dynamic::MF);
+        let xml = score_model_to_musicxml(&model);
+        let directions = xml.matches("<direction ").count() + xml.matches("<direction>").count();
+        let direction_types = xml.matches("<direction-type>").count();
+        assert!(directions >= 2, "tempo + dynamics directions expected");
+        assert_eq!(
+            directions, direction_types,
+            "every <direction> needs a <direction-type> child (OSMD drops the \
+             measure's notes otherwise):\n{xml}"
+        );
+    }
+
+    /// #356: the tempo direction is a real metronome mark — beat unit from
+    /// the time signature, per-minute from the model — and `<sound tempo>`
+    /// still round-trips. In 6/8 the model's tempo is eighth-BPM, so the
+    /// mark must pair it with "eighth", not "quarter".
+    #[test]
+    fn tempo_metronome_speaks_the_signature_beat_unit() {
+        let mut model = c_major_scale();
+        model.time_signature = TimeSignature {
+            beats: 6,
+            beat_type: 8,
+        };
+        model.tempo_bpm = 240.0;
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<beat-unit>eighth</beat-unit>"),
+            "6/8 tempo pairs with the eighth beat unit:\n{xml}"
+        );
+        assert!(xml.contains("<per-minute>240</per-minute>"));
+        let reparsed = parse_musicxml_str(&xml).unwrap();
+        assert!(
+            (reparsed.tempo_bpm - 240.0).abs() < 1e-9,
+            "tempo still round-trips via <sound tempo>"
+        );
+    }
+
+    /// Cut time (2/2) is a realistic MIDI import (`denom_pow=1`); its tempo
+    /// mark must pair with the half-note beat unit. Fails if the beat-unit
+    /// table's non-default rows regress.
+    #[test]
+    fn cut_time_tempo_pairs_with_the_half_note() {
+        let mut model = c_major_scale();
+        model.time_signature = TimeSignature {
+            beats: 2,
+            beat_type: 2,
+        };
+        model.tempo_bpm = 60.0;
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<beat-unit>half</beat-unit>"),
+            "2/2 tempo pairs with the half beat unit:\n{xml}"
+        );
+        assert!(xml.contains("<per-minute>60</per-minute>"));
+        // And the finer units map, so a 16th-based signature never shows a
+        // quarter mark.
+        assert_eq!(beat_unit_name(16), "16th");
+        assert_eq!(beat_unit_name(32), "32nd");
+        assert_eq!(beat_unit_name(1), "whole");
+    }
+
+    /// #356: a filtered band import carries the part's name as the TITLE
+    /// (instrument None) — the staff must be labeled with it, never OSMD's
+    /// anonymous "Music".
+    #[test]
+    fn part_name_falls_back_to_title_when_instrument_missing() {
+        let mut model = c_major_scale();
+        model.instrument = None;
+        model.title = "Trumpet".to_string();
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<part-name>Trumpet</part-name>"),
+            "title labels the part when instrument is absent:\n{xml}"
+        );
+    }
+
+    /// The instrument, when present, still wins over the title.
+    #[test]
+    fn part_name_prefers_instrument_over_title() {
+        let model = c_major_scale(); // instrument: Trumpet, title: Round Trip
+        let xml = score_model_to_musicxml(&model);
+        assert!(xml.contains("<part-name>Trumpet</part-name>"));
+        assert!(!xml.contains("<part-name>Round Trip</part-name>"));
+    }
+
+    /// With neither instrument nor a usable title, the label stays "Music"
+    /// rather than an empty element.
+    #[test]
+    fn part_name_defaults_to_music_when_nothing_usable() {
+        let mut model = c_major_scale();
+        model.instrument = None;
+        model.title = "   ".to_string();
+        let xml = score_model_to_musicxml(&model);
+        assert!(xml.contains("<part-name>Music</part-name>"));
+    }
+
+    /// A title used as the part label goes through XML escaping like any
+    /// other text content.
+    #[test]
+    fn part_name_from_title_is_escaped() {
+        let mut model = c_major_scale();
+        model.instrument = None;
+        model.title = "Horn & Flugel".to_string();
+        let xml = score_model_to_musicxml(&model);
+        assert!(xml.contains("<part-name>Horn &amp; Flugel</part-name>"));
     }
 
     /// #277: under a flat key signature the emitter spells FLATS — MIDI 70 in
