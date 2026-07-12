@@ -214,6 +214,22 @@ pub struct GeneratedNote {
     pub chord_group: Option<u32>,
 }
 
+/// #349 T2b: the grading target for one STACKED cell — what the T1 chord
+/// engine should hear when the cell is played right. Segment == the cell
+/// tones' `chord_group`, so verdicts land on the right measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChordTarget {
+    /// Play-order segment index (mirrors `GeneratedNote::chord_group`).
+    pub segment: u32,
+    /// Expected root pitch class, 0-11 (C = 0).
+    pub root_pc: u8,
+    /// Expected quality in the T1 engine's vocabulary.
+    pub quality: theory::ChordQuality,
+    /// `Some(pc)` when the drill DEMANDS this bass (inversion drills) —
+    /// grading then judges the sounding bass too. `None` = bass ignored.
+    pub bass_pc: Option<u8>,
+}
+
 /// The generated drill: playable notes, the exact grading target, and a human
 /// label describing what was asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -221,6 +237,10 @@ pub struct GeneratedSequence {
     pub notes: Vec<GeneratedNote>,
     /// The grading target: `notes` in order, as MIDI numbers.
     pub target_midi: Vec<u8>,
+    /// #349 T2b: per-stacked-cell chord targets, in play order. Empty for
+    /// melodic material (additive on the wire — old sequences parse).
+    #[serde(default)]
+    pub chord_targets: Vec<ChordTarget>,
     /// The roots in PLAY order (post-shuffle) — RV's signature randomized key
     /// sequence, surfaced so the UI can render it as the brand's colored cells.
     pub root_order: Vec<u8>,
@@ -294,6 +314,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         None
     };
 
+    let mut chord_targets: Vec<ChordTarget> = Vec::new();
     for (segment, &root) in roots.iter().enumerate() {
         // Block chord: every tone struck on the measure's downbeat, held for
         // the measure — one stacked cell per measure. Direction and
@@ -303,6 +324,17 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
             fold_into_range(&mut tones);
             tones.sort_unstable();
             tones.dedup(); // range-clamping a too-wide voicing can collide tones
+                           // The grading target (#349 T2b): what the T1 engine should hear.
+                           // An inversion drill demands its voicing's lowest tone as the
+                           // bass; root-position drills leave the bass unjudged.
+            chord_targets.push(ChordTarget {
+                segment: segment as u32,
+                root_pc: root % 12,
+                quality: c.chord.quality(),
+                bass_pc: (c.inversion > 0)
+                    .then(|| tones.first().map(|&m| (m.rem_euclid(12)) as u8))
+                    .flatten(),
+            });
             for &m in &tones {
                 notes.push(GeneratedNote {
                     midi: m as u8,
@@ -370,6 +402,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
     GeneratedSequence {
         notes,
         target_midi,
+        chord_targets,
         root_order: roots,
         label,
         tempo_bpm: spec.rhythm.tempo_bpm,
@@ -1394,6 +1427,60 @@ mod tests {
             "the scale run plays melodically, not as a block"
         );
         assert!(seq.label.contains("Major"), "label: {}", seq.label);
+    }
+
+    /// #349 T2b AC1: the grading target carries expected ChordReadings —
+    /// a 12-key stacked C7 drill deals 12 chord targets in play order,
+    /// segments mirroring the tones' chord_group, bass undemanded at root
+    /// position. Fails if targets drift from the dealt cells.
+    #[test]
+    fn a_stacked_drill_carries_its_chord_targets() {
+        let seq = generate(&stacked_spec(ChordType::Dominant7, 0), 7);
+        assert_eq!(seq.chord_targets.len(), 12);
+        for (i, t) in seq.chord_targets.iter().enumerate() {
+            assert_eq!(t.segment, i as u32);
+            assert_eq!(t.root_pc, seq.root_order[i] % 12, "target {i}");
+            assert_eq!(t.quality, theory::ChordQuality::Dom7);
+            assert_eq!(t.bass_pc, None, "root position demands no bass");
+            // The target names exactly the cell dealt at this segment.
+            let cell: Vec<_> = seq
+                .notes
+                .iter()
+                .filter(|n| n.chord_group == Some(t.segment))
+                .collect();
+            assert_eq!(cell.len(), 4);
+            assert!(cell.iter().any(|n| n.midi % 12 == t.root_pc));
+        }
+    }
+
+    /// An INVERSION drill demands its voicing's bass: the target's bass_pc
+    /// is the stack's lowest tone (the 3rd, for first inversion). Fails if
+    /// inversion drills stop judging the bass (spec AC2 tail).
+    #[test]
+    fn an_inversion_drill_demands_the_voiced_bass() {
+        let spec = VariationSpec {
+            roots: vec![60],
+            ..stacked_spec(ChordType::MajorTriad, 1)
+        };
+        let seq = generate(&spec, 1);
+        assert_eq!(seq.chord_targets.len(), 1);
+        let t = seq.chord_targets[0];
+        let lowest = seq.notes.iter().map(|n| n.midi).min().unwrap();
+        assert_eq!(t.bass_pc, Some(lowest % 12));
+        assert_ne!(t.bass_pc, Some(t.root_pc), "first inversion: bass != root");
+    }
+
+    /// Melodic material carries NO chord targets, and pre-T2b sequences
+    /// (no chord_targets on the wire) still parse.
+    #[test]
+    fn melodic_sequences_have_no_targets_and_old_wire_parses() {
+        let seq = generate(&base_spec(), 1);
+        assert!(seq.chord_targets.is_empty());
+        let mut json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("chord_targets");
+        let back: GeneratedSequence = serde_json::from_value(json).expect("old wire parses");
+        assert!(back.chord_targets.is_empty());
     }
 
     /// Stacks respect the playable range: a root at the very top of the

@@ -59,7 +59,14 @@ fn shape_of(spec_json: &str) -> String {
         return format!("{} {}", s.scale.label().to_lowercase(), s.pattern.label());
     }
     if let Some(c) = spec.chord {
-        return format!("{:?} arpeggio", c.chord).to_lowercase();
+        // #349 T2b: a stacked spec deals block chords, not an arpeggio —
+        // the shape must say what was actually asked (AC4).
+        let motion = if c.stacked {
+            "block chords"
+        } else {
+            "arpeggio"
+        };
+        return format!("{:?} {motion}", c.chord).to_lowercase();
     }
     if let Some(i) = spec.interval {
         return format!(
@@ -200,5 +207,38 @@ mod tests {
             .collect();
         assert!(shapes.contains(&"pattern 1-2-3-5 on major".to_owned()));
         assert!(shapes.contains(&"unparseable".to_owned()));
+    }
+
+    /// #349 T2b AC4: a STACKED chord spec's shape says "block chords" — an
+    /// exercise-log row must not call a block drill an arpeggio.
+    #[test]
+    fn stacked_specs_shape_as_block_chords() {
+        let spec = variations::VariationSpec {
+            roots: vec![60],
+            cell: None,
+            degrees: None,
+            scale: None,
+            chord: Some(variations::ChordModifier {
+                chord: variations::ChordType::Dominant7,
+                pattern: variations::ArpeggioPattern::Ascending,
+                inversion: 0,
+                stacked: true,
+            }),
+            interval: None,
+            enclosure: None,
+            direction: variations::DirectionMode::Forward,
+            rhythm: variations::RhythmSpec::default(),
+            randomize_roots: false,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let log = vec![entry(&json, None)];
+        let shapes: Vec<String> = exercise_insights(&log)
+            .into_iter()
+            .map(|i| i.shape)
+            .collect();
+        assert!(
+            shapes.contains(&"dominant7 block chords".to_owned()),
+            "got {shapes:?}"
+        );
     }
 }
