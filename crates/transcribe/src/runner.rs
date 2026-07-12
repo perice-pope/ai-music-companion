@@ -70,11 +70,13 @@ impl PolyRunner {
     /// runtime is unavailable — the caller ships without polyphony.
     pub fn spawn() -> Result<Self, TranscribeError> {
         let engine = StreamingBasicPitch::new()?;
-        Ok(Self::spawn_with(Box::new(engine)))
+        Self::spawn_with(Box::new(engine))
     }
 
-    /// Spawn with ANY engine (the seam again — and the test hook).
-    pub fn spawn_with(engine: Box<dyn PolyEngine>) -> Self {
+    /// Spawn with ANY engine (the seam again — and the test hook). Errors
+    /// calmly if the OS refuses a thread — same degradation posture as a
+    /// missing runtime.
+    pub fn spawn_with(engine: Box<dyn PolyEngine>) -> Result<Self, TranscribeError> {
         let (tx, rx) = sync_channel::<Chunk>(FEED_DEPTH);
         let shared = Arc::new(Mutex::new(PolyShared::default()));
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -89,15 +91,15 @@ impl PolyRunner {
                 let sr = Arc::clone(&sr);
                 move || run(engine, rx, shared, shutdown, dropped, sr)
             })
-            .expect("spawning the poly thread");
-        Self {
+            .map_err(|e| TranscribeError::Runtime(format!("poly thread: {e}")))?;
+        Ok(Self {
             tx,
             shared,
             shutdown: Arc::clone(&shutdown),
             dropped_samples,
             sr,
             thread: Some(thread),
-        }
+        })
     }
 
     /// Push a window of mono audio. NEVER blocks: a full queue records the
@@ -163,14 +165,26 @@ fn run(
         let Ok((samples, sr)) = rx.recv() else {
             break; // all senders gone
         };
-        // Replay any backpressure drops as silence FIRST, so this chunk
-        // lands at its true stream position.
+        // Replay any backpressure drops as silence before the next chunk.
+        // Honesty note: drops happen at the SENDER, so the owed audio is
+        // NEWER than what's still queued — the replay preserves the total
+        // duration (no cumulative clock drift) but shifts the ≤1.5 s
+        // backlog late by the owed amount. In production the engine is
+        // ~26× realtime and the queue never fills; this path exists for
+        // hitches, where a shifted backlog beats a drifted clock.
+        // Replayed in ≤1 s slices — a long-wedged engine that recovers
+        // must not allocate one giant buffer for an hour of owed silence.
         let owed = dropped_samples.swap(0, Ordering::Relaxed);
         let mut secs = samples.len() as f64 / f64::from(sr.max(1));
         if owed > 0 {
             let gap_sr = stream_sr.load(Ordering::Relaxed).max(1);
-            let silence = vec![0.0f32; owed as usize];
-            engine.feed(&silence, gap_sr);
+            let mut remaining = owed as usize;
+            let slice = vec![0.0f32; (gap_sr as usize).min(remaining)];
+            while remaining > 0 {
+                let n = slice.len().min(remaining);
+                engine.feed(&slice[..n], gap_sr);
+                remaining -= n;
+            }
             secs += owed as f64 / f64::from(gap_sr);
         }
         engine.feed(&samples, sr);
@@ -181,13 +195,16 @@ fn run(
             s.stream_secs += secs;
             let now = s.stream_secs;
             s.active.extend(notes);
-            s.active
-                .retain(|n| n.off_secs + RING_GRACE_SECS >= now - RING_GRACE_SECS);
+            // Single grace matches the query filter; consumers always ask
+            // at (or ahead of) this clock, never behind it.
+            s.active.retain(|n| n.off_secs + RING_GRACE_SECS >= now);
             // Hard cap: a pathological engine can't grow the snapshot
-            // unboundedly (~an orchestra's worth is plenty).
+            // unboundedly. Evict the HIGHEST notes first — the whole point
+            // of the snapshot is the bass, and the long-ringing pedal note
+            // is exactly what oldest-first eviction would throw away.
             if s.active.len() > 256 {
-                let overflow = s.active.len() - 256;
-                s.active.drain(..overflow);
+                s.active.sort_by_key(|n| n.midi);
+                s.active.truncate(256);
             }
         }
     }
@@ -246,7 +263,8 @@ mod tests {
             emit_on_feed: usize::MAX,
             notes: Vec::new(),
             block: Some(Duration::from_millis(50)),
-        }));
+        }))
+        .expect("thread spawns");
         let chunk = vec![0.0f32; 1024];
         let start = Instant::now();
         for _ in 0..500 {
@@ -272,7 +290,8 @@ mod tests {
             // A C/E voicing: E2 below two upper tones, ringing 0.5–3 s.
             notes: vec![note(64, 0.5, 3.0), note(40, 0.5, 3.0), note(67, 0.5, 3.0)],
             block: None,
-        }));
+        }))
+        .expect("thread spawns");
         assert_eq!(runner.sounding_bass(1.0), None, "nothing heard yet");
         // One second of audio → the mock emits on its first poll.
         let chunk = vec![0.0f32; 22_050];
@@ -317,7 +336,8 @@ mod tests {
         let total = Arc::new(AtomicUsize::new(0));
         let runner = PolyRunner::spawn_with(Box::new(CountingEngine {
             total_samples: Arc::clone(&total),
-        }));
+        }))
+        .expect("thread spawns");
         // Burst-feed 300 chunks — far over FEED_DEPTH, so many drop.
         let chunk = vec![0.0f32; 1024];
         for _ in 0..300 {
@@ -338,6 +358,66 @@ mod tests {
         runner.stop();
     }
 
+    /// The reviewer's sharper version of the clock contract: a note the
+    /// engine detects AFTER a drop carries its TRUE stream timestamp —
+    /// i.e. the engine's cumulative fed-time (silence included) matches
+    /// what the sender pushed, so a note emitted at engine-time T queries
+    /// correctly at session-time T. Fails if replay order or totals break.
+    #[test]
+    fn a_note_after_a_drop_carries_its_true_timestamp() {
+        /// Emits one note at its own cumulative fed-time once past 5 s.
+        struct ClockEngine {
+            fed_secs: f64,
+            emitted: bool,
+        }
+        impl PolyEngine for ClockEngine {
+            fn feed(&mut self, samples: &[f32], sr: u32) {
+                self.fed_secs += samples.len() as f64 / f64::from(sr.max(1));
+                std::thread::sleep(Duration::from_millis(2)); // force drops
+            }
+            fn poll(&mut self) -> Result<Vec<PolyNote>, TranscribeError> {
+                if self.fed_secs >= 5.0 && !self.emitted {
+                    self.emitted = true;
+                    return Ok(vec![PolyNote {
+                        midi: 40,
+                        on_secs: self.fed_secs,
+                        off_secs: self.fed_secs + 10.0,
+                        amplitude: 0.8,
+                    }]);
+                }
+                Ok(Vec::new())
+            }
+            fn finish(&mut self) -> Result<Vec<PolyNote>, TranscribeError> {
+                Ok(Vec::new())
+            }
+        }
+        let runner = PolyRunner::spawn_with(Box::new(ClockEngine {
+            fed_secs: 0.0,
+            emitted: false,
+        }))
+        .expect("thread spawns");
+        // Burst-feed 6 s of audio — many chunks drop at the sender.
+        let chunk = vec![0.0f32; 22_050 / 10]; // 100 ms
+        for _ in 0..60 {
+            runner.feed(&chunk, 22_050);
+        }
+        // The note fires when the engine's CUMULATIVE time (replayed
+        // silence included) crosses 5 s — and must answer a query at the
+        // SENDER's clock (~5–6 s), proving the two clocks agree.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if runner.sounding_bass(5.5) == Some(40) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the post-drop note never answered at the sender clock"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        runner.stop();
+    }
+
     /// stop() (and drop) join cleanly even mid-stream — no hang, no panic.
     #[test]
     fn stop_joins_cleanly() {
@@ -347,7 +427,8 @@ mod tests {
             emit_on_feed: usize::MAX,
             notes: Vec::new(),
             block: Some(Duration::from_millis(5)),
-        }));
+        }))
+        .expect("thread spawns");
         runner.feed(&[0.0; 512], 22_050);
         let start = Instant::now();
         runner.stop();

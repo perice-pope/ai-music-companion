@@ -374,8 +374,13 @@ impl PerceptionTracker {
     /// from seconds ago can't put a stale slash on a new chord.
     pub fn observe_chroma(&mut self, chroma: &[f32; 12], now_secs: f64) {
         let fresh = |cand: Option<(u8, f64)>| {
-            cand.filter(|&(_, t)| now_secs - t <= BASS_FRESH_SECS)
-                .map(|(pc, _)| pc)
+            cand.filter(|&(_, t)| {
+                // Reject time-travel too (a clock that restarted would make
+                // every stale candidate "fresh" forever — review M1).
+                let age = now_secs - t;
+                (0.0..=BASS_FRESH_SECS).contains(&age)
+            })
+            .map(|(pc, _)| pc)
         };
         let bass = fresh(self.poly_bass).or_else(|| fresh(self.last_bass));
         self.chords.observe(chroma, bass);
@@ -1084,6 +1089,25 @@ mod tests {
             p.observe_chroma(&c_major, 0.2 + i as f64 * 0.1);
         }
         assert_eq!(p.snapshot(0.6).chord.expect("shown").label, "C/G");
+    }
+
+    /// Review M1's second failure mode: a clock that RESTARTS (instrument
+    /// switch) must not make a stale poly bass "fresh forever" via negative
+    /// age — time-travel candidates are rejected, the slash drops.
+    #[test]
+    fn a_restarted_clock_cannot_resurrect_a_stale_bass() {
+        let mut p = PerceptionTracker::new();
+        p.observe_poly_bass(40, 300.0); // heard 5 minutes into the session
+        let c_major = chroma_of(&[0, 4, 7]);
+        // The clock restarted: queries now come in near zero.
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.2 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(0.6).chord.expect("shown").label,
+            "C",
+            "a bass from the future must never name a slash"
+        );
     }
 
     /// #349 T1c AC (inversions, bass freshness): a fresh YIN bass names the

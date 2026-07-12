@@ -112,6 +112,14 @@ impl PitchDetector {
     /// Returns an `AudioEvent` with pitch, confidence, amplitude, and onset info.
     ///
     /// **Zero heap allocations** — all scratch buffers are pre-allocated.
+    /// Seed the running clock (#349 T3b review M1): a mid-session detector
+    /// reconfigure (instrument switch) must NOT restart the session clock —
+    /// perception freshness, the jam chart's timestamps, and the polyphony
+    /// runner's note times all assume one monotonic clock per session.
+    pub fn set_clock(&mut self, timestamp_secs: f64) {
+        self.timestamp = timestamp_secs;
+    }
+
     pub fn detect(&mut self, samples: &[f32]) -> AudioEvent {
         let amplitude = rms(samples);
         let timestamp_secs = self.timestamp;
@@ -334,6 +342,30 @@ mod tests {
     fn rms_of_silence() {
         let samples = [0.0f32; 100];
         assert!(rms(&samples) < 0.001);
+    }
+
+    #[test]
+    /// #349 T3b review M1: set_clock seeds the running clock so a
+    /// reconfigured detector CONTINUES the session's time instead of
+    /// restarting at zero (poly-bass lookups, freshness checks, and chart
+    /// timestamps all key on one monotonic clock).
+    #[test]
+    fn set_clock_carries_the_session_time() {
+        let mut d = PitchDetector::new(PitchConfig {
+            sample_rate: 44_100,
+            ..Default::default()
+        })
+        .unwrap();
+        d.set_clock(300.0);
+        let w = vec![0.0f32; d.window_size()];
+        let e = d.detect(&w);
+        assert!(
+            (e.timestamp_secs - 300.0).abs() < 1e-9,
+            "clock continues from the seed, got {}",
+            e.timestamp_secs
+        );
+        let e2 = d.detect(&w);
+        assert!(e2.timestamp_secs > 300.0, "and keeps advancing");
     }
 
     #[test]

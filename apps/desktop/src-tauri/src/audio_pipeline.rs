@@ -394,6 +394,9 @@ fn run_worker<F, P, S, V>(
     let mut chroma_extractor = ears::chroma::ChromaExtractor::new(sample_rate);
     let mut samples_since_chroma: usize = 0;
     let mut pending_chroma: Option<[f32; 12]> = None;
+    // The session clock as of the last emitted event — carried into a
+    // reconfigured detector so the clock never restarts mid-session.
+    let mut session_clock: f64 = 0.0;
 
     // Tone accumulation. We gather the current phrase's mono audio and its
     // per-window pitch contour on the processing thread (Vec growth is expected
@@ -407,7 +410,12 @@ fn run_worker<F, P, S, V>(
         // Drain config updates; we only care about the latest.
         if let Some(new_profile) = drain_latest(&profile_rx) {
             match PitchDetector::new(new_profile.into_pitch_config(sample_rate)) {
-                Ok(d) => {
+                Ok(mut d) => {
+                    // #349 T3b review M1: ONE session clock. A fresh detector
+                    // restarts at 0.0, which desyncs every consumer keyed on
+                    // event time (poly bass lookups die, stale freshness
+                    // checks pin wrong slashes, chart timestamps restart).
+                    d.set_clock(session_clock);
                     detector = d;
                     tracing::debug!("audio_pipeline: detector reconfigured");
                 }
@@ -477,6 +485,7 @@ fn run_worker<F, P, S, V>(
             pending_chroma = chroma_extractor.chroma();
         }
         let event_time = event.timestamp_secs;
+        session_clock = event_time;
         aggregator.push(&event);
 
         // Accumulate this window's audio + pitch for the in-progress phrase.
