@@ -1,3 +1,9 @@
+## [2.22.0](https://github.com/perice-pope/ai-music-companion/compare/v2.21.0...v2.22.0) (2026-07-12)
+
+### Features
+
+* Room Ears jam-along — chart, lane, and the tap-to-row bridge ([#349](https://github.com/perice-pope/ai-music-companion/issues/349) T4a) ([#367](https://github.com/perice-pope/ai-music-companion/issues/367)) ([bd30758](https://github.com/perice-pope/ai-music-companion/commit/bd307586ee4b20f059c59a47d56d7f486946746a))
+
 ## [2.21.0](https://github.com/perice-pope/ai-music-companion/compare/v2.20.0...v2.21.0) (2026-07-12)
 
 ### Features
