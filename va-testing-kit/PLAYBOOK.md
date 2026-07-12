@@ -207,6 +207,18 @@ Open the samples folder for her so she can drag a file:
    anything: it should calmly say it didn't hear you yet — never a 0% for silence. On Voice or
    Trumpet the lesson should still deal the old note-by-note arpeggio — chords are only dealt to
    instruments that can play them."
+11e. **Listen to the room — jam-along (NEW this run).** In a free-play session, tap the
+   **"🎧 Listen to the room"** button under the pitch meter, then play music AT the app —
+   a recording on your phone speaker works great (pick something chordal: pop, gospel, jazz).
+   "**(a)** Chord chips should roll across the lane as the song plays — each with a colored dot
+   and 1–3 little confidence dots. Do the chips roughly match the song's chords changing?
+   **(b) THE MOVE:** tap any chip — the app should deal THAT chord through 12 keys as block
+   chords, exactly like 'Work on my last lick'. Tell me how that moment FEELS — hearing a song,
+   grabbing a chord out of the air, and drilling it is the whole idea. **(c)** Play something
+   dense or messy: the lane should show italic 'several notes…' chips instead of inventing
+   chord names. **(d)** End the session: the recap should include **'What the room played'** —
+   the chord sequence with timestamps. **(e)** Check the fine print on the lane: it should say
+   labels only, nothing recorded or sent anywhere."
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
@@ -304,6 +316,14 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 ### Your Keys wheel 🎡 (desktop only — NEW)
 - Wheel visible on the picker; dim + "play to light up" before practicing: <answer>
 - Keys brightened after lessons; tap-detail showed drills/%/scales: <answer>
+
+### Jam-along — Listen to the room 🎧 (desktop only — NEW)
+- Chord chips rolled by and roughly tracked the song's changes: <answer>
+- Tapping a chip dealt that chord through 12 keys (block chords): <answer>
+- How the grab-a-chord-from-a-song moment FELT (her words): <answer>
+- Dense/messy audio showed "several notes…", never invented names: <answer>
+- Recap included "What the room played" with timestamps: <answer>
+- Privacy line present (labels only, nothing recorded/sent): <answer>
 
 ### Chord drills 🎹 (desktop only — NEW, piano/guitar lessons)
 - Lesson on Piano/Guitar dealt a "block chords" drill with stacked notation: <answer>

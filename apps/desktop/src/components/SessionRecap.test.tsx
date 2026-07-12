@@ -504,4 +504,62 @@ describe("SessionRecap", () => {
     fireEvent.click(screen.getByTestId("recap-done"));
     expect(usePracticeStore.getState().screen).toBe("selector");
   });
+
+  // #349 T4a: a jam session's recap sketches the chord chart — timestamped
+  // labels (m:ss, minute boundary included) with confidence dots,
+  // unresolved stretches honest, privacy line present.
+  it("sketches the jam chord chart when one exists", () => {
+    seedRecap(fullRecap());
+    usePracticeStore.setState({
+      jamChart: [
+        {
+          label: "Cmaj7",
+          root_pc: 0,
+          quality: "maj7",
+          confidence: 0.9,
+          at_secs: 3.2,
+          unresolved: false,
+        },
+        {
+          label: "",
+          root_pc: null,
+          quality: null,
+          confidence: 0,
+          at_secs: 9.8,
+          unresolved: true,
+        },
+        {
+          label: "G7",
+          root_pc: 7,
+          quality: "dom7",
+          confidence: 0.6,
+          at_secs: 65.0,
+          unresolved: false,
+        },
+      ],
+    });
+    render(<SessionRecap />);
+    const chart = screen.getByTestId("recap-chord-chart");
+    expect(chart).toHaveTextContent("What the room played");
+    const chords = screen.getAllByTestId("chart-chord");
+    expect(chords).toHaveLength(2);
+    expect(chords[0]).toHaveTextContent("Cmaj7");
+    expect(chords[0]).toHaveTextContent("0:03");
+    // Minute boundary + zero padding: 65 s reads 1:05, never 1:5.
+    expect(chords[1]).toHaveTextContent("1:05");
+    // Dots reflect confidence: 0.9 → three, 0.6 → two.
+    expect(chords[0]).toHaveTextContent("●●●");
+    expect(chords[1].textContent).toContain("●●");
+    expect(screen.getByTestId("chart-unresolved")).toHaveTextContent(
+      "several notes",
+    );
+    expect(chart).toHaveTextContent("nothing was recorded");
+  });
+
+  it("shows no chart section for a normal session", () => {
+    seedRecap(fullRecap());
+    usePracticeStore.setState({ jamChart: null });
+    render(<SessionRecap />);
+    expect(screen.queryByTestId("recap-chord-chart")).toBeNull();
+  });
 });

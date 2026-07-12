@@ -19,6 +19,7 @@ import type {
   ScorePosition,
   LoadedScore,
 } from "../types/brain";
+import type { ChartEntry } from "../types/brain";
 import { useAudioStore } from "./audioStore";
 
 /**
@@ -80,6 +81,95 @@ const EMPTY_VERDICTS = {
 
 /** Most recent verdicts kept for the strip — enough to read a trend. */
 const VERDICT_RECENT_CAP = 12;
+
+/** One rolling jam-lane chip (#349 T4a) — view-local; the recap's
+ * authoritative chart comes from the backend recorder. */
+export interface LaneEntry {
+  /** Display label; empty for the honest "several notes" state. */
+  label: string;
+  rootPc: number | null;
+  /** Quality key for tap-to-row (snake_case), when labeled. */
+  quality: string | null;
+  confidence: number;
+  unresolved: boolean;
+}
+
+/** Lane length: the last ~8 things the room played. */
+const LANE_CAP = 8;
+
+/** Fold a perception snapshot into the rolling lane: a new entry on chord
+ * identity change or on entering the unresolved state; a ringing label
+ * refreshes its confidence in place; SILENCE arms a release so a re-strike
+ * of the same chord lands again — mirroring the backend recorder's change
+ * discipline so lane and chart never disagree. */
+function pushLane(
+  lane: LaneEntry[],
+  ringing: boolean,
+  p: import("../types/brain").PerceptionSnapshot,
+): { lane: LaneEntry[]; ringing: boolean } {
+  const last = lane[lane.length - 1];
+  const chord = p.chord ?? null;
+  // A labeled chord without a quality key can't be rowed and the backend
+  // recorder drops it (wire-compat state only, unreachable live) — treat
+  // it the same here so lane and chart can never disagree.
+  if (chord && chord.quality == null) {
+    return { lane, ringing: false };
+  }
+  if (chord) {
+    // Identity = (root, quality), mirroring the backend recorder's rule —
+    // a slash arriving mid-ring ("C" → "C/E") refreshes the chip in place,
+    // never a duplicate entry the recap chart won't have.
+    const sameIdentity =
+      ringing &&
+      last &&
+      !last.unresolved &&
+      last.rootPc === chord.root_pc &&
+      last.quality === (chord.quality ?? null);
+    if (sameIdentity) {
+      if (
+        last.confidence === chord.confidence &&
+        last.label === chord.label
+      ) {
+        return { lane, ringing: true };
+      }
+      return {
+        lane: [
+          ...lane.slice(0, -1),
+          { ...last, confidence: chord.confidence, label: chord.label },
+        ],
+        ringing: true,
+      };
+    }
+    return {
+      lane: [
+        ...lane,
+        {
+          label: chord.label,
+          rootPc: chord.root_pc,
+          quality: chord.quality ?? null,
+          confidence: chord.confidence,
+          unresolved: false,
+        },
+      ].slice(-LANE_CAP),
+      ringing: true,
+    };
+  }
+  if (p.hearing_polyphony) {
+    if (ringing && last?.unresolved) {
+      return { lane, ringing: true }; // one entry per stretch
+    }
+    return {
+      lane: [
+        ...lane,
+        { label: "", rootPc: null, quality: null, confidence: 0, unresolved: true },
+      ].slice(-LANE_CAP),
+      ringing: true,
+    };
+  }
+  // Silence / single line: nothing to add, and the next identical chord is
+  // a fresh strike.
+  return { lane, ringing: false };
+}
 
 /**
  * One playable track of a multi-part MIDI file (field names mirror the Rust
@@ -231,6 +321,29 @@ export interface PracticeState {
    */
   perception: PerceptionSnapshot | null;
   /**
+   * #349 T4a "Listen to the room": jam-along mode. External music is the
+   * SIGNAL — the chord lane replaces the free-play centerpiece. Deliberate
+   * per session (reset at start); the mic pipeline is unchanged.
+   */
+  listenToRoom: boolean;
+  /**
+   * The rolling jam lane (#349 T4a): the last few chord labels the room
+   * played, accumulated client-side from perception changes for display.
+   * The RECAP's authoritative chart comes from the backend recorder.
+   */
+  chordLane: LaneEntry[];
+  /** The last lane entry is still ringing (no silence since it landed). */
+  laneRinging: boolean;
+  /** Session time (secs) the room mode was FIRST enabled — the recap
+   * sketch filters to entries after this, so pre-toggle practice chords
+   * never masquerade as "what the room played". */
+  jamStartSecs: number | null;
+  /**
+   * The finished jam's chord chart (#349 T4a), fetched from the backend at
+   * session end when the room mode was on — the recap sketch's data.
+   */
+  jamChart: ChartEntry[] | null;
+  /**
    * Whether the user has pinned the band's key (overriding auto-detection).
    * Optimistic UI mirror of the backend override — set on the override actions,
    * cleared on auto / session end. Per-session, not persisted.
@@ -332,6 +445,9 @@ export interface PracticeState {
   setAccompanimentPlaying: (playing: boolean) => void;
   /** Reflect the backend's live `perception` event (what the app hears). */
   setPerception: (perception: PerceptionSnapshot | null) => void;
+  setListenToRoom: (on: boolean) => void;
+  /** #349 T4a — tap a lane chord: row it through 12 keys as block cells. */
+  exploreChord: (rootPc: number, quality: string) => Promise<void>;
   /** Pin the band to a specific key (correcting the auto-read). */
   setAccompanimentKey: (tonic: number, minor: boolean) => Promise<void>;
   /** Freeze the band on its current auto-detected key. */
@@ -529,6 +645,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     })),
   accompanimentPlaying: false,
   perception: null,
+  listenToRoom: false,
+  chordLane: [],
+  laneRinging: false,
+  jamStartSecs: null,
+  jamChart: null,
   keyPinned: false,
   pinnedKey: null,
   coachingEnabled: loadCoachingPref(),
@@ -715,6 +836,12 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       recapError: null,
       // Fresh verdict tally per session (#337 S2).
       noteVerdicts: { hit: 0, near: 0, missed: 0, recent: [] },
+      // Jam mode is a deliberate per-session choice (#349 T4a).
+      listenToRoom: false,
+      chordLane: [],
+      laneRinging: false,
+      jamStartSecs: null,
+      jamChart: null,
     });
     try {
       const sessionId = await invoke<string>("start_practice_session", {
@@ -770,14 +897,32 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // listening flag immediately so `PitchDisplay` drops back to its
     // idle copy while the recap round-trip is in flight.
     useAudioStore.getState().setListening(false);
+    const wasJam = get().listenToRoom;
     try {
       const recap = await invoke<SessionRecap>("end_practice_session");
+      // #349 T4a: the jam's chord chart survives until the NEXT session
+      // starts — fetch it now so the recap can sketch it. Best-effort:
+      // a chart failure must not dent the recap.
+      let jamChart: ChartEntry[] | null = null;
+      if (wasJam) {
+        try {
+          const chart = await invoke<ChartEntry[]>("session_chord_chart");
+          // Only what played AFTER the room mode came on — the player's
+          // own pre-toggle practice is not "what the room played".
+          const since = get().jamStartSecs ?? 0;
+          const roomChart = chart.filter((e) => e.at_secs >= since);
+          jamChart = roomChart.length > 0 ? roomChart : null;
+        } catch {
+          jamChart = null;
+        }
+      }
       set({
         status: "idle",
         screen: "recap",
         recap,
         recapError: null,
         sessionId: null,
+        jamChart,
       });
     } catch (err) {
       // Recap failure: still exit the session, still go to the recap
@@ -826,7 +971,46 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
 
-  setPerception: (perception) => set({ perception }),
+  setPerception: (perception) =>
+    set((s) => {
+      if (!s.listenToRoom || !perception) {
+        return { perception };
+      }
+      const next = pushLane(s.chordLane, s.laneRinging, perception);
+      return {
+        perception,
+        chordLane: next.lane,
+        laneRinging: next.ringing,
+      };
+    }),
+
+  setListenToRoom: (on) =>
+    set((s) =>
+      on
+        ? {
+            listenToRoom: true,
+            // First enable marks where "the room" begins for the recap
+            // sketch; re-enables keep the original mark.
+            jamStartSecs: s.jamStartSecs ?? s.elapsedSecs,
+          }
+        : { listenToRoom: false, chordLane: [], laneRinging: false },
+    ),
+
+  exploreChord: async (rootPc, quality) => {
+    if (get().status !== "listening") {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("explore_chord", {
+        rootPc,
+        quality,
+      });
+      set({ explore: dto, exploreNotice: null });
+    } catch (err) {
+      // The backend's message is written for the player — show it.
+      set({ exploreNotice: String(err) });
+    }
+  },
 
   setAccompanimentKey: async (tonic, minor) => {
     const prev = { keyPinned: get().keyPinned, pinnedKey: get().pinnedKey };

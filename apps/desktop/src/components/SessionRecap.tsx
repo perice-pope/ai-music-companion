@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
+import { confidenceDots } from "../lib/confidenceDots";
 import type { GrooveDescriptor, IntonationSummary } from "../types/brain";
 import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
@@ -86,6 +87,7 @@ function grooveLine(g: GrooveDescriptor): string {
  */
 export default function SessionRecap() {
   const recap = usePracticeStore((s) => s.recap);
+  const jamChart = usePracticeStore((s) => s.jamChart);
   const recapError = usePracticeStore((s) => s.recapError);
   const returnToSelector = usePracticeStore((s) => s.returnToSelector);
   const exploreMeasure = usePracticeStore((s) => s.exploreMeasure);
@@ -342,11 +344,64 @@ export default function SessionRecap() {
           </div>
         )}
 
+        {/* #349 T4a: the jam's chord chart sketch — the label sequence the
+          room played, timestamped, with the same honesty cues as the lane
+          (confidence dots; unresolved stretches shown as such). */}
+        {jamChart && jamChart.length > 0 && (
+          <div
+            className="mt-4 rounded border border-gray-700 bg-gray-800/60 p-3"
+            data-testid="recap-chord-chart"
+          >
+            <p className="mb-2 text-sm font-medium text-gray-200">
+              What the room played
+            </p>
+            <ol className="flex flex-wrap gap-x-4 gap-y-1">
+              {jamChart.map((e, i) => (
+                <li
+                  key={`${e.at_secs}-${i}`}
+                  data-testid={
+                    e.unresolved ? "chart-unresolved" : "chart-chord"
+                  }
+                  className="flex items-baseline gap-1.5 text-sm"
+                >
+                  <span className="font-mono text-[10px] text-gray-500">
+                    {formatChartTime(e.at_secs)}
+                  </span>
+                  {e.unresolved ? (
+                    <span className="italic text-gray-400">
+                      several notes…
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-gray-100">
+                      {e.label}
+                      <span className="ml-1 text-[9px] tracking-widest text-gray-500">
+                        {confidenceDots(e.confidence)}
+                      </span>
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 text-[10px] text-gray-600">
+              Labels only — nothing was recorded or sent anywhere.
+            </p>
+          </div>
+        )}
+
         <RecapActions onDone={returnToSelector} />
       </section>
     </RecapScreen>
   );
 }
+
+/** m:ss for chart timestamps. */
+function formatChartTime(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const ss = Math.floor(secs % 60);
+  return `${m}:${ss.toString().padStart(2, "0")}`;
+}
+
+
 
 /**
  * Full-height dark surface for the recap. Every other screen owns its own

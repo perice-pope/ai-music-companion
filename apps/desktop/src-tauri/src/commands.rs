@@ -661,6 +661,10 @@ pub struct AppState {
     ///
     /// [`ChordChangeBuffer`]: brain::chord_judge::ChordChangeBuffer
     chord_buffer: Arc<std::sync::Mutex<brain::chord_judge::ChordChangeBuffer>>,
+    /// The jam chord chart (#349 T4a): timed label sequence recorded from
+    /// perception snapshots — the lane's source of truth and the recap's
+    /// chord sketch. Labels + timestamps only; no audio retained.
+    chord_chart: Arc<std::sync::Mutex<brain::chord_chart::ChartRecorder>>,
     /// Follow-me accompaniment ("Play with me"). `Some` while the band is
     /// playing. Held behind a `std::sync::Mutex` (not tokio) because the audio
     /// worker thread's emit closures feed its driver synchronously on every
@@ -804,6 +808,9 @@ impl AppState {
             chord_buffer: Arc::new(std::sync::Mutex::new(
                 brain::chord_judge::ChordChangeBuffer::new(),
             )),
+            chord_chart: Arc::new(std::sync::Mutex::new(
+                brain::chord_chart::ChartRecorder::new(),
+            )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
@@ -836,6 +843,9 @@ impl AppState {
             verdict_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
             chord_buffer: Arc::new(std::sync::Mutex::new(
                 brain::chord_judge::ChordChangeBuffer::new(),
+            )),
+            chord_chart: Arc::new(std::sync::Mutex::new(
+                brain::chord_chart::ChartRecorder::new(),
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
@@ -1985,6 +1995,11 @@ pub async fn start_practice_session<R: Runtime>(
             if let Some(active) = state.active_session.lock().await.as_mut() {
                 active.score_id = score_id;
             }
+            // The jam chart is served AFTER a session ends (recap sketch),
+            // so it must clear at the next session's COMMIT — even one that
+            // never opens a pipeline — or a no-mic session could recap the
+            // previous session's chart (review nice-to-have).
+            state.chord_chart.lock_or_recover().clear();
             // Spin up the pipeline only after state-machine commit —
             // if we can't open the mic we at least want the recorder
             // in a consistent state.
@@ -2006,6 +2021,7 @@ pub async fn start_practice_session<R: Runtime>(
                 let phrase_buffer = state.phrase_buffer.clone();
                 let verdict_buffer = state.verdict_buffer.clone();
                 let chord_buffer = state.chord_buffer.clone();
+                let chord_chart = state.chord_chart.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2050,7 +2066,11 @@ pub async fn start_practice_session<R: Runtime>(
                         let due = last_perception_secs
                             .is_none_or(|last| now - last >= PERCEPTION_EMIT_INTERVAL_SECS);
                         if due {
-                            let _ = app_for_emit.emit("perception", perception.snapshot(now));
+                            let snap = perception.snapshot(now);
+                            // The jam chart records label CHANGES from the
+                            // same snapshots the strip renders (#349 T4a).
+                            chord_chart.lock_or_recover().observe(&snap, now);
+                            let _ = app_for_emit.emit("perception", snap);
                             last_perception_secs = Some(now);
                         }
                         let _ = app_for_emit.emit("audio-event", event);
@@ -2389,12 +2409,11 @@ fn explore_dto(
     model: &brain::learner::LearnerModel,
 ) -> ExploreDto {
     let chips = brain::coach::suggest_chips(explore, model);
-    let scale_label = explore
-        .spec
-        .scale
-        .map(|m| m.scale.label().to_lowercase())
-        .unwrap_or_else(|| "major".to_owned());
-    let key = brain::coach::key_signature_for(explore.tonic, &scale_label);
+    // ONE key derivation for everything the player sees or edits —
+    // explore_key follows the figure's family (scale, else the jam
+    // chord, #349 T4a review M4-r2: a heard Cm7 must engrave Eb/Bb
+    // under flats on the RENDERED staff, not just in the edit engine).
+    let key = explore_key(explore);
     // Same rule as the root cells: the label speaks the engraved
     // signature's spelling, never "C#" over flats (#335).
     let label = brain::coach::respell_label(&seq.label, key.fifths);
@@ -2473,12 +2492,17 @@ fn log_exercise_best_effort(store: &SessionStore, o: ExerciseOutcome<'_>) {
 
 /// The active explore key signature (for the edit engine's staff-step math).
 fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
-    let scale_label = explore
+    // The signature follows the FIGURE the row actually deals (#335): a
+    // scale explore engraves in its scale's family; a chord explore (the
+    // jam bridge, #349 T4a) in its chord family — an Am7 row must not
+    // engrave in A MAJOR and drown every stack in accidentals (review S1).
+    let material = explore
         .spec
         .scale
         .map(|m| m.scale.label().to_lowercase())
+        .or_else(|| explore.spec.chord.map(|c| c.chord.label().to_lowercase()))
         .unwrap_or_else(|| "major".to_owned());
-    brain::coach::key_signature_for(explore.tonic, &scale_label)
+    brain::coach::key_signature_for(explore.tonic, &material)
 }
 
 /// Start (or restart) a free-play exploration from the live key. Reads the
@@ -2814,6 +2838,64 @@ pub fn explore_measure(
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(42);
     explore_measure_impl(&state, &score_id, measure_number, seed)
+}
+
+/// #349 T4a — the jam lane's RV bridge: row a chord the room played
+/// through 12 keys as stacked block cells. Same explore engine (and same
+/// live view swap) as "work on my last lick".
+pub fn explore_chord_impl(
+    state: &AppState,
+    root_pc: u8,
+    quality: brain::theory::ChordQuality,
+    seed: u64,
+) -> Result<ExploreDto, String> {
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) = brain::coach::start_explore_chord(root_pc % 12, quality, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "jam_bridge",
+                label: &dto.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn explore_chord(
+    state: State<'_, AppState>,
+    root_pc: u8,
+    quality: brain::theory::ChordQuality,
+) -> Result<ExploreDto, String> {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(7);
+    explore_chord_impl(&state, root_pc, quality, seed)
+}
+
+/// #349 T4a — the session's chord chart so far: the timed label sequence
+/// the jam recap sketches. Read-only; cleared at the next session start.
+#[tauri::command]
+pub fn session_chord_chart(
+    state: State<'_, AppState>,
+) -> Result<Vec<brain::chord_chart::ChartEntry>, String> {
+    Ok(state.chord_chart.lock_or_recover().entries().to_vec())
 }
 
 #[tauri::command]
@@ -4415,6 +4497,71 @@ mod tests {
         assert!(edited.can_undo);
     }
 
+    /// #349 T4a end-to-end at the command layer: tapping a heard chord in
+    /// the jam lane rows it as stacked block cells through the SAME explore
+    /// machinery as a lifted lick — active exploration installed, staff
+    /// carries the stacks, exercise log gets a jam_bridge row. Fails if the
+    /// bridge command or the stacked handoff breaks.
+    #[test]
+    fn a_tapped_jam_chord_rows_as_stacked_cells() {
+        let s = state();
+        let dto = explore_chord_impl(&s, 10, brain::theory::ChordQuality::Dom13, 42).unwrap();
+        assert!(
+            dto.label.contains("block chords"),
+            "deals blocks: {}",
+            dto.label
+        );
+        assert!(
+            dto.label.starts_with("Bb"),
+            "flat-family spelling: {}",
+            dto.label
+        );
+        assert!(!dto.root_pitch_classes.is_empty());
+        assert_eq!(dto.root_pitch_classes[0], 10, "rooted where it was heard");
+        // The staff really carries simultaneities (stacked dots share beats).
+        let first_beat = dto.staff.notes[0].start_beat;
+        assert!(
+            dto.staff
+                .notes
+                .iter()
+                .filter(|n| n.start_beat == first_beat)
+                .count()
+                >= 3,
+            "stacked cell on the staff"
+        );
+        assert!(
+            s.active_explore.lock().unwrap().is_some(),
+            "exploration is live — same view swap as lift"
+        );
+        // Logged for the self-improvement loop, honestly sourced.
+        let rows = s.session_store.lock().unwrap().list_exercise_log().unwrap();
+        assert!(
+            rows.iter().any(|r| r.source == "jam_bridge"),
+            "exercise log carries the bridge row"
+        );
+    }
+
+    /// #349 T4a review M4-r2: the RENDERED staff follows the chord family —
+    /// a heard Cm7 engraves flat-side (Eb/Bb under a flat signature), never
+    /// D#/A# under fifths=0. The Bb-rooted test masks this (its plain major
+    /// is already flat); C minor is the trap case.
+    #[test]
+    fn a_tapped_minor_chord_engraves_flat_side() {
+        let s = state();
+        let dto = explore_chord_impl(&s, 0, brain::theory::ChordQuality::Min7, 42).unwrap();
+        assert!(
+            dto.staff.fifths < 0,
+            "C minor 7 must engrave under flats, got fifths={}",
+            dto.staff.fifths
+        );
+        assert!(
+            !dto.staff.notes.iter().any(|n| n.accidental == Some(1)),
+            "no sharp accidentals on a C minor stack: {:?}",
+            dto.staff.notes
+        );
+        assert!(dto.label.starts_with('C'), "label: {}", dto.label);
+    }
+
     /// #255: the explore loop end-to-end at the command layer — start seeds a
     /// variation from the live key (chips + cells + engraved XML), a tapped
     /// delta mutates the rep, and apply-without-start errs calmly. Fails if
@@ -5084,6 +5231,39 @@ mod tests {
         let session = guard.as_ref().unwrap();
         // The currently-open segment must be the new one.
         assert_eq!(session.recorder.current_instrument(), Some("Piano"));
+    }
+
+    /// #349 T4a (test-auditor gap): the chart survives session END — the
+    /// store fetches it after end_practice_session returns, so a tidy-
+    /// minded clear at session end would silently kill the recap sketch.
+    /// Cleared only at the NEXT session start (glue in the pipeline block;
+    /// the lifecycle contract is pinned here at the readable half).
+    #[tokio::test]
+    async fn the_chord_chart_survives_session_end() {
+        let s = state();
+        start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .unwrap();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(
+                &brain::perception::PerceptionSnapshot {
+                    chord: Some(brain::perception::ChordReading {
+                        root_pc: 0,
+                        quality: Some(brain::theory::ChordQuality::Maj),
+                        label: "C".to_owned(),
+                        bass_pc: None,
+                        confidence: 0.8,
+                    }),
+                    ..brain::perception::PerceptionSnapshot::EMPTY
+                },
+                1.0,
+            );
+        }
+        end_practice_session_impl(&s).await.unwrap();
+        let entries = s.chord_chart.lock().unwrap().entries().to_vec();
+        assert_eq!(entries.len(), 1, "the recap sketch's data must survive");
+        assert_eq!(entries[0].label, "C");
     }
 
     #[tokio::test]

@@ -1037,6 +1037,10 @@ pub fn apply_explore_delta(
             let scale = next.spec.scale;
             let cell = next.spec.cell.take();
             let degrees = next.spec.degrees.take();
+            // A tapped jam chord (#349 T4a) is the player's material too —
+            // the ladder rebuild must not turn their Am7 blocks into a
+            // scale run (review M1).
+            let chord = next.spec.chord.take();
             let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
             next.spec = spec;
             if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
@@ -1046,6 +1050,13 @@ pub fn apply_explore_delta(
             // Degree patterns are the player's material too (#289) — they
             // survive the ladder rebuild exactly like a hand-edited cell.
             next.spec.degrees = degrees;
+            if chord.is_some() {
+                // The chord IS the figure: the rebuilt scale would shadow
+                // it (scale > chord precedence), so drop the ladder scale.
+                next.spec.scale = None;
+                next.spec.chord = chord;
+                next.spec.enclosure = None;
+            }
         }
         VariationDelta::DifferentScale => {
             // With a hand-edited cell the scale figure is shadowed (cell has
@@ -1053,6 +1064,15 @@ pub fn apply_explore_delta(
             // discard the cell, back to the catalog; undo recovers it
             // (review M3).
             next.spec.cell = None;
+            // Fresh material replaces a tapped jam chord too (#349 T4a) —
+            // never a silent no-op; undo recovers the chord row.
+            next.spec.chord = None;
+            if next.spec.scale.is_none() {
+                next.spec.scale = Some(ScaleModifier {
+                    scale: ScaleType::Major,
+                    pattern: ScalePattern::Up,
+                });
+            }
             if let Some(m) = next.spec.scale.as_mut() {
                 let current = m.scale;
                 let idx = (next.seed as usize) % EXPLORE_SCALES.len();
@@ -1071,6 +1091,8 @@ pub fn apply_explore_delta(
             // edited cell — discard the cell (undo recovers it) and pull a
             // pattern from the database, never the one already playing.
             next.spec.cell = None;
+            // Fresh material replaces a tapped jam chord too (#349 T4a).
+            next.spec.chord = None;
             // Degrees need a scale to map through; give a default rather than
             // silently no-op if explore ever seeds from scale-less material.
             if next.spec.scale.is_none() {
@@ -1191,6 +1213,72 @@ fn hz_to_midi(hz: f64) -> Option<u8> {
 /// and a fresh learner starts at difficulty 0 = 1 root.
 pub const LIFT_MIN_ROOTS: usize = 3;
 
+/// #349 T4a: the PRACTICE template for a heard chord quality — the tap-to-
+/// row bridge's mapping from the T1 engine's 23-quality vocabulary onto the
+/// drillable catalog. Rich extensions row as their base family (a heard C13
+/// rows as C7 block chords: the RV unit is the quality family, and the
+/// label the player sees says exactly what it deals). Exhaustive: a new
+/// quality forces a mapping decision here, never a silent fallback.
+pub fn practice_chord_type(quality: theory::ChordQuality) -> ChordType {
+    use theory::ChordQuality as Q;
+    match quality {
+        Q::Maj | Q::Add9 => ChordType::MajorTriad,
+        Q::Min => ChordType::MinorTriad,
+        Q::Dim => ChordType::DiminishedTriad,
+        Q::Aug => ChordType::AugmentedTriad,
+        Q::Sus2 => ChordType::Sus2Triad,
+        Q::Sus4 => ChordType::Sus4Triad,
+        Q::Maj7 | Q::Maj9 | Q::Maj6 => ChordType::Major7,
+        Q::Min7 | Q::Min9 | Q::Min6 | Q::MinMaj7 => ChordType::Minor7,
+        Q::Dom7 | Q::Dom9 | Q::Dom13 | Q::Dom7b9 | Q::Dom7s9 | Q::Dom7s11 => ChordType::Dominant7,
+        // A sus voicing rows AS sus — reducing to a plain dominant would
+        // reintroduce the very 3rd it avoids (review S4).
+        Q::Dom7Sus4 => ChordType::Dominant7Sus4,
+        Q::Min7b5 => ChordType::HalfDiminished7,
+        Q::Dim7 => ChordType::Diminished7,
+    }
+}
+
+/// #349 T4a — the jam lane's RV bridge: row a HEARD chord through 12 keys
+/// as stacked block cells (T2's machinery), rooted where it was heard.
+/// Same explore engine as a lifted lick, so difficulty/roots/shuffle come
+/// from the learner model.
+pub fn start_explore_chord(
+    root_pc: u8,
+    quality: theory::ChordQuality,
+    model: &LearnerModel,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let chord = practice_chord_type(quality);
+    // Mode label drives the key signature (a dominant rows mixolydian-
+    // spelled, #277) and the recap wording.
+    let (mut state, _) = start_explore(root_pc % 12, &chord.label().to_lowercase(), model, seed);
+    state.spec.cell = None;
+    state.spec.degrees = None;
+    state.spec.scale = None;
+    state.spec.interval = None;
+    state.spec.enclosure = None;
+    state.spec.chord = Some(ChordModifier {
+        chord,
+        pattern: ArpeggioPattern::Ascending,
+        inversion: 0,
+        stacked: true,
+    });
+    if state.spec.roots.len() < LIFT_MIN_ROOTS {
+        state.spec.roots = roots_for(root_pc % 12, LIFT_MIN_ROOTS);
+        state.spec.randomize_roots = true; // the RV shuffle, from the start
+    }
+    let mut sequence = generate(&state.spec, state.seed);
+    // #335 discipline, same as build_drill: the label rides everywhere the
+    // row shows — respell it to the chord family's signature so a Bb
+    // dominant never reads "A#".
+    sequence.label = respell_label(
+        &sequence.label,
+        key_signature_for(root_pc % 12, &chord.label().to_lowercase()).fifths,
+    );
+    (state, sequence)
+}
+
 pub fn start_explore_cell(
     cell: Vec<i8>,
     tonic: u8,
@@ -1291,6 +1379,15 @@ pub fn edit_explore_note(
     edit: &NoteEdit,
     key: &crate::score::KeySignature,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
+    // #349 T4a review M2: a stacked chord row has no melodic cell to bake —
+    // dragging one dot would flatten the block into a one-note melody and
+    // silently drop the chord grading. Refuse calmly; the lane is the edit
+    // surface for chords.
+    if state.spec.chord.is_some_and(|c| c.stacked) {
+        return Err(
+            "this row is a chord — tap a different chord in the lane to change it".to_owned(),
+        );
+    }
     let seq = generate(&state.spec, state.seed);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
@@ -1389,6 +1486,87 @@ mod tests {
             start_difficulty: 0,
             polyphonic: false,
         }
+    }
+
+    /// #349 T4a: tapping a heard chord rows it as STACKED block cells
+    /// through 12 keys — the lane's RV bridge. A rich extension rows as its
+    /// practice family (heard C13 → C7 block chords) and the label says
+    /// what it deals. Fails if the bridge stops stacking or the mapping
+    /// leaves the family.
+    #[test]
+    fn the_jam_bridge_rows_a_heard_chord_as_stacked_cells() {
+        let model = LearnerModel::default();
+        let (state, seq) = start_explore_chord(10, theory::ChordQuality::Dom13, &model, 5);
+        let spec_chord = state.spec.chord.expect("chord figure");
+        assert!(spec_chord.stacked);
+        assert_eq!(
+            spec_chord.chord,
+            ChordType::Dominant7,
+            "C13 rows as its 7 family"
+        );
+        assert!(state.spec.cell.is_none() && state.spec.scale.is_none());
+        assert!(!seq.chord_targets.is_empty(), "graded like any chord drill");
+        assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Dom7);
+        assert!(seq.root_order.len() >= LIFT_MIN_ROOTS);
+        assert_eq!(seq.root_order[0] % 12, 10, "rooted where it was heard");
+        assert!(
+            seq.label.contains("block chords"),
+            "the label says what it deals: {}",
+            seq.label
+        );
+        // Flat-family spelling: a Bb dominant engraves flat-side (#335).
+        assert!(seq.label.starts_with("Bb"), "label: {}", seq.label);
+    }
+
+    /// Review M1 (T4a): the chips flow must never destroy the tapped jam
+    /// chord — a difficulty bump keeps the block-chord figure (rebuilding
+    /// tempo/roots around it), and the fresh-material chips REPLACE it
+    /// visibly (scale figure appears), never a silent no-op. Fails if the
+    /// ladder rebuild drops `spec.chord` again.
+    #[test]
+    fn chips_never_silently_destroy_a_tapped_jam_chord() {
+        let model = LearnerModel::default();
+        let (state, _) = start_explore_chord(9, theory::ChordQuality::Min7, &model, 5);
+
+        // Make it spicy: the Am7 blocks survive the ladder rebuild.
+        let (bumped, seq) = apply_explore_delta(&state, &VariationDelta::BumpDifficulty { by: 1 });
+        let chord = bumped.spec.chord.expect("the tapped chord survives");
+        assert!(chord.stacked, "still block cells");
+        assert_eq!(chord.chord, ChordType::Minor7);
+        assert!(
+            bumped.spec.scale.is_none(),
+            "no ladder scale may shadow the chord figure"
+        );
+        assert!(!seq.chord_targets.is_empty(), "still graded as chords");
+        assert!(seq.label.contains("block chords"), "label: {}", seq.label);
+
+        // Fresh material: DifferentScale visibly REPLACES the chord.
+        let (fresh, seq) = apply_explore_delta(&state, &VariationDelta::DifferentScale);
+        assert!(fresh.spec.chord.is_none());
+        assert!(fresh.spec.scale.is_some(), "a scale figure actually deals");
+        assert!(seq.chord_targets.is_empty());
+
+        // TryPattern likewise.
+        let (fresh, _) = apply_explore_delta(&state, &VariationDelta::TryPattern);
+        assert!(fresh.spec.chord.is_none());
+        assert!(fresh.spec.degrees.is_some(), "a pattern actually deals");
+    }
+
+    /// The practice mapping keeps every heard quality inside its family:
+    /// direct qualities map to their exact catalog type; extensions reduce
+    /// to the family seventh/triad. Spot-pins the reductions a reviewer
+    /// would question.
+    #[test]
+    fn practice_mapping_stays_in_the_family() {
+        use theory::ChordQuality as Q;
+        assert_eq!(practice_chord_type(Q::Maj7), ChordType::Major7);
+        assert_eq!(practice_chord_type(Q::Min7b5), ChordType::HalfDiminished7);
+        assert_eq!(practice_chord_type(Q::Dim7), ChordType::Diminished7);
+        assert_eq!(practice_chord_type(Q::Sus2), ChordType::Sus2Triad);
+        assert_eq!(practice_chord_type(Q::Maj9), ChordType::Major7);
+        assert_eq!(practice_chord_type(Q::MinMaj7), ChordType::Minor7);
+        assert_eq!(practice_chord_type(Q::Add9), ChordType::MajorTriad);
+        assert_eq!(practice_chord_type(Q::Dom7Sus4), ChordType::Dominant7Sus4);
     }
 
     /// #349 T2b: a polyphonic lesson deals its chord drill STACKED — block

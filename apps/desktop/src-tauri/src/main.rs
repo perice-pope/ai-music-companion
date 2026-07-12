@@ -77,6 +77,8 @@ fn main() {
             ai_music_companion::commands::import_midi_file,
             ai_music_companion::commands::list_midi_parts,
             ai_music_companion::commands::explore_measure,
+            ai_music_companion::commands::explore_chord,
+            ai_music_companion::commands::session_chord_chart,
             ai_music_companion::commands::list_score_parts,
             ai_music_companion::commands::import_musicxml_file,
             ai_music_companion::commands::import_audio_file,
