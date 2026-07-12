@@ -199,7 +199,7 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent, Option<[f32; 12]>) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, None, emit, |_| {}, |_| {}, |_| {})
+        Self::start_with_follower(profile, None, None, None, emit, |_| {}, |_| {}, |_| {})
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
@@ -221,6 +221,7 @@ impl AudioPipeline {
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
         idiom_buffer: Option<SharedIdiomBuffer>,
+        poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
         emit: F,
         emit_phrase: P,
         emit_position: S,
@@ -244,6 +245,7 @@ impl AudioPipeline {
                     profile,
                     follower,
                     idiom_buffer,
+                    poly,
                     profile_rx,
                     shutdown_worker,
                     startup_tx,
@@ -307,6 +309,7 @@ fn run_worker<F, P, S, V>(
     initial_profile: DetectorProfile,
     follower: Option<ScoreFollower>,
     idiom_buffer: Option<SharedIdiomBuffer>,
+    poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
@@ -391,6 +394,9 @@ fn run_worker<F, P, S, V>(
     let mut chroma_extractor = ears::chroma::ChromaExtractor::new(sample_rate);
     let mut samples_since_chroma: usize = 0;
     let mut pending_chroma: Option<[f32; 12]> = None;
+    // The session clock as of the last emitted event — carried into a
+    // reconfigured detector so the clock never restarts mid-session.
+    let mut session_clock: f64 = 0.0;
 
     // Tone accumulation. We gather the current phrase's mono audio and its
     // per-window pitch contour on the processing thread (Vec growth is expected
@@ -404,7 +410,12 @@ fn run_worker<F, P, S, V>(
         // Drain config updates; we only care about the latest.
         if let Some(new_profile) = drain_latest(&profile_rx) {
             match PitchDetector::new(new_profile.into_pitch_config(sample_rate)) {
-                Ok(d) => {
+                Ok(mut d) => {
+                    // #349 T3b review M1: ONE session clock. A fresh detector
+                    // restarts at 0.0, which desyncs every consumer keyed on
+                    // event time (poly bass lookups die, stale freshness
+                    // checks pin wrong slashes, chart timestamps restart).
+                    d.set_clock(session_clock);
                     detector = d;
                     tracing::debug!("audio_pipeline: detector reconfigured");
                 }
@@ -461,6 +472,12 @@ fn run_worker<F, P, S, V>(
         // Now (with the live emit already out the door) fold this window
         // into the chroma ring and, at the ~10 Hz hop, compute the reading
         // the next emit will carry.
+        // #349 T3b: the polyphony runner gets the same window — feed()
+        // NEVER blocks (bounded channel, drops on backpressure), so the
+        // ~38 ms inference lives entirely on its own thread.
+        if let Some(p) = &poly {
+            p.feed(mono_slice, sample_rate);
+        }
         chroma_extractor.feed(mono_slice);
         samples_since_chroma += mono_slice.len();
         if samples_since_chroma >= CHROMA_HOP_SAMPLES {
@@ -468,6 +485,10 @@ fn run_worker<F, P, S, V>(
             pending_chroma = chroma_extractor.chroma();
         }
         let event_time = event.timestamp_secs;
+        // The detector's INTERNAL clock has already advanced past this
+        // window; seed a reconfigure with end-of-window so a switch never
+        // back-steps the session clock (review r2 nit).
+        session_clock = event_time + window as f64 / f64::from(sample_rate);
         aggregator.push(&event);
 
         // Accumulate this window's audio + pitch for the in-progress phrase.

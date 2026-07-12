@@ -286,6 +286,52 @@ fn finish_flushes_the_final_chord() {
     }
 }
 
+/// #349 T3b: the runner end to end with REAL inference — an E-in-the-bass
+/// voicing (E2 under C4/G4) surfaces E as the lowest sounding note at the
+/// stream clock. This is the voicing-true slash's evidence source: YIN's
+/// single-pitch track cannot see this bass under the upper voices.
+#[test]
+fn the_runner_hears_the_true_bass_under_a_voicing() {
+    if should_skip_inference() {
+        return;
+    }
+    let runner = transcribe::PolyRunner::spawn().expect("runtime present");
+    let audio = chord(&[40, 60, 67], 3.0); // E2, C4, G4 — "C/E"
+                                           // TRUE realtime pacing with CONCURRENT polling (review r2 MF-B: 4 ms
+                                           // pacing ran 5.8x realtime — under a contended parallel suite the
+                                           // queue overflowed and the tail honestly became silence, while the
+                                           // backdated query raced past the ring horizon; flaky ~1/3). Feeding at
+                                           // the production rate makes overflow impossible even contended, and
+                                           // polling DURING the feed gives a >=0.5 s observation window — exactly
+                                           // how the session consumes the snapshot.
+    let chunk_secs = 1024.0 / f64::from(SR);
+    let mut bass: Option<u8> = None;
+    for w in audio.chunks(1024) {
+        runner.feed(w, SR);
+        std::thread::sleep(std::time::Duration::from_secs_f64(chunk_secs));
+        if bass.is_none() {
+            bass = runner.sounding_bass(1.5);
+        }
+    }
+    // A short grace for the final hop if it hadn't surfaced mid-feed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let bass = loop {
+        if let Some(m) = bass.or_else(|| runner.sounding_bass(1.5)) {
+            break m;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the true bass never surfaced"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    assert!(
+        (i32::from(bass) - 40).abs() <= 1,
+        "lowest sounding note is the E2 bass, got midi {bass}"
+    );
+    runner.stop();
+}
+
 /// #349 T3 AC4 (kill switch): construction NEVER panics — with the runtime
 /// present it succeeds; absent, it returns a calm error a caller can show.
 /// This test runs in both environments and fails if ort's dlopen panic
