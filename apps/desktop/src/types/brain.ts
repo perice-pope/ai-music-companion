@@ -600,6 +600,8 @@ export interface KeySnapshot {
 export interface ChordReading {
   /** Root pitch class, 0–11 (C = 0) — drives the RV root colour. */
   root_pc: number;
+  /** Matched quality (snake_case, e.g. "dom7") — the tap-to-row bridge's template key. */
+  quality?: string | null;
   /** Display label spelled per the active key signature: "C7", "Bbmaj7", "C7/E". */
   label: string;
   /** Sounding bass pitch class when the label names an inversion. */
@@ -619,6 +621,21 @@ export interface PerceptionSnapshot {
   chord?: ChordReading | null;
   /** Several notes sound but no chord fits confidently — show the honest fallback. */
   hearing_polyphony?: boolean;
+}
+
+/** One jam-chart moment (#349 T4a). Mirrors `brain::chord_chart::ChartEntry`. */
+export interface ChartEntry {
+  /** Display label ("Bbmaj7") — empty for unresolved entries. */
+  label: string;
+  root_pc: number | null;
+  /** Quality key for tap-to-row (snake_case), when labeled. */
+  quality: string | null;
+  /** Label confidence 0–1 (0 = unresolved). */
+  confidence: number;
+  /** Session time the entry began, seconds. */
+  at_secs: number;
+  /** Honest "hearing several notes…" stretch — never a guessed name. */
+  unresolved: boolean;
 }
 
 /** Payload of the `segment-changed` Tauri event. */

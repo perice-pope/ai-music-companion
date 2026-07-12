@@ -13,6 +13,7 @@ import RevealCard from "./RevealCard";
 import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
+import ChordLane from "./ChordLane";
 import ScoreView from "./ScoreView";
 import VerdictStrip from "./VerdictStrip";
 import ScorePhraseCard from "./ScorePhraseCard";
@@ -31,6 +32,8 @@ export default function PracticeSession() {
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const activeScoreXml = usePracticeStore((s) => s.activeScoreXml);
   const cursorPosition = usePracticeStore((s) => s.cursorPosition);
+  const listenToRoom = usePracticeStore((s) => s.listenToRoom);
+  const setListenToRoom = usePracticeStore((s) => s.setListenToRoom);
   const lessonDrill = usePracticeStore((s) => s.lessonDrill);
   const lessonRecap = usePracticeStore((s) => s.lessonRecap);
   const startLesson = usePracticeStore((s) => s.startLesson);
@@ -265,10 +268,27 @@ export default function PracticeSession() {
         // last lick" anchored directly beneath it (VA #324 screenshot:
         // parked in the side column it floated in dead space — and vanished
         // entirely on narrow windows behind the lg: breakpoint).
+        // #349 T4a: "Listen to the room" swaps the centerpiece for the jam
+        // chord lane — external music is the SIGNAL, and every heard chord
+        // is one tap from the RV bridge.
         <div className="flex flex-1 flex-col items-center justify-center gap-8 lg:flex-row lg:gap-12">
           <div className="flex flex-col items-center gap-6">
-            <PitchDisplay />
-            <LiftLickButton />
+            {listenToRoom ? <ChordLane /> : <PitchDisplay />}
+            {listenToRoom ? null : <LiftLickButton />}
+            <button
+              type="button"
+              data-testid="listen-to-room-toggle"
+              onClick={() => setListenToRoom(!listenToRoom)}
+              className={`rounded-full border px-4 py-1.5 text-xs ${
+                listenToRoom
+                  ? "border-emerald-500 text-emerald-300"
+                  : "border-gray-600 text-gray-400 hover:border-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {listenToRoom
+                ? "🎧 Listening to the room"
+                : "🎧 Listen to the room"}
+            </button>
           </div>
           <div className="hidden lg:flex lg:flex-col lg:gap-4">
             <CoachingTipPanel />
