@@ -233,7 +233,7 @@ export default function PracticeSession() {
           <ExplorePanel />
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
-            <div className="hidden lg:flex lg:flex-col lg:gap-4">
+            <div className="flex flex-col gap-4">
               <RevealCard />
             </div>
           </div>
@@ -274,7 +274,7 @@ export default function PracticeSession() {
           </div>
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
-            <div className="hidden lg:flex lg:flex-col lg:gap-4">
+            <div className="flex flex-col gap-4">
               <CoachingTipPanel />
               <RevealCard />
             </div>
@@ -283,8 +283,11 @@ export default function PracticeSession() {
       ) : (
         // Free play: the pitch meter is the centerpiece, with "work on my
         // last lick" anchored directly beneath it (VA #324 screenshot:
-        // parked in the side column it floated in dead space — and vanished
-        // entirely on narrow windows behind the lg: breakpoint).
+        // parked in the side column it floated in dead space). #329: the
+        // side column itself is visible at EVERY width now — on narrow
+        // windows it stacks below the centerpiece instead of vanishing
+        // (reveals are a flagship; hiding them behind lg: was the same
+        // defect class as the button placement #324 fixed).
         // #349 T4a: "Listen to the room" swaps the centerpiece for the jam
         // chord lane — external music is the SIGNAL, and every heard chord
         // is one tap from the RV bridge.
@@ -307,7 +310,7 @@ export default function PracticeSession() {
                 : "🎧 Listen to the room"}
             </button>
           </div>
-          <div className="hidden lg:flex lg:flex-col lg:gap-4">
+          <div className="flex flex-col gap-4">
             <CoachingTipPanel />
             <RevealCard />
           </div>
