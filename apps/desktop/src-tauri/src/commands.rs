@@ -4675,6 +4675,88 @@ mod tests {
         assert!(rows.iter().any(|r| r.source == "progression_lift"));
     }
 
+    /// Review MF2: the chart-shaping contract, pinned against its three
+    /// surviving mutations — A→B→A keeps its return chord (only
+    /// CONSECUTIVE dupes collapse), a 5-chord chart lifts its TRAILING 4,
+    /// and one repeated chord (dedup → 1 distinct) refuses calmly.
+    #[test]
+    fn chart_shaping_keeps_returns_trails_and_refuses() {
+        let snap = |pc: u8, q: brain::theory::ChordQuality| brain::perception::PerceptionSnapshot {
+            chord: Some(brain::perception::ChordReading {
+                root_pc: pc,
+                quality: Some(q),
+                label: format!("pc{pc}"),
+                bass_pc: None,
+                confidence: 0.8,
+            }),
+            ..brain::perception::PerceptionSnapshot::EMPTY
+        };
+        use brain::theory::ChordQuality as Q;
+
+        // A→B→A: the return chord survives.
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(0, Q::Maj), 0.0);
+            chart.observe(&snap(5, Q::Maj), 1.0);
+            chart.observe(&snap(0, Q::Maj), 2.0);
+        }
+        let dto = explore_progression_impl(&s, 42).unwrap();
+        let steps = s
+            .active_explore
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .spec
+            .progression
+            .clone()
+            .unwrap();
+        assert_eq!(steps.len(), 3, "A-B-A keeps the return: {}", dto.label);
+        assert_eq!(steps[2].offset, 0, "…back to the anchor");
+
+        // 5 distinct chords: the TRAILING 4 lift (anchor = 2nd played).
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            for (i, pc) in [0u8, 2, 4, 5, 7].iter().enumerate() {
+                chart.observe(&snap(*pc, Q::Maj), i as f64);
+            }
+        }
+        explore_progression_impl(&s, 42).unwrap();
+        let steps = s
+            .active_explore
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .spec
+            .progression
+            .clone()
+            .unwrap();
+        assert_eq!(steps.len(), 4, "capped at 4");
+        assert_eq!(
+            steps.iter().map(|st| st.offset).collect::<Vec<_>>(),
+            [0, 2, 3, 5],
+            "the trailing 4 (anchor D): D E F G"
+        );
+
+        // One chord re-struck around silence: 1 distinct → calm refusal.
+        let s = state();
+        {
+            let mut chart = s.chord_chart.lock().unwrap();
+            chart.observe(&snap(2, Q::Min7), 0.0);
+            chart.observe(&brain::perception::PerceptionSnapshot::EMPTY, 1.0);
+            chart.observe(&snap(2, Q::Min7), 2.0);
+        }
+        assert!(
+            explore_progression_impl(&s, 42)
+                .unwrap_err()
+                .contains("play a couple of chords"),
+            "one distinct chord refuses"
+        );
+    }
+
     /// #349 T4a end-to-end at the command layer: tapping a heard chord in
     /// the jam lane rows it as stacked block cells through the SAME explore
     /// machinery as a lifted lick — active exploration installed, staff

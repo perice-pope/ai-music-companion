@@ -228,7 +228,8 @@ Open the samples folder for her so she can drag a file:
 11g. **Work on my last progression (NEW this run).** After playing (or playing a recording of)
    a few chords in any session — the jam lane is perfect for this — tap **"🎲 Work on my last
    progression"**. "The app should deal the chord SEQUENCE it just heard (like 'Dm7 → G7 →
-   Cmaj7') through 12 keys — each key plays all the chords in a row as block chords. Tap it
+   Cmaj7') through the keys (3 or more, growing as you level up) — each key plays all the
+   chords in a row as block chords. Tap it
    before playing any chords: it should calmly ask you to play a couple first. Does drilling a
    whole progression through the keys feel like the RV idea leveled up?"
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in

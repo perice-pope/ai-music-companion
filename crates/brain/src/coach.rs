@@ -1291,7 +1291,16 @@ pub fn start_explore_progression(
         state.spec.randomize_roots = true; // the RV shuffle, from the start
     }
     let mut sequence = generate(&state.spec, state.seed);
-    sequence.label = respell_label(&sequence.label, key_signature_for(anchor, &family).fifths);
+    // #335 (review MF1): respell_label only fixes a label's LEADING note
+    // token — useless for "your progression · D#m7 → …". Build the whole
+    // label here, every chord name spelled per the engraved signature, so
+    // an Eb-minor progression can never read sharp over a flat staff.
+    let fifths = key_signature_for(anchor, &family).fifths;
+    let names: Vec<String> = chords
+        .iter()
+        .map(|&(pc, q)| format!("{}{}", tonic_display_name(pc % 12, fifths), q.suffix()))
+        .collect();
+    sequence.label = format!("your progression · {}", names.join(" → "));
     (state, sequence)
 }
 
@@ -1588,6 +1597,27 @@ mod tests {
         assert_eq!(seq.chord_targets[0].quality, theory::ChordQuality::Min7);
         assert_eq!(seq.chord_targets[1].root_pc, 7);
         assert_eq!(seq.chord_targets[2].root_pc, 0);
+    }
+
+    /// Review MF1: a FLAT-family progression's label spells flat — heard
+    /// Ebm7 → Ab7 → Dbmaj7 must read exactly that, never "D#m7 → G#7 →
+    /// C#maj7" over a flat staff (the accidental-free ii–V–I fixture was
+    /// blind to this). Fails if the label stops spelling per signature.
+    #[test]
+    fn a_flat_progression_labels_flat() {
+        let model = LearnerModel::default();
+        let heard = [
+            (3u8, theory::ChordQuality::Min7), // Ebm7
+            (8, theory::ChordQuality::Dom7),   // Ab7
+            (1, theory::ChordQuality::Maj7),   // Dbmaj7
+        ];
+        let (_, seq) = start_explore_progression(&heard, &model, 5);
+        assert!(
+            seq.label.contains("Ebm7") && seq.label.contains("Ab7") && seq.label.contains("Dbmaj7"),
+            "flat spelling throughout: {}",
+            seq.label
+        );
+        assert!(!seq.label.contains('#'), "no sharps: {}", seq.label);
     }
 
     /// T3c pre-empt of the T4a M1 class: chips must not destroy a lifted

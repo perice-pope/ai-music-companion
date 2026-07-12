@@ -225,7 +225,11 @@ pub struct GeneratedNote {
 /// re-roots in every key exactly like a cell's semitone offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressionStep {
-    /// Semitones above the key root, 0..12.
+    /// Semitones above the key root, 0..12. Register note: offsets always
+    /// realize ABOVE the key root, so descending root motion (C → Am)
+    /// renders its A a 6th up rather than a 3rd down — the harmonic
+    /// identity is what one-cell-per-measure drills practice; nearest-
+    /// realization (signed) offsets are a possible later refinement.
     pub offset: u8,
     /// The practice template for this chord.
     pub chord: ChordType,
