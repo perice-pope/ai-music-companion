@@ -363,22 +363,39 @@ fn drill_seed(lesson_seed: u64, index: u8) -> u64 {
 fn build_drill(lesson: &LessonSpec, index: u8, difficulty: u8, tonic: u8) -> Option<Drill> {
     let count = lesson.drill_count.clamp(3, 4);
     let kind = kind_at(index, count)?;
+    let mut drill = drill_for(
+        kind,
+        difficulty,
+        tonic,
+        lesson.polyphonic,
+        drill_seed(lesson.seed, index),
+    );
+    drill.index = index;
+    Some(drill)
+}
+
+/// Build one drill directly from its coordinates, outside the lesson state
+/// machine. This is the notation-harness seam (#327): the render sweep in
+/// `tests/lesson_drill_notation_test.rs` walks every (kind, difficulty,
+/// tonic) the routine can deal and proves the engraved MusicXML survives
+/// OSMD — through the exact same generator path the lesson uses.
+pub fn drill_for(kind: DrillKind, difficulty: u8, tonic: u8, polyphonic: bool, seed: u64) -> Drill {
     let d = difficulty.min(MAX_DIFFICULTY);
-    let (spec, mode) = spec_for(kind, d, tonic, lesson.polyphonic);
-    let mut sequence = generate(&spec, drill_seed(lesson.seed, index));
+    let (spec, mode) = spec_for(kind, d, tonic, polyphonic);
+    let mut sequence = generate(&spec, seed);
     // The label rides everywhere the drill shows (header, recap, score
     // title) — respell it to the engraved signature so no surface can say
     // "C#" over flats (#335).
     sequence.label = respell_label(&sequence.label, key_signature_for(tonic, &mode).fifths);
-    Some(Drill {
-        index,
+    Drill {
+        index: 0,
         kind,
         difficulty: d,
         tonic,
         mode,
         spec,
         sequence,
-    })
+    }
 }
 
 /// Build drill 0 from the lesson spec + current learner state. Deterministic

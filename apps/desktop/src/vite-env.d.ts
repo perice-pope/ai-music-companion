@@ -6,6 +6,12 @@ declare module "*.musicxml?raw" {
   export default content;
 }
 
+/** Lesson-drill fixture (#327), raw so the sweep parses + types it itself. */
+declare module "*.json?raw" {
+  const content: string;
+  export default content;
+}
+
 interface ImportMetaEnv {
   /** Supabase project API URL. Falls back to the bundled project default. */
   readonly VITE_SUPABASE_URL?: string;
