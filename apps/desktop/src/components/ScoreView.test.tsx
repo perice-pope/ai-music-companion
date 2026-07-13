@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, waitFor, cleanup, screen, fireEvent } from "@testing-library/react";
+import {
+  render,
+  waitFor,
+  cleanup,
+  screen,
+  fireEvent,
+} from "@testing-library/react";
 import ScoreView, {
   boundsFromGraphicSheet,
   measureIndexByXmlNumber,
@@ -526,10 +532,7 @@ describe("ScoreView — measure tap overlay (#341)", () => {
     fireEvent.click(screen.getByTestId("measure-hit-2"));
     expect(taps).toEqual([2]);
     const hit = screen.getByTestId("measure-hit-2");
-    expect(hit).toHaveAttribute(
-      "aria-label",
-      "Row measure 2 through 12 keys",
-    );
+    expect(hit).toHaveAttribute("aria-label", "Row measure 2 through 12 keys");
     expect(hit.style.left).toBe("100px");
   });
 
@@ -676,8 +679,20 @@ describe("measureIndexByXmlNumber — the cursor's numbering map (#370)", () => 
     expect(map.get(2)).toBe(1);
   });
 
+  // Implicit measures (after repeats / voltas) can repeat an XML number —
+  // first sighting wins, so the cursor walks to the earlier statement
+  // instead of teleporting past unplayed music.
+  it("first sighting wins when an XML number repeats", () => {
+    const map = measureIndexByXmlNumber([
+      [withXml(1)],
+      [withXml(1)],
+      [withXml(2)],
+    ]);
+    expect(map.get(1)).toBe(0);
+    expect(map.get(2)).toBe(2);
+  });
+
   it("empty input yields an empty map", () => {
     expect(measureIndexByXmlNumber(undefined).size).toBe(0);
   });
 });
-
