@@ -183,12 +183,15 @@ While the session is running:
 5. **Escape hatch** — "Start one more lesson and tap **'End lesson'** mid-way — it should calmly
    return you to free play."
 
-**Bug hunt (#327 — please do this one deliberately):** the lesson notation sometimes fails with
-"Could not render this score" — it depends on the KEY. Run at least **4 separate lessons** (end
-and restart to get different keys). For every lesson, jot the key name shown in the colored cell
-(like "C#", "G", "Eb"). If the error appears, we need: the exact key name, whether it happened on
-drill 1 or later, and whether ending + starting a new lesson cleared it. If 4+ lessons all render
-clean, say that too — "didn't reproduce in N tries" is real data.
+**Bug hunt (#327 — please do this one deliberately):** the lesson notation sometimes fails to
+draw — it depends on the KEY. When it happens you'll see a calm gray notice ("The notation
+couldn't be drawn for this one…") where the sheet music should be; the colored cells stay. Run
+at least **4 separate lessons** (end and restart to get different keys). For every lesson, jot
+the key name shown in the colored cell (like "C#", "G", "Eb"). If the notice appears, we need:
+the exact key name, whether it happened on drill 1 or later, and whether ending + starting a new
+lesson cleared it (the technical error is in the session log and on the notice's hover text —
+grab it if you can). If 4+ lessons all render clean, say that too — "didn't reproduce in N
+tries" is real data.
 
 ### A3. Your Keys wheel 🎡 (NEW)
 Back on the **instrument picker screen** (end the session or tap Done first):
