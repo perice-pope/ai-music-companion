@@ -167,24 +167,33 @@ fn fixture_json() -> String {
 /// of its row, so an empty one is an emission bug, not a musical choice.
 #[test]
 fn no_drill_shape_emits_an_osmd_killing_measure() {
+    // Three decorrelated seeds per case: real lessons draw seeds from the
+    // whole u64 space, so the invariant must hold across the generator's
+    // randomization (root shuffle, per-root direction), not just at the
+    // fixture's seed.
+    let salts = [0u64, 1_000_003, 0x9E37_79B9_7F4A_7C15];
     for (i, case) in sweep().iter().enumerate() {
-        let e = emit(case, i as u64);
-        assert!(
-            !e.sounding.is_empty() && e.sounding.iter().all(|&n| n > 0),
-            "{}: a measure engraved with zero sounding notes — the exact \
+        for e in salts
+            .iter()
+            .map(|s| emit(case, (i as u64).wrapping_add(*s)))
+        {
+            assert!(
+                !e.sounding.is_empty() && e.sounding.iter().all(|&n| n > 0),
+                "{}: a measure engraved with zero sounding notes — the exact \
              shape OSMD's cursor dies on: {:?}",
-            e.id,
-            e.sounding
-        );
-        let directions =
-            e.xml.matches("<direction ").count() + e.xml.matches("<direction>").count();
-        let direction_types = e.xml.matches("<direction-type>").count();
-        assert_eq!(
-            directions, direction_types,
-            "{}: every <direction> needs a <direction-type> — OSMD drops the \
+                e.id,
+                e.sounding
+            );
+            let directions =
+                e.xml.matches("<direction ").count() + e.xml.matches("<direction>").count();
+            let direction_types = e.xml.matches("<direction-type>").count();
+            assert_eq!(
+                directions, direction_types,
+                "{}: every <direction> needs a <direction-type> — OSMD drops the \
              whole measure's notes otherwise",
-            e.id
-        );
+                e.id
+            );
+        }
     }
 }
 

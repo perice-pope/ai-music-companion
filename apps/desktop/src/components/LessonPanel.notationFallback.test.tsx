@@ -44,7 +44,11 @@ describe("LessonPanel when the drill notation cannot render (#327)", () => {
     usePracticeStore.setState({ lessonDrill: brokenDrill });
     render(<LessonPanel />);
 
-    const notice = await waitFor(() => screen.getByTestId("score-view-error"));
+    // Generous timeout: the real OSMD chunk dynamic-imports on first use,
+    // which can outrun waitFor's 1s default on a cold CI worker.
+    const notice = await waitFor(() => screen.getByTestId("score-view-error"), {
+      timeout: 5000,
+    });
 
     // The drill is still playable: header, cells, and grading chrome stand.
     expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
