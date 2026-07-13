@@ -1,3 +1,9 @@
+## [2.26.1](https://github.com/perice-pope/ai-music-companion/compare/v2.26.0...v2.26.1) (2026-07-13)
+
+### Bug Fixes
+
+* **score:** cursor walks by XML measure number; exploration phrases shed score anchors ([#370](https://github.com/perice-pope/ai-music-companion/issues/370)) ([#377](https://github.com/perice-pope/ai-music-companion/issues/377)) ([3a8eca5](https://github.com/perice-pope/ai-music-companion/commit/3a8eca5f17789c63ba5f0fe223c5160b96649e1c))
+
 ## [2.26.0](https://github.com/perice-pope/ai-music-companion/compare/v2.25.0...v2.26.0) (2026-07-12)
 
 ### Features
