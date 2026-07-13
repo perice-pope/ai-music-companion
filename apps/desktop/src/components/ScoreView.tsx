@@ -324,6 +324,11 @@ export default function ScoreView({
       } catch (err) {
         if (!cancelled) {
           osmdRef.current = null;
+          // The raw error goes to the console, where the VA log collector
+          // finds it; the surface stays calm (#327) — a raw TypeError
+          // paragraph mid-lesson reads as breakage, and everything around
+          // the notation (cells, grading, playback) still works.
+          console.error("ScoreView: notation failed to render", err);
           setError(String(err));
         }
       }
@@ -398,8 +403,13 @@ export default function ScoreView({
       }
     >
       {error && (
-        <p data-testid="score-view-error" className="text-sm text-red-600">
-          Could not render this score: {error}
+        <p
+          data-testid="score-view-error"
+          title={error}
+          className="text-sm text-gray-500"
+        >
+          The notation couldn&apos;t be drawn for this one — everything else
+          keeps working without it.
         </p>
       )}
       {!musicXml && !error && (

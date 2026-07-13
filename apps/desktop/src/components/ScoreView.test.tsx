@@ -253,10 +253,19 @@ describe("ScoreView — wiring with a fake OSMD", () => {
     cleanup();
   });
 
-  it("surfaces a load error without crashing", async () => {
+  // #327: the VA tester read a raw "TypeError: undefined is not an object
+  // (evaluating 't3.StaffEntries')" mid-lesson. The surface must stay calm:
+  // the player gets plain words, the raw error goes to the console (where
+  // the VA log collector finds it) and the notice's hover title.
+  it("surfaces a load error as a calm notice, never the raw TypeError", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     const failing: OsmdFactory = () => ({
       async load() {
-        throw new Error("bad xml");
+        throw new TypeError(
+          "undefined is not an object (evaluating 't3.StaffEntries')",
+        );
       },
       render() {},
       cursor: { show() {}, hide() {}, reset() {}, next() {} },
@@ -269,6 +278,16 @@ describe("ScoreView — wiring with a fake OSMD", () => {
       />,
     );
     await waitFor(() => expect(getByTestId("score-view-error")).toBeTruthy());
+    const notice = getByTestId("score-view-error");
+    expect(notice.textContent).toContain("notation couldn't be drawn");
+    expect(notice.textContent).not.toContain("TypeError");
+    expect(notice.textContent).not.toContain("StaffEntries");
+    expect(notice.getAttribute("title")).toContain("StaffEntries");
+    expect(consoleError).toHaveBeenCalledWith(
+      "ScoreView: notation failed to render",
+      expect.any(TypeError),
+    );
+    consoleError.mockRestore();
     cleanup();
   });
 });
