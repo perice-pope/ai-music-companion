@@ -24,6 +24,12 @@ export interface OsmdLike {
    * older fakes) simply have no tap targets.
    */
   measureBounds?(): MeasureBound[];
+  /**
+   * #370: XML measure number → 0-based cursor index, read from OSMD's
+   * layout after render. Optional — fakes without it fall back to the
+   * no-pickup assumption (number − 1).
+   */
+  measureIndexMap?(): Map<number, number>;
 }
 
 /** One measure's hit region, container-pixel coordinates (#341). */
@@ -118,6 +124,12 @@ const makeDefaultFactory =
         } | null;
         return boundsFromGraphicSheet(g?.GraphicSheet?.MeasureList, g?.Zoom);
       },
+      measureIndexMap() {
+        const g = inner as unknown as {
+          GraphicSheet?: { MeasureList?: OsmdStaffMeasure[][] };
+        } | null;
+        return measureIndexByXmlNumber(g?.GraphicSheet?.MeasureList);
+      },
     };
   };
 
@@ -177,6 +189,31 @@ export function boundsFromGraphicSheet(
     });
   });
   return out;
+}
+
+/**
+ * #370: XML measure number → 0-based cursor index, from OSMD's layout.
+ * The follower reports the MusicXML `number` attribute, and pickup-bar
+ * scores number 0,1,2… — so "index = number − 1" (the tap overlay's old
+ * bug, review M3) sat the CURSOR one measure behind the player for the
+ * whole piece too. Same treatment as the overlay: read
+ * `parentSourceMeasure.MeasureNumberXML` per list slot, falling back to
+ * list order (i+1) for shims that don't carry it. First sighting wins if
+ * a number ever repeats.
+ */
+export function measureIndexByXmlNumber(
+  list: OsmdStaffMeasure[][] | undefined,
+): Map<number, number> {
+  const map = new Map<number, number>();
+  list?.forEach((staves, i) => {
+    let xmlNumber: number | undefined;
+    for (const staff of staves) {
+      xmlNumber ??= staff?.parentSourceMeasure?.MeasureNumberXML;
+    }
+    const n = xmlNumber ?? i + 1;
+    if (!map.has(n)) map.set(n, i);
+  });
+  return map;
 }
 
 /** Stable factory instances so effect deps don't churn between renders. */
@@ -239,6 +276,12 @@ export default function ScoreView({
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
   /**
+   * #370: XML measure number → cursor index for the current score, read
+   * once per render. Null (older fakes, pre-render) falls back to the
+   * no-pickup assumption in effect 2.
+   */
+  const xmlIndexRef = useRef<Map<number, number> | null>(null);
+  /**
    * Whether we have show()n the cursor for the current score. Real OSMD's
    * show() re-runs update() — getBoundingClientRect + a smooth
    * scrollIntoView — so calling it on every ~10 Hz position tick would
@@ -253,6 +296,7 @@ export default function ScoreView({
     setReady(false);
     setError(null);
     cursorMeasureRef.current = -1;
+    xmlIndexRef.current = null;
 
     if (!musicXml || !containerRef.current) {
       osmdRef.current = null;
@@ -274,6 +318,8 @@ export default function ScoreView({
         // #341: read the layout's measure regions once per render — the
         // overlay is geometry over a static layout, not a live listener.
         setMeasureRects(osmd.measureBounds?.() ?? []);
+        // #370: and the XML-number → index map the cursor walks by.
+        xmlIndexRef.current = osmd.measureIndexMap?.() ?? null;
         setReady(true);
       } catch (err) {
         if (!cancelled) {
@@ -330,11 +376,14 @@ export default function ScoreView({
       osmd.cursor.show();
       cursorShownRef.current = true;
     }
-    // ScorePosition measures are 1-based (MusicXML convention); OSMD's
-    // iterator is 0-based.
+    // The follower reports the MusicXML `number` attribute; OSMD's
+    // iterator is a 0-based index. Pickup-bar scores number 0,1,2…, so
+    // the layout-read map is authoritative (#370); "number − 1" is only
+    // the fallback for shims that carry no map.
     moveCursorToMeasure(
       osmd,
-      Math.max(0, cursorPosition.measure_number - 1),
+      xmlIndexRef.current?.get(cursorPosition.measure_number) ??
+        Math.max(0, cursorPosition.measure_number - 1),
       cursorMeasureRef,
     );
   }, [ready, cursorPosition]);

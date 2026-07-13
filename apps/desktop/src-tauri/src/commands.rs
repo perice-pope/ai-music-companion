@@ -1515,6 +1515,65 @@ fn emit_phrase_detected<R: Runtime>(app: &tauri::AppHandle<R>, phrase: PhraseSum
     let _ = app.emit("phrase-detected", phrase);
 }
 
+/// #370 (#341 review residual 2): while a tap-a-measure exploration is on
+/// stage, the follower keeps aligning — the rowed cell is near-identical to
+/// the score — so phrases closed mid-exploration carry score anchors for
+/// music the player wasn't playing AT the score. Detach every score-anchored
+/// field: the card never cites the exploration, the cursor never jumps to its
+/// bogus measure (`phrase-detected` moves the cursor too), and the recap's
+/// score summary never counts it. Everything else stays — the lift path
+/// ("work on my last lick") lifts from `pitch_stats.pitches`, which must keep
+/// hearing exploration playing.
+fn scrub_score_anchors_if_exploring(mut phrase: PhraseSummary, exploring: bool) -> PhraseSummary {
+    if exploring {
+        phrase.score_position = None;
+        phrase.score_span = None;
+        phrase.verdicts = None;
+        phrase.score_card = None;
+    }
+    phrase
+}
+
+/// The pipeline's phrase-close callback (#370): buffer for the recap, retune
+/// the band, emit to the UI — with exploration phrases shedding their score
+/// anchors first.
+///
+/// A phrase only closes when the NEXT voiced event arrives after a silence
+/// gap, so the phrase overlaying an exploration typically closes AFTER
+/// "Back to listening" clears the gate — a gate read at close time alone
+/// leaks its bogus anchors (review MF1). Since the event that closes a
+/// phrase is the first event of the next one, the callback latches the
+/// gate's state at each close as "did the next phrase open mid-exploration"
+/// and scrubs on either signal. The conservative half — the last honest
+/// score phrase closing on the first ROWED note loses its anchors too — is
+/// accepted: silence over lies.
+fn make_phrase_closed_callback<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    phrase_buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>>,
+    accompaniment: Arc<std::sync::Mutex<Option<Accompaniment>>>,
+    explore_gate: Arc<std::sync::Mutex<Option<ExploreState>>>,
+) -> impl FnMut(PhraseSummary) + Send + 'static {
+    // The first phrase opens with the session itself, and an exploration can
+    // already be on stage (staged from a recap, practised in a fresh session).
+    let mut opened_while_exploring = explore_gate.lock_or_recover().is_some();
+    move |phrase| {
+        let exploring_now = explore_gate.lock_or_recover().is_some();
+        let phrase =
+            scrub_score_anchors_if_exploring(phrase, exploring_now || opened_while_exploring);
+        opened_while_exploring = exploring_now;
+        // Buffer a copy for the recap (drained into the recorder at session
+        // end), then emit to the UI for live display.
+        phrase_buffer.lock_or_recover().push(phrase.clone());
+        // Retune the band when this phrase carries a confident key.
+        if let Some(key) = phrase.key.as_ref() {
+            if let Some(accompaniment) = accompaniment.lock_or_recover().as_mut() {
+                accompaniment.driver.observe_key(key);
+            }
+        }
+        emit_phrase_detected(&app, phrase);
+    }
+}
+
 /// Emit the follower's live score position (~10 Hz) so the cursor glides
 /// between phrase boundaries. Only fires in score mode. Non-fatal on
 /// error: a dropped tick just means one skipped frame of cursor motion.
@@ -2031,6 +2090,7 @@ pub async fn start_practice_session<R: Runtime>(
                 // exploration; both resume at "Back to listening".
                 let explore_gate_verdict = state.active_explore.clone();
                 let explore_gate_position = state.active_explore.clone();
+                let explore_gate_phrase = state.active_explore.clone();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2106,20 +2166,12 @@ pub async fn start_practice_session<R: Runtime>(
                         }
                         let _ = app_for_emit.emit("audio-event", event);
                     },
-                    move |phrase| {
-                        // Buffer a copy for the recap (drained into the recorder
-                        // at session end), then emit to the UI for live display.
-                        phrase_buffer.lock_or_recover().push(phrase.clone());
-                        // Retune the band when this phrase carries a confident key.
-                        if let Some(key) = phrase.key.as_ref() {
-                            if let Some(accompaniment) =
-                                accomp_for_phrase.lock_or_recover().as_mut()
-                            {
-                                accompaniment.driver.observe_key(key);
-                            }
-                        }
-                        emit_phrase_detected(&app_for_phrase, phrase);
-                    },
+                    make_phrase_closed_callback(
+                        app_for_phrase,
+                        phrase_buffer,
+                        accomp_for_phrase,
+                        explore_gate_phrase,
+                    ),
                     move |position| {
                         if explore_gate_position.lock_or_recover().is_some() {
                             return; // exploration on stage — the cursor rests
@@ -4630,6 +4682,117 @@ mod tests {
         let edited =
             edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
         assert!(edited.can_undo);
+    }
+
+    /// #370 (#341 review residual 2): a phrase closed while an exploration
+    /// is on stage sheds every score anchor — so the score card, the
+    /// cursor (`phrase-detected` moves it too), and the recap never cite
+    /// the exploration — while the phrase itself stays liftable. With no
+    /// exploration live, the phrase passes through untouched. Fails if the
+    /// scrub drops the wrong fields, fires when it shouldn't, or breaks
+    /// the lift path.
+    #[test]
+    fn exploration_phrases_shed_score_anchors_but_stay_liftable() {
+        // A score-anchored phrase whose lick is liftable: D F E A D.
+        let mut phrase = sample_phrase();
+        phrase.pitch_stats.pitches = [62u8, 65, 64, 69, 62]
+            .iter()
+            .flat_map(|&m| {
+                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                std::iter::repeat_n(hz, 6)
+            })
+            .collect();
+        phrase.score_position = Some(ScorePosition {
+            measure_number: 3,
+            beat: 1.0,
+            section_name: None,
+            expected_note: Some(62),
+        });
+        phrase.score_span = Some((3, 4));
+        phrase.verdicts = Some(brain::phrase::PhraseVerdicts {
+            hit: 2,
+            near: 1,
+            missed: 1,
+        });
+        phrase.score_card = Some("Measures 3–4 — 2 clean, 1 rough, 1 missed".to_owned());
+
+        // No exploration live → untouched, anchors and all.
+        let kept = scrub_score_anchors_if_exploring(phrase.clone(), false);
+        assert_eq!(kept, phrase, "no exploration → the phrase passes through");
+
+        // Exploration live → every score anchor gone, nothing else.
+        let scrubbed = scrub_score_anchors_if_exploring(phrase.clone(), true);
+        assert!(scrubbed.score_position.is_none(), "cursor anchor detached");
+        assert!(scrubbed.score_span.is_none(), "span detached");
+        assert!(scrubbed.verdicts.is_none(), "verdict tally detached");
+        assert!(scrubbed.score_card.is_none(), "card line detached");
+        assert_eq!(
+            scrubbed.pitch_stats.pitches, phrase.pitch_stats.pitches,
+            "the lick itself is untouched"
+        );
+
+        // …and the lift path still lifts it (the AC's second half).
+        let s = state();
+        s.phrase_buffer.lock().unwrap().push(scrubbed);
+        let dto = explore_last_phrase_impl(&s, 42).unwrap();
+        assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
+    }
+
+    /// #370 review MF1+MF2 — the scrub WIRING at the "Back to listening"
+    /// boundary, driven through the real pipeline callback. A phrase only
+    /// closes when the NEXT event arrives, so the phrase overlaying an
+    /// exploration closes AFTER the gate clears: a callback that reads the
+    /// gate at close time alone leaks that phrase's bogus anchors into the
+    /// buffer and the card. Fails if the scrub is unwired from the
+    /// callback, or the opened-mid-exploration latch is dropped, or honest
+    /// phrases get scrubbed.
+    #[test]
+    fn phrase_callback_scrubs_across_the_back_to_listening_boundary() {
+        use tauri::test::mock_app;
+        let app = mock_app();
+        let buffer: Arc<std::sync::Mutex<Vec<PhraseSummary>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate: Arc<std::sync::Mutex<Option<ExploreState>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let mut on_phrase = make_phrase_closed_callback(
+            app.handle().clone(),
+            buffer.clone(),
+            Arc::new(std::sync::Mutex::new(None)),
+            gate.clone(),
+        );
+        let anchored = || {
+            let mut p = sample_phrase();
+            p.score_span = Some((3, 4));
+            p.score_card = Some("Measures 3–4 — 2 clean".to_owned());
+            p
+        };
+        let staged_explore = || {
+            brain::coach::start_explore(0, "major", &brain::learner::LearnerModel::default(), 1).0
+        };
+
+        // 1: closes with no exploration anywhere near it → anchors kept.
+        on_phrase(anchored());
+        // 2: closes while the exploration is on stage → scrubbed.
+        *gate.lock().unwrap() = Some(staged_explore());
+        on_phrase(anchored());
+        // 3: "Back to listening" clears the gate BEFORE the phrase that was
+        // open during the exploration closes → still scrubbed (the leak).
+        *gate.lock().unwrap() = None;
+        on_phrase(anchored());
+        // 4: opened and closed after the exploration ended → kept.
+        on_phrase(anchored());
+
+        let buf = buffer.lock().unwrap();
+        let cards: Vec<bool> = buf.iter().map(|p| p.score_card.is_some()).collect();
+        assert_eq!(
+            cards,
+            [true, false, false, true],
+            "kept / mid-exploration / boundary leak / kept"
+        );
+        assert!(
+            buf.iter().all(|p| p.note_count == 6),
+            "the phrases themselves stay buffered for the lift path"
+        );
     }
 
     /// #349 T3 AC3 at the command layer: the chart's trailing chords lift

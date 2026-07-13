@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, waitFor, cleanup, screen, fireEvent } from "@testing-library/react";
+import {
+  render,
+  waitFor,
+  cleanup,
+  screen,
+  fireEvent,
+} from "@testing-library/react";
 import ScoreView, {
   boundsFromGraphicSheet,
+  measureIndexByXmlNumber,
   type OsmdLike,
   type OsmdFactory,
   type OsmdStaffMeasure,
@@ -148,6 +155,40 @@ describe("ScoreView — wiring with a fake OSMD", () => {
       <ScoreView
         musicXml={SCALE_XML}
         cursorPosition={pos(3)}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.currentMeasure()).toBe(2));
+    cleanup();
+  });
+
+  it("walks the cursor by the XML-number map on pickup-bar scores (#370)", async () => {
+    // An anacrusis score numbers its measures 0,1,2,3 — XML number n lives
+    // at index n. The old "n − 1" mapping sat the cursor one measure
+    // behind the player for the whole piece.
+    const fake = makeFakeOsmd(4);
+    fake.osmd.measureIndexMap = () =>
+      new Map([
+        [0, 0],
+        [1, 1],
+        [2, 2],
+        [3, 3],
+      ]);
+    const { rerender } = render(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.calls).toContain("render"));
+
+    // The follower reports XML measure 2 → the cursor must sit on INDEX 2
+    // (the measure whose XML number was reported), not index 1.
+    rerender(
+      <ScoreView
+        musicXml={SCALE_XML}
+        cursorPosition={pos(2)}
         osmdFactory={fake.factory}
       />,
     );
@@ -491,10 +532,7 @@ describe("ScoreView — measure tap overlay (#341)", () => {
     fireEvent.click(screen.getByTestId("measure-hit-2"));
     expect(taps).toEqual([2]);
     const hit = screen.getByTestId("measure-hit-2");
-    expect(hit).toHaveAttribute(
-      "aria-label",
-      "Row measure 2 through 12 keys",
-    );
+    expect(hit).toHaveAttribute("aria-label", "Row measure 2 through 12 keys");
     expect(hit.style.left).toBe("100px");
   });
 
@@ -611,3 +649,50 @@ describe("boundsFromGraphicSheet — the OSMD-contract math (#341)", () => {
   });
 });
 
+describe("measureIndexByXmlNumber — the cursor's numbering map (#370)", () => {
+  const withXml = (n: number): OsmdStaffMeasure => ({
+    parentSourceMeasure: { MeasureNumberXML: n },
+  });
+
+  // The follower reports the XML `number` attribute; pickup scores number
+  // 0,1,2… — so XML number n lives at index n, NOT n − 1.
+  it("maps pickup-bar numbering to list indices", () => {
+    const map = measureIndexByXmlNumber([
+      [withXml(0)], // anacrusis: number="0"
+      [withXml(1)],
+      [withXml(2)],
+    ]);
+    expect(map.get(0)).toBe(0);
+    expect(map.get(1)).toBe(1);
+    expect(map.get(2)).toBe(2);
+  });
+
+  it("regular scores keep the n − 1 shape", () => {
+    const map = measureIndexByXmlNumber([[withXml(1)], [withXml(2)]]);
+    expect(map.get(1)).toBe(0);
+    expect(map.get(2)).toBe(1);
+  });
+
+  it("falls back to list order without XML numbers", () => {
+    const map = measureIndexByXmlNumber([[{}], [{}]]);
+    expect(map.get(1)).toBe(0);
+    expect(map.get(2)).toBe(1);
+  });
+
+  // Implicit measures (after repeats / voltas) can repeat an XML number —
+  // first sighting wins, so the cursor walks to the earlier statement
+  // instead of teleporting past unplayed music.
+  it("first sighting wins when an XML number repeats", () => {
+    const map = measureIndexByXmlNumber([
+      [withXml(1)],
+      [withXml(1)],
+      [withXml(2)],
+    ]);
+    expect(map.get(1)).toBe(0);
+    expect(map.get(2)).toBe(2);
+  });
+
+  it("empty input yields an empty map", () => {
+    expect(measureIndexByXmlNumber(undefined).size).toBe(0);
+  });
+});
