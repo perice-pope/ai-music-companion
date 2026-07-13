@@ -100,6 +100,32 @@ describe("seeded Tauri IPC handler", () => {
     expect(loaded.music_xml).toContain("score-partwise");
   });
 
+  it("serves an audio import the screens can immediately get_score (#336)", async () => {
+    const invoke = makeIpcHandler([]);
+    const imported = (await invoke("import_audio_file", {
+      sourceFilename: "sample-recording-c-major-scale.wav",
+      bytes: [1, 2, 3],
+    })) as {
+      entry: { id: string; source_filename: string };
+      polyphonic: boolean;
+      low_confidence: boolean;
+    };
+    // Clean monophonic result — the drop zone must show the loading message
+    // and the plain beta banner, never the quality warning.
+    expect(imported.polyphonic).toBe(false);
+    expect(imported.low_confidence).toBe(false);
+    // The entry echoes the dropped file, and the follow-up get_score the
+    // store issues loads a renderable score (the seeded mock serves the
+    // same score for every id — this pins "loadable", not id routing).
+    expect(imported.entry.source_filename).toBe(
+      "sample-recording-c-major-scale.wav",
+    );
+    const loaded = (await invoke("get_score", { id: imported.entry.id })) as {
+      music_xml: string;
+    };
+    expect(loaded.music_xml).toContain("score-partwise");
+  });
+
   it("rejects an unmocked command loudly", async () => {
     const invoke = makeIpcHandler([]);
     await expect(invoke("totally_new_networked_command")).rejects.toThrow(

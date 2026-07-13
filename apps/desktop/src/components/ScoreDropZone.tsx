@@ -35,7 +35,31 @@ const STAGE_LABELS: Record<string, string> = {
   done: "Finishing up…",
 };
 
-export default function ScoreDropZone() {
+// #336, round three: the VA watched .wav imports produce sheet music with no
+// loading message visible — a short recording transcribes faster than the
+// seeded indicator (#342) can reach the screen, so seed-then-clear paints
+// zero perceivable frames. Once shown, the in-progress state stays up at
+// least this long, however fast the backend finishes.
+const IMPORT_FEEDBACK_MIN_MS = 1200;
+
+/** Resolves once the indicator shown at `shownAt` has been on screen for
+ *  `minMs`. No-op when the import already took longer. */
+function holdImportFeedback(shownAt: number, minMs: number): Promise<void> {
+  const remaining = minMs - (performance.now() - shownAt);
+  return remaining > 0
+    ? new Promise((resolve) => setTimeout(resolve, remaining))
+    : Promise.resolve();
+}
+
+interface ScoreDropZoneProps {
+  /** Test seam only — routing/banner tests pass 0 so they don't sit through
+   *  the real hold. The product default is `IMPORT_FEEDBACK_MIN_MS`. */
+  importFeedbackMinMs?: number;
+}
+
+export default function ScoreDropZone({
+  importFeedbackMinMs = IMPORT_FEEDBACK_MIN_MS,
+}: ScoreDropZoneProps = {}) {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -59,6 +83,11 @@ export default function ScoreDropZone() {
   // Single-shot guard for the part-picker buttons: two clicks in one frame
   // both see the pre-dismissal partChoice and would import twice (review S7).
   const partImportInFlight = useRef(false);
+  // Monotonic id of the latest import. The #336 hold keeps an import's
+  // completion writes pending for up to IMPORT_FEEDBACK_MIN_MS — long enough
+  // for the user to drop a second file — so a finished import only writes
+  // status/progress if it is still the current one.
+  const importSeq = useRef(0);
   const importMidiFromFile = usePracticeStore((s) => s.importMidiFromFile);
   const listMidiParts = usePracticeStore((s) => s.listMidiParts);
   const importAudioFromFile = usePracticeStore((s) => s.importAudioFromFile);
@@ -91,6 +120,9 @@ export default function ScoreDropZone() {
   // live progress and a calm quality note. MusicXML still needs frontend
   // metadata parsing (a later slice), so it surfaces an honest "not yet".
   const handleFile = async (file: File) => {
+    importSeq.current += 1;
+    const seq = importSeq.current;
+    const isCurrentImport = () => importSeq.current === seq;
     setError(null);
     setStatus(null);
     setQuality(null);
@@ -150,23 +182,32 @@ export default function ScoreDropZone() {
         // VA saw imports finish without it ever painting. We know we're
         // transcribing the moment the call starts, so seed the indicator
         // (the backend's own beats are fixed constants; events refine it).
+        const shownAt = performance.now();
         setProgress({ stage: "transcribing", pct: 45 });
         const result = await importAudioFromFile(file.name, bytes);
-        // AC2 (#337 S1): transcription is the beta tier — say so at import
-        // time, every time, not only when quality looks off.
-        setStatus(
-          `Imported "${result.entry.title}" — transcribed from audio (beta): check the notes look right.`,
-        );
-        // Only surface the banner when something looks off — never nag.
-        if (result.polyphonic || result.low_confidence) {
-          setQuality(result);
+        // Success keeps the indicator up for a perceivable minimum (#336);
+        // a failure below skips straight to the error. A newer import may
+        // have started during the hold — then this one stays silent.
+        await holdImportFeedback(shownAt, importFeedbackMinMs);
+        if (isCurrentImport()) {
+          // AC2 (#337 S1): transcription is the beta tier — say so at import
+          // time, every time, not only when quality looks off.
+          setStatus(
+            `Imported "${result.entry.title}" — transcribed from audio (beta): check the notes look right.`,
+          );
+          // Only surface the banner when something looks off — never nag.
+          if (result.polyphonic || result.low_confidence) {
+            setQuality(result);
+          }
         }
       } catch (err) {
-        setStatus(null);
-        setError(`${err instanceof Error ? err.message : err}`);
+        if (isCurrentImport()) {
+          setStatus(null);
+          setError(`${err instanceof Error ? err.message : err}`);
+        }
       } finally {
         unlisten?.();
-        setProgress(null);
+        if (isCurrentImport()) setProgress(null);
       }
       return;
     }
@@ -183,29 +224,37 @@ export default function ScoreDropZone() {
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
         // #336: same event-independent seed as the audio path.
+        const shownAt = performance.now();
         setProgress({ stage: "reading-notes", pct: 55 });
         const recognized = await recognizePdfFromFile(file.name, bytes);
-        // OMR is approximate — always surface the "read from a scan" note.
-        setScanNote({ lowContent: recognized.low_content });
-        const xmlBytes = Array.from(
-          new TextEncoder().encode(recognized.music_xml),
-        );
-        if (recognized.parts.length <= 1) {
-          await importMusicXml(file.name, xmlBytes, 0);
-        } else {
-          setStatus(null);
-          setPartChoice({
-            fileName: file.name,
-            bytes: xmlBytes,
-            parts: recognized.parts,
-          });
+        // Same perceivable minimum as the audio path (#336); same
+        // newer-import-wins rule after it.
+        await holdImportFeedback(shownAt, importFeedbackMinMs);
+        if (isCurrentImport()) {
+          // OMR is approximate — always surface the "read from a scan" note.
+          setScanNote({ lowContent: recognized.low_content });
+          const xmlBytes = Array.from(
+            new TextEncoder().encode(recognized.music_xml),
+          );
+          if (recognized.parts.length <= 1) {
+            await importMusicXml(file.name, xmlBytes, 0);
+          } else {
+            setStatus(null);
+            setPartChoice({
+              fileName: file.name,
+              bytes: xmlBytes,
+              parts: recognized.parts,
+            });
+          }
         }
       } catch (err) {
-        setStatus(null);
-        setError(`${err instanceof Error ? err.message : err}`);
+        if (isCurrentImport()) {
+          setStatus(null);
+          setError(`${err instanceof Error ? err.message : err}`);
+        }
       } finally {
         unlisten?.();
-        setProgress(null);
+        if (isCurrentImport()) setProgress(null);
       }
       return;
     }
@@ -263,6 +312,7 @@ export default function ScoreDropZone() {
   return (
     <div className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8">
       <div
+        data-testid="score-drop-zone"
         onDrop={handleDrop}
         onDragOver={(e) => {
           e.preventDefault();

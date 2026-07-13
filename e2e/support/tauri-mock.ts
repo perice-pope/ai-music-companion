@@ -43,6 +43,13 @@ declare global {
     __ipcCalls: RecordedInvoke[];
     /** Ordered log of every outbound network attempt (all blocked). */
     __netCalls: RecordedNetwork[];
+    /**
+     * How long the seeded `import_audio_file` pends before returning, in ms.
+     * Defaults to 0 — an instant backend, the exact shape three VA runs of
+     * #336 could never see a loading message in. Tests set it to simulate a
+     * slower transcription.
+     */
+    __importDelayMs?: number;
     __TAURI_INTERNALS__?: unknown;
   }
 }
@@ -196,6 +203,31 @@ export function makeIpcHandler(ipcCalls: RecordedInvoke[]) {
         return [SEEDED_SCORE];
       case "get_score":
         return { entry: SEEDED_SCORE, music_xml: SEEDED_MUSICXML };
+      // Audio → transcription import (#336). Pends for `__importDelayMs`
+      // (default 0 — an instant backend) then returns a clean monophonic
+      // result echoing the dropped file's name, shaped to `ImportedAudioDto`.
+      case "import_audio_file": {
+        const delayMs =
+          (globalThis as { __importDelayMs?: number }).__importDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        return {
+          entry: {
+            ...SEEDED_SCORE,
+            id: "00000000-0000-0000-0000-0000000000bb",
+            title: "Transcribed Recording",
+            source_filename:
+              (args?.sourceFilename as string | undefined) ?? "recording.wav",
+            duration_measures: 4,
+          },
+          note_count: 8,
+          mean_confidence: 0.91,
+          polyphony: 0.0,
+          polyphonic: false,
+          low_confidence: false,
+        };
+      }
       case "get_practice_stats":
         return {
           total_sessions: 0,
@@ -350,6 +382,29 @@ export function installTauriMockAndNetGuard(): void {
         return [score];
       case "get_score":
         return { entry: score, music_xml: musicXml };
+      // Audio → transcription import (#336): pends for `__importDelayMs`
+      // (default 0 — an instant backend), mirroring the exported handler.
+      case "import_audio_file": {
+        const delayMs = window.__importDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        return {
+          entry: {
+            ...score,
+            id: "00000000-0000-0000-0000-0000000000bb",
+            title: "Transcribed Recording",
+            source_filename:
+              (args?.sourceFilename as string | undefined) ?? "recording.wav",
+            duration_measures: 4,
+          },
+          note_count: 8,
+          mean_confidence: 0.91,
+          polyphony: 0.0,
+          polyphonic: false,
+          low_confidence: false,
+        };
+      }
       case "get_practice_stats":
         return {
           total_sessions: 0,
