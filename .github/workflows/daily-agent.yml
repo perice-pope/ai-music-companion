@@ -192,7 +192,11 @@ jobs:
         if: steps.queue_check.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Billing: subscription OAuth token (founder call 2026-07-14) — runs
+          # draw on the Max plan instead of pay-per-token API billing
+          # (~$15/day at 4 fable runs). Mint with `claude setup-token`;
+          # rotate by re-running it and updating the secret.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Use the founder's PAT for all GitHub API operations the action
           # performs (PR creation, branch push, comments, issue filing).
           # Without this the action falls back to an OIDC-fetched Claude
