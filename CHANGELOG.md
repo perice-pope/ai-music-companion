@@ -1,3 +1,9 @@
+## [2.27.0](https://github.com/perice-pope/ai-music-companion/compare/v2.26.1...v2.27.0) (2026-07-14)
+
+### Features
+
+* **notation:** beam eighths in 2s and 4s; center the score at all times ([#393](https://github.com/perice-pope/ai-music-companion/issues/393)) ([edde9ae](https://github.com/perice-pope/ai-music-companion/commit/edde9aedd06b83a660090aeed4e6130d13cfb38a))
+
 ## [2.26.1](https://github.com/perice-pope/ai-music-companion/compare/v2.26.0...v2.26.1) (2026-07-13)
 
 ### Bug Fixes
