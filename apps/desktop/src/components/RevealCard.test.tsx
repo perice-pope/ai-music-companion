@@ -26,13 +26,7 @@ function perceptionWithKey(tonic: number, mode: string) {
     tempo_bpm: null,
     swing_ratio: null,
     locked: false,
-    key: {
-      tonic,
-      mode,
-      name: `${tonic} ${mode}`,
-      confidence: 0.9,
-      alternative: null,
-    },
+    key: { tonic, mode, name: `${tonic} ${mode}`, confidence: 0.9, alternative: null },
   };
 }
 
@@ -104,18 +98,14 @@ describe("RevealCard", () => {
   it("a newer reveal replaces the older one — the old never resurfaces", () => {
     render(<RevealCard />);
     act(() => {
-      usePracticeStore
-        .getState()
-        .pushReveal(reveal("Santana — Oye Como Va"), 0);
+      usePracticeStore.getState().pushReveal(reveal("Santana — Oye Como Va"), 0);
     });
     expect(screen.getByText("Santana — Oye Como Va")).toBeInTheDocument();
 
     // r2 supersedes r1 partway through r1's linger window.
     act(() => {
       vi.advanceTimersByTime(4000);
-      usePracticeStore
-        .getState()
-        .pushReveal(reveal('Miles Davis — "So What"'), 1);
+      usePracticeStore.getState().pushReveal(reveal('Miles Davis — "So What"'), 1);
     });
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.queryByText("Santana — Oye Como Va")).not.toBeInTheDocument();
@@ -159,9 +149,7 @@ describe("RevealCard", () => {
     // Live detection confidently moves to a different key/mode while the card
     // is brand new → it must stay readable, not vanish (#277).
     act(() => {
-      usePracticeStore.setState({
-        perception: perceptionWithKey(5, "phrygian"),
-      });
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
@@ -186,9 +174,7 @@ describe("RevealCard", () => {
     // 2.5s into the card's life, a confident different key arrives.
     act(() => {
       vi.advanceTimersByTime(2500);
-      usePracticeStore.setState({
-        perception: perceptionWithKey(5, "phrygian"),
-      });
+      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
 
@@ -235,9 +221,7 @@ describe("RevealCard", () => {
     });
     render(<RevealCard />);
     act(() => {
-      usePracticeStore.setState({
-        perception: perceptionWithKey(7, "phrygian"),
-      });
+      usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
       vi.advanceTimersByTime(4000); // readable dwell
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
@@ -315,12 +299,7 @@ describe("RevealCard", () => {
     // Player pauses → key goes null → don't punish silence.
     act(() => {
       usePracticeStore.setState({
-        perception: {
-          tempo_bpm: null,
-          swing_ratio: null,
-          locked: false,
-          key: null,
-        },
+        perception: { tempo_bpm: null, swing_ratio: null, locked: false, key: null },
       });
     });
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();

@@ -318,6 +318,8 @@ export default function ScoreView({
    * the pane, so `mx-auto` centers it; null keeps the wrapper full-width.
    */
   const [fitWidth, setFitWidth] = useState<number | null>(null);
+  /** Canvas width at OSMD's last layout — what the drawn SVG is true to. */
+  const layoutWidthRef = useRef(0);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
   /**
@@ -365,6 +367,7 @@ export default function ScoreView({
         // overlay is geometry over a static layout, not a live listener.
         const bounds = osmd.measureBounds?.() ?? [];
         setMeasureRects(bounds);
+        layoutWidthRef.current = containerRef.current?.clientWidth ?? 0;
         setFitWidth(
           notationFitWidth(
             paneAvailableWidth(rootRef.current),
@@ -415,6 +418,39 @@ export default function ScoreView({
       window.removeEventListener("resize", onResize);
     };
   }, [ready]);
+
+  // Review M1: OSMD re-lays-out only on WINDOW resize — pinning or
+  // unpinning the wrapper changes the canvas width without one, leaving
+  // the drawn SVG true to a stale width (a pane shrink would clip real
+  // music under the pinned wrapper's overflow-hidden). Whenever the
+  // canvas's actual width departs from the width OSMD last laid out at,
+  // re-render and re-read every piece of geometry that depends on it.
+  useEffect(() => {
+    if (!ready) return;
+    const osmd = osmdRef.current;
+    const canvas = containerRef.current;
+    if (!osmd || !canvas) return;
+    const width = canvas.clientWidth;
+    if (width <= 0 || Math.abs(width - layoutWidthRef.current) <= 1) return;
+    osmd.render();
+    layoutWidthRef.current = width;
+    const bounds = osmd.measureBounds?.() ?? [];
+    setMeasureRects(bounds);
+    const next = notationFitWidth(
+      paneAvailableWidth(rootRef.current),
+      notationContentWidth(bounds),
+    );
+    // Hysteresis: a re-render at the pinned width re-measures the same
+    // content to within barline slack — keep the current pin rather than
+    // creep or ping-pong by a few pixels.
+    setFitWidth((current) =>
+      next !== null &&
+      current !== null &&
+      Math.abs(next - current) <= BARLINE_SLACK_PX
+        ? current
+        : next,
+    );
+  }, [ready, fitWidth]);
 
   // Effect 2: advance the cursor to the live measure.
   useEffect(() => {
@@ -480,15 +516,19 @@ export default function ScoreView({
           but nothing is ever visible on screen (#279). */}
       {/* Centering: when the drawn notation is narrower than the pane, the
           wrapper takes exactly the content's width and `mx-auto` centers
-          it — the founder's "score centered at all times". OSMD rendered
-          the SVG at the pre-fit width, so `overflow-hidden` clips only the
-          SVG's EMPTY right margin (the fit width covers all drawn content
-          plus barline slack). The overlay and the cursor img live inside
-          the same wrapper, so their container-local coordinates stay
-          valid. */}
+          it — the founder's "score centered at all times". Clipping is
+          applied ONLY while pinned, where it hides the SVG's EMPTY right
+          margin between the M1 corrective re-render's ticks; unpinned,
+          wide content keeps the root's overflow-auto scrollbar exactly as
+          before. The overlay and the cursor img live inside the same
+          wrapper, so their container-local coordinates stay valid. */}
       <div
         data-testid="notation-wrapper"
-        className="relative mx-auto overflow-hidden"
+        className={
+          fitWidth === null
+            ? "relative mx-auto"
+            : "relative mx-auto overflow-hidden"
+        }
         style={fitWidth === null ? undefined : { width: fitWidth }}
       >
         <div

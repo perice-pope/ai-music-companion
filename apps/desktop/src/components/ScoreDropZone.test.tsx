@@ -158,12 +158,12 @@ describe("ScoreDropZone", () => {
   it("labels the stable and beta format tiers", () => {
     render(<ScoreDropZone />);
     expect(
-      screen.getByText(/Reliable: \.musicxml, \.xml, \.mid, \.midi scores/),
+      screen.getByText(
+        /Reliable: \.musicxml, \.xml, \.mid, \.midi scores/,
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(
-        /Beta, still rough:\s*\.pdf scans, \.wav\/\.mp3 recordings/,
-      ),
+      screen.getByText(/Beta, still rough:\s*\.pdf scans, \.wav\/\.mp3 recordings/),
     ).toBeInTheDocument();
   });
 

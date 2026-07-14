@@ -88,18 +88,21 @@ describe("emitted MusicXML through the real OSMD parser (#356)", () => {
     expect(perMeasure).toEqual([0, 4]);
   });
 
-  it("beams the eighth-run into two groups of four — no lone flags", async () => {
+  it("beams the eighth run in a 4 and a 2 around an unbeamed quarter", async () => {
     // The founder's engraving rule: eighth notes join in groups of 2 and 4,
-    // never a page of individual flags. OSMD models a beamed group as one
-    // shared Beam instance across its notes; the emitted <beam> elements
-    // must survive OSMD's parse as exactly two four-note groups.
+    // never a page of individual flags. The fixture mixes both group sizes
+    // with an untyped, unbeamed quarter on beat 3 — OSMD must parse the
+    // emitted <beam> elements into exactly a four-group and a pair, leave
+    // the quarter beamless, and keep every note (mixed typed/untyped notes
+    // in one measure are valid MusicXML).
     const osmd = new OpenSheetMusicDisplay(document.createElement("div"), {
       autoResize: false,
       backend: "svg",
     });
     await osmd.load(eighthRunXml);
-    const beams = new Set<unknown>();
+    const beams = new Set<{ Notes: unknown[] }>();
     let sounding = 0;
+    let quarters = 0;
     for (const measure of osmd.Sheet.SourceMeasures) {
       for (const container of measure.VerticalSourceStaffEntryContainers) {
         for (const staffEntry of container.StaffEntries) {
@@ -108,17 +111,25 @@ describe("emitted MusicXML through the real OSMD parser (#356)", () => {
             for (const note of voiceEntry.Notes) {
               if (note.isRest()) continue;
               sounding += 1;
-              expect(note.NoteBeam, "every eighth must be beamed").toBeTruthy();
-              beams.add(note.NoteBeam);
+              if (note.Length.RealValue === 0.25) {
+                // The quarter (beat 3) must stay beamless.
+                quarters += 1;
+                expect(note.NoteBeam).toBeFalsy();
+              } else {
+                expect(
+                  note.NoteBeam,
+                  "every eighth must be beamed",
+                ).toBeTruthy();
+                beams.add(note.NoteBeam as { Notes: unknown[] });
+              }
             }
           }
         }
       }
     }
-    expect(sounding).toBe(8);
-    expect(beams.size).toBe(2);
-    for (const beam of beams) {
-      expect((beam as { Notes: unknown[] }).Notes).toHaveLength(4);
-    }
+    expect(sounding).toBe(7);
+    expect(quarters).toBe(1);
+    const sizes = [...beams].map((b) => b.Notes.length).sort();
+    expect(sizes).toEqual([2, 4]);
   });
 });

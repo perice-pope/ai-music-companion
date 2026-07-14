@@ -76,10 +76,7 @@ export default function InstrumentSelector() {
     PRACTICE_MODES.find((m) => m.value === practiceMode) ?? PRACTICE_MODES[1];
 
   return (
-    <section
-      className="w-full max-w-3xl px-4"
-      data-testid="instrument-selector"
-    >
+    <section className="w-full max-w-3xl px-4" data-testid="instrument-selector">
       <h2 className="mb-4 text-center text-xl font-semibold text-gray-200">
         Select Your Instrument
       </h2>
@@ -98,7 +95,9 @@ export default function InstrumentSelector() {
             type="button"
             aria-label="Dismiss queued exploration"
             data-testid="dismiss-pending-explore"
-            onClick={() => usePracticeStore.setState({ pendingExplore: null })}
+            onClick={() =>
+              usePracticeStore.setState({ pendingExplore: null })
+            }
             className="shrink-0 text-emerald-300 hover:text-emerald-100"
           >
             ✕
@@ -132,9 +131,7 @@ export default function InstrumentSelector() {
             <button
               key={instrument.name}
               type="button"
-              onClick={() =>
-                setInstrument(instrument.name, instrument.vibratoToleranceCents)
-              }
+              onClick={() => setInstrument(instrument.name, instrument.vibratoToleranceCents)}
               data-testid={`instrument-card-${instrument.name.toLowerCase().replace(/\s+/g, "-")}`}
               className={`
                 relative flex flex-col items-center gap-2 rounded-xl border-2 p-4
@@ -160,11 +157,7 @@ export default function InstrumentSelector() {
               )}
 
               {/* Emoji icon */}
-              <span
-                className="text-3xl"
-                role="img"
-                aria-label={instrument.name}
-              >
+              <span className="text-3xl" role="img" aria-label={instrument.name}>
                 {instrument.emoji}
               </span>
 
@@ -253,9 +246,7 @@ export default function InstrumentSelector() {
           </button>
           <button
             type="button"
-            onClick={() =>
-              usePracticeStore.setState({ screen: "score-picker" })
-            }
+            onClick={() => usePracticeStore.setState({ screen: "score-picker" })}
             disabled={!selectedInstrument}
             data-testid="practice-with-score-button"
             className={`rounded-full px-6 py-2 text-base font-semibold transition-colors
@@ -269,11 +260,7 @@ export default function InstrumentSelector() {
           </button>
         </div>
         {startError && (
-          <p
-            className="text-sm text-red-400"
-            role="alert"
-            data-testid="start-error"
-          >
+          <p className="text-sm text-red-400" role="alert" data-testid="start-error">
             {startError}
           </p>
         )}

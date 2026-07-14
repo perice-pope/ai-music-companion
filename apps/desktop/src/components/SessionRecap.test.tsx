@@ -288,7 +288,9 @@ describe("SessionRecap", () => {
     render(<SessionRecap />);
     fireEvent.click(screen.getByTestId("row-measure-7"));
     await screen.findByTestId("bridge-notice");
-    expect(screen.getByTestId("bridge-notice")).toHaveTextContent("all rests");
+    expect(screen.getByTestId("bridge-notice")).toHaveTextContent(
+      "all rests",
+    );
     // The recap and its summary are still standing.
     expect(screen.getByTestId("recap-score-summary")).toBeInTheDocument();
     expect(screen.getByTestId("recap-assessment")).toBeInTheDocument();

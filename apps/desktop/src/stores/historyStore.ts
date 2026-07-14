@@ -44,7 +44,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
           instrument_filter: instrumentFilter,
           start_date: dateRangeFilter?.start?.toISOString() || null,
           end_date: dateRangeFilter?.end?.toISOString() || null,
-        },
+        }
       );
       set({ sessions, isLoading: false });
     } catch (err: unknown) {
@@ -70,7 +70,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     try {
       const selectedSessionDetail = await invoke<StoredSessionDto>(
         "get_session_detail",
-        { session_id: id },
+        { session_id: id }
       );
       set({ selectedSessionId: id, selectedSessionDetail });
     } catch (err: unknown) {

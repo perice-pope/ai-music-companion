@@ -70,9 +70,7 @@ function RevealCardItem({
             <p className="mt-1 text-sm font-semibold leading-relaxed text-amber-100">
               {connection}
             </p>
-            <p className="mt-1 text-sm leading-relaxed text-amber-200/90">
-              {why}
-            </p>
+            <p className="mt-1 text-sm leading-relaxed text-amber-200/90">{why}</p>
           </div>
 
           <button

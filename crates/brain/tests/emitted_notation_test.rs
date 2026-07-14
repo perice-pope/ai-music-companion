@@ -135,19 +135,33 @@ fn no_emitted_direction_lacks_a_direction_type() {
 /// two groups of four.
 fn eighth_run_model() -> ScoreModel {
     use brain::score::{KeySignature, Measure, ScoreNote, TimeSignature};
-    let notes = (0..8u8)
-        .map(|i| {
-            let midi = [60, 62, 64, 65, 67, 69, 71, 72][i as usize];
-            ScoreNote {
-                pitch_hz: brain::score::midi_to_hz(f64::from(midi)),
-                midi_number: midi,
-                duration_beats: 0.5,
-                start_beat: f64::from(i) * 0.5,
-                dynamic: None,
-                is_rest: false,
-            }
-        })
-        .collect();
+    let eighth = |midi: u8, start: f64| ScoreNote {
+        pitch_hz: brain::score::midi_to_hz(f64::from(midi)),
+        midi_number: midi,
+        duration_beats: 0.5,
+        start_beat: start,
+        dynamic: None,
+        is_rest: false,
+    };
+    // Beats 1-2: a four-group of eighths; beat 3: an UNBEAMED (and
+    // untyped) quarter; beat 4: a pair — one measure exercising mixed
+    // typed/untyped notes and both group sizes through the real OSMD parse.
+    let mut notes = vec![
+        eighth(60, 0.0),
+        eighth(62, 0.5),
+        eighth(64, 1.0),
+        eighth(65, 1.5),
+    ];
+    notes.push(ScoreNote {
+        pitch_hz: brain::score::midi_to_hz(67.0),
+        midi_number: 67,
+        duration_beats: 1.0,
+        start_beat: 2.0,
+        dynamic: None,
+        is_rest: false,
+    });
+    notes.push(eighth(69, 3.0));
+    notes.push(eighth(71, 3.5));
     ScoreModel {
         title: "Eighth Run".to_string(),
         composer: None,

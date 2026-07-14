@@ -24,30 +24,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const TEST_INSTRUMENTS: InstrumentInfo[] = [
-  {
-    name: "Trumpet",
-    family: "Brass",
-    freqMinHz: 165,
-    freqMaxHz: 1047,
-    vibratoToleranceCents: 20,
-    emoji: "\uD83C\uDFBA",
-  },
-  {
-    name: "Piano",
-    family: "Keyboard",
-    freqMinHz: 28,
-    freqMaxHz: 4186,
-    vibratoToleranceCents: 10,
-    emoji: "\uD83C\uDFB9",
-  },
-  {
-    name: "Violin",
-    family: "Strings",
-    freqMinHz: 196,
-    freqMaxHz: 3136,
-    vibratoToleranceCents: 30,
-    emoji: "\uD83C\uDFBB",
-  },
+  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, vibratoToleranceCents: 20, emoji: "\uD83C\uDFBA" },
+  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, vibratoToleranceCents: 10, emoji: "\uD83C\uDFB9" },
+  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, vibratoToleranceCents: 30, emoji: "\uD83C\uDFBB" },
 ];
 
 function seedListeningSession() {
@@ -129,9 +108,7 @@ describe("PracticeSession", () => {
       expect(mockInvoke).toHaveBeenCalledWith("list_instruments");
     });
     fireEvent.click(screen.getByTestId("instrument-switch-button"));
-    fireEvent.click(
-      await screen.findByTestId("instrument-switch-option-piano"),
-    );
+    fireEvent.click(await screen.findByTestId("instrument-switch-option-piano"));
 
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("switch_instrument", {
@@ -264,12 +241,7 @@ describe("PracticeSession", () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
       if (cmd === "start_lesson")
-        return Promise.resolve({
-          seed: 1,
-          score: null,
-          drill: LESSON_DRILL,
-          recap: null,
-        });
+        return Promise.resolve({ seed: 1, score: null, drill: LESSON_DRILL, recap: null });
       return Promise.reject(new Error(`no mock configured for "${cmd}"`));
     });
     render(<PracticeSession />);
@@ -384,7 +356,9 @@ describe("PracticeSession", () => {
       lessonDrill: null,
     });
     render(<PracticeSession />);
-    expect(screen.getByTestId(/reveal-card/).closest("div.hidden")).toBeNull();
+    expect(
+      screen.getByTestId(/reveal-card/).closest("div.hidden"),
+    ).toBeNull();
   });
 
   // #349 T4a: the "Listen to the room" toggle swaps the free-play

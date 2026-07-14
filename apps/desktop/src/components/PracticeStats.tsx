@@ -23,7 +23,9 @@ export default function PracticeStats({ stats }: PracticeStatsProps) {
       </div>
 
       <div className="text-center">
-        <div className="text-3xl font-bold text-green-400">{totalHours}h</div>
+        <div className="text-3xl font-bold text-green-400">
+          {totalHours}h
+        </div>
         <div className="text-xs text-gray-400">Total Time</div>
       </div>
 

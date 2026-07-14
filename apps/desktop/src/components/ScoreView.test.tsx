@@ -729,11 +729,61 @@ describe("ScoreView — centered notation (VA 2026-07-14)", () => {
     });
     release();
     const wrapper = await screen.findByTestId("notation-wrapper");
-    // 300px content + 8px barline slack, centered by mx-auto.
+    // 300px content + 8px barline slack, centered by mx-auto; clipping is
+    // active only while pinned (M1).
     await waitFor(() => expect(wrapper.style.width).toBe("308px"));
     expect(wrapper.className).toContain("mx-auto");
+    expect(wrapper.className).toContain("overflow-hidden");
     // Overlay coordinates are wrapper-local — hit 2 still starts at 100px.
     expect(screen.getByTestId("measure-hit-2").style.left).toBe("100px");
+  });
+
+  // Review M1: pinning changes the canvas width WITHOUT a window resize,
+  // and OSMD only re-lays-out on window resize — so the component itself
+  // must re-render OSMD at the new width (else overflow-hidden could clip
+  // stale-width drawings). The canvas mock tracks the wrapper's pin.
+  it("re-renders OSMD when the pin changes the canvas width", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const originalLoad = fake.osmd.load.bind(fake.osmd);
+    fake.osmd.load = async (xml: string) => {
+      await gate;
+      return originalLoad(xml);
+    };
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    // The canvas reports the width the wrapper actually gives it.
+    const wrapperWidth = () =>
+      Number.parseInt(
+        screen.getByTestId("notation-wrapper").style.width || "1000",
+        10,
+      );
+    Object.defineProperty(
+      screen.getByTestId("score-view-canvas"),
+      "clientWidth",
+      { get: wrapperWidth, configurable: true },
+    );
+    release();
+    const wrapper = await screen.findByTestId("notation-wrapper");
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"));
+    // Load-render at 1000px, then the corrective render at the 308px pin —
+    // and the pin stays stable (hysteresis) rather than re-render looping.
+    await waitFor(() =>
+      expect(fake.calls.filter((c) => c === "render")).toHaveLength(2),
+    );
+    expect(wrapper.style.width).toBe("308px");
   });
 
   // AC: content as wide as the pane (or unknown — jsdom's clientWidth is 0)
@@ -750,6 +800,9 @@ describe("ScoreView — centered notation (VA 2026-07-14)", () => {
     await waitFor(() => expect(fake.calls).toContain("render"));
     const wrapper = screen.getByTestId("notation-wrapper");
     expect(wrapper.style.width).toBe("");
+    // M1: unpinned must never clip — wide scores rely on the root's
+    // overflow-auto scrollbar, exactly as before this feature.
+    expect(wrapper.className).not.toContain("overflow-hidden");
   });
 });
 

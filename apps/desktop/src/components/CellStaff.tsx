@@ -154,9 +154,7 @@ function Dot({
         cy={y}
         rx={5.5}
         ry={4.2}
-        fill={
-          note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL
-        }
+        fill={note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL}
         fillOpacity={ghostSteps === 0 ? 1 : 0.7}
         data-testid="staff-dot"
       />
@@ -387,9 +385,7 @@ export default function CellStaff({
               y1={yFor(8)}
               y2={yFor(0)}
               stroke="#4B5563"
-              strokeWidth={
-                i === windowMeasures && current === pages - 1 ? 3 : 1
-              }
+              strokeWidth={i === windowMeasures && current === pages - 1 ? 3 : 1}
             />
           );
         })}

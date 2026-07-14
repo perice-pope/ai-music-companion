@@ -7,10 +7,7 @@ interface ScoreLibraryProps {
   onSelectScore: (id: string) => Promise<void>;
 }
 
-export default function ScoreLibrary({
-  scores,
-  onSelectScore,
-}: ScoreLibraryProps) {
+export default function ScoreLibrary({ scores, onSelectScore }: ScoreLibraryProps) {
   const { deleteScore, activeScore } = usePracticeStore();
   const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
 

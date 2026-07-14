@@ -15,13 +15,7 @@ describe("ToneSummary", () => {
   it("renders all five tone dimensions as labelled meters", () => {
     render(<ToneSummary tone={TONE} />);
     expect(screen.getByTestId("recap-tone")).toBeTruthy();
-    for (const label of [
-      "Brightness",
-      "Warmth",
-      "Core clarity",
-      "Air / breath",
-      "Vibrato",
-    ]) {
+    for (const label of ["Brightness", "Warmth", "Core clarity", "Air / breath", "Vibrato"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     // Five accessible meters, qualitative labels — no numeric grade leaks.
@@ -34,8 +28,6 @@ describe("ToneSummary", () => {
     expect(screen.getByLabelText("Core clarity: pronounced")).toBeTruthy();
     expect(screen.getByLabelText("Air / breath: subtle")).toBeTruthy();
     // No "%" or "/10"-style grade anywhere in the rendered text.
-    expect(screen.getByTestId("recap-tone").textContent).not.toMatch(
-      /\d\s*%|\/\s*10/,
-    );
+    expect(screen.getByTestId("recap-tone").textContent).not.toMatch(/\d\s*%|\/\s*10/);
   });
 });

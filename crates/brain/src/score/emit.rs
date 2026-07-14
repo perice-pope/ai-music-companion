@@ -227,9 +227,10 @@ fn close_beam_group(group: &mut Vec<usize>, out: &mut [Option<BeamPos>]) {
 }
 
 /// Beam assignment for one measure's notes: consecutive eighth notes beam in
-/// groups of 2–4 that never cross the metric region boundary — half-measure
-/// in even `X/4` meters (so a full beat of two eighths beams as a pair and a
-/// half-measure run beams as a four), per-beat in odd meters like 3/4.
+/// groups of 2–4 that never cross the metric region boundary — the
+/// HALF-MEASURE in even `X/4` meters (beat 1 in 2/4, beat 2 in 4/4, beat 3
+/// in 6/4; a full beat of two eighths beams as a pair, a 4/4 half-measure
+/// run beams as a four), per-beat in odd meters like 3/4.
 ///
 /// Rests, longer values, and gaps break a group; a lone eighth keeps its
 /// flag. Chord members (same onset as the previous sounding note) carry no
@@ -242,7 +243,15 @@ fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<B
     if beat_type != 4 {
         return out;
     }
-    let region_beats = if beats.is_multiple_of(2) { 2.0 } else { 1.0 };
+    let region_beats = if beats.is_multiple_of(2) {
+        f64::from(beats) / 2.0
+    } else {
+        1.0
+    };
+    // Region index of a start position. The +EPS absorbs parser-accumulated
+    // float drift: six triplet eighths sum to 1.999999…8, which must still
+    // classify as the region STARTING at 2.0, not the one before it.
+    let region_of = |start: f64| ((start + EPS) / region_beats).floor();
 
     // Indices of the group currently being built + where it ends in time.
     let mut group: Vec<usize> = Vec::new();
@@ -264,10 +273,9 @@ fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<B
             continue;
         }
         let contiguous = (n.start_beat - group_end).abs() < EPS;
-        let same_region = group.first().is_none_or(|&first| {
-            (notes[first].start_beat / region_beats).floor()
-                == (n.start_beat / region_beats).floor()
-        });
+        let same_region = group
+            .first()
+            .is_none_or(|&first| region_of(notes[first].start_beat) == region_of(n.start_beat));
         let extends_group = contiguous && same_region && group.len() < 4;
         if !group.is_empty() && !extends_group {
             close_beam_group(&mut group, &mut out);
@@ -916,6 +924,84 @@ mod tests {
         assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 3);
         assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 3);
         assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 0);
+    }
+
+    /// Review M2: in 2/4 the half-measure is beat 1 — four straight eighths
+    /// beam as TWO PAIRS, never one four across the bar's midpoint. Fails
+    /// if the region reverts to a hard-coded 2 beats.
+    #[test]
+    fn two_four_beams_in_pairs_across_its_half_measure() {
+        let notes: Vec<ScoreNote> = (0..4)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 2,
+            beat_type: 4,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 0);
+    }
+
+    /// Review M2: in 6/4 the half-measure is beat 3 — two contiguous
+    /// eighths at starts 2.5 and 3.0 straddle it and must not beam.
+    #[test]
+    fn six_four_beams_never_cross_beat_three() {
+        let notes = vec![
+            note(60, 2.5, 0.0),
+            note(62, 0.5, 2.5),
+            note(64, 0.5, 3.0),
+            note(65, 2.5, 3.5),
+        ];
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 6,
+            beat_type: 4,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            !xml.contains("<beam"),
+            "eighths on either side of beat 3 in 6/4 must not beam:\n{xml}"
+        );
+    }
+
+    /// Review M4: parser-accumulated float drift must not shift the region.
+    /// Six triplet eighths sum to 1.999999…8; the straight eighths that
+    /// follow (drifted starts ≈2.0, 2.5, 3.0, 3.5) still all classify into
+    /// the second half-measure and beam as one four — no orphaned flag.
+    #[test]
+    fn drifted_starts_still_group_with_their_half_measure() {
+        let mut notes: Vec<ScoreNote> = Vec::new();
+        let mut cursor = 0.0_f64;
+        for i in 0..6 {
+            notes.push(note(60 + i, 1.0 / 3.0, cursor));
+            cursor += 1.0 / 3.0; // accumulates like the MusicXML parser
+        }
+        assert_ne!(cursor, 2.0, "the fixture must actually exercise drift");
+        for i in 0..4 {
+            notes.push(note(67 + i, 0.5, cursor));
+            cursor += 0.5;
+        }
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(
+            xml.matches("<beam number=\"1\">begin</beam>").count(),
+            1,
+            "the four straight eighths beam as ONE group:\n{xml}"
+        );
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 1);
     }
 
     /// Compound meter (6/8) is deliberately left unbeamed — its grouping
