@@ -46,6 +46,39 @@ export interface MeasureBound {
 export type OsmdFactory = (container: HTMLElement) => OsmdLike;
 
 /**
+ * Right edge of the drawn notation in container pixels, from the same
+ * measure bounds the tap overlay uses. 0 when the layout is unknown
+ * (pre-render, or a fake without `measureBounds`).
+ */
+export function notationContentWidth(bounds: MeasureBound[]): number {
+  return bounds.reduce((max, r) => Math.max(max, r.x + r.width), 0);
+}
+
+/** Headroom past the last measure so the final barline never clips. */
+const BARLINE_SLACK_PX = 8;
+/** Below this much reclaimed space, centering is imperceptible — skip it. */
+const CENTER_MIN_GAIN_PX = 16;
+
+/**
+ * Width to give the notation wrapper so `margin-inline: auto` centers the
+ * drawn content in the pane ("the score is centered at all times").
+ * `null` means keep the wrapper at full width: content unknown, or already
+ * (nearly) as wide as the pane — where OSMD justifies systems edge to edge
+ * and centering would change nothing.
+ */
+export function notationFitWidth(
+  availableWidth: number,
+  contentWidth: number,
+): number | null {
+  if (!Number.isFinite(availableWidth) || !Number.isFinite(contentWidth)) {
+    return null;
+  }
+  if (contentWidth <= 0) return null;
+  const fit = Math.ceil(contentWidth) + BARLINE_SLACK_PX;
+  return fit + CENTER_MIN_GAIN_PX <= availableWidth ? fit : null;
+}
+
+/**
  * Build the default factory: lazy-loads the (heavy) opensheetmusicdisplay
  * bundle so it isn't in the initial app chunk, then constructs a real
  * instance. OSMD ships as UMD, so the constructor hides under `.default`.
@@ -80,8 +113,13 @@ const makeDefaultFactory =
             drawingParameters: "compact",
             // Ambient (#278): light ink so the staff reads on the app's dark
             // background — the SVG itself is transparent; the old white "page"
-            // was only ever the container's background.
-            ...(ambient ? { defaultColorMusic: "#E2E8F0" } : {}),
+            // was only ever the container's background. Part names are off:
+            // in-session surfaces already show the drill/phrase label in
+            // their own header, and OSMD indents only the FIRST system for
+            // the label, which reads as a lopsided layout on wrapped drills.
+            ...(ambient
+              ? { defaultColorMusic: "#E2E8F0", drawPartNames: false }
+              : {}),
           });
           if (ambient) {
             // Smaller notation for the ambient treatment. OSMD exposes zoom as
@@ -268,11 +306,20 @@ export default function ScoreView({
   const factory =
     osmdFactory ?? (variant === "ambient" ? ambientFactory : pageFactory);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** The padded pane the notation wrapper centers within. */
+  const rootRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdLike | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** #341: measure hit regions, container pixels; empty until rendered. */
   const [measureRects, setMeasureRects] = useState<MeasureBound[]>([]);
+  /**
+   * Explicit wrapper width (px) when the drawn notation is narrower than
+   * the pane, so `mx-auto` centers it; null keeps the wrapper full-width.
+   */
+  const [fitWidth, setFitWidth] = useState<number | null>(null);
+  /** Canvas width at OSMD's last layout — what the drawn SVG is true to. */
+  const layoutWidthRef = useRef(0);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
   const cursorMeasureRef = useRef<number>(-1);
   /**
@@ -295,6 +342,7 @@ export default function ScoreView({
     let cancelled = false;
     setReady(false);
     setError(null);
+    setFitWidth(null);
     cursorMeasureRef.current = -1;
     xmlIndexRef.current = null;
 
@@ -317,7 +365,15 @@ export default function ScoreView({
         cursorMeasureRef.current = currentMeasure(osmd);
         // #341: read the layout's measure regions once per render — the
         // overlay is geometry over a static layout, not a live listener.
-        setMeasureRects(osmd.measureBounds?.() ?? []);
+        const bounds = osmd.measureBounds?.() ?? [];
+        setMeasureRects(bounds);
+        layoutWidthRef.current = containerRef.current?.clientWidth ?? 0;
+        setFitWidth(
+          notationFitWidth(
+            paneAvailableWidth(rootRef.current),
+            notationContentWidth(bounds),
+          ),
+        );
         // #370: and the XML-number → index map the cursor walks by.
         xmlIndexRef.current = osmd.measureIndexMap?.() ?? null;
         setReady(true);
@@ -336,15 +392,24 @@ export default function ScoreView({
 
   // #341 review M4: OSMD re-lays-out on window resize (autoResize), so the
   // hit regions must follow — otherwise a maximized window rows a
-  // different measure than the one under the pointer. Debounced past
-  // OSMD's own debounced re-render.
+  // different measure than the one under the pointer. The centering width
+  // follows for the same reason (a shrunken pane must reclaim the wrapper
+  // before the notation can re-wrap). Debounced past OSMD's own debounced
+  // re-render.
   useEffect(() => {
-    if (!ready || !onMeasureTap) return;
+    if (!ready) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const onResize = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        setMeasureRects(osmdRef.current?.measureBounds?.() ?? []);
+        const bounds = osmdRef.current?.measureBounds?.() ?? [];
+        setMeasureRects(bounds);
+        setFitWidth(
+          notationFitWidth(
+            paneAvailableWidth(rootRef.current),
+            notationContentWidth(bounds),
+          ),
+        );
       }, 250);
     };
     window.addEventListener("resize", onResize);
@@ -352,7 +417,40 @@ export default function ScoreView({
       if (timer) clearTimeout(timer);
       window.removeEventListener("resize", onResize);
     };
-  }, [ready, onMeasureTap]);
+  }, [ready]);
+
+  // Review M1: OSMD re-lays-out only on WINDOW resize — pinning or
+  // unpinning the wrapper changes the canvas width without one, leaving
+  // the drawn SVG true to a stale width (a pane shrink would clip real
+  // music under the pinned wrapper's overflow-hidden). Whenever the
+  // canvas's actual width departs from the width OSMD last laid out at,
+  // re-render and re-read every piece of geometry that depends on it.
+  useEffect(() => {
+    if (!ready) return;
+    const osmd = osmdRef.current;
+    const canvas = containerRef.current;
+    if (!osmd || !canvas) return;
+    const width = canvas.clientWidth;
+    if (width <= 0 || Math.abs(width - layoutWidthRef.current) <= 1) return;
+    osmd.render();
+    layoutWidthRef.current = width;
+    const bounds = osmd.measureBounds?.() ?? [];
+    setMeasureRects(bounds);
+    const next = notationFitWidth(
+      paneAvailableWidth(rootRef.current),
+      notationContentWidth(bounds),
+    );
+    // Hysteresis: a re-render at the pinned width re-measures the same
+    // content to within barline slack — keep the current pin rather than
+    // creep or ping-pong by a few pixels.
+    setFitWidth((current) =>
+      next !== null &&
+      current !== null &&
+      Math.abs(next - current) <= BARLINE_SLACK_PX
+        ? current
+        : next,
+    );
+  }, [ready, fitWidth]);
 
   // Effect 2: advance the cursor to the live measure.
   useEffect(() => {
@@ -390,6 +488,7 @@ export default function ScoreView({
 
   return (
     <div
+      ref={rootRef}
       data-testid="score-view"
       className={
         variant === "ambient"
@@ -415,7 +514,23 @@ export default function ScoreView({
           so the negative-z cursor paints above the app's backgrounds
           instead of behind them. Without both, every cursor move "works"
           but nothing is ever visible on screen (#279). */}
-      <div className="relative">
+      {/* Centering: when the drawn notation is narrower than the pane, the
+          wrapper takes exactly the content's width and `mx-auto` centers
+          it — the founder's "score centered at all times". Clipping is
+          applied ONLY while pinned, where it hides the SVG's EMPTY right
+          margin between the M1 corrective re-render's ticks; unpinned,
+          wide content keeps the root's overflow-auto scrollbar exactly as
+          before. The overlay and the cursor img live inside the same
+          wrapper, so their container-local coordinates stay valid. */}
+      <div
+        data-testid="notation-wrapper"
+        className={
+          fitWidth === null
+            ? "relative mx-auto"
+            : "relative mx-auto overflow-hidden"
+        }
+        style={fitWidth === null ? undefined : { width: fitWidth }}
+      >
         <div
           ref={containerRef}
           data-testid="score-view-canvas"
@@ -452,6 +567,20 @@ export default function ScoreView({
       </div>
     </div>
   );
+}
+
+/**
+ * Width available for notation inside the padded pane. `clientWidth`
+ * includes padding, so the pane's own horizontal padding comes off — the
+ * wrapper centers within the content box, not under the padding.
+ */
+function paneAvailableWidth(root: HTMLElement | null): number {
+  if (!root) return 0;
+  const style = window.getComputedStyle(root);
+  const padding =
+    (Number.parseFloat(style.paddingLeft) || 0) +
+    (Number.parseFloat(style.paddingRight) || 0);
+  return root.clientWidth - padding;
 }
 
 /** Read the cursor's current 0-based measure, or -1 if unavailable. */

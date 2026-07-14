@@ -146,11 +146,16 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
 
         // Two onsets within this many beats count as simultaneous (a chord).
         const CHORD_ONSET_EPSILON: f64 = 1e-6;
+        let beams = beam_positions(
+            &measure.notes,
+            model.time_signature.beats,
+            model.time_signature.beat_type,
+        );
         // Onset of the previous sounding note, so a note sharing it can be
         // flagged as a chord member. MusicXML stacks notes only when the
         // 2nd+ of a simultaneity carries a <chord/> element.
         let mut prev_sounding_start: Option<f64> = None;
-        for note in &measure.notes {
+        for (note_idx, note) in measure.notes.iter().enumerate() {
             // Emit a dynamics direction when the marking changes (skip on
             // rests — dynamics attach to sounding notes).
             if !note.is_rest && note.dynamic != current_dynamic {
@@ -170,7 +175,13 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
             let is_chord = !note.is_rest
                 && prev_sounding_start
                     .is_some_and(|prev| (note.start_beat - prev).abs() < CHORD_ONSET_EPSILON);
-            write_note(&mut out, note, is_chord, model.key_signature.fifths < 0);
+            write_note(
+                &mut out,
+                note,
+                is_chord,
+                model.key_signature.fifths < 0,
+                beams[note_idx],
+            );
             if !note.is_rest {
                 prev_sounding_start = Some(note.start_beat);
             }
@@ -184,8 +195,106 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     out
 }
 
+/// A note's place in a `<beam number="1">` group.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BeamPos {
+    Begin,
+    Continue,
+    End,
+}
+
+impl BeamPos {
+    fn tag(self) -> &'static str {
+        match self {
+            BeamPos::Begin => "begin",
+            BeamPos::Continue => "continue",
+            BeamPos::End => "end",
+        }
+    }
+}
+
+/// Close the open beam group: groups of 2+ get begin/continue…/end; a lone
+/// eighth keeps its flag (no beam element at all).
+fn close_beam_group(group: &mut Vec<usize>, out: &mut [Option<BeamPos>]) {
+    if group.len() >= 2 {
+        out[group[0]] = Some(BeamPos::Begin);
+        for &i in &group[1..group.len() - 1] {
+            out[i] = Some(BeamPos::Continue);
+        }
+        out[*group.last().unwrap()] = Some(BeamPos::End);
+    }
+    group.clear();
+}
+
+/// Beam assignment for one measure's notes: consecutive eighth notes beam in
+/// groups of 2–4 that never cross the metric region boundary — the
+/// HALF-MEASURE in even `X/4` meters (beat 1 in 2/4, beat 2 in 4/4, beat 3
+/// in 6/4; a full beat of two eighths beams as a pair, a 4/4 half-measure
+/// run beams as a four), per-beat in odd meters like 3/4.
+///
+/// Rests, longer values, and gaps break a group; a lone eighth keeps its
+/// flag. Chord members (same onset as the previous sounding note) carry no
+/// beam of their own — they ride their anchor. Non-quarter denominators
+/// (6/8 …) are left unbeamed for now: compound-meter grouping is a
+/// different rule and flags are honest there.
+fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<BeamPos>> {
+    const EPS: f64 = 1e-6;
+    let mut out = vec![None; notes.len()];
+    if beat_type != 4 {
+        return out;
+    }
+    let region_beats = if beats.is_multiple_of(2) {
+        f64::from(beats) / 2.0
+    } else {
+        1.0
+    };
+    // Region index of a start position. The +EPS absorbs parser-accumulated
+    // float drift: six triplet eighths sum to 1.999999…8, which must still
+    // classify as the region STARTING at 2.0, not the one before it.
+    let region_of = |start: f64| ((start + EPS) / region_beats).floor();
+
+    // Indices of the group currently being built + where it ends in time.
+    let mut group: Vec<usize> = Vec::new();
+    let mut group_end = 0.0_f64;
+    let mut prev_sounding_start: Option<f64> = None;
+
+    for (i, n) in notes.iter().enumerate() {
+        let chord_member =
+            !n.is_rest && prev_sounding_start.is_some_and(|prev| (n.start_beat - prev).abs() < EPS);
+        if !n.is_rest {
+            prev_sounding_start = Some(n.start_beat);
+        }
+        if chord_member {
+            continue;
+        }
+        let is_eighth = !n.is_rest && (n.duration_beats - 0.5).abs() < EPS;
+        if !is_eighth {
+            close_beam_group(&mut group, &mut out);
+            continue;
+        }
+        let contiguous = (n.start_beat - group_end).abs() < EPS;
+        let same_region = group
+            .first()
+            .is_none_or(|&first| region_of(notes[first].start_beat) == region_of(n.start_beat));
+        let extends_group = contiguous && same_region && group.len() < 4;
+        if !group.is_empty() && !extends_group {
+            close_beam_group(&mut group, &mut out);
+        }
+        group.push(i);
+        group_end = n.start_beat + n.duration_beats;
+    }
+    close_beam_group(&mut group, &mut out);
+    out
+}
+
 /// Write a single `<note>` element (rest or pitched).
-fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool, flats: bool) {
+fn write_note(
+    out: &mut String,
+    note: &ScoreNote,
+    is_chord: bool,
+    flats: bool,
+    beam: Option<BeamPos>,
+) {
     let duration_divs = beats_to_divs(note.duration_beats);
 
     out.push_str("      <note>\n");
@@ -207,6 +316,16 @@ fn write_note(out: &mut String, note: &ScoreNote, is_chord: bool, flats: bool) {
         out.push_str("        </pitch>\n");
     }
     out.push_str(&format!("        <duration>{duration_divs}</duration>\n"));
+    // Beamed notes are eighths by construction (see `beam_positions`). The
+    // <type> makes the beam well-formed MusicXML — renderers pair the beam
+    // with the note value rather than inferring it from the duration.
+    if let Some(pos) = beam {
+        out.push_str("        <type>eighth</type>\n");
+        out.push_str(&format!(
+            "        <beam number=\"1\">{}</beam>\n",
+            pos.tag()
+        ));
+    }
     out.push_str("      </note>\n");
 }
 
@@ -701,6 +820,296 @@ mod tests {
         model.title = "Horn & Flugel".to_string();
         let xml = score_model_to_musicxml(&model);
         assert!(xml.contains("<part-name>Horn &amp; Flugel</part-name>"));
+    }
+
+    /// Eight straight eighths in 4/4 beam as two groups of four, split at
+    /// the half-measure — never one eight-note beam, never lone flags.
+    /// Fails if grouping, the size cap, or the region boundary regresses.
+    #[test]
+    fn straight_eighths_beam_in_fours_per_half_measure() {
+        let notes: Vec<ScoreNote> = (0..8)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 4);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 2);
+        // The split lands exactly at beat 2: note 4 (start 2.0) begins the
+        // second group, so the sequence is begin,cont,cont,end ×2.
+        let positions: Vec<&str> = xml
+            .match_indices("<beam number=\"1\">")
+            .map(|(i, _)| &xml[i + 17..i + 20])
+            .collect();
+        assert_eq!(
+            positions,
+            vec!["beg", "con", "con", "end", "beg", "con", "con", "end"]
+        );
+    }
+
+    /// A rest inside the run breaks the beam: eighth,eighth,rest,eighth →
+    /// a pair (begin/end) and a lone flagged eighth with no beam element.
+    #[test]
+    fn rests_break_beams_and_singletons_stay_flagged() {
+        let notes = vec![
+            note(60, 0.5, 0.0),
+            note(62, 0.5, 0.5),
+            rest(0.5, 1.0),
+            note(64, 0.5, 1.5),
+        ];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 1);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 1);
+        assert_eq!(
+            xml.matches("<beam").count(),
+            2,
+            "the isolated eighth after the rest keeps its flag:\n{xml}"
+        );
+    }
+
+    /// Two contiguous eighths straddling the half-measure (starts 1.5 and
+    /// 2.0) must NOT beam across the boundary — each is a singleton, so no
+    /// beam at all. Fails if the region check drops out of the grouping.
+    #[test]
+    fn beams_never_cross_the_half_measure_boundary() {
+        let notes = vec![
+            note(60, 1.5, 0.0),
+            note(62, 0.5, 1.5),
+            note(64, 0.5, 2.0),
+            note(65, 1.5, 2.5),
+        ];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            !xml.contains("<beam"),
+            "eighths on either side of beat 2 must not share a beam:\n{xml}"
+        );
+    }
+
+    /// Quarter notes never beam — the plain scale emits no beam elements
+    /// (and no <type>, which the emitter only writes alongside a beam).
+    #[test]
+    fn quarter_notes_emit_no_beams() {
+        let xml = score_model_to_musicxml(&c_major_scale());
+        assert!(!xml.contains("<beam"), "no beams on quarters:\n{xml}");
+        assert!(!xml.contains("<type>"));
+    }
+
+    /// In 3/4 the region is one beat, so six straight eighths beam as three
+    /// pairs — begin/end three times, no continue.
+    #[test]
+    fn three_four_beams_in_pairs_per_beat() {
+        let notes: Vec<ScoreNote> = (0..6)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 3,
+            beat_type: 4,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 3);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 3);
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 0);
+    }
+
+    /// Review M2: in 2/4 the half-measure is beat 1 — four straight eighths
+    /// beam as TWO PAIRS, never one four across the bar's midpoint. Fails
+    /// if the region reverts to a hard-coded 2 beats.
+    #[test]
+    fn two_four_beams_in_pairs_across_its_half_measure() {
+        let notes: Vec<ScoreNote> = (0..4)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 2,
+            beat_type: 4,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 0);
+    }
+
+    /// Review M2: in 6/4 the half-measure is beat 3 — two contiguous
+    /// eighths at starts 2.5 and 3.0 straddle it and must not beam.
+    #[test]
+    fn six_four_beams_never_cross_beat_three() {
+        let notes = vec![
+            note(60, 2.5, 0.0),
+            note(62, 0.5, 2.5),
+            note(64, 0.5, 3.0),
+            note(65, 2.5, 3.5),
+        ];
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 6,
+            beat_type: 4,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            !xml.contains("<beam"),
+            "eighths on either side of beat 3 in 6/4 must not beam:\n{xml}"
+        );
+    }
+
+    /// Review M4: parser-accumulated float drift must not shift the region.
+    /// Six triplet eighths sum to 1.999999…8; the straight eighths that
+    /// follow (drifted starts ≈2.0, 2.5, 3.0, 3.5) still all classify into
+    /// the second half-measure and beam as one four — no orphaned flag.
+    #[test]
+    fn drifted_starts_still_group_with_their_half_measure() {
+        let mut notes: Vec<ScoreNote> = Vec::new();
+        let mut cursor = 0.0_f64;
+        for i in 0..6 {
+            notes.push(note(60 + i, 1.0 / 3.0, cursor));
+            cursor += 1.0 / 3.0; // accumulates like the MusicXML parser
+        }
+        assert_ne!(cursor, 2.0, "the fixture must actually exercise drift");
+        for i in 0..4 {
+            notes.push(note(67 + i, 0.5, cursor));
+            cursor += 0.5;
+        }
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(
+            xml.matches("<beam number=\"1\">begin</beam>").count(),
+            1,
+            "the four straight eighths beam as ONE group:\n{xml}"
+        );
+        assert_eq!(xml.matches("<beam number=\"1\">continue</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 1);
+    }
+
+    /// Compound meter (6/8) is deliberately left unbeamed — its grouping
+    /// rule (threes per dotted quarter) isn't implemented, and flags are
+    /// honest where a wrong beam would lie about the meter.
+    #[test]
+    fn compound_meter_stays_unbeamed() {
+        let notes: Vec<ScoreNote> = (0..6)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let mut model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        model.time_signature = TimeSignature {
+            beats: 6,
+            beat_type: 8,
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(!xml.contains("<beam"), "6/8 must stay flag-only:\n{xml}");
+    }
+
+    /// Beamed eighth-note block chords: the chord ANCHORS beam; the stacked
+    /// members (<chord/> notes) carry no beam of their own — they ride the
+    /// anchor's stem. Fails if members join the group (which would make the
+    /// group overshoot its cap and renderers double-beam the stack).
+    #[test]
+    fn chord_members_ride_the_anchor_beam() {
+        // Two eighth-note dyads: anchors at 0.0 and 0.5, each with one
+        // stacked member sharing the onset.
+        let notes = vec![
+            note(60, 0.5, 0.0),
+            note(64, 0.5, 0.0), // member
+            note(62, 0.5, 0.5),
+            note(65, 0.5, 0.5), // member
+        ];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<chord/>").count(), 2);
+        assert_eq!(
+            xml.matches("<beam").count(),
+            2,
+            "exactly the two anchors beam (begin + end):\n{xml}"
+        );
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 1);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 1);
+        // PLACEMENT, not just counts (test-audit mutant: shifting the beam
+        // onto a member leaves every count identical): a <note> carrying
+        // <chord/> must never also carry <beam>, and both anchors — E4/F4
+        // members, C4/D4 anchors — must be the beamed ones.
+        for block in xml.split("<note>").skip(1) {
+            let block = block.split("</note>").next().unwrap();
+            assert!(
+                !(block.contains("<chord/>") && block.contains("<beam")),
+                "a chord member must never carry its own beam:\n{block}"
+            );
+            if block.contains("<beam") {
+                assert!(
+                    block.contains("<step>C</step>") || block.contains("<step>D</step>"),
+                    "beams belong on the anchors (C4, D4):\n{block}"
+                );
+            }
+        }
+    }
+
+    /// An onset GAP with no rest note between two eighths (legal in the
+    /// model) also breaks the beam: eighths at 0.0 and 1.0 are not
+    /// contiguous, so each is a singleton and nothing beams. Fails if the
+    /// contiguity condition drops out of the grouping (test-audit mutant 7
+    /// — every other "gap" test realizes the gap as an explicit rest).
+    #[test]
+    fn onset_gaps_without_rests_break_beams() {
+        let notes = vec![note(60, 0.5, 0.0), note(62, 0.5, 1.0)];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            !xml.contains("<beam"),
+            "non-contiguous eighths in the same half-measure must not beam:\n{xml}"
+        );
+    }
+
+    /// Beamed output still round-trips: the parser ignores <type>/<beam>
+    /// and reads back the same pitches and durations.
+    #[test]
+    fn beamed_output_round_trips() {
+        let notes: Vec<ScoreNote> = (0..8)
+            .map(|i| note(60 + i as u8, 0.5, i as f64 * 0.5))
+            .collect();
+        let model = ScoreModel {
+            measures: vec![Measure {
+                number: 1,
+                notes: notes.clone(),
+            }],
+            ..c_major_scale()
+        };
+        let reparsed = parse_musicxml_str(&score_model_to_musicxml(&model)).unwrap();
+        let rt = &reparsed.measures[0].notes;
+        assert_eq!(rt.len(), 8);
+        for (o, r) in notes.iter().zip(rt) {
+            assert_eq!(o.midi_number, r.midi_number);
+            assert!((o.duration_beats - r.duration_beats).abs() < 1e-9);
+        }
     }
 
     /// #277: under a flat key signature the emitter spells FLATS — MIDI 70 in

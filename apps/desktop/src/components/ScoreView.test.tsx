@@ -9,6 +9,8 @@ import {
 import ScoreView, {
   boundsFromGraphicSheet,
   measureIndexByXmlNumber,
+  notationContentWidth,
+  notationFitWidth,
   type OsmdLike,
   type OsmdFactory,
   type OsmdStaffMeasure,
@@ -694,5 +696,194 @@ describe("measureIndexByXmlNumber — the cursor's numbering map (#370)", () => 
 
   it("empty input yields an empty map", () => {
     expect(measureIndexByXmlNumber(undefined).size).toBe(0);
+  });
+});
+
+describe("ScoreView — centered notation (VA 2026-07-14)", () => {
+  // AC: notation narrower than the pane → the wrapper takes the content's
+  // width (+slack) so mx-auto centers it, and the overlay rides inside the
+  // same wrapper so tap regions stay aligned with the drawn measures.
+  it("sizes the wrapper to the drawn content when the pane is wider", async () => {
+    const fake = makeFakeOsmdWithBounds(3); // content right edge = 300px
+    // Gate load so the pane width mock is in place before effect 1 reads it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const originalLoad = fake.osmd.load.bind(fake.osmd);
+    fake.osmd.load = async (xml: string) => {
+      await gate;
+      return originalLoad(xml);
+    };
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    release();
+    const wrapper = await screen.findByTestId("notation-wrapper");
+    // 300px content + 8px barline slack, centered by mx-auto; clipping is
+    // active only while pinned (M1).
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"));
+    expect(wrapper.className).toContain("mx-auto");
+    expect(wrapper.className).toContain("overflow-hidden");
+    // Overlay coordinates are wrapper-local — hit 2 still starts at 100px.
+    expect(screen.getByTestId("measure-hit-2").style.left).toBe("100px");
+  });
+
+  // Review M1: pinning changes the canvas width WITHOUT a window resize,
+  // and OSMD only re-lays-out on window resize — so the component itself
+  // must re-render OSMD at the new width (else overflow-hidden could clip
+  // stale-width drawings). The canvas mock tracks the wrapper's pin.
+  it("re-renders OSMD when the pin changes the canvas width", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const originalLoad = fake.osmd.load.bind(fake.osmd);
+    fake.osmd.load = async (xml: string) => {
+      await gate;
+      return originalLoad(xml);
+    };
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    // The canvas reports the width the wrapper actually gives it.
+    const wrapperWidth = () =>
+      Number.parseInt(
+        screen.getByTestId("notation-wrapper").style.width || "1000",
+        10,
+      );
+    Object.defineProperty(
+      screen.getByTestId("score-view-canvas"),
+      "clientWidth",
+      { get: wrapperWidth, configurable: true },
+    );
+    release();
+    const wrapper = await screen.findByTestId("notation-wrapper");
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"));
+    // Load-render at 1000px, then the corrective render at the 308px pin —
+    // and the pin stays stable (hysteresis) rather than re-render looping.
+    await waitFor(() =>
+      expect(fake.calls.filter((c) => c === "render")).toHaveLength(2),
+    );
+    expect(wrapper.style.width).toBe("308px");
+  });
+
+  // AC: content as wide as the pane (or unknown — jsdom's clientWidth is 0)
+  // keeps the wrapper at full width; nothing shifts, nothing clips.
+  it("keeps full width when content fills the pane or layout is unknown", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.calls).toContain("render"));
+    const wrapper = screen.getByTestId("notation-wrapper");
+    expect(wrapper.style.width).toBe("");
+    // M1: unpinned must never clip — wide scores rely on the root's
+    // overflow-auto scrollbar, exactly as before this feature.
+    expect(wrapper.className).not.toContain("overflow-hidden");
+  });
+});
+
+describe("notationFitWidth / notationContentWidth — the centering math", () => {
+  const bound = (x: number, width: number) => ({
+    measureNumber: 1,
+    x,
+    y: 0,
+    width,
+    height: 40,
+  });
+
+  it("content width is the farthest right edge across systems", () => {
+    // Two wrapped systems: the SECOND is shorter — the union must not
+    // shrink to the last rect read.
+    expect(
+      notationContentWidth([bound(0, 400), bound(400, 200), bound(0, 250)]),
+    ).toBe(600);
+    expect(notationContentWidth([])).toBe(0);
+  });
+
+  it("fits (content + slack) when the pane is meaningfully wider", () => {
+    expect(notationFitWidth(1000, 300)).toBe(308);
+    expect(notationFitWidth(1000, 299.4)).toBe(308); // ceil, never clip
+  });
+
+  it("declines when centering would gain nothing or inputs are unknown", () => {
+    expect(notationFitWidth(320, 300)).toBeNull(); // < slack + min gain
+    expect(notationFitWidth(0, 300)).toBeNull(); // jsdom / unmeasured pane
+    expect(notationFitWidth(1000, 0)).toBeNull(); // no layout read
+    expect(notationFitWidth(Number.NaN, 300)).toBeNull();
+    expect(notationFitWidth(1000, Number.POSITIVE_INFINITY)).toBeNull();
+  });
+});
+
+describe("ScoreView — centering follows window resize", () => {
+  // AC: the debounced resize handler recomputes the fit width — and it now
+  // runs WITHOUT a tap handler (the effect gate moved from
+  // [ready, onMeasureTap] to [ready]). A pane that grows around a short
+  // drill must start centering it after the 250ms debounce.
+  it("recomputes the wrapper width on resize, without onMeasureTap", async () => {
+    const fake = makeFakeOsmdWithBounds(3); // content right edge = 300px
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    // jsdom pane width is 0 at load → no fit width.
+    await waitFor(() => expect(fake.calls).toContain("render"));
+    const wrapper = screen.getByTestId("notation-wrapper");
+    expect(wrapper.style.width).toBe("");
+
+    // The pane grows (e.g. the window is maximized) and resize fires; the
+    // 250ms-debounced handler must re-read the pane and snap the wrapper
+    // to the content width. Real timers — waitFor outlives the debounce.
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1200,
+      configurable: true,
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"), {
+      timeout: 2000,
+    });
+  });
+
+  // AC2 alignment: the tap overlay must live INSIDE the sized wrapper —
+  // that containment is what keeps its container-local rects aligned with
+  // the centered notation (left=100px is meaningless from outside it).
+  it("the measure overlay is a descendant of the sized wrapper", async () => {
+    const fake = makeFakeOsmdWithBounds(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    const overlay = await screen.findByTestId("measure-overlay");
+    expect(screen.getByTestId("notation-wrapper")).toContainElement(overlay);
   });
 });
