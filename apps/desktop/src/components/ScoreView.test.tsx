@@ -784,3 +784,53 @@ describe("notationFitWidth / notationContentWidth — the centering math", () =>
     expect(notationFitWidth(1000, Number.POSITIVE_INFINITY)).toBeNull();
   });
 });
+
+describe("ScoreView — centering follows window resize", () => {
+  // AC: the debounced resize handler recomputes the fit width — and it now
+  // runs WITHOUT a tap handler (the effect gate moved from
+  // [ready, onMeasureTap] to [ready]). A pane that grows around a short
+  // drill must start centering it after the 250ms debounce.
+  it("recomputes the wrapper width on resize, without onMeasureTap", async () => {
+    const fake = makeFakeOsmdWithBounds(3); // content right edge = 300px
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    // jsdom pane width is 0 at load → no fit width.
+    await waitFor(() => expect(fake.calls).toContain("render"));
+    const wrapper = screen.getByTestId("notation-wrapper");
+    expect(wrapper.style.width).toBe("");
+
+    // The pane grows (e.g. the window is maximized) and resize fires; the
+    // 250ms-debounced handler must re-read the pane and snap the wrapper
+    // to the content width. Real timers — waitFor outlives the debounce.
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1200,
+      configurable: true,
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"), {
+      timeout: 2000,
+    });
+  });
+
+  // AC2 alignment: the tap overlay must live INSIDE the sized wrapper —
+  // that containment is what keeps its container-local rects aligned with
+  // the centered notation (left=100px is meaningless from outside it).
+  it("the measure overlay is a descendant of the sized wrapper", async () => {
+    const fake = makeFakeOsmdWithBounds(2);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    const overlay = await screen.findByTestId("measure-overlay");
+    expect(screen.getByTestId("notation-wrapper")).toContainElement(overlay);
+  });
+});

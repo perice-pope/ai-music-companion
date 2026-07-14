@@ -965,6 +965,42 @@ mod tests {
         );
         assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 1);
         assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 1);
+        // PLACEMENT, not just counts (test-audit mutant: shifting the beam
+        // onto a member leaves every count identical): a <note> carrying
+        // <chord/> must never also carry <beam>, and both anchors — E4/F4
+        // members, C4/D4 anchors — must be the beamed ones.
+        for block in xml.split("<note>").skip(1) {
+            let block = block.split("</note>").next().unwrap();
+            assert!(
+                !(block.contains("<chord/>") && block.contains("<beam")),
+                "a chord member must never carry its own beam:\n{block}"
+            );
+            if block.contains("<beam") {
+                assert!(
+                    block.contains("<step>C</step>") || block.contains("<step>D</step>"),
+                    "beams belong on the anchors (C4, D4):\n{block}"
+                );
+            }
+        }
+    }
+
+    /// An onset GAP with no rest note between two eighths (legal in the
+    /// model) also breaks the beam: eighths at 0.0 and 1.0 are not
+    /// contiguous, so each is a singleton and nothing beams. Fails if the
+    /// contiguity condition drops out of the grouping (test-audit mutant 7
+    /// — every other "gap" test realizes the gap as an explicit rest).
+    #[test]
+    fn onset_gaps_without_rests_break_beams() {
+        let notes = vec![note(60, 0.5, 0.0), note(62, 0.5, 1.0)];
+        let model = ScoreModel {
+            measures: vec![Measure { number: 1, notes }],
+            ..c_major_scale()
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert!(
+            !xml.contains("<beam"),
+            "non-contiguous eighths in the same half-measure must not beam:\n{xml}"
+        );
     }
 
     /// Beamed output still round-trips: the parser ignores <type>/<beam>
