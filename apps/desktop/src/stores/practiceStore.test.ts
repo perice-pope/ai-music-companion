@@ -671,12 +671,23 @@ describe("practiceStore — guided lesson (#254)", () => {
   // its score; the final submit lands the recap and clears the drill.
   it("start → submit → recap walks the state machine", async () => {
     const useStore = await listeningStore();
-    mockInvoke.mockResolvedValueOnce({ seed: 7, score: null, drill: drillDto, recap: null });
+    mockInvoke.mockResolvedValueOnce({
+      seed: 7,
+      score: null,
+      drill: drillDto,
+      recap: null,
+    });
     await useStore.getState().startLesson();
     expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
     expect(useStore.getState().lessonDrill?.index).toBe(0);
 
-    const score = { accuracy: 0.9, pitch_accuracy: 0.9, timing_accuracy: 0.8, correct: 7, total: 8 };
+    const score = {
+      accuracy: 0.9,
+      pitch_accuracy: 0.9,
+      timing_accuracy: 0.8,
+      correct: 7,
+      total: 8,
+    };
     mockInvoke.mockResolvedValueOnce({
       seed: 7,
       score,
@@ -687,7 +698,12 @@ describe("practiceStore — guided lesson (#254)", () => {
     expect(useStore.getState().lessonDrill?.index).toBe(1);
     expect(useStore.getState().lessonScore?.accuracy).toBe(0.9);
 
-    const recap = { drill_labels: ["a"], drill_accuracies: [0.9], start_difficulty: 0, end_difficulty: 1 };
+    const recap = {
+      drill_labels: ["a"],
+      drill_accuracies: [0.9],
+      start_difficulty: 0,
+      end_difficulty: 1,
+    };
     mockInvoke.mockResolvedValueOnce({ seed: 7, score, drill: null, recap });
     await useStore.getState().submitDrill();
     expect(useStore.getState().lessonDrill).toBeNull();
@@ -697,7 +713,12 @@ describe("practiceStore — guided lesson (#254)", () => {
   // A failed submit keeps the drill on screen (retryable), never throws.
   it("a failed submit keeps the current drill", async () => {
     const useStore = await listeningStore();
-    mockInvoke.mockResolvedValueOnce({ seed: 1, score: null, drill: drillDto, recap: null });
+    mockInvoke.mockResolvedValueOnce({
+      seed: 1,
+      score: null,
+      drill: drillDto,
+      recap: null,
+    });
     await useStore.getState().startLesson();
     mockInvoke.mockRejectedValueOnce(new Error("ears offline"));
     await expect(useStore.getState().submitDrill()).resolves.toBeUndefined();
@@ -707,7 +728,12 @@ describe("practiceStore — guided lesson (#254)", () => {
   // Ending abandons: state clears and the backend is told.
   it("endLesson clears state and notifies the backend", async () => {
     const useStore = await listeningStore();
-    mockInvoke.mockResolvedValueOnce({ seed: 1, score: null, drill: drillDto, recap: null });
+    mockInvoke.mockResolvedValueOnce({
+      seed: 1,
+      score: null,
+      drill: drillDto,
+      recap: null,
+    });
     await useStore.getState().startLesson();
     mockInvoke.mockResolvedValueOnce(undefined);
     await useStore.getState().endLesson();

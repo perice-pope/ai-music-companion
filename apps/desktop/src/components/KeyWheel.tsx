@@ -42,7 +42,8 @@ function Segment({
   const start = (index * 30 - 90 + 1.5) * (Math.PI / 180);
   const end = ((index + 1) * 30 - 90 - 1.5) * (Math.PI / 180);
   const [cx, cy, rOuter, rInner] = [100, 100, 90, 58];
-  const p = (r: number, a: number) => `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`;
+  const p = (r: number, a: number) =>
+    `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`;
   const d = [
     `M ${p(rOuter, start)}`,
     `A ${rOuter} ${rOuter} 0 0 1 ${p(rOuter, end)}`,
@@ -122,20 +123,24 @@ export default function KeyWheel() {
   ].filter(Boolean);
 
   return (
-    <div
-      className="flex flex-col items-center gap-2"
-      data-testid="key-wheel"
-    >
+    <div className="flex flex-col items-center gap-2" data-testid="key-wheel">
       <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">
         Your keys · {wheel.total_owned} of 12 owned
       </p>
-      <svg viewBox="0 0 200 200" className="h-52 w-52" role="img" aria-label="Key mastery wheel">
+      <svg
+        viewBox="0 0 200 200"
+        className="h-52 w-52"
+        role="img"
+        aria-label="Key mastery wheel"
+      >
         {FIFTHS_ORDER.map((pc, i) => (
           <Segment
             key={pc}
             cell={wheel.cells[pc]}
             index={i}
-            onSelect={(c) => setSelected(selected?.tonic === c.tonic ? null : c)}
+            onSelect={(c) =>
+              setSelected(selected?.tonic === c.tonic ? null : c)
+            }
             selected={selected?.tonic === pc}
           />
         ))}
@@ -146,7 +151,9 @@ export default function KeyWheel() {
           dominantBaseline="central"
           className="fill-gray-500 text-[10px]"
         >
-          {wheel.total_owned === 0 ? "play to light up" : `${wheel.total_owned}/12`}
+          {wheel.total_owned === 0
+            ? "play to light up"
+            : `${wheel.total_owned}/12`}
         </text>
       </svg>
       {trends.length > 0 && (

@@ -73,7 +73,9 @@ describe("LessonPanel", () => {
     expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
     expect(screen.getByText(/drill 2 of 4/)).toBeInTheDocument();
     expect(screen.getByText(/step 0/)).toBeInTheDocument();
-    expect(screen.getByText("C Major · up · 1 roots · 60 BPM")).toBeInTheDocument();
+    expect(
+      screen.getByText("C Major · up · 1 roots · 60 BPM"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("lesson-last-score")).toHaveTextContent("80%");
     expect(screen.getByTestId("stub-score-view")).toBeInTheDocument();
   });

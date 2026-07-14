@@ -69,7 +69,10 @@ export default function LessonPanel() {
   }
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col gap-3" data-testid="lesson-panel">
+    <div
+      className="flex min-h-0 w-full flex-1 flex-col gap-3"
+      data-testid="lesson-panel"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div
           className="border-l-4 pl-3"

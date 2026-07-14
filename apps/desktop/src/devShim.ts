@@ -26,19 +26,73 @@
 // lowercase values here would exercise a different render path in
 // preview than the production app.
 const MOCK_INSTRUMENTS = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 155, freqMaxHz: 988, emoji: "🎺" },
+  {
+    name: "Trumpet",
+    family: "Brass",
+    freqMinHz: 155,
+    freqMaxHz: 988,
+    emoji: "🎺",
+  },
   // Trombone deliberately NOT 🎺 — that's a trumpet, not a trombone.
   // Unicode has no dedicated trombone glyph; 🎶 is a neutral fallback
   // until we ship custom SVG art for instruments. Keeps us honest
   // toward trombonists in the meantime. Mirror in profiles/trombone.json.
-  { name: "Trombone", family: "Brass", freqMinHz: 58, freqMaxHz: 587, emoji: "🎶" },
-  { name: "French Horn", family: "Brass", freqMinHz: 87, freqMaxHz: 880, emoji: "📯" },
-  { name: "Voice", family: "Voice", freqMinHz: 82, freqMaxHz: 1047, emoji: "🎤" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 2637, emoji: "🎻" },
-  { name: "Cello", family: "Strings", freqMinHz: 65, freqMaxHz: 988, emoji: "🎻" },
-  { name: "Flute", family: "Woodwind", freqMinHz: 262, freqMaxHz: 2093, emoji: "🪈" },
-  { name: "Clarinet", family: "Woodwind", freqMinHz: 147, freqMaxHz: 1568, emoji: "🎷" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 27, freqMaxHz: 4186, emoji: "🎹" },
+  {
+    name: "Trombone",
+    family: "Brass",
+    freqMinHz: 58,
+    freqMaxHz: 587,
+    emoji: "🎶",
+  },
+  {
+    name: "French Horn",
+    family: "Brass",
+    freqMinHz: 87,
+    freqMaxHz: 880,
+    emoji: "📯",
+  },
+  {
+    name: "Voice",
+    family: "Voice",
+    freqMinHz: 82,
+    freqMaxHz: 1047,
+    emoji: "🎤",
+  },
+  {
+    name: "Violin",
+    family: "Strings",
+    freqMinHz: 196,
+    freqMaxHz: 2637,
+    emoji: "🎻",
+  },
+  {
+    name: "Cello",
+    family: "Strings",
+    freqMinHz: 65,
+    freqMaxHz: 988,
+    emoji: "🎻",
+  },
+  {
+    name: "Flute",
+    family: "Woodwind",
+    freqMinHz: 262,
+    freqMaxHz: 2093,
+    emoji: "🪈",
+  },
+  {
+    name: "Clarinet",
+    family: "Woodwind",
+    freqMinHz: 147,
+    freqMaxHz: 1568,
+    emoji: "🎷",
+  },
+  {
+    name: "Piano",
+    family: "Keyboard",
+    freqMinHz: 27,
+    freqMaxHz: 4186,
+    emoji: "🎹",
+  },
 ];
 
 interface InvokeArgs {
@@ -87,7 +141,9 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
           "(Browser preview — no real audio analysis. Run `pnpm tauri dev` for the full experience.)",
         strengths: ["UI renders", "State transitions fire"],
         areas_to_improve: ["Live pitch needs the Tauri native shell"],
-        next_session_suggestions: ["Launch the Tauri dev build to hear yourself"],
+        next_session_suggestions: [
+          "Launch the Tauri dev build to hear yourself",
+        ],
         duration_secs: 0,
         phrase_count: 0,
         instrument: (args?.instrument as string) ?? "Unknown",

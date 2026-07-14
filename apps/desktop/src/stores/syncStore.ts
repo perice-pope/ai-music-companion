@@ -47,7 +47,10 @@ export interface SyncState {
    * user has opted into session sync (`optedIn`). No-op (returns to idle) when
    * called with a falsy userId or when optedIn is false.
    */
-  syncAll: (userId: string | null | undefined, optedIn: boolean) => Promise<void>;
+  syncAll: (
+    userId: string | null | undefined,
+    optedIn: boolean,
+  ) => Promise<void>;
 
   /**
    * Push the local taste profile for `userId` to Supabase — but only when the

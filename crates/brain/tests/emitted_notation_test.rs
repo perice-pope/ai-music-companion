@@ -128,3 +128,48 @@ fn no_emitted_direction_lacks_a_direction_type() {
         );
     }
 }
+
+/// The beamed-eighths contract model: one 4/4 measure of eight straight
+/// eighths (C major run). Kept tiny and constructed (not imported) so the
+/// fixture is stable; the frontend OSMD sweep asserts the beams parse into
+/// two groups of four.
+fn eighth_run_model() -> ScoreModel {
+    use brain::score::{KeySignature, Measure, ScoreNote, TimeSignature};
+    let notes = (0..8u8)
+        .map(|i| {
+            let midi = [60, 62, 64, 65, 67, 69, 71, 72][i as usize];
+            ScoreNote {
+                pitch_hz: brain::score::midi_to_hz(f64::from(midi)),
+                midi_number: midi,
+                duration_beats: 0.5,
+                start_beat: f64::from(i) * 0.5,
+                dynamic: None,
+                is_rest: false,
+            }
+        })
+        .collect();
+    ScoreModel {
+        title: "Eighth Run".to_string(),
+        composer: None,
+        instrument: Some("Melody".to_string()),
+        time_signature: TimeSignature::default(),
+        key_signature: KeySignature::default(),
+        tempo_bpm: 60.0,
+        measures: vec![Measure { number: 1, notes }],
+    }
+}
+
+const FIXTURE_EIGHTH_RUN: &str =
+    include_str!("../../../apps/desktop/src/test-fixtures/emitted-eighth-run.musicxml");
+
+/// The beamed fixture IS the emitter's output for the eighth-run model —
+/// same drift contract as the #356 fixtures: if this fails, regenerate the
+/// fixture and re-run the OSMD sweep.
+#[test]
+fn beamed_fixture_matches_emitter_output() {
+    assert_eq!(
+        score_model_to_musicxml(&eighth_run_model()),
+        FIXTURE_EIGHTH_RUN,
+        "emitted-eighth-run.musicxml drifted from the emitter"
+    );
+}

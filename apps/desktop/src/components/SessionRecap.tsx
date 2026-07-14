@@ -170,7 +170,10 @@ export default function SessionRecap() {
             (the explicit unsettled claim) — a percussive/groove-only session
             with no tonal readings says nothing about key at all. */}
           {!isEmptyState && fingerprint?.key_claim === "unsettled" && (
-            <p className="text-sm text-gray-400" data-testid="recap-key-unsettled">
+            <p
+              className="text-sm text-gray-400"
+              data-testid="recap-key-unsettled"
+            >
               Key:{" "}
               <span className="text-gray-200">
                 kept moving — normal for exploratory playing
@@ -368,9 +371,7 @@ export default function SessionRecap() {
                     {formatChartTime(e.at_secs)}
                   </span>
                   {e.unresolved ? (
-                    <span className="italic text-gray-400">
-                      several notes…
-                    </span>
+                    <span className="italic text-gray-400">several notes…</span>
                   ) : (
                     <span className="font-semibold text-gray-100">
                       {e.label}
@@ -400,8 +401,6 @@ function formatChartTime(secs: number): string {
   const ss = Math.floor(secs % 60);
   return `${m}:${ss.toString().padStart(2, "0")}`;
 }
-
-
 
 /**
  * Full-height dark surface for the recap. Every other screen owns its own

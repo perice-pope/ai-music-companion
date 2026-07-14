@@ -126,10 +126,7 @@ function pushLane(
       last.rootPc === chord.root_pc &&
       last.quality === (chord.quality ?? null);
     if (sameIdentity) {
-      if (
-        last.confidence === chord.confidence &&
-        last.label === chord.label
-      ) {
+      if (last.confidence === chord.confidence && last.label === chord.label) {
         return { lane, ringing: true };
       }
       return {
@@ -161,7 +158,13 @@ function pushLane(
     return {
       lane: [
         ...lane,
-        { label: "", rootPc: null, quality: null, confidence: 0, unresolved: true },
+        {
+          label: "",
+          rootPc: null,
+          quality: null,
+          confidence: 0,
+          unresolved: true,
+        },
       ].slice(-LANE_CAP),
       ringing: true,
     };
@@ -1125,7 +1128,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   // dismiss timer fires — so we keep the queue at a single, latest entry.
   pushReveal: (reveal, phraseIndex) =>
     set({
-      revealQueue: [{ id: newId(), reveal, receivedAt: Date.now(), phraseIndex }],
+      revealQueue: [
+        { id: newId(), reveal, receivedAt: Date.now(), phraseIndex },
+      ],
     }),
 
   requestReveal: async (phrase) => {
@@ -1252,7 +1257,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     if (!scoreId) {
       // Edge: the recap outlived its score reference — say so instead of a
       // dead button (S3/S5 review finding 9).
-      set({ bridgeNotice: "that score isn't open anymore — re-import it first" });
+      set({
+        bridgeNotice: "that score isn't open anymore — re-import it first",
+      });
       return;
     }
     try {

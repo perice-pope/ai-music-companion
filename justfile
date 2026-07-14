@@ -33,9 +33,10 @@ fmt-check:
     cargo fmt --all -- --check
     cd apps/desktop && pnpm format:check || true
 
-# Lint all code
+# Lint all code (same clippy form as CI — current clippy dropped the
+# old `--deny warnings` wrapper flag)
 lint:
-    cargo clippy --workspace --deny warnings
+    cargo clippy --workspace --all-targets -- -D warnings
     cd apps/desktop && pnpm lint || true
 
 # Run security audits

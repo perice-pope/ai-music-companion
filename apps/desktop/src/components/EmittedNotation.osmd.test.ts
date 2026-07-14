@@ -3,6 +3,7 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import trumpetXml from "../test-fixtures/emitted-band-trumpet.musicxml?raw";
 import bassXml from "../test-fixtures/emitted-band-bass.musicxml?raw";
 import scaleXml from "../test-fixtures/emitted-scale-score.musicxml?raw";
+import eighthRunXml from "../test-fixtures/emitted-eighth-run.musicxml?raw";
 
 /**
  * #356 — the emitted-notation ⇄ OSMD contract, tested against the REAL
@@ -85,5 +86,39 @@ describe("emitted MusicXML through the real OSMD parser (#356)", () => {
     expect(malformed).not.toBe(trumpetXml);
     const { perMeasure } = await osmdSoundingPerMeasure(malformed);
     expect(perMeasure).toEqual([0, 4]);
+  });
+
+  it("beams the eighth-run into two groups of four — no lone flags", async () => {
+    // The founder's engraving rule: eighth notes join in groups of 2 and 4,
+    // never a page of individual flags. OSMD models a beamed group as one
+    // shared Beam instance across its notes; the emitted <beam> elements
+    // must survive OSMD's parse as exactly two four-note groups.
+    const osmd = new OpenSheetMusicDisplay(document.createElement("div"), {
+      autoResize: false,
+      backend: "svg",
+    });
+    await osmd.load(eighthRunXml);
+    const beams = new Set<unknown>();
+    let sounding = 0;
+    for (const measure of osmd.Sheet.SourceMeasures) {
+      for (const container of measure.VerticalSourceStaffEntryContainers) {
+        for (const staffEntry of container.StaffEntries) {
+          if (!staffEntry) continue;
+          for (const voiceEntry of staffEntry.VoiceEntries) {
+            for (const note of voiceEntry.Notes) {
+              if (note.isRest()) continue;
+              sounding += 1;
+              expect(note.NoteBeam, "every eighth must be beamed").toBeTruthy();
+              beams.add(note.NoteBeam);
+            }
+          }
+        }
+      }
+    }
+    expect(sounding).toBe(8);
+    expect(beams.size).toBe(2);
+    for (const beam of beams) {
+      expect((beam as { Notes: unknown[] }).Notes).toHaveLength(4);
+    }
   });
 });

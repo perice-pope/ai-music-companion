@@ -9,6 +9,8 @@ import {
 import ScoreView, {
   boundsFromGraphicSheet,
   measureIndexByXmlNumber,
+  notationContentWidth,
+  notationFitWidth,
   type OsmdLike,
   type OsmdFactory,
   type OsmdStaffMeasure,
@@ -694,5 +696,91 @@ describe("measureIndexByXmlNumber — the cursor's numbering map (#370)", () => 
 
   it("empty input yields an empty map", () => {
     expect(measureIndexByXmlNumber(undefined).size).toBe(0);
+  });
+});
+
+describe("ScoreView — centered notation (VA 2026-07-14)", () => {
+  // AC: notation narrower than the pane → the wrapper takes the content's
+  // width (+slack) so mx-auto centers it, and the overlay rides inside the
+  // same wrapper so tap regions stay aligned with the drawn measures.
+  it("sizes the wrapper to the drawn content when the pane is wider", async () => {
+    const fake = makeFakeOsmdWithBounds(3); // content right edge = 300px
+    // Gate load so the pane width mock is in place before effect 1 reads it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const originalLoad = fake.osmd.load.bind(fake.osmd);
+    fake.osmd.load = async (xml: string) => {
+      await gate;
+      return originalLoad(xml);
+    };
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+        onMeasureTap={() => {}}
+      />,
+    );
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    release();
+    const wrapper = await screen.findByTestId("notation-wrapper");
+    // 300px content + 8px barline slack, centered by mx-auto.
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"));
+    expect(wrapper.className).toContain("mx-auto");
+    // Overlay coordinates are wrapper-local — hit 2 still starts at 100px.
+    expect(screen.getByTestId("measure-hit-2").style.left).toBe("100px");
+  });
+
+  // AC: content as wide as the pane (or unknown — jsdom's clientWidth is 0)
+  // keeps the wrapper at full width; nothing shifts, nothing clips.
+  it("keeps full width when content fills the pane or layout is unknown", async () => {
+    const fake = makeFakeOsmdWithBounds(3);
+    render(
+      <ScoreView
+        musicXml="<score/>"
+        cursorPosition={null}
+        osmdFactory={fake.factory}
+      />,
+    );
+    await waitFor(() => expect(fake.calls).toContain("render"));
+    const wrapper = screen.getByTestId("notation-wrapper");
+    expect(wrapper.style.width).toBe("");
+  });
+});
+
+describe("notationFitWidth / notationContentWidth — the centering math", () => {
+  const bound = (x: number, width: number) => ({
+    measureNumber: 1,
+    x,
+    y: 0,
+    width,
+    height: 40,
+  });
+
+  it("content width is the farthest right edge across systems", () => {
+    // Two wrapped systems: the SECOND is shorter — the union must not
+    // shrink to the last rect read.
+    expect(
+      notationContentWidth([bound(0, 400), bound(400, 200), bound(0, 250)]),
+    ).toBe(600);
+    expect(notationContentWidth([])).toBe(0);
+  });
+
+  it("fits (content + slack) when the pane is meaningfully wider", () => {
+    expect(notationFitWidth(1000, 300)).toBe(308);
+    expect(notationFitWidth(1000, 299.4)).toBe(308); // ceil, never clip
+  });
+
+  it("declines when centering would gain nothing or inputs are unknown", () => {
+    expect(notationFitWidth(320, 300)).toBeNull(); // < slack + min gain
+    expect(notationFitWidth(0, 300)).toBeNull(); // jsdom / unmeasured pane
+    expect(notationFitWidth(1000, 0)).toBeNull(); // no layout read
+    expect(notationFitWidth(Number.NaN, 300)).toBeNull();
+    expect(notationFitWidth(1000, Number.POSITIVE_INFINITY)).toBeNull();
   });
 });

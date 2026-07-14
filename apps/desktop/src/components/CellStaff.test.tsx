@@ -18,7 +18,10 @@ function note(overrides: Partial<CellStaffNoteDto>): CellStaffNoteDto {
   };
 }
 
-function view(notes: CellStaffNoteDto[], overrides?: Partial<CellStaffViewDto>): CellStaffViewDto {
+function view(
+  notes: CellStaffNoteDto[],
+  overrides?: Partial<CellStaffViewDto>,
+): CellStaffViewDto {
   const last = notes[notes.length - 1];
   return {
     fifths: 0,
@@ -222,12 +225,22 @@ describe("CellStaff — editing (#292 slice 3)", () => {
   it("undo shows only with history", () => {
     const onUndo = vi.fn();
     const { unmount } = render(
-      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={false} />,
+      <CellStaff
+        staff={three()}
+        onEditNote={() => {}}
+        onUndo={onUndo}
+        canUndo={false}
+      />,
     );
     expect(screen.queryByTestId("edit-undo")).not.toBeInTheDocument();
     unmount();
     render(
-      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={true} />,
+      <CellStaff
+        staff={three()}
+        onEditNote={() => {}}
+        onUndo={onUndo}
+        canUndo={true}
+      />,
     );
     fireEvent.click(screen.getByTestId("edit-undo"));
     expect(onUndo).toHaveBeenCalled();
