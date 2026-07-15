@@ -50,6 +50,13 @@ declare global {
      * slower transcription.
      */
     __importDelayMs?: number;
+    /**
+     * Deliver a backend event to every listener the app registered for it
+     * (#354): the seeded backend has no mic, so live events — score
+     * positions, verdicts — can only enter the app through this. Payload
+     * must match the event's real wire shape.
+     */
+    __emitTauriEvent: (event: string, payload: unknown) => void;
     __TAURI_INTERNALS__?: unknown;
   }
 }
@@ -357,7 +364,31 @@ export function installTauriMockAndNetGuard(): void {
     '<key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>' +
     '<clef><sign>G</sign><line>2</line></clef></attributes>' +
     '<note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>' +
-    "<type>whole</type></note></measure></part></score-partwise>";
+    "<type>whole</type></note></measure>" +
+    // A second measure so cursor-advance can be exercised (#354) — the
+    // cursor spec walks measure 1 → 2 and asserts real pixel movement.
+    '<measure number="2"><note><pitch><step>D</step><octave>4</octave></pitch>' +
+    "<duration>4</duration><type>whole</type></note></measure>" +
+    "</part></score-partwise>";
+
+  // Event-listener registry (#354): Tauri v2 routes `listen` over invoke
+  // with a `handler` callback id minted by `transformCallback`. Recording
+  // event → handler ids lets a test deliver a real backend event through
+  // the exact plumbing the app wired — the only way the headless suite can
+  // exercise live-event flows (score positions, verdicts).
+  const eventHandlers: Record<string, number[]> = {};
+  window.__emitTauriEvent = (event: string, payload: unknown) => {
+    for (const hid of eventHandlers[event] ?? []) {
+      const cb = (window as unknown as Record<string, unknown>)[`_${hid}`];
+      if (typeof cb === "function") {
+        (cb as (e: { event: string; id: number; payload: unknown }) => void)({
+          event,
+          id: hid,
+          payload,
+        });
+      }
+    }
+  };
 
   async function handleInvoke(
     cmd: string,
@@ -413,9 +444,19 @@ export function installTauriMockAndNetGuard(): void {
           avg_session_length_secs: 0,
           trend: "stable",
         };
-      case "plugin:event|listen":
+      case "plugin:event|listen": {
+        const event = args?.event as string | undefined;
+        const handler = args?.handler as number | undefined;
+        if (event !== undefined && typeof handler === "number") {
+          (eventHandlers[event] ??= []).push(handler);
+        }
         return Math.floor(Math.random() * 1_000_000);
+      }
       case "plugin:event|unlisten":
+        return undefined;
+      // #354 diagnostics: webview breadcrumbs are fire-and-forget log
+      // lines; the headless suite just accepts them.
+      case "frontend_breadcrumb":
         return undefined;
       default:
         throw new Error(`[e2e tauri-mock] unmocked command "${cmd}"`);

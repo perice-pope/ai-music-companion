@@ -44,6 +44,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ping,
             ai_music_companion::commands::start_practice_session,
+            ai_music_companion::commands::frontend_breadcrumb,
             ai_music_companion::commands::switch_instrument,
             ai_music_companion::commands::end_practice_session,
             ai_music_companion::commands::start_accompaniment,

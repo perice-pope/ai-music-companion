@@ -1,3 +1,16 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* #354 ROOT CAUSE — the invisible score cursor. OSMD's follow cursor is a
+   1px-tall bitmap stretched to stave height via the img's HTML `height`
+   ATTRIBUTE. Tailwind preflight ships `img { height: auto }`, which beats
+   attribute sizing — the cursor collapsed to a 1px hairline in every real
+   browser (five VA runs of "no visual cursor" while jsdom tests, which
+   apply no CSS, stayed green). No CSS can restore attribute sizing
+   (`revert` also rolls back presentational hints), so ScoreView mirrors
+   the attribute into an inline style (`fixCursorImgHeight`); this rule
+   only stops preflight's max-width from squeezing wide cursors. */
+img[id^="cursorImg"] {
+  max-width: none;
+}

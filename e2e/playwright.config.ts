@@ -41,7 +41,20 @@ export default defineConfig({
     // Belt-and-suspenders: deny camera/mic so nothing prompts headlessly.
     permissions: [],
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    // The shipped app renders in WKWebView, not Chromium — WebKit is the
+    // closest engine Playwright has to what users actually see. #354's
+    // cursor was invisible for five VA runs while every Chromium-side
+    // check passed; engine-specific paint behavior is exactly the class
+    // of bug this project exists to catch. Scoped to the cursor spec to
+    // keep CI time flat (broaden if WebKit-only bugs recur elsewhere).
+    {
+      name: "webkit",
+      use: { ...devices["Desktop Safari"] },
+      testMatch: /07-score-cursor-paints\.spec\.ts$/,
+    },
+  ],
   webServer: {
     // Build the bundle then preview it. `--strictPort` so a stale server on
     // the port fails loudly instead of silently serving the wrong build.

@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ScorePosition } from "../types/brain";
+import {
+  cursorShownBreadcrumb,
+  sendBreadcrumb,
+} from "../lib/positionBreadcrumbs";
 
 /**
  * Minimal slice of the OpenSheetMusicDisplay surface we depend on. Typed
@@ -108,7 +112,12 @@ const makeDefaultFactory =
             opts: Record<string, unknown>,
           ) => OsmdLike;
           inner = new OSMD(container, {
-            autoResize: true,
+            // OSMD's own resize hook re-renders at the CURRENT canvas
+            // width — under a centering pin that rewraps the score into
+            // the pin and breaks cursor geometry (#354 spec finding).
+            // The component owns re-layout: window resizes flow through
+            // the unpinned remeasure path instead.
+            autoResize: false,
             backend: "svg",
             drawingParameters: "compact",
             // Ambient (#278): light ink so the staff reads on the app's dark
@@ -390,26 +399,60 @@ export default function ScoreView({
     };
   }, [musicXml, factory]);
 
+  /**
+   * Re-derive layout-dependent state — hit regions (#341) and the
+   * centering pin — from an UNPINNED canvas. If the canvas's real width
+   * departed from the width OSMD last laid out at, re-render first (and
+   * re-park the cursor: a render rebuilds the graphic sheet, and a
+   * cursor shown against the old one draws hairline garbage — the 30×1px
+   * cursor the #354 paint spec caught). Callers guarantee the wrapper is
+   * unpinned, so any pin computed here comes from a full-width layout —
+   * pinning NEVER re-renders, which is what makes the pin↔re-wrap
+   * ratchet (review r2 nice-to-have 1) structurally impossible.
+   */
+  const remeasureUnpinned = () => {
+    const osmd = osmdRef.current;
+    const canvas = containerRef.current;
+    if (!osmd || !canvas) return;
+    const width = canvas.clientWidth;
+    if (width > 0 && Math.abs(width - layoutWidthRef.current) > 1) {
+      osmd.render();
+      osmd.cursor.reset();
+      osmd.cursor.hide();
+      cursorShownRef.current = false;
+      cursorMeasureRef.current = currentMeasure(osmd);
+      layoutWidthRef.current = width;
+    }
+    const bounds = osmd.measureBounds?.() ?? [];
+    setMeasureRects(bounds);
+    setFitWidth(
+      notationFitWidth(
+        paneAvailableWidth(rootRef.current),
+        notationContentWidth(bounds),
+      ),
+    );
+  };
+
   // #341 review M4: OSMD re-lays-out on window resize (autoResize), so the
   // hit regions must follow — otherwise a maximized window rows a
-  // different measure than the one under the pointer. The centering width
-  // follows for the same reason (a shrunken pane must reclaim the wrapper
-  // before the notation can re-wrap). Debounced past OSMD's own debounced
-  // re-render.
+  // different measure than the one under the pointer. The centering pin
+  // follows too: pinned wrappers UNPIN here (the effect below then
+  // remeasures at the new full width and re-pins), unpinned ones
+  // remeasure directly. Debounced past OSMD's own debounced re-render.
   useEffect(() => {
     if (!ready) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const onResize = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        const bounds = osmdRef.current?.measureBounds?.() ?? [];
-        setMeasureRects(bounds);
-        setFitWidth(
-          notationFitWidth(
-            paneAvailableWidth(rootRef.current),
-            notationContentWidth(bounds),
-          ),
-        );
+        setFitWidth((current) => {
+          if (current !== null) {
+            // Unpin; the corrective effect remeasures at full width.
+            return null;
+          }
+          remeasureUnpinned();
+          return current;
+        });
       }, 250);
     };
     window.addEventListener("resize", onResize);
@@ -419,37 +462,17 @@ export default function ScoreView({
     };
   }, [ready]);
 
-  // Review M1: OSMD re-lays-out only on WINDOW resize — pinning or
-  // unpinning the wrapper changes the canvas width without one, leaving
-  // the drawn SVG true to a stale width (a pane shrink would clip real
-  // music under the pinned wrapper's overflow-hidden). Whenever the
-  // canvas's actual width departs from the width OSMD last laid out at,
-  // re-render and re-read every piece of geometry that depends on it.
+  // Review M1 (round 3 shape): a pane change reaches OSMD only through an
+  // UNPINNED remeasure. Pinning itself never re-renders — the pinned
+  // wrapper is at least as wide as the drawn content (measured at full
+  // width), so overflow-hidden clips only empty margin and the existing
+  // layout, overlay rects, and cursor geometry all stay valid. This
+  // effect fires exactly when the wrapper is unpinned (load start, or the
+  // resize handler unpinning): remeasure at the full width, which re-pins
+  // if the content is narrower than the pane.
   useEffect(() => {
-    if (!ready) return;
-    const osmd = osmdRef.current;
-    const canvas = containerRef.current;
-    if (!osmd || !canvas) return;
-    const width = canvas.clientWidth;
-    if (width <= 0 || Math.abs(width - layoutWidthRef.current) <= 1) return;
-    osmd.render();
-    layoutWidthRef.current = width;
-    const bounds = osmd.measureBounds?.() ?? [];
-    setMeasureRects(bounds);
-    const next = notationFitWidth(
-      paneAvailableWidth(rootRef.current),
-      notationContentWidth(bounds),
-    );
-    // Hysteresis: a re-render at the pinned width re-measures the same
-    // content to within barline slack — keep the current pin rather than
-    // creep or ping-pong by a few pixels.
-    setFitWidth((current) =>
-      next !== null &&
-      current !== null &&
-      Math.abs(next - current) <= BARLINE_SLACK_PX
-        ? current
-        : next,
-    );
+    if (!ready || fitWidth !== null) return;
+    remeasureUnpinned();
   }, [ready, fitWidth]);
 
   // Effect 2: advance the cursor to the live measure.
@@ -473,6 +496,12 @@ export default function ScoreView({
     if (!cursorShownRef.current) {
       osmd.cursor.show();
       cursorShownRef.current = true;
+      fixCursorImgHeight(containerRef.current ?? document);
+      // #354 diagnostics: the moment the cursor is first shown, put its
+      // actual DOM state (or absence) in the tester's log — the #279
+      // failure shape is "every move works, zero visible pixels", which
+      // only geometry can distinguish from a dead event stream.
+      sendBreadcrumb(cursorShownBreadcrumb(document));
     }
     // The follower reports the MusicXML `number` attribute; OSMD's
     // iterator is a 0-based index. Pickup-bar scores number 0,1,2…, so
@@ -484,6 +513,8 @@ export default function ScoreView({
         Math.max(0, cursorPosition.measure_number - 1),
       cursorMeasureRef,
     );
+    // Walking across a system re-sizes the img via the attribute again.
+    fixCursorImgHeight(containerRef.current ?? document);
   }, [ready, cursorPosition]);
 
   return (
@@ -581,6 +612,24 @@ function paneAvailableWidth(root: HTMLElement | null): number {
     (Number.parseFloat(style.paddingLeft) || 0) +
     (Number.parseFloat(style.paddingRight) || 0);
   return root.clientWidth - padding;
+}
+
+/**
+ * #354: OSMD sizes its cursor img via the HTML `height` attribute, and
+ * Tailwind preflight's `img { height: auto }` overrides attribute sizing —
+ * collapsing the cursor to its intrinsic 1px bitmap in every real browser.
+ * No stylesheet can restore attribute sizing (`revert` discards
+ * presentational hints too), so the attribute is mirrored into an inline
+ * style, which wins the cascade. Called at every point the cursor may
+ * have been (re)created or re-sized: show, and after a measure walk.
+ */
+export function fixCursorImgHeight(root: ParentNode = document): void {
+  for (const img of root.querySelectorAll<HTMLImageElement>(
+    'img[id^="cursorImg"]',
+  )) {
+    const h = img.getAttribute("height");
+    if (h) img.style.height = `${h}px`;
+  }
 }
 
 /** Read the cursor's current 0-based measure, or -1 if unavailable. */
