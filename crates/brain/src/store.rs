@@ -1000,13 +1000,16 @@ impl ScoreStore {
         let content_hash = score_content_hash(&music_xml);
         // Libraries that predate the hash column can already hold duplicates
         // (the bug this fixes), so the lookup is not unique; newest wins.
+        // The music_xml equality check makes a 64-bit hash collision merge
+        // impossible rather than astronomically unlikely — the hash is just
+        // the cheap filter in front of the blob compare.
         let existing: Option<String> = self
             .conn
             .query_row(
                 "SELECT id FROM scores \
-                 WHERE content_hash = ?1 AND part_index = ?2 \
+                 WHERE content_hash = ?1 AND part_index = ?2 AND music_xml = ?3 \
                  ORDER BY added_at DESC LIMIT 1",
-                params![content_hash, part_index as i64],
+                params![content_hash, part_index as i64, music_xml],
                 |r| r.get(0),
             )
             .optional()?;
@@ -2300,6 +2303,18 @@ mod tests {
         let after = store.get(id).unwrap();
         assert!(after.last_practiced_at.is_some());
         assert!(after.last_practiced_at.unwrap() > before.added_at);
+    }
+
+    /// The hashes persist in the DB, so the function's contract is byte-for-
+    /// byte stability across releases — pin it to the published FNV-1a 64
+    /// vectors. If this test goes red, the change would silently orphan every
+    /// stored hash and bring the #385 duplicates back for existing libraries.
+    #[test]
+    fn score_content_hash_is_pinned_to_fnv1a64_vectors() {
+        assert_eq!(score_content_hash(""), "cbf29ce484222325");
+        assert_eq!(score_content_hash("a"), "af63dc4c8601ec8c");
+        assert_eq!(score_content_hash("foobar"), "85944171f73967e8");
+        assert_eq!(score_content_hash("<score-partwise/>"), "d374142b6cd125d2");
     }
 
     /// #385 AC1: importing the same file twice yields one list entry, and the
