@@ -1,3 +1,9 @@
+## [2.27.1](https://github.com/perice-pope/ai-music-companion/compare/v2.27.0...v2.27.1) (2026-07-15)
+
+### Bug Fixes
+
+* **import:** hold the .wav loading message long enough to actually see ([#336](https://github.com/perice-pope/ai-music-companion/issues/336)) ([#376](https://github.com/perice-pope/ai-music-companion/issues/376)) ([c83a9d5](https://github.com/perice-pope/ai-music-companion/commit/c83a9d5f2f0bfb9b5099c7ce5b85005127b9508d))
+
 ## [2.27.0](https://github.com/perice-pope/ai-music-companion/compare/v2.26.1...v2.27.0) (2026-07-14)
 
 ### Features
