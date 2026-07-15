@@ -297,7 +297,8 @@ CREATE TABLE IF NOT EXISTS scores (
     last_practiced_at TEXT,
     part_index INTEGER NOT NULL DEFAULT 0,
     duration_measures INTEGER NOT NULL DEFAULT 0,
-    music_xml TEXT NOT NULL
+    music_xml TEXT NOT NULL,
+    content_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scores_last_practiced ON scores(last_practiced_at DESC, added_at DESC);
 CREATE TABLE IF NOT EXISTS taste_profile (
@@ -361,6 +362,47 @@ pub struct ExerciseLogEntry {
 /// session data already uses.
 pub const LOCAL_TASTE_PROFILE_USER_ID: &str = "local";
 
+/// Add `column` to `table` only if absent. SQLite's
+/// `ALTER TABLE ADD COLUMN` is not idempotent, so we check `table_info`
+/// first — keeping `migrate()` safe to run on fresh and already-migrated
+/// databases alike. `table`/`column`/`decl` are internal constants, never
+/// user input.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), StoreError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+    drop(stmt);
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    }
+    Ok(())
+}
+
+/// 64-bit FNV-1a over the stored MusicXML — the dedup key for score imports
+/// (#385). Not cryptographic on purpose: the only consequence of a collision
+/// is an import reusing another entry, so the bar is "astronomically unlikely
+/// across a personal library", which 64 bits clears without adding a hash
+/// dependency. Stability across releases matters more here than strength —
+/// hashes persist in the DB, so `std`'s `DefaultHasher` (unstable across Rust
+/// versions by contract) would silently orphan old rows.
+fn score_content_hash(music_xml: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in music_xml.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 // ---------------------------------------------------------------------------
 // SessionStore
 // ---------------------------------------------------------------------------
@@ -420,34 +462,10 @@ impl SessionStore {
             // v1: session-level debug columns. Databases created before these
             // (and before `score_id` was added to SCHEMA) gain them now; a
             // fresh DB already has the column, so the guard skips it.
-            self.add_column_if_missing("sessions", "score_id", "TEXT")?;
-            self.add_column_if_missing("sessions", "app_version", "TEXT")?;
-            self.add_column_if_missing("sessions", "practice_mode", "TEXT")?;
+            add_column_if_missing(&self.conn, "sessions", "score_id", "TEXT")?;
+            add_column_if_missing(&self.conn, "sessions", "app_version", "TEXT")?;
+            add_column_if_missing(&self.conn, "sessions", "practice_mode", "TEXT")?;
             self.conn.execute_batch("PRAGMA user_version = 1;")?;
-        }
-        Ok(())
-    }
-
-    /// Add `column` to `table` only if absent. SQLite's
-    /// `ALTER TABLE ADD COLUMN` is not idempotent, so we check `table_info`
-    /// first — keeping `migrate()` safe to run on fresh and already-migrated
-    /// databases alike. `table`/`column`/`decl` are internal constants, never
-    /// user input.
-    fn add_column_if_missing(
-        &self,
-        table: &str,
-        column: &str,
-        decl: &str,
-    ) -> Result<(), StoreError> {
-        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
-        let exists = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .filter_map(Result::ok)
-            .any(|name| name == column);
-        drop(stmt);
-        if !exists {
-            self.conn
-                .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
         }
         Ok(())
     }
@@ -929,6 +947,31 @@ impl ScoreStore {
     /// Execute the schema migrations. Idempotent.
     fn migrate(&self) -> Result<(), StoreError> {
         self.conn.execute_batch(SCHEMA)?;
+        // Dedup-by-content (#385): databases created before `content_hash`
+        // gain the column here, and pre-existing rows are backfilled so a
+        // re-import of a score that predates the column still lands on its
+        // old entry instead of minting a duplicate.
+        add_column_if_missing(&self.conn, "scores", "content_hash", "TEXT")?;
+        self.backfill_content_hashes()?;
+        Ok(())
+    }
+
+    /// Hash any rows the migration left without a `content_hash`. Only ever
+    /// touches NULL rows, so repeated opens are no-ops.
+    fn backfill_content_hashes(&self) -> Result<(), StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, music_xml FROM scores WHERE content_hash IS NULL")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        for (id, music_xml) in rows {
+            self.conn.execute(
+                "UPDATE scores SET content_hash = ?1 WHERE id = ?2",
+                params![score_content_hash(&music_xml), id],
+            )?;
+        }
         Ok(())
     }
 
@@ -938,6 +981,13 @@ impl ScoreStore {
     /// `music_xml` is the raw MusicXML string (parsed by the caller from file).
     /// `title`, `composer`, and other metadata may come from the parsed content
     /// or be inferred from the filename.
+    ///
+    /// Re-importing identical content is a no-op by design (#385): every
+    /// format funnels its normalized MusicXML through here, and dropping the
+    /// same file twice used to mint a new row each time. Same content + same
+    /// part = the same score, so the existing entry is returned instead.
+    /// Title matching is deliberately NOT used — different pieces can share a
+    /// name; identical content can't differ.
     pub fn import(
         &self,
         title: String,
@@ -947,13 +997,33 @@ impl ScoreStore {
         part_index: usize,
         duration_measures: usize,
     ) -> Result<ScoreLibraryEntry, StoreError> {
+        let content_hash = score_content_hash(&music_xml);
+        // Libraries that predate the hash column can already hold duplicates
+        // (the bug this fixes), so the lookup is not unique; newest wins.
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM scores \
+                 WHERE content_hash = ?1 AND part_index = ?2 \
+                 ORDER BY added_at DESC LIMIT 1",
+                params![content_hash, part_index as i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id_str) = existing {
+            let id: ScoreId = id_str.parse().map_err(|e: uuid::Error| {
+                StoreError::CorruptRow(format!("invalid score id {id_str}: {e}"))
+            })?;
+            return self.get(id);
+        }
+
         let id = ScoreId::new();
         let now = Utc::now();
 
         self.conn.execute(
             "INSERT INTO scores \
-             (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml, content_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id.as_str(),
                 title,
@@ -963,6 +1033,7 @@ impl ScoreStore {
                 part_index as i64,
                 duration_measures as i64,
                 music_xml.clone(),
+                content_hash,
             ],
         )?;
 
@@ -2130,14 +2201,19 @@ mod tests {
     #[test]
     fn list_scores_ordered_by_last_practiced() {
         let store = ScoreStore::in_memory().unwrap();
-        let xml = "<?xml version=\"1.0\"?><score-partwise/>".to_string();
+        // Distinct content per score — identical content would (correctly)
+        // dedup to a single entry (#385), and this test is about ordering.
+        let xml1 =
+            "<?xml version=\"1.0\"?><score-partwise><!-- one --></score-partwise>".to_string();
+        let xml2 =
+            "<?xml version=\"1.0\"?><score-partwise><!-- two --></score-partwise>".to_string();
 
         let id1 = store
             .import(
                 "Score 1".to_string(),
                 None,
                 "s1.musicxml".to_string(),
-                xml.clone(),
+                xml1,
                 0,
                 10,
             )
@@ -2148,7 +2224,7 @@ mod tests {
                 "Score 2".to_string(),
                 None,
                 "s2.musicxml".to_string(),
-                xml.clone(),
+                xml2,
                 0,
                 20,
             )
@@ -2224,5 +2300,157 @@ mod tests {
         let after = store.get(id).unwrap();
         assert!(after.last_practiced_at.is_some());
         assert!(after.last_practiced_at.unwrap() > before.added_at);
+    }
+
+    /// #385 AC1: importing the same file twice yields one list entry, and the
+    /// second import hands back that entry (so the UI can open it).
+    #[test]
+    fn reimporting_identical_content_reuses_the_existing_entry() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<?xml version=\"1.0\"?><score-partwise><!-- kit --></score-partwise>";
+
+        let first = store
+            .import(
+                "Test Scale (C major)".to_string(),
+                Some("AMC Test Kit".to_string()),
+                "test-scale.musicxml".to_string(),
+                xml.to_string(),
+                0,
+                4,
+            )
+            .unwrap();
+        let second = store
+            .import(
+                "Test Scale (C major)".to_string(),
+                Some("AMC Test Kit".to_string()),
+                "test-scale.musicxml".to_string(),
+                xml.to_string(),
+                0,
+                4,
+            )
+            .unwrap();
+
+        assert_eq!(second.id, first.id, "re-import must reuse the entry");
+        assert_eq!(second.music_xml, xml);
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 1, "no duplicate row for identical content");
+        assert_eq!(list[0].id, first.id);
+    }
+
+    /// #385 AC2: a genuinely different file with the same title is a
+    /// different piece — it must still get its own entry.
+    #[test]
+    fn same_title_different_content_stays_two_entries() {
+        let store = ScoreStore::in_memory().unwrap();
+
+        let first = store
+            .import(
+                "Etude No. 1".to_string(),
+                None,
+                "etude.musicxml".to_string(),
+                "<score-partwise><!-- in C --></score-partwise>".to_string(),
+                0,
+                8,
+            )
+            .unwrap();
+        let second = store
+            .import(
+                "Etude No. 1".to_string(),
+                None,
+                "etude.musicxml".to_string(),
+                "<score-partwise><!-- in Db --></score-partwise>".to_string(),
+                0,
+                8,
+            )
+            .unwrap();
+
+        assert_ne!(second.id, first.id, "same title is not the same piece");
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    /// Importing another part of the same multi-part file is a distinct
+    /// library entry: the stored MusicXML is identical, the part isn't.
+    #[test]
+    fn same_content_different_part_stays_two_entries() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<score-partwise><!-- duet --></score-partwise>".to_string();
+
+        let flute = store
+            .import(
+                "Duet".to_string(),
+                None,
+                "duet.musicxml".to_string(),
+                xml.clone(),
+                0,
+                12,
+            )
+            .unwrap();
+        let oboe = store
+            .import(
+                "Duet".to_string(),
+                None,
+                "duet.musicxml".to_string(),
+                xml,
+                1,
+                12,
+            )
+            .unwrap();
+
+        assert_ne!(oboe.id, flute.id, "part 1 is not part 0");
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    /// A library created before the `content_hash` column existed must dedup
+    /// against its legacy rows: `migrate()` backfills their hashes, so
+    /// re-importing an old score lands on the old entry, not a duplicate.
+    #[test]
+    fn migration_backfills_hashes_so_legacy_rows_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        let xml = "<score-partwise><!-- legacy --></score-partwise>";
+        let legacy_id = ScoreId::new();
+
+        // Build the pre-#385 scores table by hand: no content_hash column.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE scores (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    composer TEXT,
+                    source_filename TEXT NOT NULL,
+                    added_at TEXT NOT NULL,
+                    last_practiced_at TEXT,
+                    part_index INTEGER NOT NULL DEFAULT 0,
+                    duration_measures INTEGER NOT NULL DEFAULT 0,
+                    music_xml TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scores (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml) \
+                 VALUES (?1, 'Legacy', NULL, 'legacy.musicxml', '2026-01-01T00:00:00+00:00', 0, 4, ?2)",
+                params![legacy_id.as_str(), xml],
+            )
+            .unwrap();
+        }
+
+        let store = ScoreStore::open(&path).unwrap();
+        let entry = store
+            .import(
+                "Legacy".to_string(),
+                None,
+                "legacy.musicxml".to_string(),
+                xml.to_string(),
+                0,
+                4,
+            )
+            .unwrap();
+
+        assert_eq!(
+            entry.id, legacy_id,
+            "re-import must land on the backfilled legacy row"
+        );
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 }
