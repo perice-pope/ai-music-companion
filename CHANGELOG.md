@@ -1,3 +1,9 @@
+## [2.28.3](https://github.com/perice-pope/ai-music-companion/compare/v2.28.2...v2.28.3) (2026-07-15)
+
+### Bug Fixes
+
+* **face:** drill header honesty — step counts from 1, '1 root' singular, no shuffle brag on one item ([#391](https://github.com/perice-pope/ai-music-companion/issues/391)) ([#399](https://github.com/perice-pope/ai-music-companion/issues/399)) ([ce87096](https://github.com/perice-pope/ai-music-companion/commit/ce8709636ba2ddb86911b7c008141d09340d2170))
+
 ## [2.28.2](https://github.com/perice-pope/ai-music-companion/compare/v2.28.1...v2.28.2) (2026-07-15)
 
 ### Bug Fixes
