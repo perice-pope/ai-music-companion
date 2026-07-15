@@ -48,7 +48,16 @@ pub fn resolve_ort_dylib(resource_dir: Option<&Path>, env_already_set: bool) -> 
     if env_already_set {
         return None;
     }
-    let candidate = resource_dir?.join("onnxruntime").join(ort_lib_filename());
+    let base = resource_dir?.join("onnxruntime");
+    // #383: macOS universal builds bundle BOTH arch dylibs under arch
+    // subdirs (an arm64 dylib dlopen'd by an x86_64 process is a
+    // wrong-architecture failure, not a fallback). The running process's
+    // arch picks; the flat path stays as the single-arch layout.
+    let arch_candidate = base.join(std::env::consts::ARCH).join(ort_lib_filename());
+    if arch_candidate.is_file() {
+        return Some(arch_candidate);
+    }
+    let candidate = base.join(ort_lib_filename());
     candidate.is_file().then_some(candidate)
 }
 
@@ -175,6 +184,43 @@ mod tests {
         let base = unique_dir("missing"); // never created
         assert_eq!(resolve_ort_dylib(Some(&base), false), None);
         assert_eq!(resolve_ort_dylib(None, false), None);
+    }
+
+    /// #383: a universal macOS bundle carries BOTH arch dylibs under arch
+    /// subdirs; the running process's arch must win over the flat path —
+    /// an arm64 dylib in an x86_64 process is a wrong-arch dlopen failure,
+    /// not a fallback. Fails if the arch-subdir probe is dropped or probes
+    /// after the flat path.
+    #[test]
+    fn arch_subdir_wins_over_flat_layout() {
+        let base = unique_dir("arch");
+        let ort = base.join("onnxruntime");
+        let arch_dir = ort.join(std::env::consts::ARCH);
+        fs::create_dir_all(&arch_dir).unwrap();
+        // Both layouts present — the arch one must be chosen.
+        fs::write(ort.join(ort_lib_filename()), b"flat").unwrap();
+        let arch_lib = arch_dir.join(ort_lib_filename());
+        fs::write(&arch_lib, b"arch").unwrap();
+        assert_eq!(resolve_ort_dylib(Some(&base), false), Some(arch_lib));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A DIFFERENT arch's subdir must never satisfy resolution — only the
+    /// flat layout can, and when neither matches the resolver stays None
+    /// (calm error downstream, never a wrong-arch dlopen).
+    #[test]
+    fn foreign_arch_subdir_is_ignored() {
+        let base = unique_dir("foreign");
+        let other = if std::env::consts::ARCH == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        let dir = base.join("onnxruntime").join(other);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(ort_lib_filename()), b"wrong-arch").unwrap();
+        assert_eq!(resolve_ort_dylib(Some(&base), false), None);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
