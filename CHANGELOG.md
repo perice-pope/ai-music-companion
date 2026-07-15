@@ -1,3 +1,9 @@
+## [2.28.1](https://github.com/perice-pope/ai-music-companion/compare/v2.28.0...v2.28.1) (2026-07-15)
+
+### Bug Fixes
+
+* **release:** actually bundle the ONNX Runtime into installers ([#383](https://github.com/perice-pope/ai-music-companion/issues/383)) ([#395](https://github.com/perice-pope/ai-music-companion/issues/395)) ([bda187d](https://github.com/perice-pope/ai-music-companion/commit/bda187d2b1f2034350a355aa9943153974271964))
+
 ## [2.28.0](https://github.com/perice-pope/ai-music-companion/compare/v2.27.1...v2.28.0) (2026-07-15)
 
 ### Features
