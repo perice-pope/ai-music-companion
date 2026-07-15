@@ -95,17 +95,37 @@ jobs:
         working-directory: apps/desktop
         run: pnpm tauri icon src-tauri/icons/128x128@2x.png
 
-      # The transcribe crate dynamically loads ONNX Runtime; vendor it so the
-      # release build links the same runtime CI tests use. (Bundled into the
-      # installer via tauri.conf.json `bundle.resources`.)
-      - name: Vendor ONNX Runtime (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+      # #383: the transcribe crate dlopens ONNX Runtime at run time. The old
+      # step here vendored it to /tmp on Linux ONLY — the resource dir that
+      # tauri.conf.json `bundle.resources` actually packages stayed EMPTY,
+      # so every installer on every platform shipped without the engine
+      # (.wav import + all poly features dead, found by the VA's installer
+      # smoke). Populate the real resource dir on every platform; macOS
+      # universal bundles BOTH arch dylibs (runtime.rs picks by process
+      # arch — upstream ships no osx-x64 1.24.x, so Intel rides 1.22.0).
+      - name: Bundle ONNX Runtime into resources
+        shell: bash
         run: |
-          ORT_VERSION=1.24.2
-          curl -fsSL -o /tmp/onnxruntime.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-          tar xzf /tmp/onnxruntime.tgz -C /tmp
-          echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            bash scripts/fetch-onnxruntime.sh --macos-universal
+          else
+            bash scripts/fetch-onnxruntime.sh
+          fi
+
+      # Fail RED before building if the resource dir is empty — the exact
+      # regression #383 fixes must never ship silently again.
+      - name: Assert ONNX Runtime resources present
+        shell: bash
+        run: |
+          DIR=apps/desktop/src-tauri/resources/onnxruntime
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            test -f "$DIR/aarch64/libonnxruntime.dylib" || { echo "::error::missing arm64 ONNX Runtime resource"; exit 1; }
+            test -f "$DIR/x86_64/libonnxruntime.dylib" || { echo "::error::missing x86_64 ONNX Runtime resource"; exit 1; }
+          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            test -f "$DIR/onnxruntime.dll" || { echo "::error::missing Windows ONNX Runtime resource"; exit 1; }
+          else
+            test -f "$DIR/libonnxruntime.so" || { echo "::error::missing Linux ONNX Runtime resource"; exit 1; }
+          fi
 
       # Tauri's bundler treats a PRESENT-but-empty APPLE_CERTIFICATE as "sign
       # with this" and dies importing a blank keychain cert (killed v2.15.1's
