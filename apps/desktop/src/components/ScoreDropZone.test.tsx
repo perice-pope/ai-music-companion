@@ -266,7 +266,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("faint.wav", [1]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -293,7 +293,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("band.wav", [1]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -411,7 +411,7 @@ describe("ScoreDropZone", () => {
           return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       const file = fileWithBytes("take.wav", [1]);
       fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -449,7 +449,7 @@ describe("ScoreDropZone", () => {
           return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       fireEvent.change(fileInput(), {
         target: { files: [fileWithBytes("first.wav", [1])] },
       });
@@ -481,7 +481,7 @@ describe("ScoreDropZone", () => {
           return Promise.reject(new Error("Couldn't decode that recording"));
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       const file = fileWithBytes("broken.wav", [1]);
       fireEvent.change(fileInput(), { target: { files: [file] } });
 
