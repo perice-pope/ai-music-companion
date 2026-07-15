@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import ScoreDropZone from "./ScoreDropZone";
 
 const mockInvoke = vi.fn();
@@ -90,7 +96,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("routes a .mid file to import_midi_file with its bytes", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("scales.mid", [0x4d, 0x54, 0x68, 0x64]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -105,7 +111,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("routes a .midi file to import_midi_file too", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("piece.midi", [1, 2, 3]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -132,7 +138,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("band.mid", [9, 9]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -156,28 +162,28 @@ describe("ScoreDropZone", () => {
   // #337 S1 AC2: the format hint tells the truth about reliability tiers —
   // exact copy (escaped), both tiers, both beta formats named.
   it("labels the stable and beta format tiers", () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     expect(
-      screen.getByText(
-        /Reliable: \.musicxml, \.xml, \.mid, \.midi scores/,
-      ),
+      screen.getByText(/Reliable: \.musicxml, \.xml, \.mid, \.midi scores/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Beta, still rough:\s*\.pdf scans, \.wav\/\.mp3 recordings/),
+      screen.getByText(
+        /Beta, still rough:\s*\.pdf scans, \.wav\/\.mp3 recordings/,
+      ),
     ).toBeInTheDocument();
   });
 
   // #337 S1 AC2 (second clause): a .wav import shows its beta label AT
   // import time, every time — not only when quality looks off.
   it("labels a .wav import as beta on success", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("take.wav", [1, 2]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
     await screen.findByText(/transcribed from audio \(beta\)/);
   });
 
   it("routes a .wav file to import_audio_file with its bytes", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("recording.wav", [0x52, 0x49, 0x46, 0x46]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -191,7 +197,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("routes a .mp3 file to import_audio_file too", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("take.mp3", [9, 9, 9]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -204,7 +210,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("does not warn about quality for a clean monophonic import", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("recording.wav", [1]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -225,7 +231,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("band.wav", [1]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -253,7 +259,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("take.wav", [1, 2]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -264,6 +270,169 @@ describe("ScoreDropZone", () => {
     await waitFor(() =>
       expect(screen.queryByText("Listening for notes…")).toBeNull(),
     );
+  });
+
+  // #336, round three — the VA's sample recording is small enough that the
+  // backend can resolve before the seeded indicator ever reaches the screen:
+  // seed-then-clear inside one task paints ZERO frames, which is exactly
+  // "no loading message appeared" from three consecutive VA runs. Once shown,
+  // the in-progress state must survive a human-perceivable minimum even when
+  // the import finishes instantly.
+  it("keeps the loading message up for a perceivable minimum when the import finishes instantly", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScoreDropZone />);
+      const file = fileWithBytes("take.wav", [1, 2]);
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      // Settle the (instantly-resolving) import. 50ms of fake time gives a
+      // cold worker's microtask chain room while staying far inside the hold.
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      // The backend already returned, yet the message is still on screen…
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+      expect(screen.queryByText(/transcribed from audio/)).toBeNull();
+
+      // …and stays through most of the hold window…
+      await act(() => vi.advanceTimersByTimeAsync(900));
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+
+      // …then hands over to the imported banner once the hold elapses.
+      await act(() => vi.advanceTimersByTimeAsync(400));
+      expect(screen.queryByText("Listening for notes…")).toBeNull();
+      expect(
+        screen.getByText(/transcribed from audio \(beta\)/),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The PDF/OMR branch has the identical zero-frame invisibility class —
+  // its hold is pinned separately so it can't be silently dropped.
+  it("keeps the PDF reading message up for the same perceivable minimum", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScoreDropZone />);
+      const file = fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46]);
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      // OMR resolved instantly, yet the seeded message is still on screen…
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(screen.getByText("Reading the notes…")).toBeInTheDocument();
+      expect(screen.queryByText(/read from a scan/i)).toBeNull();
+
+      // …through most of the hold window…
+      await act(() => vi.advanceTimersByTimeAsync(900));
+      expect(screen.getByText("Reading the notes…")).toBeInTheDocument();
+
+      // …then the flow proceeds to the provenance note + import.
+      await act(() => vi.advanceTimersByTimeAsync(400));
+      expect(screen.queryByText("Reading the notes…")).toBeNull();
+      expect(screen.getByText(/read from a scan/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The hold is a minimum, not an addend: a transcription that already ran
+  // longer than the window hands over to the banner the moment it resolves.
+  it("does not extend a slow import beyond its own duration", async () => {
+    // Fake `performance` too, so the import's elapsed time is the fake
+    // clock's 2000ms rather than the real microseconds the test took.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      let resolveImport: ((v: unknown) => void) | undefined;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "import_audio_file")
+          return new Promise((res) => {
+            resolveImport = res;
+          });
+        if (cmd === "get_score")
+          return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone />);
+      const file = fileWithBytes("take.wav", [1]);
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      // 2s of transcription — already past the 1.2s hold window.
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+
+      // The banner must arrive on resolution alone, no further timers.
+      resolveImport?.(AUDIO_RESULT);
+      await act(async () => {});
+      expect(
+        screen.getByText(/transcribed from audio \(beta\)/),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A tester who sees nothing retries fast. If a second file is dropped
+  // while the first import is still holding its indicator, the first's
+  // completion must not clobber the second's in-progress UI (review MF1).
+  it("a second drop during the first's hold keeps its own indicator", async () => {
+    vi.useFakeTimers();
+    try {
+      // First import resolves instantly (enters its hold); the second pends.
+      let audioCalls = 0;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "import_audio_file") {
+          audioCalls += 1;
+          return audioCalls === 1
+            ? Promise.resolve(AUDIO_RESULT)
+            : new Promise(() => {});
+        }
+        if (cmd === "get_score")
+          return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("first.wav", [1])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("second.wav", [2])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+
+      // The first import's hold elapses mid-second-import: its stale
+      // completion stays silent — the second's indicator survives.
+      await act(() => vi.advanceTimersByTimeAsync(1300));
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+      expect(screen.getByText(/Transcribing second\.wav/)).toBeInTheDocument();
+      expect(screen.queryByText(/Imported "recording"/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The hold applies to success only — a failed import reports immediately,
+  // with no in-progress message lingering over the error.
+  it("shows an import failure immediately, without holding the indicator", async () => {
+    vi.useFakeTimers();
+    try {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "import_audio_file")
+          return Promise.reject(new Error("Couldn't decode that recording"));
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone />);
+      const file = fileWithBytes("broken.wav", [1]);
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(
+        screen.getByText(/Couldn't decode that recording/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Listening for notes…")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders progress from import-progress events during audio import", async () => {
@@ -279,7 +448,7 @@ describe("ScoreDropZone", () => {
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
 
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("recording.wav", [1]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -295,7 +464,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("imports a single-part MusicXML file directly (part 0, no picker)", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("song.musicxml", [0x3c, 0x3f, 0x78]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -320,7 +489,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("duet.xml", [1, 2, 3]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -344,7 +513,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("recognizes a single-part PDF and imports it via the shared MusicXML path", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46]); // %PDF
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -383,7 +552,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("duet.pdf", [0x25, 0x50, 0x44, 0x46]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -419,7 +588,7 @@ describe("ScoreDropZone", () => {
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("blurry.pdf", [0x25, 0x50, 0x44, 0x46]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -436,7 +605,7 @@ describe("ScoreDropZone", () => {
         );
       return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
     });
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -448,7 +617,7 @@ describe("ScoreDropZone", () => {
   });
 
   it("guides the user to re-export a compressed .mxl file", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = fileWithBytes("song.mxl", [0x50, 0x4b, 0x03, 0x04]);
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -457,11 +626,123 @@ describe("ScoreDropZone", () => {
   });
 
   it("rejects an unsupported extension without invoking anything", async () => {
-    render(<ScoreDropZone />);
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
     const file = new File(["nope"], "notes.txt");
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
     await screen.findByText(/Unsupported format/);
     expect(mockInvoke).not.toHaveBeenCalled();
+  });
+});
+
+// Post-review hardening (test-audit survivors S1–S3): the staleness guards
+// on the ERROR and QUALITY paths existed in code but nothing pinned them,
+// and PDF error immediacy was only asserted under a masking minMs=0.
+describe("staleness guards on error/quality paths (#336 audit S1–S3)", () => {
+  // S1: a slow FAILING import must not clobber a newer drop's indicator
+  // with its stale error. Kills the mutant that drops isCurrentImport()
+  // around the audio catch's setStatus/setError.
+  it("a stale rejection stays silent while a newer drop is live", async () => {
+    vi.useFakeTimers();
+    try {
+      let audioCalls = 0;
+      let rejectFirst!: (e: Error) => void;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "import_audio_file") {
+          audioCalls += 1;
+          return audioCalls === 1
+            ? new Promise((_r, rej) => {
+                rejectFirst = rej;
+              })
+            : new Promise(() => {}); // second import pends forever
+        }
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("first.wav", [1])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("second.wav", [2])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+
+      rejectFirst(new Error("decoder exploded"));
+      await act(() => vi.advanceTimersByTimeAsync(50));
+
+      // The stale failure must neither surface its error nor tear down
+      // the live import's indicator.
+      expect(screen.queryByText(/decoder exploded/)).toBeNull();
+      expect(screen.getByText("Listening for notes…")).toBeInTheDocument();
+      expect(screen.getByText(/Transcribing second\.wav/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // S2: a stale import's QUALITY banner must not land on a newer drop.
+  // Kills the mutant that hoists setQuality out of the staleness guard.
+  it("a stale polyphonic result's banner stays off a newer drop", async () => {
+    vi.useFakeTimers();
+    try {
+      let audioCalls = 0;
+      let resolveFirst!: (v: unknown) => void;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "import_audio_file") {
+          audioCalls += 1;
+          return audioCalls === 1
+            ? new Promise((res) => {
+                resolveFirst = res;
+              })
+            : new Promise(() => {});
+        }
+        if (cmd === "get_score")
+          return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("first.wav", [1])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("second.wav", [2])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+
+      resolveFirst({ ...AUDIO_RESULT, polyphonic: true });
+      await act(() => vi.advanceTimersByTimeAsync(100));
+
+      expect(screen.queryByText(/sounds polyphonic/i)).toBeNull();
+      expect(screen.getByText(/Transcribing second\.wav/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // S3: PDF failures report immediately even at the real (nonzero) hold —
+  // the audio twin of this test exists; the PDF branch was only covered
+  // under minMs=0, which masks an accidental hold on its error path.
+  it("a PDF failure reports immediately at the real hold value", async () => {
+    vi.useFakeTimers();
+    try {
+      mockInvoke.mockImplementation((cmd: string) =>
+        cmd === "recognize_pdf_score"
+          ? Promise.reject(new Error("scan too blurry"))
+          : Promise.reject(new Error(`no mock for invoke("${cmd}")`)),
+      );
+      render(<ScoreDropZone importFeedbackMinMs={1200} />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("etude.pdf", [1])] },
+      });
+      // Well inside the 1200ms hold window: the error is already up and
+      // the in-progress message is already gone.
+      await act(() => vi.advanceTimersByTimeAsync(60));
+      expect(screen.getByText(/scan too blurry/)).toBeInTheDocument();
+      expect(screen.queryByText(/Reading etude\.pdf/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
