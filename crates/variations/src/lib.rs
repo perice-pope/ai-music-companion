@@ -676,13 +676,15 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
     };
 
     let mut parts = vec![figure];
-    let order = if spec.randomize_roots {
-        format!("{} roots, random order", roots.len())
-    } else {
-        format!("{} roots", roots.len())
+    // One root has no order or directions to shuffle — the knobs may stay on
+    // internally, but the label must not brag about randomizing a single item (#391).
+    let order = match (roots.len(), spec.randomize_roots) {
+        (1, _) => "1 root".to_owned(),
+        (n, true) => format!("{n} roots, random order"),
+        (n, false) => format!("{n} roots"),
     };
     parts.push(order);
-    if spec.direction == DirectionMode::RandomPerRoot {
+    if spec.direction == DirectionMode::RandomPerRoot && roots.len() > 1 {
         parts.push("random directions".to_owned());
     }
     if let Some(enc) = spec.enclosure {
@@ -982,6 +984,34 @@ mod tests {
         assert!(label.contains("12 roots, random order"), "got: {label}");
         assert!(label.contains("enclosed (one down)"), "got: {label}");
         assert!(label.contains("80 BPM"), "got: {label}");
+    }
+
+    /// #391: a one-root drill says "1 root" and never claims to shuffle order
+    /// or directions — there is nothing to randomize. Fails if the singular
+    /// form regresses to "1 roots" or the meaningless modifiers reappear.
+    #[test]
+    fn single_root_label_drops_meaningless_modifiers() {
+        let mut spec = base_spec();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        let label = generate(&spec, 0).label;
+        assert!(label.contains("1 root"), "got: {label}");
+        assert!(!label.contains("roots"), "got: {label}");
+        assert!(!label.contains("random order"), "got: {label}");
+        assert!(!label.contains("random directions"), "got: {label}");
+    }
+
+    /// #391 guard-rail: the suppression is strictly the one-root case — two
+    /// roots still declare their shuffle and random directions.
+    #[test]
+    fn two_root_label_keeps_modifiers() {
+        let mut spec = base_spec();
+        spec.roots = vec![60, 67];
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        let label = generate(&spec, 0).label;
+        assert!(label.contains("2 roots, random order"), "got: {label}");
+        assert!(label.contains("random directions"), "got: {label}");
     }
 
     /// target_midi always mirrors notes (the grading contract).

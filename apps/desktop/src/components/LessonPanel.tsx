@@ -46,8 +46,9 @@ export default function LessonPanel() {
           ))}
         </ul>
         <p className="mt-4 text-sm text-indigo-200/80">
-          Difficulty: step {recap.start_difficulty} → step{" "}
-          {recap.end_difficulty}
+          {/* 1-based to match the drill header's step display (#391) */}
+          Difficulty: step {recap.start_difficulty + 1} → step{" "}
+          {recap.end_difficulty + 1}
           {recap.end_difficulty > recap.start_difficulty
             ? " — leveled up!"
             : ""}
@@ -79,8 +80,10 @@ export default function LessonPanel() {
           }}
         >
           <p className="text-xs font-semibold uppercase tracking-wider text-indigo-300/80">
+            {/* difficulty is the engine's 0-based ladder index; players count
+                from 1 (#391) */}
             Lesson · drill {drill.index + 1} of {drill.drill_count} · step{" "}
-            {drill.difficulty}
+            {drill.difficulty + 1}
           </p>
           <p className="text-sm font-medium text-gray-100">{drill.label}</p>
         </div>
