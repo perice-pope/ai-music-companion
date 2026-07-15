@@ -54,7 +54,7 @@ const LESSON_DRILL = {
   index: 0,
   drill_count: 4,
   kind: "warmup_scale",
-  label: "C Major · up · 1 roots · 60 BPM",
+  label: "C Major · up · 1 root · 60 BPM",
   tempo_bpm: 60,
   difficulty: 0,
   music_xml: "<score-partwise/>",

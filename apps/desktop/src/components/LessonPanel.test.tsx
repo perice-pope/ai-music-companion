@@ -22,7 +22,7 @@ function drill(index = 0): DrillDto {
     index,
     drill_count: 4,
     kind: "WarmupScale",
-    label: "C Major · up · 1 roots · 60 BPM",
+    label: "C Major · up · 1 root · 60 BPM",
     tempo_bpm: 60,
     difficulty: 0,
     music_xml: "<score-partwise/>",
@@ -72,8 +72,10 @@ describe("LessonPanel", () => {
     render(<LessonPanel />);
     expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
     expect(screen.getByText(/drill 2 of 4/)).toBeInTheDocument();
-    expect(screen.getByText(/step 0/)).toBeInTheDocument();
-    expect(screen.getByText("C Major · up · 1 roots · 60 BPM")).toBeInTheDocument();
+    // #391: difficulty 0 displays as "step 1" — the player never sees "STEP 0".
+    expect(screen.getByText(/step 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/step 0/)).toBeNull();
+    expect(screen.getByText("C Major · up · 1 root · 60 BPM")).toBeInTheDocument();
     expect(screen.getByTestId("lesson-last-score")).toHaveTextContent("80%");
     expect(screen.getByTestId("stub-score-view")).toBeInTheDocument();
   });
@@ -151,7 +153,8 @@ describe("LessonPanel", () => {
     expect(screen.getByTestId("lesson-recap")).toBeInTheDocument();
     expect(screen.getByText("90%")).toBeInTheDocument();
     expect(screen.getByText("75%")).toBeInTheDocument();
-    expect(screen.getByText(/step 0 → step 1/)).toBeInTheDocument();
+    // #391: 1-based in the recap too, so it matches the header's numbering.
+    expect(screen.getByText(/step 1 → step 2/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("lesson-recap-done"));
     expect(usePracticeStore.getState().lessonRecap).toBeNull();
