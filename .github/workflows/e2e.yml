@@ -73,9 +73,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
+          # -webkit suffix: cache bust — the old exact-key entry is chromium-only
+          # and actions/cache never re-saves on an exact hit (review r2).
+          key: ${{ runner.os }}-playwright-webkit-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright browsers (chromium + webkit)
         working-directory: apps/desktop
         # playwright --with-deps runs apt under the hood; drop the broken
         # third-party mirrors first (packages.microsoft.com failed 5+ runs on

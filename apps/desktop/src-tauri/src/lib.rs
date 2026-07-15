@@ -11,6 +11,7 @@ pub mod audio_pipeline;
 pub mod commands;
 pub mod logging;
 pub mod runtime;
+pub mod score_position_log;
 
 pub use commands::{
     clear_accompaniment_key, end_practice_session, list_instruments, set_accompaniment_key,

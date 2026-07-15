@@ -32,6 +32,8 @@ use brain::connections::{
     apply_enriched_why, reveal_on_phrase, MusicalContext, Reveal, DEFAULT_REVEAL_CADENCE,
 };
 use brain::follower::ScorePosition;
+
+use crate::score_position_log::{PositionBreadcrumb, ScorePositionLog};
 use brain::perception::PerceptionTracker;
 use brain::phrase::PhraseSummary;
 use brain::session::{
@@ -1577,12 +1579,54 @@ fn make_phrase_closed_callback<R: Runtime>(
 /// Emit the follower's live score position (~10 Hz) so the cursor glides
 /// between phrase boundaries. Only fires in score mode. Non-fatal on
 /// error: a dropped tick just means one skipped frame of cursor motion.
-fn emit_score_position_updated<R: Runtime>(app: &tauri::AppHandle<R>, position: ScorePosition) {
-    // One breadcrumb per process on the first cursor tick (#277 diagnostics):
-    // separates "follower never aligned" from "events not reaching the UI".
-    static FIRST: std::sync::Once = std::sync::Once::new();
-    FIRST.call_once(|| tracing::info!(?position, "first score-position emitted"));
+///
+/// `log` is the SESSION's breadcrumb state (#354). Its predecessor — a
+/// process-wide `std::sync::Once` "first score-position emitted" line —
+/// could never fire twice, so five VA runs of "no visual cursor" read as
+/// "one emission then silence" whether or not emissions continued. The
+/// per-session decisions (first / measure change / heartbeat / resume)
+/// make the tester's log answer that directly.
+fn emit_score_position_updated<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    log: &mut ScorePositionLog,
+    position: ScorePosition,
+) {
+    for crumb in log.emitted(position.measure_number) {
+        match crumb {
+            PositionBreadcrumb::First { measure } => {
+                tracing::info!(measure, ?position, "first score-position emitted");
+            }
+            PositionBreadcrumb::MeasureChanged { from, to, emitted } => {
+                tracing::info!(from, to, emitted, "score-position measure changed");
+            }
+            PositionBreadcrumb::Heartbeat { emitted, measure } => {
+                tracing::info!(emitted, measure, "score-position still emitting");
+            }
+            PositionBreadcrumb::Resumed { measure } => {
+                tracing::info!(measure, "score-position emissions resumed");
+            }
+            // `emitted()` never yields this variant — suppression starts
+            // are logged at the gate via `swallowed()`.
+            PositionBreadcrumb::SuppressionStarted { emitted } => {
+                tracing::info!(emitted, "score-position suppressed (exploration on stage)");
+            }
+        }
+    }
     let _ = app.emit("score-position-updated", position);
+}
+
+/// Webview-side diagnostic breadcrumb (#354): lands frontend observations
+/// (positions received, cursor shown, cursor DOM geometry) in the SAME
+/// log file the tester already pulls, so one capture shows both sides of
+/// the IPC boundary. Local IPC → local log only; nothing leaves the
+/// device (offline-first: not a networked feature, nothing to disclose).
+#[tauri::command]
+pub fn frontend_breadcrumb(message: String) {
+    tracing::info!(
+        source = "webview",
+        "{}",
+        crate::score_position_log::clip_frontend_breadcrumb(&message)
+    );
 }
 
 /// Payload for `accompaniment-status`. Reports whether the band is playing.
@@ -2091,6 +2135,9 @@ pub async fn start_practice_session<R: Runtime>(
                 let explore_gate_verdict = state.active_explore.clone();
                 let explore_gate_position = state.active_explore.clone();
                 let explore_gate_phrase = state.active_explore.clone();
+                // #354: fresh per session — "first emitted" means first
+                // for THIS session, unlike the process-wide Once it replaced.
+                let mut position_log = ScorePositionLog::new();
                 // Hand the worker closures their own handles to the (maybe-absent)
                 // accompaniment so they can drive the follow-me band live. When
                 // no band is playing these locks see `None` and do nothing.
@@ -2174,9 +2221,20 @@ pub async fn start_practice_session<R: Runtime>(
                     ),
                     move |position| {
                         if explore_gate_position.lock_or_recover().is_some() {
-                            return; // exploration on stage — the cursor rests
+                            // Exploration on stage — the cursor rests. One
+                            // log line per suppressed stretch (#354), so a
+                            // swallowed stream never reads as a dead one.
+                            if let Some(PositionBreadcrumb::SuppressionStarted { emitted }) =
+                                position_log.swallowed()
+                            {
+                                tracing::info!(
+                                    emitted,
+                                    "score-position suppressed (exploration on stage)"
+                                );
+                            }
+                            return;
                         }
-                        emit_score_position_updated(&app_for_position, position);
+                        emit_score_position_updated(&app_for_position, &mut position_log, position);
                     },
                     move |verdict| {
                         // #341 M2: no score judging while the exploration is

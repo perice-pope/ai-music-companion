@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterEach } from "vitest";
 import {
   render,
   waitFor,
@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import ScoreView, {
   boundsFromGraphicSheet,
+  fixCursorImgHeight,
   measureIndexByXmlNumber,
   notationContentWidth,
   notationFitWidth,
@@ -738,11 +739,12 @@ describe("ScoreView — centered notation (VA 2026-07-14)", () => {
     expect(screen.getByTestId("measure-hit-2").style.left).toBe("100px");
   });
 
-  // Review M1: pinning changes the canvas width WITHOUT a window resize,
-  // and OSMD only re-lays-out on window resize — so the component itself
-  // must re-render OSMD at the new width (else overflow-hidden could clip
-  // stale-width drawings). The canvas mock tracks the wrapper's pin.
-  it("re-renders OSMD when the pin changes the canvas width", async () => {
+  // Review M1 round 3: pinning must NOT re-render — the pin is derived
+  // from the full-width layout and is at least as wide as the content, so
+  // the drawn SVG, overlay rects, and cursor geometry all stay valid. A
+  // re-render at the pinned width is exactly what re-wrapped drills into
+  // the pin (the ratchet) and broke cursor geometry (30×1 px, spec 07).
+  it("pins WITHOUT re-rendering — one render, layout stays valid", async () => {
     const fake = makeFakeOsmdWithBounds(3);
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -764,26 +766,44 @@ describe("ScoreView — centered notation (VA 2026-07-14)", () => {
       value: 1000,
       configurable: true,
     });
-    // The canvas reports the width the wrapper actually gives it.
-    const wrapperWidth = () =>
-      Number.parseInt(
-        screen.getByTestId("notation-wrapper").style.width || "1000",
-        10,
-      );
+    // The canvas reports the width the wrapper actually gives it: the
+    // pin when pinned, the pane's full width when unpinned.
+    const canvasWidth = () => {
+      const pinned = screen.getByTestId("notation-wrapper").style.width;
+      if (pinned) return Number.parseInt(pinned, 10);
+      return screen.getByTestId("score-view").clientWidth;
+    };
     Object.defineProperty(
       screen.getByTestId("score-view-canvas"),
       "clientWidth",
-      { get: wrapperWidth, configurable: true },
+      { get: canvasWidth, configurable: true },
     );
     release();
     const wrapper = await screen.findByTestId("notation-wrapper");
     await waitFor(() => expect(wrapper.style.width).toBe("308px"));
-    // Load-render at 1000px, then the corrective render at the 308px pin —
-    // and the pin stays stable (hysteresis) rather than re-render looping.
-    await waitFor(() =>
-      expect(fake.calls.filter((c) => c === "render")).toHaveLength(2),
-    );
+    // Exactly the load render — pinning re-renders nothing.
+    expect(fake.calls.filter((c) => c === "render")).toHaveLength(1);
     expect(wrapper.style.width).toBe("308px");
+
+    // A real pane change (window resize) unpins, re-renders at the new
+    // full width, RE-PARKS the cursor (a shown cursor against a rebuilt
+    // layout draws hairline garbage), and re-pins from fresh bounds.
+    Object.defineProperty(screen.getByTestId("score-view"), "clientWidth", {
+      value: 600,
+      configurable: true,
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(
+      () => expect(fake.calls.filter((c) => c === "render")).toHaveLength(2),
+      { timeout: 2000 },
+    );
+    // Re-park happened after the resize re-render: reset+hide follow it.
+    const renderIdx = fake.calls.lastIndexOf("render");
+    expect(fake.calls.slice(renderIdx)).toEqual(
+      expect.arrayContaining(["reset", "hide"]),
+    );
+    // Re-pinned from the fresh bounds (content 300 still fits a 600 pane).
+    await waitFor(() => expect(wrapper.style.width).toBe("308px"));
   });
 
   // AC: content as wide as the pane (or unknown — jsdom's clientWidth is 0)
@@ -885,5 +905,35 @@ describe("ScoreView — centering follows window resize", () => {
     );
     const overlay = await screen.findByTestId("measure-overlay");
     expect(screen.getByTestId("notation-wrapper")).toContainElement(overlay);
+  });
+});
+
+describe("fixCursorImgHeight — the Tailwind-preflight cursor collapse (#354)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  // Root cause of five VA runs of "no visual cursor": preflight's
+  // `img { height: auto }` beats OSMD's height ATTRIBUTE, collapsing the
+  // stretched 1px cursor bitmap to a hairline. The fix mirrors the
+  // attribute into an inline style, which wins the cascade.
+  it("mirrors the height attribute into an inline style", () => {
+    const img = document.createElement("img");
+    img.id = "cursorImg-0";
+    img.setAttribute("height", "40");
+    document.body.appendChild(img);
+    fixCursorImgHeight(document);
+    expect(img.style.height).toBe("40px");
+  });
+
+  it("leaves non-cursor imgs and attribute-less cursors alone", () => {
+    const plain = document.createElement("img");
+    plain.setAttribute("height", "40");
+    const bare = document.createElement("img");
+    bare.id = "cursorImg-1";
+    document.body.append(plain, bare);
+    fixCursorImgHeight(document);
+    expect(plain.style.height).toBe("");
+    expect(bare.style.height).toBe("");
   });
 });

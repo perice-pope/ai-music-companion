@@ -11,6 +11,11 @@ import type {
   PhraseSummary,
   ScorePosition,
 } from "./types/brain";
+import {
+  freshReceiptState,
+  receiptBreadcrumb,
+  sendBreadcrumb,
+} from "./lib/positionBreadcrumbs";
 
 /**
  * App entry. Subscribes to the backend's live event streams for the whole
@@ -65,6 +70,10 @@ function App() {
 
   useEffect(() => {
     const unsubs: Array<() => void> = [];
+    // #354 diagnostics: app-lifetime receipt counter for the position
+    // stream (the backend's counterpart is per session — its 'first'
+    // lines mark session starts in the shared log).
+    const receiptState = freshReceiptState();
 
     (async () => {
       try {
@@ -108,6 +117,14 @@ function App() {
           await listen<ScorePosition>(
             "score-position-updated",
             ({ payload }) => {
+              // #354 diagnostics: mirror the backend's emission log with a
+              // receipt log, so a tester's capture shows whether positions
+              // crossed the IPC boundary. Fire-and-forget, local-only.
+              const line = receiptBreadcrumb(
+                receiptState,
+                payload.measure_number,
+              );
+              if (line) sendBreadcrumb(line);
               setCursorPosition(payload);
             },
           ),
