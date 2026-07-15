@@ -450,7 +450,10 @@ export function installTauriMockAndNetGuard(): void {
         if (event !== undefined && typeof handler === "number") {
           (eventHandlers[event] ??= []).push(handler);
         }
-        return Math.floor(Math.random() * 1_000_000);
+        // The returned id is what @tauri-apps/api sends back as `eventId`
+        // on unlisten — returning the HANDLER id makes unlisten's registry
+        // removal line up (review r2: a random id removed nothing, ever).
+        return handler ?? 0;
       }
       case "plugin:event|unlisten": {
         // Remove the unlistened handler so __emitTauriEvent can't deliver
@@ -473,6 +476,15 @@ export function installTauriMockAndNetGuard(): void {
         throw new Error(`[e2e tauri-mock] unmocked command "${cmd}"`);
     }
   }
+
+  // @tauri-apps/api's unlisten calls this BEFORE invoking
+  // plugin:event|unlisten; without the stub the real unlisten path throws
+  // and the mock's registry cleanup is unreachable (review r2).
+  (
+    window as unknown as Record<string, unknown>
+  ).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
+  };
 
   window.__TAURI_INTERNALS__ = {
     invoke: handleInvoke,

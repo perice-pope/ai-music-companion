@@ -73,7 +73,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
+          # -webkit suffix: cache bust — the old exact-key entry is chromium-only
+          # and actions/cache never re-saves on an exact hit (review r2).
+          key: ${{ runner.os }}-playwright-webkit-${{ hashFiles('apps/desktop/pnpm-lock.yaml') }}
 
       - name: Install Playwright Chromium
         working-directory: apps/desktop
