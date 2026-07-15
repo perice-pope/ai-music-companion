@@ -327,6 +327,13 @@ export default function ScoreView({
    * the pane, so `mx-auto` centers it; null keeps the wrapper full-width.
    */
   const [fitWidth, setFitWidth] = useState<number | null>(null);
+  /**
+   * Mirror of `fitWidth` for event handlers (review r1: branching on pin
+   * state inside a setState updater ran side effects in the render phase
+   * — a Rules-of-React violation StrictMode double-invokes).
+   */
+  const fitWidthRef = useRef<number | null>(null);
+  fitWidthRef.current = fitWidth;
   /** Canvas width at OSMD's last layout — what the drawn SVG is true to. */
   const layoutWidthRef = useRef(0);
   /** Measure the cursor currently sits on (0-based), or -1 before ready. */
@@ -445,14 +452,12 @@ export default function ScoreView({
     const onResize = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        setFitWidth((current) => {
-          if (current !== null) {
-            // Unpin; the corrective effect remeasures at full width.
-            return null;
-          }
+        if (fitWidthRef.current !== null) {
+          // Unpin; the corrective effect remeasures at full width.
+          setFitWidth(null);
+        } else {
           remeasureUnpinned();
-          return current;
-        });
+        }
       }, 250);
     };
     window.addEventListener("resize", onResize);
@@ -513,7 +518,10 @@ export default function ScoreView({
         Math.max(0, cursorPosition.measure_number - 1),
       cursorMeasureRef,
     );
-    // Walking across a system re-sizes the img via the attribute again.
+    // Defensive: OSMD re-sets the img's height ATTRIBUTE when a walk
+    // crosses into a system of a different height, which would re-collapse
+    // under preflight. No current fixture renders multi-system scores, so
+    // no test observes this call — it guards real multi-system scores.
     fixCursorImgHeight(containerRef.current ?? document);
   }, [ready, cursorPosition]);
 

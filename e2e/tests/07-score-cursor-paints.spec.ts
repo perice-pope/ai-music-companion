@@ -98,11 +98,32 @@ test.describe("score cursor paints and moves (#354)", () => {
       box2!,
       `cursor must advance rightward into measure 2 (was rel x=${box1})`,
     ).toBeGreaterThan(box1!);
+    // Still a real band after the walk — the pixel diffs alone would pass
+    // on a hairline (review: the diff is a weak discriminator; geometry
+    // carries the contract).
+    const afterAdvance = await cursor.boundingBox();
+    expect(afterAdvance!.height).toBeGreaterThan(8);
 
-    // Session end (null position path) hides it again: pixels return to
-    // (approximately) the baseline — assert via difference from the shown
-    // state rather than byte-equality with `before`, since OSMD may
-    // re-rasterize antialiasing.
+    // #354 diagnostics chain, end to end in a real engine: receiving the
+    // first position and showing the cursor must each land a breadcrumb
+    // on the backend log via the frontend_breadcrumb command. Deleting
+    // the App/ScoreView wiring turns these red (test-audit gap A).
+    const breadcrumbs = await page.evaluate(() =>
+      window.__ipcCalls
+        .filter((c) => c.cmd === "frontend_breadcrumb")
+        .map((c) => (c.args as { message: string }).message),
+    );
+    expect(
+      breadcrumbs.some((m) =>
+        /score-position received: first, measure=1/.test(m),
+      ),
+      `receipt breadcrumb missing in: ${breadcrumbs.join(" | ")}`,
+    ).toBe(true);
+    expect(
+      breadcrumbs.some((m) => /cursor shown: img x=/.test(m)),
+      `cursor-shown breadcrumb missing in: ${breadcrumbs.join(" | ")}`,
+    ).toBe(true);
+
     await assertNoNetwork(page, abortedRequests);
   });
 });

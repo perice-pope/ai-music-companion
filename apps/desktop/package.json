@@ -15,7 +15,7 @@
     "e2e": "playwright test --config ../../e2e/playwright.config.ts",
     "e2e:unit": "vitest run --root ../../e2e --config vitest.config.ts",
     "e2e:typecheck": "tsc --noEmit --project ../../e2e/tsconfig.json",
-    "e2e:install": "playwright install --with-deps chromium"
+    "e2e:install": "playwright install --with-deps chromium webkit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",

@@ -452,8 +452,19 @@ export function installTauriMockAndNetGuard(): void {
         }
         return Math.floor(Math.random() * 1_000_000);
       }
-      case "plugin:event|unlisten":
+      case "plugin:event|unlisten": {
+        // Remove the unlistened handler so __emitTauriEvent can't deliver
+        // to dead callbacks (review nice-to-have — mid-test unmounts).
+        const target = args?.eventId as number | undefined;
+        if (typeof target === "number") {
+          for (const key of Object.keys(eventHandlers)) {
+            eventHandlers[key] = eventHandlers[key].filter(
+              (h) => h !== target,
+            );
+          }
+        }
         return undefined;
+      }
       // #354 diagnostics: webview breadcrumbs are fire-and-forget log
       // lines; the headless suite just accepts them.
       case "frontend_breadcrumb":

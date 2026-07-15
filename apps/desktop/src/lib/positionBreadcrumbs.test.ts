@@ -37,6 +37,14 @@ describe("receiptBreadcrumb", () => {
     );
   });
 
+  it("mirrors the backend's heartbeat cadence exactly", () => {
+    // The whole point of the receipt log is line-for-line comparison with
+    // the Rust emission log (HEARTBEAT_EVERY in score_position_log.rs).
+    // The cadence tests below are self-referential via the constant, so
+    // the mirror itself is pinned here.
+    expect(RECEIPT_HEARTBEAT_EVERY).toBe(100);
+  });
+
   it("heartbeats at the cadence so a steady stream proves itself", () => {
     const state = freshReceiptState();
     const lines: string[] = [];

@@ -221,8 +221,12 @@ mod tests {
         let clipped = clip_frontend_breadcrumb(&long);
         assert!(clipped.len() <= FRONTEND_BREADCRUMB_MAX_BYTES + '…'.len_utf8());
         assert!(clipped.ends_with('…'));
-        // Cap lands on a char boundary even mid-multibyte.
-        let multi = "é".repeat(400);
-        let _ = clip_frontend_breadcrumb(&multi); // must not panic
+        // Cap lands on a char boundary even mid-multibyte — and the
+        // multibyte input is genuinely CLIPPED, not passed through (a
+        // skip-clipping-for-multibyte mutant must die here).
+        let multi = "é".repeat(400); // 800 bytes
+        let clipped_multi = clip_frontend_breadcrumb(&multi);
+        assert!(clipped_multi.ends_with('…'));
+        assert!(clipped_multi.len() <= FRONTEND_BREADCRUMB_MAX_BYTES + '…'.len_utf8());
     }
 }
