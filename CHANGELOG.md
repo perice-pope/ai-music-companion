@@ -1,3 +1,9 @@
+## [2.28.0](https://github.com/perice-pope/ai-music-companion/compare/v2.27.1...v2.28.0) (2026-07-15)
+
+### Features
+
+* **import:** the polyphony honesty gate — never present a full mix as clean ([#331](https://github.com/perice-pope/ai-music-companion/issues/331)) ([#380](https://github.com/perice-pope/ai-music-companion/issues/380)) ([cefa33f](https://github.com/perice-pope/ai-music-companion/commit/cefa33f49572acbe4e334f3d75dc341217dc09e2)), closes [#328](https://github.com/perice-pope/ai-music-companion/issues/328)
+
 ## [2.27.1](https://github.com/perice-pope/ai-music-companion/compare/v2.27.0...v2.27.1) (2026-07-15)
 
 ### Bug Fixes
