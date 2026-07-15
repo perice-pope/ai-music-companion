@@ -14,17 +14,24 @@ this directory before building an installer:
 ./scripts/fetch-onnxruntime.sh
 ```
 
-Expected file (per platform), placed directly in this directory:
+Expected layout (per platform):
 
 | Platform | File |
 |----------|------|
 | Linux    | `libonnxruntime.so` |
-| macOS    | `libonnxruntime.dylib` |
+| macOS (universal installer) | `aarch64/libonnxruntime.dylib` **and** `x86_64/libonnxruntime.dylib` (fetch with `--macos-universal`) |
+| macOS (single-arch dev)     | `libonnxruntime.dylib` |
 | Windows  | `onnxruntime.dll` |
 
-The version must match the C API that `ort` (`=2.0.0-rc.10`) targets — ONNX
-Runtime **1.24.x**.
+`src/runtime.rs` resolves `<arch>/<lib>` first (universal layout), then the
+flat file — a foreign arch's dylib never satisfies resolution.
 
-> Status: the desktop installer pipeline (`cargo tauri build`) does not exist
-> yet, so nothing populates this directory in CI today. In dev builds the app
+Versions: `ort` (`=2.0.0-rc.10`) targets the ONNX Runtime **1.24.x** C API,
+but upstream ships no osx-x64 build for 1.24.x — Intel macOS rides **1.22.0**
+(`ORT_VERSION_MACOS_X64` in the script; re-verify with the real-inference
+integration tests if you bump either version).
+
+> Status (#383, PR #395): the release workflow populates this directory on
+> every platform before `tauri build`, and a red pre-build assert fails the
+> installer job if the expected library is missing. In dev builds the app
 > falls back to a developer-set `ORT_DYLIB_PATH` or the system loader.

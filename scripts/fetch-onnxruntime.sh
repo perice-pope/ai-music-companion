@@ -16,6 +16,13 @@
 # the same crate loads cleanly (proven by the local x86_64 dev setup).
 set -euo pipefail
 
+# Accumulate temp dirs and clean them even when `set -e` aborts mid-fetch
+# (a function-local RETURN trap never fires on an -e exit — review r1 on
+# PR #395 confirmed the leak empirically).
+TMP_DIRS=()
+cleanup_tmp() { for d in "${TMP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
+trap cleanup_tmp EXIT
+
 ORT_VERSION="${ORT_VERSION:-1.24.2}"
 ORT_VERSION_MACOS_X64="${ORT_VERSION_MACOS_X64:-1.22.0}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +39,7 @@ fetch_into() {
   esac
   url="https://github.com/microsoft/onnxruntime/releases/download/v${pkg##*-}/${pkg}.${ext}"
   tmp="$(mktemp -d)"
-  # shellcheck disable=SC2064 -- expand now: each call cleans its own tmp
-  trap "rm -rf '$tmp'" RETURN 2>/dev/null || true
+  TMP_DIRS+=("$tmp")
   echo "fetching ${pkg}.${ext} → ${dest}/${lib}"
   curl -fsSL -o "$tmp/ort.$ext" "$url"
   if [ "$ext" = "zip" ]; then
