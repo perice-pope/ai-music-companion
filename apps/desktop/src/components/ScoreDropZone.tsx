@@ -196,7 +196,8 @@ export default function ScoreDropZone({
             `Imported "${result.entry.title}" — transcribed from audio (beta): check the notes look right.`,
           );
           // Only surface the banner when something looks off — never nag.
-          if (result.polyphonic || result.low_confidence) {
+          // A clean mono take stays silent (#331 AC1's negative half).
+          if (result.verdict !== "mono" || result.low_confidence) {
             setQuality(result);
           }
         }
@@ -305,9 +306,17 @@ export default function ScoreDropZone({
     await handleFile(files[0]);
   };
 
-  const qualityMessage = quality?.polyphonic
-    ? "This recording sounds polyphonic — basic-pitch works best on a single instrument line, so the transcription may be rough. You can re-record or drop a different file anytime."
-    : "This transcription may be approximate — try a closer, single-instrument recording for a cleaner result.";
+  // The honesty gate (#331): the verdict is classified in the Rust core;
+  // this only picks the words. Full mix gets the plain-spoken version.
+  const qualityMessage =
+    quality?.verdict === "full_mix"
+      ? "This sounds like a full mix — the notes may be approximate. Practicing works best with one instrument's line at a time."
+      : quality?.verdict === "borderline"
+        ? "This recording sounds polyphonic — basic-pitch works best on a single instrument line, so the transcription may be rough. You can re-record or drop a different file anytime."
+        : "This transcription may be approximate — try a closer, single-instrument recording for a cleaner result.";
+  const honestyCounts = quality
+    ? `Caught ${quality.note_count} note${quality.note_count === 1 ? "" : "s"}, ${quality.uncertain_count} uncertain.`
+    : null;
 
   return (
     <div className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8">
@@ -434,7 +443,12 @@ export default function ScoreDropZone({
 
       {quality && (
         <div className="mt-4 rounded bg-amber-900/20 border border-amber-500 p-3 text-amber-200 text-sm flex items-start justify-between gap-3">
-          <span>{qualityMessage}</span>
+          <span>
+            {qualityMessage}
+            <span className="mt-1 block text-amber-300/80 text-xs">
+              {honestyCounts}
+            </span>
+          </span>
           <button
             onClick={() => setQuality(null)}
             aria-label="Dismiss"

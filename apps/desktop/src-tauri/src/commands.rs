@@ -3754,11 +3754,6 @@ fn filename_ext(name: &str) -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
-/// Above this fraction of time-overlapping notes we call the input polyphonic.
-const POLYPHONIC_THRESHOLD: f32 = 0.15;
-/// Below this mean note activation we flag the transcription as low-confidence.
-const LOW_CONFIDENCE_THRESHOLD: f32 = 0.4;
-
 /// `import-progress` event payload (audio import only).
 #[derive(Clone, Serialize)]
 struct ImportProgressPayload {
@@ -3778,6 +3773,13 @@ pub struct ImportedAudioDto {
     pub polyphonic: bool,
     /// Transcription confidence looks weak.
     pub low_confidence: bool,
+    /// Notes the model itself was unsure of — the "M" of the honesty counts
+    /// ("caught N notes, M uncertain") on the import result (#331).
+    pub uncertain_count: usize,
+    /// The honesty-gate verdict: `"mono"` | `"borderline"` | `"full_mix"`.
+    /// Classified in `crates/transcribe` (`PolyphonyVerdict`), not here —
+    /// the thresholds live with the model that produced the numbers.
+    pub verdict: String,
 }
 
 impl ImportedAudioDto {
@@ -3787,8 +3789,15 @@ impl ImportedAudioDto {
             note_count: quality.note_count,
             mean_confidence: quality.mean_confidence,
             polyphony: quality.polyphony,
-            polyphonic: quality.polyphony > POLYPHONIC_THRESHOLD,
-            low_confidence: quality.mean_confidence < LOW_CONFIDENCE_THRESHOLD,
+            polyphonic: quality.verdict != transcribe::PolyphonyVerdict::Mono,
+            low_confidence: quality.mean_confidence < transcribe::LOW_CONFIDENCE,
+            uncertain_count: quality.uncertain_count,
+            verdict: match quality.verdict {
+                transcribe::PolyphonyVerdict::Mono => "mono",
+                transcribe::PolyphonyVerdict::Borderline => "borderline",
+                transcribe::PolyphonyVerdict::FullMix => "full_mix",
+            }
+            .to_string(),
         }
     }
 }
@@ -4032,6 +4041,72 @@ mod tests {
         AppState::with_mocks()
     }
 
+    /// #331: the IPC result carries the honesty verdict and counts exactly as
+    /// the crate classified them — a full-mix quality maps to `"full_mix"` +
+    /// `polyphonic: true` with the uncertain count intact, and a clean mono
+    /// quality raises no flag at all. Fails if the DTO mapping drops, renames,
+    /// or re-derives the verdict from its own thresholds.
+    #[test]
+    fn imported_audio_dto_carries_the_honesty_verdict_and_counts() {
+        let entry = || ScoreLibraryEntryDto {
+            id: "00000000-0000-0000-0000-000000000001".to_string(),
+            title: "band".to_string(),
+            composer: None,
+            source_filename: "band.wav".to_string(),
+            added_at: chrono::DateTime::UNIX_EPOCH,
+            last_practiced_at: None,
+            part_index: 0,
+            duration_measures: 4,
+        };
+
+        let full_mix = ImportedAudioDto::new(
+            entry(),
+            transcribe::TranscriptionQuality {
+                note_count: 12,
+                mean_confidence: 0.6,
+                polyphony: 1.0,
+                uncertain_count: 5,
+                verdict: transcribe::PolyphonyVerdict::FullMix,
+            },
+        );
+        assert_eq!(full_mix.verdict, "full_mix");
+        assert!(full_mix.polyphonic);
+        assert!(!full_mix.low_confidence);
+        assert_eq!(full_mix.note_count, 12);
+        assert_eq!(full_mix.uncertain_count, 5);
+
+        let mono = ImportedAudioDto::new(
+            entry(),
+            transcribe::TranscriptionQuality {
+                note_count: 8,
+                mean_confidence: 0.75,
+                polyphony: 0.0,
+                uncertain_count: 0,
+                verdict: transcribe::PolyphonyVerdict::Mono,
+            },
+        );
+        assert_eq!(mono.verdict, "mono");
+        assert!(!mono.polyphonic, "a clean line must not warn");
+        assert!(!mono.low_confidence);
+
+        let weak_borderline = ImportedAudioDto::new(
+            entry(),
+            transcribe::TranscriptionQuality {
+                note_count: 6,
+                mean_confidence: 0.3,
+                polyphony: 0.2,
+                uncertain_count: 4,
+                verdict: transcribe::PolyphonyVerdict::Borderline,
+            },
+        );
+        assert_eq!(weak_borderline.verdict, "borderline");
+        assert!(weak_borderline.polyphonic);
+        assert!(
+            weak_borderline.low_confidence,
+            "mean confidence below the crate constant must flag"
+        );
+    }
+
     /// #267 AC1: a panic inside transcription (e.g. ONNX Runtime aborting a Rust
     /// panic, or a decoder unwrap) is converted to the calm, non-fatal message
     /// instead of unwinding into the command and crashing the app — while a
@@ -4198,6 +4273,8 @@ mod tests {
                     note_count: 0,
                     mean_confidence: 0.0,
                     polyphony: 0.0,
+                    uncertain_count: 0,
+                    verdict: transcribe::PolyphonyVerdict::Mono,
                 },
             ))
         });
@@ -6524,10 +6601,10 @@ mod tests {
         assert!(entry.duration_measures >= 1);
         assert!(quality.note_count > 0, "a clear scale yields notes");
         // A clean monophonic recording should not look polyphonic.
-        assert!(
-            quality.polyphony <= POLYPHONIC_THRESHOLD,
-            "monophonic input flagged polyphonic: {}",
-            quality.polyphony
+        assert_eq!(
+            quality.verdict,
+            transcribe::PolyphonyVerdict::Mono,
+            "monophonic input flagged polyphonic: {quality:?}"
         );
 
         // Stored payload is real, re-parseable MusicXML.
@@ -6599,6 +6676,8 @@ mod tests {
                         note_count: 4,
                         mean_confidence: 0.9,
                         polyphony: 0.0,
+                        uncertain_count: 0,
+                        verdict: transcribe::PolyphonyVerdict::Mono,
                     },
                 ))
             },

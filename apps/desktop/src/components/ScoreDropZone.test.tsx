@@ -42,6 +42,8 @@ const AUDIO_RESULT = {
   polyphony: 0.0,
   polyphonic: false,
   low_confidence: false,
+  uncertain_count: 0,
+  verdict: "mono" as const,
 };
 
 function installInvokeMock() {
@@ -224,8 +226,10 @@ describe("ScoreDropZone", () => {
       if (cmd === "import_audio_file")
         return Promise.resolve({
           ...AUDIO_RESULT,
-          polyphony: 0.5,
+          polyphony: 0.3,
           polyphonic: true,
+          uncertain_count: 1,
+          verdict: "borderline",
         });
       if (cmd === "get_score")
         return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
@@ -236,11 +240,67 @@ describe("ScoreDropZone", () => {
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
     await screen.findByText(/sounds polyphonic/i);
+    // The honesty counts ride every quality banner, not just full-mix.
+    expect(screen.getByText(/Caught 5 notes, 1 uncertain/)).toBeInTheDocument();
     // Dismissible.
     fireEvent.click(screen.getByLabelText("Dismiss"));
     await waitFor(() =>
       expect(screen.queryByText(/sounds polyphonic/i)).toBeNull(),
     );
+  });
+
+  // #331: a weak-but-single-line take (mono verdict, low confidence) must
+  // still get its calm "may be approximate" note — the banner gate is
+  // verdict OR confidence, not verdict alone. Fails if the low-confidence
+  // half of the gate is dropped.
+  it("warns on a low-confidence mono transcription", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "import_audio_file")
+        return Promise.resolve({
+          ...AUDIO_RESULT,
+          mean_confidence: 0.3,
+          low_confidence: true,
+          uncertain_count: 3,
+        });
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
+    const file = fileWithBytes("faint.wav", [1]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await screen.findByText(/This transcription may be approximate/);
+    expect(screen.getByText(/Caught 5 notes, 3 uncertain/)).toBeInTheDocument();
+  });
+
+  // #331 AC1: a full-mix verdict must say so in plain words and carry the
+  // honesty counts — never present a full-mix transcription as clean. Fails
+  // if the verdict stops selecting the full-mix copy or the counts vanish.
+  it("names a full mix and shows the honesty counts on its banner", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "import_audio_file")
+        return Promise.resolve({
+          ...AUDIO_RESULT,
+          entry: { ...ENTRY, title: "band", source_filename: "band.wav" },
+          note_count: 12,
+          polyphony: 1.0,
+          polyphonic: true,
+          uncertain_count: 5,
+          verdict: "full_mix",
+        });
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
+    const file = fileWithBytes("band.wav", [1]);
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    await screen.findByText(
+      /sounds like a full mix — the notes may be approximate/i,
+    );
+    expect(screen.getByText(/Caught 12 notes, 5 uncertain/)).toBeTruthy();
   });
 
   // #336 — the VA saw NO loading message during .wav imports even with the
@@ -351,7 +411,7 @@ describe("ScoreDropZone", () => {
           return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       const file = fileWithBytes("take.wav", [1]);
       fireEvent.change(fileInput(), { target: { files: [file] } });
 
@@ -389,7 +449,7 @@ describe("ScoreDropZone", () => {
           return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       fireEvent.change(fileInput(), {
         target: { files: [fileWithBytes("first.wav", [1])] },
       });
@@ -421,7 +481,7 @@ describe("ScoreDropZone", () => {
           return Promise.reject(new Error("Couldn't decode that recording"));
         return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
       });
-      render(<ScoreDropZone />);
+      render(<ScoreDropZone importFeedbackMinMs={0} />);
       const file = fileWithBytes("broken.wav", [1]);
       fireEvent.change(fileInput(), { target: { files: [file] } });
 

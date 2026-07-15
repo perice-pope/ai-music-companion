@@ -133,3 +133,83 @@ fn empty_input_is_handled() {
         Err(e) => panic!("unexpected error on empty input: {e}"),
     }
 }
+
+/// Sum of simultaneous sines at `freqs` for `secs` seconds — a chord.
+fn chord(freqs: &[f64], secs: f64, sr: u32) -> Vec<f32> {
+    let n = (secs * sr as f64) as usize;
+    let scale = 0.7 / freqs.len() as f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f64 / sr as f64;
+            freqs
+                .iter()
+                .map(|f| (2.0 * std::f64::consts::PI * f * t).sin() as f32)
+                .sum::<f32>()
+                * scale
+        })
+        .collect()
+}
+
+/// #331 AC1 (negative half, synthetic): a clean single line must read Mono —
+/// the honesty gate must not cry wolf on exactly the input the model is for.
+#[test]
+fn clean_monophonic_line_gets_a_mono_verdict() {
+    if should_skip_inference() {
+        return;
+    }
+    let mut samples = Vec::new();
+    for &m in &[60i32, 62, 64, 65, 67] {
+        samples.extend(sine(midi_to_hz(m), 0.6, SR));
+    }
+    let (_, quality) = transcribe::audio_to_midi_with_quality(&samples, SR).expect("transcription");
+    assert_eq!(
+        quality.verdict,
+        transcribe::PolyphonyVerdict::Mono,
+        "clean line misread: {quality:?}"
+    );
+}
+
+/// #331 AC1 (negative half, the real fixture): the VA kit's sample scale —
+/// the exact file from the #324 report — must import with no warning.
+#[test]
+fn va_kit_sample_scale_gets_a_mono_verdict() {
+    if should_skip_inference() {
+        return;
+    }
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../va-testing-kit/samples/sample-recording-c-major-scale.wav"
+    ))
+    .expect("va-kit fixture present");
+    let (_, quality) =
+        transcribe::transcribe_audio_bytes_with_quality(bytes, Some("wav")).expect("transcription");
+    assert_eq!(
+        quality.verdict,
+        transcribe::PolyphonyVerdict::Mono,
+        "the VA's own sample scale must not warn: {quality:?}"
+    );
+}
+
+/// #331 AC1 (positive half): sustained triads — a full mix's texture — must
+/// read FullMix so the import result can say the notes may be approximate.
+#[test]
+fn sustained_chords_get_a_full_mix_verdict() {
+    if should_skip_inference() {
+        return;
+    }
+    let mut samples = Vec::new();
+    for triad in [[60, 64, 67], [65, 69, 72], [67, 71, 74], [60, 64, 67]] {
+        let freqs: Vec<f64> = triad.iter().map(|&m| midi_to_hz(m)).collect();
+        samples.extend(chord(&freqs, 1.0, SR));
+    }
+    let (_, quality) = transcribe::audio_to_midi_with_quality(&samples, SR).expect("transcription");
+    assert_eq!(
+        quality.verdict,
+        transcribe::PolyphonyVerdict::FullMix,
+        "chordal texture misread: {quality:?}"
+    );
+    assert!(
+        quality.polyphony >= transcribe::FULL_MIX_POLYPHONY,
+        "triads should overlap heavily: {quality:?}"
+    );
+}
