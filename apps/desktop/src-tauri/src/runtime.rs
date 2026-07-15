@@ -8,12 +8,12 @@
 //! `ORT_DYLIB_PATH` ourselves — the same "bundled resource" resolution we use
 //! for `profiles/` (#112/#120).
 //!
-//! **Binary delivery is deferred.** Placing the platform library under the
-//! bundled `onnxruntime/` resource dir happens in the desktop installer
-//! pipeline (`cargo tauri build`), which does not exist yet — see
-//! `scripts/fetch-onnxruntime.sh` and the `onnxruntime` entry in
-//! `tauri.conf.json`. Until then this resolver is a no-op in dev builds (the
-//! library isn't present), and transcription falls back to a developer-set
+//! **Binary delivery (#383, PR #395):** the release workflow runs
+//! `scripts/fetch-onnxruntime.sh` on every platform before `tauri build`
+//! (macOS universal fetches BOTH arch dylibs under `onnxruntime/<arch>/`),
+//! and a red pre-build assert keeps the resource from ever going missing
+//! silently again. In dev builds the library usually isn't present and this
+//! resolver is a no-op — transcription falls back to a developer-set
 //! `ORT_DYLIB_PATH` or the system loader.
 
 use std::path::{Path, PathBuf};
