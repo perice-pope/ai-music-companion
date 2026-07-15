@@ -1,3 +1,9 @@
+## [2.28.2](https://github.com/perice-pope/ai-music-companion/compare/v2.28.1...v2.28.2) (2026-07-15)
+
+### Bug Fixes
+
+* **score:** the invisible cursor — Tailwind preflight collapsed OSMD's cursor to 1px ([#396](https://github.com/perice-pope/ai-music-companion/issues/396)) ([a3674ea](https://github.com/perice-pope/ai-music-companion/commit/a3674eaebafd8a48f4abc6d413dfa3410887cc6d)), closes [#354](https://github.com/perice-pope/ai-music-companion/issues/354)
+
 ## [2.28.1](https://github.com/perice-pope/ai-music-companion/compare/v2.28.0...v2.28.1) (2026-07-15)
 
 ### Bug Fixes
