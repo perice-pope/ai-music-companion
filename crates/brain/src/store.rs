@@ -2468,4 +2468,77 @@ mod tests {
         );
         assert_eq!(store.list().unwrap().len(), 1);
     }
+
+    /// Review survivor 1: the blob-equality clause is the collision guard —
+    /// a row whose content_hash matches but whose MusicXML differs must NOT
+    /// be reused. No real FNV collision needed: forge one with raw SQL.
+    #[test]
+    fn hash_collision_with_different_blob_creates_a_new_entry() {
+        let store = ScoreStore::in_memory().unwrap();
+        let new_xml = "<score-partwise><!-- the real import --></score-partwise>";
+        // Seed a row that LIES about its hash: it claims new_xml's hash but
+        // stores different content — exactly what a hash collision looks
+        // like to the dedup SELECT.
+        store
+            .conn
+            .execute(
+                "INSERT INTO scores (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml, content_hash)                  VALUES (?1, 'Impostor', NULL, 'other.musicxml', '2026-01-01T00:00:00+00:00', 0, 4, '<score-partwise><!-- different --></score-partwise>', ?2)",
+                params![ScoreId::new().as_str(), score_content_hash(new_xml)],
+            )
+            .unwrap();
+
+        let entry = store
+            .import(
+                "Real".to_string(),
+                None,
+                "real.musicxml".to_string(),
+                new_xml.to_string(),
+                0,
+                4,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.list().unwrap().len(),
+            2,
+            "a colliding hash with different content must not dedup"
+        );
+        assert_eq!(entry.title, "Real");
+    }
+
+    /// Review survivor 2: with pre-#385 duplicates in the library, a
+    /// re-import must land on the NEWEST duplicate (the one whose practice
+    /// history the user has been building since).
+    #[test]
+    fn dedup_prefers_the_newest_of_preexisting_duplicates() {
+        let store = ScoreStore::in_memory().unwrap();
+        let xml = "<score-partwise><!-- dup --></score-partwise>";
+        let (old_id, new_id) = (ScoreId::new(), ScoreId::new());
+        for (id, added) in [(&old_id, "2026-01-01"), (&new_id, "2026-06-01")] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO scores (id, title, composer, source_filename, added_at, part_index, duration_measures, music_xml, content_hash)                      VALUES (?1, 'Dup', NULL, 'dup.musicxml', ?2, 0, 4, ?3, ?4)",
+                    params![id.as_str(), format!("{added}T00:00:00+00:00"), xml, score_content_hash(xml)],
+                )
+                .unwrap();
+        }
+
+        let entry = store
+            .import(
+                "Dup".to_string(),
+                None,
+                "dup.musicxml".to_string(),
+                xml.to_string(),
+                0,
+                4,
+            )
+            .unwrap();
+
+        assert_eq!(
+            entry.id, new_id,
+            "re-import must reuse the NEWEST duplicate, not the oldest"
+        );
+        assert_eq!(store.list().unwrap().len(), 2, "no third entry");
+    }
 }
