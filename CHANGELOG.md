@@ -1,3 +1,9 @@
+## [2.28.4](https://github.com/perice-pope/ai-music-companion/compare/v2.28.3...v2.28.4) (2026-07-16)
+
+### Bug Fixes
+
+* **face:** recap chart reads like a chart — collapse unresolved runs, honest empty line, real heading ([#390](https://github.com/perice-pope/ai-music-companion/issues/390)) ([#400](https://github.com/perice-pope/ai-music-companion/issues/400)) ([b20e9de](https://github.com/perice-pope/ai-music-companion/commit/b20e9def8132695af402aaeb1ed064c1c9243b5b))
+
 ## [2.28.3](https://github.com/perice-pope/ai-music-companion/compare/v2.28.2...v2.28.3) (2026-07-15)
 
 ### Bug Fixes
