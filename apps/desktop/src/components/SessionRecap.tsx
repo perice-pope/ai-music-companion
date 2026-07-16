@@ -264,7 +264,7 @@ export default function SessionRecap() {
             </h3>
             {jamChart.some((e) => !e.unresolved) ? (
               <ol className="flex flex-wrap gap-x-4 gap-y-1">
-                {chartRows(jamChart, recap.duration_secs).map((row, i) =>
+                {chartRows(jamChart).map((row, i) =>
                   row.kind === "chord" ? (
                     <li
                       key={`${row.entry.at_secs}-${i}`}
@@ -431,11 +431,14 @@ type ChartRow =
   | { kind: "unclear"; atSecs: number; durationSecs: number };
 
 /**
- * Collapse consecutive unresolved entries into one span (#390). A run's
- * duration ends at the next labeled entry; a trailing run ends at session
- * end (clamped so a short session clock can't produce a negative span).
+ * Collapse consecutive unresolved entries into one span (#390). The span's
+ * duration is the observed first→last reading of the run — never extended
+ * to the next label or session end, because the recorder writes nothing
+ * during silence, so anything past the last reading may be rest and the
+ * chart must not bill rest as unclear sound. A lone blip spans 0 s and
+ * renders without a duration claim.
  */
-function chartRows(entries: ChartEntry[], sessionSecs: number): ChartRow[] {
+function chartRows(entries: ChartEntry[]): ChartRow[] {
   const rows: ChartRow[] = [];
   let i = 0;
   while (i < entries.length) {
@@ -446,20 +449,19 @@ function chartRows(entries: ChartEntry[], sessionSecs: number): ChartRow[] {
       continue;
     }
     const start = e.at_secs;
-    while (i < entries.length && entries[i].unresolved) i += 1;
-    const end = i < entries.length ? entries[i].at_secs : sessionSecs;
-    rows.push({
-      kind: "unclear",
-      atSecs: start,
-      durationSecs: Math.max(0, end - start),
-    });
+    let last = start;
+    while (i < entries.length && entries[i].unresolved) {
+      last = entries[i].at_secs;
+      i += 1;
+    }
+    rows.push({ kind: "unclear", atSecs: start, durationSecs: last - start });
   }
   return rows;
 }
 
 /** Impressionistic duration for a collapsed unclear span: "45s" / "2m". */
 function formatUnclearSpan(secs: number): string {
-  const s = Math.max(1, Math.round(secs));
+  const s = Math.round(secs);
   return s < 60 ? `${s}s` : `${Math.round(secs / 60)}m`;
 }
 

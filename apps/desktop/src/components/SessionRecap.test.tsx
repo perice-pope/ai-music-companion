@@ -41,6 +41,7 @@ function seedRecap(recap: RecapT | null, error: string | null = null) {
     tipQueue: [],
     recap,
     recapError: error,
+    jamChart: null,
   });
 }
 
@@ -550,11 +551,12 @@ describe("SessionRecap", () => {
     // Dots reflect confidence: 0.9 → three, 0.6 → two.
     expect(chords[0]).toHaveTextContent("●●●");
     expect(chords[1].textContent).toContain("●●");
-    // #390: the unresolved stretch reads as a muted span with its duration
-    // (9.8 s → the G7 at 65.0 s ≈ 55 s), not a "several notes…" row.
+    // #390: the unresolved stretch reads as a muted span, not a "several
+    // notes…" row. A lone reading spans 0 s, so no duration is claimed —
+    // the 55 s until the G7 may have been mostly rest.
     const unresolved = screen.getByTestId("chart-unresolved");
     expect(unresolved).toHaveTextContent("· · ·");
-    expect(unresolved).toHaveTextContent("(55s unclear)");
+    expect(unresolved).not.toHaveTextContent("unclear");
     expect(unresolved).toHaveTextContent("0:09");
     expect(chart).toHaveTextContent("nothing was recorded");
   });
@@ -602,50 +604,60 @@ describe("SessionRecap", () => {
     render(<SessionRecap />);
     const spans = screen.getAllByTestId("chart-unresolved");
     expect(spans).toHaveLength(1);
-    // The run starts at 12 s and ends at the Dm at 132 s → 120 s → "2m".
+    // The run's readings span 12 s → 110 s = 98 s → rounds to "2m"
+    // (never floors to "1m"); the silent gap to the Dm at 132 s is
+    // NOT billed as unclear time.
     expect(spans[0]).toHaveTextContent("0:12");
     expect(spans[0]).toHaveTextContent("(2m unclear)");
     expect(screen.getAllByTestId("chart-chord")).toHaveLength(2);
   });
 
-  it("ends a trailing unresolved run at session end; blink-length runs drop the duration", () => {
-    // duration_secs: 220 → the trailing run 100 s → end spans 120 s → "2m".
-    seedRecap(fullRecap({ duration_secs: 220 }));
+  // #390: span durations are the observed readings only — honest at the
+  // seconds/minutes boundary, and a lone blip claims no duration at all
+  // (the recorder writes nothing during silence, so anything past the
+  // last reading may be rest).
+  it("reports observed span durations honestly across the s/m boundary", () => {
+    const run = (from: number, to: number, stepSecs: number) =>
+      Array.from(
+        { length: Math.floor((to - from) / stepSecs) + 1 },
+        (_, k) => ({
+          label: "",
+          root_pc: null,
+          quality: null,
+          confidence: 0,
+          at_secs: from + k * stepSecs,
+          unresolved: true,
+        }),
+      );
+    const chord = (label: string, at_secs: number) => ({
+      label,
+      root_pc: 0,
+      quality: "maj",
+      confidence: 0.9,
+      at_secs,
+      unresolved: false,
+    });
+    seedRecap(fullRecap({ duration_secs: 600 }));
     usePracticeStore.setState({
       jamChart: [
-        {
-          label: "",
-          root_pc: null,
-          quality: null,
-          confidence: 0,
-          at_secs: 3.0,
-          unresolved: true,
-        },
-        {
-          label: "C",
-          root_pc: 0,
-          quality: "maj",
-          confidence: 0.9,
-          at_secs: 3.5,
-          unresolved: false,
-        },
-        {
-          label: "",
-          root_pc: null,
-          quality: null,
-          confidence: 0,
-          at_secs: 100,
-          unresolved: true,
-        },
+        // 45 s of readings → seconds form, never "0m".
+        ...run(10, 55, 5),
+        chord("C", 60),
+        // 75 s of readings → "1m", never "75s" (boundary is 60 s).
+        ...run(100, 175, 5),
+        chord("F", 200),
+        // A lone trailing blip, then silence to session end (600 s):
+        // dots only — two minutes of rest never read "(2m unclear)".
+        ...run(230, 230, 5),
       ],
     });
     render(<SessionRecap />);
     const spans = screen.getAllByTestId("chart-unresolved");
-    expect(spans).toHaveLength(2);
-    // Half a second of unclear before the C: the dots render, no "(0s …)".
-    expect(spans[0]).toHaveTextContent("· · ·");
-    expect(spans[0]).not.toHaveTextContent("unclear");
-    expect(spans[1]).toHaveTextContent("(2m unclear)");
+    expect(spans).toHaveLength(3);
+    expect(spans[0]).toHaveTextContent("(45s unclear)");
+    expect(spans[1]).toHaveTextContent("(1m unclear)");
+    expect(spans[2]).toHaveTextContent("· · ·");
+    expect(spans[2]).not.toHaveTextContent("unclear");
   });
 
   // #390: a session that resolved nothing gets one honest line, not a wall.
