@@ -130,7 +130,9 @@ Requires a **paid Apple Developer Program membership** ($99/yr).
    `apps/desktop/src-tauri/tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`;
    `@semantic-release/git` commits them with the changelog. If you cut a tag by
    hand, run the stamp yourself first — `release.yml` fails any `v*` tag whose
-   tree doesn't carry the tag's version.
+   tree doesn't carry the tag's version. (This also means tags cut before the
+   stamp existed — v2.28.x and older — can no longer be rebuilt by re-running
+   `release.yml`; that is deliberate.)
 3. **The tag is pushed automatically.** On push to `main`, semantic-release tags
    `vX.Y.Z`. To cut one by hand instead:
    ```bash

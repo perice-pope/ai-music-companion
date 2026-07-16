@@ -41,11 +41,14 @@ export function stampTauriConf(content, version) {
 }
 
 /**
- * The `[package]` version line in Cargo.toml. Line-anchored so inline
- * dependency versions (`tauri-build = { version = "2" }`) never match.
+ * The version line inside the `[package]` section of Cargo.toml — anchored
+ * to that section, so neither inline dependency versions
+ * (`tauri-build = { version = "2" }`) nor a `version` line in some later
+ * `[dependencies.x]` table can ever be the one stamped. CRLF-tolerant.
  */
 export function stampCargoToml(content, version) {
-  const pattern = /^(version = ")[^"]+(")$/m;
+  const pattern =
+    /(^\[package\]\r?\n(?:(?!\[)[^\n]*\r?\n)*?version = ")[^"]+(")/m;
   if (!pattern.test(content)) {
     throw new Error("Cargo.toml: no [package] version line found to stamp");
   }

@@ -21,6 +21,9 @@ const REPO_ROOT = path.resolve(
 const TAURI_DIR = path.join(REPO_ROOT, "apps", "desktop", "src-tauri");
 
 // Fixtures mirror the real files' shapes, shrunk to the load-bearing parts.
+// The nested "version" key doesn't exist in today's real file — it's here to
+// pin first-occurrence-only semantics against a future plugin config gaining
+// one (spec §6).
 const TAURI_CONF = `{
   "$schema": "https://example.com/schema.json",
   "productName": "AI Music Companion",
@@ -28,6 +31,9 @@ const TAURI_CONF = `{
   "identifier": "com.aimusiccompanion.desktop",
   "bundle": {
     "copyright": "Copyright \\u00a9 2026 AI Music Companion"
+  },
+  "plugins": {
+    "someday": { "version": "not-the-app-version" }
   }
 }
 `;
@@ -80,6 +86,11 @@ describe("stamp-version", () => {
     );
     // JSON string escapes survive (a JSON.stringify re-emit would lose ©).
     expect(conf).toContain("\\u00a9");
+    // Only the TOP-LEVEL version is stamped; a nested "version" key in some
+    // future plugin config keeps its value.
+    expect(JSON.parse(conf).plugins.someday.version).toBe(
+      "not-the-app-version",
+    );
   });
 
   it("stamps only the app's own Cargo.lock block — a dependency sharing the old version keeps it", () => {
@@ -94,6 +105,24 @@ describe("stamp-version", () => {
     const toml = stampCargoToml(CARGO_TOML, "2.29.0");
     expect(toml).toContain('tauri = { version = "2", features = [] }');
     expect(toml).toContain('serde = { version = "1", features = ["derive"] }');
+  });
+
+  it("never stamps a version line outside [package] — missing package version throws instead", () => {
+    // A [package] with no version but a later table with a line-anchored one:
+    // stamping that dependency would re-ship 0.1.0 installers silently.
+    const noPackageVersion =
+      '[package]\nname = "x"\nedition = "2021"\n\n[dependencies.foo]\nversion = "1.0.0"\n';
+    expect(() => stampCargoToml(noPackageVersion, "2.29.0")).toThrow(
+      /Cargo\.toml/,
+    );
+    expect(() => stampCargoToml("", "2.29.0")).toThrow(/Cargo\.toml/);
+  });
+
+  it("stamps CRLF-encoded Cargo.toml (Windows checkout)", () => {
+    const crlf = CARGO_TOML.replace(/\n/g, "\r\n");
+    const stamped = stampCargoToml(crlf, "2.29.0");
+    expect(stamped).toContain('version = "2.29.0"');
+    expect(stamped).toContain('tauri = { version = "2", features = [] }');
   });
 
   it("is idempotent — restamping the same version is a no-op", () => {
@@ -166,7 +195,11 @@ describe("stamp-version", () => {
     const toml = readFileSync(path.join(TAURI_DIR, "Cargo.toml"), "utf8");
     const lock = readFileSync(path.join(TAURI_DIR, "Cargo.lock"), "utf8");
     expect(JSON.parse(stampTauriConf(conf, "9.9.9")).version).toBe("9.9.9");
-    expect(stampCargoToml(toml, "9.9.9")).toContain('\nversion = "9.9.9"');
+    // The stamped line must sit INSIDE the [package] section, not merely
+    // somewhere in the file.
+    expect(stampCargoToml(toml, "9.9.9")).toMatch(
+      /^\[package\]\n(?:(?!\[)[^\n]*\n)*?version = "9\.9\.9"/m,
+    );
     expect(stampCargoLock(lock, "9.9.9")).toContain(
       'name = "ai-music-companion"\nversion = "9.9.9"',
     );

@@ -50,7 +50,12 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           CONF_VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/src-tauri/tauri.conf.json','utf8')).version")
-          TOML_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/desktop/src-tauri/Cargo.toml | head -n 1)
+          # node, not sed: the Windows runner checks out with CRLF endings,
+          # which a $-anchored sed pattern silently fails to match.
+          TOML_VERSION=$(node -e "
+            const m = require('fs').readFileSync('apps/desktop/src-tauri/Cargo.toml','utf8').match(/^version = \"([^\"]+)\"/m);
+            console.log(m ? m[1] : '');
+          ")
           if [ "$CONF_VERSION" != "$TAG_VERSION" ] || [ "$TOML_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::tag $GITHUB_REF_NAME but tauri.conf.json=$CONF_VERSION, Cargo.toml=$TOML_VERSION — the release commit wasn't stamped (scripts/stamp-version.mjs)"
             exit 1
