@@ -52,7 +52,7 @@ export default defineConfig({
     {
       name: "webkit",
       use: { ...devices["Desktop Safari"] },
-      testMatch: /07-score-cursor-paints\.spec\.ts$/,
+      testMatch: /(06-wav-import-progress|07-score-cursor-paints)\.spec\.ts$/,
     },
   ],
   webServer: {
