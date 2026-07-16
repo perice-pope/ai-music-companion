@@ -85,13 +85,16 @@ function fileWithBytes(name: string, bytes: number[]): File {
   return file;
 }
 
-// The #336 first-frame probe rides requestAnimationFrame; a test that ends
-// inside one frame would otherwise leak the probe's breadcrumb into the
-// NEXT test's mock history. Wait one real frame so any pending probe fires
-// before the next test's beforeEach clears the mocks.
-afterEach(
-  () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-);
+// The #336 first-frame probe rides requestAnimationFrame and may sample a
+// second frame; a test that ends mid-probe would otherwise leak the probe's
+// breadcrumb into the NEXT test's mock history. Wait two real frames so any
+// pending probe finishes before the next test's beforeEach clears the mocks.
+afterEach(async () => {
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await nextFrame();
+  await nextFrame();
+});
 
 function fileInput(): HTMLInputElement {
   // The drop zone's <input type="file"> is hidden but present in the DOM.
@@ -843,23 +846,51 @@ describe("import-feedback breadcrumbs (#336)", () => {
       });
 
       // Seed logs with the import running; the rAF first-frame probe
-      // (fake rAF fires at ~16ms) lands next. The hold hasn't elapsed,
-      // so neither of the closing moments may have logged yet.
+      // (fake rAF fires at ~16ms, second sample ~32ms) lands next. The
+      // hold hasn't elapsed, so neither closing moment may have logged.
       await act(() => vi.advanceTimersByTimeAsync(50));
       expect(breadcrumbs()).toEqual([
-        "import feedback: seeded stage=transcribing via file-picker (.wav)",
-        expect.stringMatching(/^import feedback: first frame — /),
+        "import feedback #1: seeded stage=transcribing via file-picker (.wav)",
+        expect.stringMatching(/^import feedback #1: first frame — /),
       ]);
 
       // The hold elapses → hold done, then cleared, complete the four.
       await act(() => vi.advanceTimersByTimeAsync(1300));
       const lines = breadcrumbs();
       expect(lines).toHaveLength(4);
-      expect(lines[2]).toMatch(/^import feedback: hold done after \d+ms$/);
-      expect(lines[3]).toBe("import feedback: cleared (success)");
+      expect(lines[2]).toMatch(/^import feedback #1: hold done after \d+ms$/);
+      expect(lines[3]).toBe("import feedback #1: cleared (success)");
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The probe must observe the REAL indicator, not just emit a line: with
+  // the import held in flight and the message provably on screen, the
+  // logged frame line carries the indicator's visible label and computed
+  // style. Kills a probe that runs synchronously at seed time (only ever
+  // sees pre-commit DOM) or one that hardcodes its report.
+  it("the first-frame probe reports the indicator it actually observes", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "frontend_breadcrumb") return Promise.resolve();
+      if (cmd === "import_audio_file") return new Promise(() => {}); // in flight
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    fireEvent.change(fileInput(), {
+      target: { files: [fileWithBytes("take.wav", [1])] },
+    });
+
+    await screen.findByText("Listening for notes…");
+    await waitFor(() =>
+      expect(
+        breadcrumbs().some((l) =>
+          /first frame — (?:.*second frame — )?"Listening for notes…" x=-?\d+ y=-?\d+ w=\d+ h=\d+ display=block visibility=visible$/.test(
+            l,
+          ),
+        ),
+      ).toBe(true),
+    );
   });
 
   it("records the drag-drop entry path when a .wav is dropped", async () => {
@@ -870,14 +901,12 @@ describe("import-feedback breadcrumbs (#336)", () => {
 
     await waitFor(() =>
       expect(breadcrumbs()).toContain(
-        "import feedback: seeded stage=transcribing via drag-drop (.wav)",
+        "import feedback #1: seeded stage=transcribing via drag-drop (.wav)",
       ),
     );
     // The first-frame probe fires on this entry path too.
     await waitFor(() =>
-      expect(
-        breadcrumbs().some((l) => l.startsWith("import feedback: first frame")),
-      ).toBe(true),
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
     );
   });
 
@@ -895,20 +924,16 @@ describe("import-feedback breadcrumbs (#336)", () => {
 
     await screen.findByText(/Couldn't decode that recording/);
     await waitFor(() =>
-      expect(breadcrumbs()).toContain("import feedback: cleared (error)"),
+      expect(breadcrumbs()).toContain("import feedback #1: cleared (error)"),
     );
-    expect(
-      breadcrumbs().some((l) => l.startsWith("import feedback: hold done")),
-    ).toBe(false);
+    expect(breadcrumbs().some((l) => l.includes("hold done"))).toBe(false);
     // The first-frame probe fires on this path too.
     await waitFor(() =>
-      expect(
-        breadcrumbs().some((l) => l.startsWith("import feedback: first frame")),
-      ).toBe(true),
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
     );
   });
 
-  it("logs cleared (superseded) for an import outlived by a newer drop", async () => {
+  it("attributes a superseded import's cleared line to it, with its own ending", async () => {
     vi.useFakeTimers();
     try {
       let audioCalls = 0;
@@ -934,33 +959,67 @@ describe("import-feedback breadcrumbs (#336)", () => {
       });
 
       // The first import's hold elapses while the second still pends: its
-      // writes were silenced, and its cleared line must say so.
+      // writes were silenced, and its cleared line must say so — while
+      // staying attributable (#1) and keeping its own ending.
       await act(() => vi.advanceTimersByTimeAsync(1300));
-      expect(breadcrumbs()).toContain("import feedback: cleared (superseded)");
-      expect(breadcrumbs()).not.toContain("import feedback: cleared (success)");
+      expect(breadcrumbs()).toContain(
+        "import feedback #1: cleared (superseded, was success)",
+      );
+      expect(breadcrumbs()).toContain(
+        "import feedback #2: seeded stage=transcribing via file-picker (.wav)",
+      );
+      expect(breadcrumbs()).not.toContain("import feedback #1: cleared (success)");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("logs the same lifecycle for a PDF import, with its own stage", async () => {
+  it("logs the full lifecycle for a PDF import, with its own stage", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScoreDropZone />);
+      fireEvent.change(fileInput(), {
+        target: {
+          files: [fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46])],
+        },
+      });
+
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(breadcrumbs()).toEqual([
+        "import feedback #1: seeded stage=reading-notes via file-picker (.pdf)",
+        expect.stringMatching(/^import feedback #1: first frame — /),
+      ]);
+
+      await act(() => vi.advanceTimersByTimeAsync(1300));
+      const lines = breadcrumbs();
+      expect(lines).toHaveLength(4);
+      expect(lines[2]).toMatch(/^import feedback #1: hold done after \d+ms$/);
+      expect(lines[3]).toBe("import feedback #1: cleared (success)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs cleared (error) — and no hold line — when PDF recognition fails", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "frontend_breadcrumb") return Promise.resolve();
+      if (cmd === "recognize_pdf_score")
+        return Promise.reject(new Error("scan too blurry"));
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
     render(<ScoreDropZone importFeedbackMinMs={0} />);
     fireEvent.change(fileInput(), {
-      target: { files: [fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46])] },
+      target: { files: [fileWithBytes("etude.pdf", [1])] },
     });
 
-    await screen.findByText(/read from a scan/i);
+    await screen.findByText(/scan too blurry/);
     await waitFor(() =>
-      expect(breadcrumbs()).toContain("import feedback: cleared (success)"),
+      expect(breadcrumbs()).toContain("import feedback #1: cleared (error)"),
     );
-    expect(breadcrumbs()).toContain(
-      "import feedback: seeded stage=reading-notes via file-picker (.pdf)",
-    );
+    expect(breadcrumbs().some((l) => l.includes("hold done"))).toBe(false);
     // The first-frame probe fires on this path too.
     await waitFor(() =>
-      expect(
-        breadcrumbs().some((l) => l.startsWith("import feedback: first frame")),
-      ).toBe(true),
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
     );
   });
 });

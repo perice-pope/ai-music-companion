@@ -3,9 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { usePracticeStore, type ImportedAudio } from "../stores/practiceStore";
 import {
   importClearedBreadcrumb,
-  importFirstFrameBreadcrumb,
   importHoldBreadcrumb,
   importSeededBreadcrumb,
+  scheduleImportFirstFrameProbe,
   type ImportEntryPath,
   type ImportOutcome,
 } from "../lib/importBreadcrumbs";
@@ -89,6 +89,8 @@ export default function ScoreDropZone({
     midiTrackIndices?: number[];
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Scopes the #336 first-frame probe's DOM query to this drop zone.
+  const rootRef = useRef<HTMLDivElement>(null);
   // Single-shot guard for the part-picker buttons: two clicks in one frame
   // both see the pre-dismissal partChoice and would import twice (review S7).
   const partImportInFlight = useRef(false);
@@ -200,18 +202,14 @@ export default function ScoreDropZone({
         // (the backend's own beats are fixed constants; events refine it).
         const shownAt = performance.now();
         setProgress({ stage: "transcribing", pct: 45 });
-        sendBreadcrumb(importSeededBreadcrumb("transcribing", entry, ext));
-        // The first frame the shell could paint after the seed: log what
-        // the indicator's DOM actually shows there (or that it's absent).
-        requestAnimationFrame(() =>
-          sendBreadcrumb(importFirstFrameBreadcrumb(document)),
-        );
+        sendBreadcrumb(importSeededBreadcrumb(seq, "transcribing", entry, ext));
+        scheduleImportFirstFrameProbe(seq, rootRef.current, sendBreadcrumb);
         const result = await importAudioFromFile(file.name, bytes);
         // Success keeps the indicator up for a perceivable minimum (#336);
         // a failure below skips straight to the error. A newer import may
         // have started during the hold — then this one stays silent.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
-        sendBreadcrumb(importHoldBreadcrumb(performance.now() - shownAt));
+        sendBreadcrumb(importHoldBreadcrumb(seq, performance.now() - shownAt));
         outcome = "success";
         if (isCurrentImport()) {
           // AC2 (#337 S1): transcription is the beta tier — say so at import
@@ -232,9 +230,9 @@ export default function ScoreDropZone({
         }
       } finally {
         unlisten?.();
-        if (isCurrentImport()) setProgress(null);
-        else outcome = "superseded";
-        sendBreadcrumb(importClearedBreadcrumb(outcome));
+        const superseded = !isCurrentImport();
+        if (!superseded) setProgress(null);
+        sendBreadcrumb(importClearedBreadcrumb(seq, outcome, superseded));
       }
       return;
     }
@@ -254,15 +252,15 @@ export default function ScoreDropZone({
         // #336: same event-independent seed as the audio path.
         const shownAt = performance.now();
         setProgress({ stage: "reading-notes", pct: 55 });
-        sendBreadcrumb(importSeededBreadcrumb("reading-notes", entry, ext));
-        requestAnimationFrame(() =>
-          sendBreadcrumb(importFirstFrameBreadcrumb(document)),
+        sendBreadcrumb(
+          importSeededBreadcrumb(seq, "reading-notes", entry, ext),
         );
+        scheduleImportFirstFrameProbe(seq, rootRef.current, sendBreadcrumb);
         const recognized = await recognizePdfFromFile(file.name, bytes);
         // Same perceivable minimum as the audio path (#336); same
         // newer-import-wins rule after it.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
-        sendBreadcrumb(importHoldBreadcrumb(performance.now() - shownAt));
+        sendBreadcrumb(importHoldBreadcrumb(seq, performance.now() - shownAt));
         outcome = "success";
         if (isCurrentImport()) {
           // OMR is approximate — always surface the "read from a scan" note.
@@ -288,9 +286,9 @@ export default function ScoreDropZone({
         }
       } finally {
         unlisten?.();
-        if (isCurrentImport()) setProgress(null);
-        else outcome = "superseded";
-        sendBreadcrumb(importClearedBreadcrumb(outcome));
+        const superseded = !isCurrentImport();
+        if (!superseded) setProgress(null);
+        sendBreadcrumb(importClearedBreadcrumb(seq, outcome, superseded));
       }
       return;
     }
@@ -354,7 +352,10 @@ export default function ScoreDropZone({
     : null;
 
   return (
-    <div className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8">
+    <div
+      ref={rootRef}
+      className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8"
+    >
       <div
         data-testid="score-drop-zone"
         onDrop={handleDrop}
