@@ -104,6 +104,8 @@ key name (or happily report none).
 **RUN 5 — "The stranger test" (installer, ~15 min).** The INSTALLER smoke section below, exactly
 as written — download from the public site like a stranger, right-click-open, quick pass. This is
 the pilot launch gate: a failure here is a SHIP BLOCKER headline.
+**Always download a FRESH installer at the start of Run 5** — delete any previously downloaded
+copy first. (2026-07-16 lesson: a stale DMG made two already-fixed bugs look alive.)
 
 Between runs: 10 deep breaths, sip of water — fatigue findings ("I stopped noticing X by run 4")
 are real findings too; note them.
