@@ -2,12 +2,16 @@
 //!
 //! Every prior fixture used 5 partials at 1/k rolloff; a real piano carries
 //! audible energy past the 10th partial, and log compression in the chroma
-//! path inflates exactly that residue. The VA's findings (two runs straight)
-//! are reproduced here with 10-partial tones and pinned to the honest
-//! answers: C major is "C" (not Cmaj7/maj9), G7 is "G7" (not G13/G9),
-//! C-over-E is "C/E" (not G#maj9/C), one note is NO chord, a cluster is NO
-//! chord. The full seam is exercised — chroma extraction → perception
-//! tracker → the label the strip would show — because that is what she sees.
+//! path inflates exactly that residue. With 10-partial tones this suite
+//! REPRODUCED two of the VA's findings red-first (G7→"G13", cluster→an
+//! invented "Dmaj7") and pins all five of her checks as regressions:
+//! C major is "C", G7 is "G7", C-over-E is "C/E", one note is NO chord, a
+//! cluster is NO chord. (Her real piano also decorated C→Cmaj7 and
+//! E3→"E7"; this render doesn't reach those — a hotter fixture is welcome
+//! if they recur.) The full seam is exercised — chroma extraction →
+//! perception tracker → the label the strip would show — and every label,
+//! once shown, must NEVER change for the rest of the take ("flicker and
+//! lie" is half the complaint).
 
 use brain::perception::PerceptionTracker;
 use ears::chroma::ChromaExtractor;
@@ -51,14 +55,30 @@ fn settled_label_with_bass(audio: &[f32], bass_midi: Option<u8>) -> Option<Strin
     let mut ex = ChromaExtractor::new(SR);
     let mut tracker = PerceptionTracker::new();
     let mut now = 0.0f64;
-    for w in audio.chunks(1024) {
+    let mut first_label: Option<String> = None;
+    for (i, w) in audio.chunks(1024).enumerate() {
         ex.feed(w);
         now += w.len() as f64 / f64::from(SR);
+        // Production reads chroma at ~10 Hz, not per hop — match it so the
+        // tracker's dwell counters see her cadence (review note 4).
+        if i % 4 != 3 {
+            continue;
+        }
         if let Some(c) = ex.chroma() {
             if let Some(b) = bass_midi {
                 tracker.observe_poly_bass(b, now);
             }
             tracker.observe_chroma(&c, now);
+            // Stability: once a label shows, it must hold for the whole
+            // take — a right answer buried in churn is still a lie.
+            let label = tracker.snapshot(now).chord.map(|c| c.label);
+            match (&first_label, &label) {
+                (Some(seen), Some(l)) => {
+                    assert_eq!(l, seen, "label churned mid-take (was {seen:?}, now {l:?})")
+                }
+                (None, Some(_)) => first_label = label.clone(),
+                _ => {}
+            }
         }
     }
     tracker.snapshot(now).chord.map(|c| c.label)
@@ -111,6 +131,23 @@ fn c_over_e_labels_the_slash() {
 fn single_e3_never_labels_a_chord() {
     let label = settled_label(&rich_render(&[52], 3.0));
     assert_eq!(label, None, "a single rich E3 must not become a chord");
+}
+
+/// The other side of the coin (review fast-follow 2): a genuinely played
+/// low-register NINTH chord must still speak. This is the discriminating
+/// pin for the 7th/9th-partial HARMONIC_BLEED entries — with them
+/// reverted, the low C9's own partial thicket drowns the real 9th and the
+/// label dies to None. A future "cleanup" of the bleed table goes red here
+/// instead of silently killing low-register extension detection.
+#[test]
+fn low_register_c9_still_speaks() {
+    // C3 E3 G3 Bb3 D4 — a full dominant ninth, low and thick.
+    let label = settled_label(&rich_render(&[48, 52, 55, 58, 62], 3.0));
+    assert_eq!(
+        label.as_deref(),
+        Some("C9"),
+        "a played low-register C9 must still be heard as C9"
+    );
 }
 
 /// A chromatic mash must stay quiet (this passed both her runs — pin it so

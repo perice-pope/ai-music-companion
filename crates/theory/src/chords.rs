@@ -161,16 +161,6 @@ pub const MIN_CHORD_CONF: f32 = 0.5;
 /// well above it (a sounding pitch class folds to ≳1.0).
 const CHROMA_SILENCE_FLOOR: f32 = 0.1;
 
-/// #382: a candidate with MORE template tones than the incumbent best must
-/// beat it by this absolute score margin. Real-piano partials (7th, 9th,
-/// 15th) leave residue in exactly the extension pitch classes, and an
-/// extended template double-benefits from covering them (residue moves
-/// from out-of-chord penalty to in-chord reward) — so without a margin,
-/// every dominant decorates itself into a 9/13 and every major grows a
-/// maj7 ("over-decorated with extensions that weren't actually present",
-/// VA runs 2026-07-14 and -16).
-const EXTENSION_MARGIN: f32 = 0.10;
-
 /// #382: any pitch class sounding at least this fraction of the strongest
 /// bin is a REAL note, and a template that doesn't contain it is not the
 /// chord being played — a loud C natural disqualifies Dmaj7 no matter how
@@ -287,17 +277,11 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
                 - MISSING_TONE_PENALTY * missing as f32;
             // Strictly-better wins; ties keep the earlier (simpler) quality
             // and the earlier root — deterministic and triad-favoring.
-            // #382: a RICHER template (more tones than the incumbent) must
-            // additionally clear EXTENSION_MARGIN — partial residue alone
-            // can't buy a decoration.
-            let bar = match &best {
-                None => MIN_CHORD_CONF,
-                Some(b) => {
-                    let richer = intervals.len() > b.quality.intervals().len();
-                    b.confidence + if richer { EXTENSION_MARGIN } else { 0.0 }
-                }
-            };
-            if score > bar {
+            // (#382 review note: an extra richer-must-win-by-a-margin rule
+            // was tried here and proved inert — the extension evidence bar
+            // above and the outsider veto below already decide every case
+            // the margin could have. Deleted rather than shipped untestable.)
+            if score > best.map_or(MIN_CHORD_CONF, |b| b.confidence) {
                 let bass = bass_pc.filter(|&b| {
                     b % 12 != root && intervals.iter().any(|&iv| (root + iv) % 12 == b % 12)
                 });
