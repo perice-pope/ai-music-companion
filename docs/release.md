@@ -56,10 +56,13 @@ Bundle config lives in `apps/desktop/src-tauri/tauri.conf.json`:
 - **icons**: `icons/icon.icns` (macOS), `icons/icon.ico` (Windows), PNGs (Linux),
   generated with `pnpm tauri icon`.
 
-The version is sourced from `tauri.conf.json` `version` and should be kept in
-lock-step with `apps/desktop/package.json` and
-`apps/desktop/src-tauri/Cargo.toml` (semantic-release bumps `package.json`; keep
-the other two aligned in the same commit — see §4).
+The version is sourced from `tauri.conf.json` `version`. The release pipeline
+keeps it aligned automatically: semantic-release's prepare step runs
+`scripts/stamp-version.mjs`, which writes the new version into
+`tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`, and the
+release commit carries all three (#384 — before this, every installer shipped
+labeled 0.1.0). `release.yml` refuses to build a tag whose tree isn't stamped
+with the tag's own version.
 
 ---
 
@@ -122,10 +125,12 @@ Requires a **paid Apple Developer Program membership** ($99/yr).
 1. **Land changes on `main`** using Conventional Commits. `feat:` → minor,
    `fix:` → patch, `feat!:`/`BREAKING CHANGE` → major. `semantic-release.yml`
    computes the next version automatically.
-2. **Keep versions aligned.** semantic-release bumps `apps/desktop/package.json`.
-   In the same release commit (or a follow-up `chore(release):`), set the matching
-   `version` in `apps/desktop/src-tauri/tauri.conf.json` and
-   `apps/desktop/src-tauri/Cargo.toml`.
+2. **Versions align themselves.** The `@semantic-release/exec` prepare step runs
+   `scripts/stamp-version.mjs`, stamping the new version into
+   `apps/desktop/src-tauri/tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`;
+   `@semantic-release/git` commits them with the changelog. If you cut a tag by
+   hand, run the stamp yourself first — `release.yml` fails any `v*` tag whose
+   tree doesn't carry the tag's version.
 3. **The tag is pushed automatically.** On push to `main`, semantic-release tags
    `vX.Y.Z`. To cut one by hand instead:
    ```bash

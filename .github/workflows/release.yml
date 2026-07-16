@@ -40,6 +40,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # #384: every release before this check shipped as 0.1.0 because
+      # semantic-release never stamped the Tauri sources. A v* tag must now
+      # point at a tree whose version IS the tag's — fail red before spending
+      # 30 minutes building mislabeled installers.
+      - name: Assert the tree is stamped with the tag's version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CONF_VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/src-tauri/tauri.conf.json','utf8')).version")
+          TOML_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/desktop/src-tauri/Cargo.toml | head -n 1)
+          if [ "$CONF_VERSION" != "$TAG_VERSION" ] || [ "$TOML_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME but tauri.conf.json=$CONF_VERSION, Cargo.toml=$TOML_VERSION — the release commit wasn't stamped (scripts/stamp-version.mjs)"
+            exit 1
+          fi
+          echo "version stamp OK: $TAG_VERSION"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

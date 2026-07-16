@@ -10,6 +10,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+// The version badge at the panel's foot (#384) reads the bundle version
+// through the app API; give it a stable value here.
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: () => Promise.resolve("2.29.0"),
+}));
+
 // localStorage polyfill (jsdom in CI doesn't always persist). Critical: the
 // store reads it at module init for the "off by default" guarantee, so we make
 // sure it starts empty.
@@ -40,6 +46,13 @@ describe("ConnectionsPrivacy", () => {
       cloudSyncEnabled: false,
       teacherSharingEnabled: false,
     });
+  });
+
+  it("shows the running app version so testers can quote their build (#384)", async () => {
+    render(<ConnectionsPrivacy />);
+    expect(await screen.findByTestId("app-version")).toHaveTextContent(
+      "v2.29.0",
+    );
   });
 
   it("defaults EVERY networked toggle to OFF", () => {
