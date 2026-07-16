@@ -41,6 +41,7 @@ function seedRecap(recap: RecapT | null, error: string | null = null) {
     tipQueue: [],
     recap,
     recapError: error,
+    jamChart: null,
   });
 }
 
@@ -550,9 +551,13 @@ describe("SessionRecap", () => {
     // Dots reflect confidence: 0.9 → three, 0.6 → two.
     expect(chords[0]).toHaveTextContent("●●●");
     expect(chords[1].textContent).toContain("●●");
-    expect(screen.getByTestId("chart-unresolved")).toHaveTextContent(
-      "several notes",
-    );
+    // #390: the unresolved stretch reads as a muted span, not a "several
+    // notes…" row. A lone reading spans 0 s, so no duration is claimed —
+    // the 55 s until the G7 may have been mostly rest.
+    const unresolved = screen.getByTestId("chart-unresolved");
+    expect(unresolved).toHaveTextContent("· · ·");
+    expect(unresolved).not.toHaveTextContent("unclear");
+    expect(unresolved).toHaveTextContent("0:09");
     expect(chart).toHaveTextContent("nothing was recorded");
   });
 
@@ -561,5 +566,153 @@ describe("SessionRecap", () => {
     usePracticeStore.setState({ jamChart: null });
     render(<SessionRecap />);
     expect(screen.queryByTestId("recap-chord-chart")).toBeNull();
+  });
+
+  // #390 AC: 50 consecutive unresolved entries collapse to ONE rendered row
+  // — the wall of "several notes…" is gone; the real chords still frame it.
+  it("collapses a run of unresolved entries into one span with its duration", () => {
+    seedRecap(fullRecap());
+    const unresolvedRun = Array.from({ length: 50 }, (_, k) => ({
+      label: "",
+      root_pc: null,
+      quality: null,
+      confidence: 0,
+      at_secs: 12 + k * 2,
+      unresolved: true,
+    }));
+    usePracticeStore.setState({
+      jamChart: [
+        {
+          label: "Am7",
+          root_pc: 9,
+          quality: "min7",
+          confidence: 0.8,
+          at_secs: 10,
+          unresolved: false,
+        },
+        ...unresolvedRun,
+        {
+          label: "Dm",
+          root_pc: 2,
+          quality: "min",
+          confidence: 0.7,
+          at_secs: 132,
+          unresolved: false,
+        },
+      ],
+    });
+    render(<SessionRecap />);
+    const spans = screen.getAllByTestId("chart-unresolved");
+    expect(spans).toHaveLength(1);
+    // The run's readings span 12 s → 110 s = 98 s → rounds to "2m"
+    // (never floors to "1m"); the silent gap to the Dm at 132 s is
+    // NOT billed as unclear time.
+    expect(spans[0]).toHaveTextContent("0:12");
+    expect(spans[0]).toHaveTextContent("(2m unclear)");
+    expect(screen.getAllByTestId("chart-chord")).toHaveLength(2);
+  });
+
+  // #390: span durations are the observed readings only — honest at the
+  // seconds/minutes boundary, and a lone blip claims no duration at all
+  // (the recorder writes nothing during silence, so anything past the
+  // last reading may be rest).
+  it("reports observed span durations honestly across the s/m boundary", () => {
+    const run = (from: number, to: number, stepSecs: number) =>
+      Array.from(
+        { length: Math.floor((to - from) / stepSecs) + 1 },
+        (_, k) => ({
+          label: "",
+          root_pc: null,
+          quality: null,
+          confidence: 0,
+          at_secs: from + k * stepSecs,
+          unresolved: true,
+        }),
+      );
+    const chord = (label: string, at_secs: number) => ({
+      label,
+      root_pc: 0,
+      quality: "maj",
+      confidence: 0.9,
+      at_secs,
+      unresolved: false,
+    });
+    seedRecap(fullRecap({ duration_secs: 600 }));
+    usePracticeStore.setState({
+      jamChart: [
+        // 45 s of readings → seconds form, never "0m".
+        ...run(10, 55, 5),
+        chord("C", 60),
+        // 75 s of readings → "1m", never "75s" (boundary is 60 s).
+        ...run(100, 175, 5),
+        chord("F", 200),
+        // A lone trailing blip, then silence to session end (600 s):
+        // dots only — two minutes of rest never read "(2m unclear)".
+        ...run(230, 230, 5),
+      ],
+    });
+    render(<SessionRecap />);
+    const spans = screen.getAllByTestId("chart-unresolved");
+    expect(spans).toHaveLength(3);
+    expect(spans[0]).toHaveTextContent("(45s unclear)");
+    expect(spans[1]).toHaveTextContent("(1m unclear)");
+    expect(spans[2]).toHaveTextContent("· · ·");
+    expect(spans[2]).not.toHaveTextContent("unclear");
+  });
+
+  // #390: a session that resolved nothing gets one honest line, not a wall.
+  it("replaces an all-unresolved chart with one honest line", () => {
+    seedRecap(fullRecap());
+    usePracticeStore.setState({
+      jamChart: Array.from({ length: 40 }, (_, k) => ({
+        label: "",
+        root_pc: null,
+        quality: null,
+        confidence: 0,
+        at_secs: k * 5,
+        unresolved: true,
+      })),
+    });
+    render(<SessionRecap />);
+    expect(screen.getByTestId("chart-all-unclear")).toHaveTextContent(
+      "nothing settled long enough to name",
+    );
+    expect(screen.queryAllByTestId("chart-unresolved")).toHaveLength(0);
+    expect(screen.queryAllByTestId("chart-chord")).toHaveLength(0);
+    // The privacy line survives the honest-line branch.
+    expect(screen.getByTestId("recap-chord-chart")).toHaveTextContent(
+      "nothing was recorded",
+    );
+  });
+
+  // #390: discoverability — the sketch is a real section (heading weight of
+  // "Tone today") and sits with the session read-outs, before Strengths,
+  // instead of below the fold.
+  it("gives the chart a section heading and renders it before Strengths", () => {
+    seedRecap(fullRecap());
+    usePracticeStore.setState({
+      jamChart: [
+        {
+          label: "Cmaj7",
+          root_pc: 0,
+          quality: "maj7",
+          confidence: 0.9,
+          at_secs: 3.2,
+          unresolved: false,
+        },
+      ],
+    });
+    render(<SessionRecap />);
+    const heading = screen.getByRole("heading", {
+      level: 3,
+      name: "What the room played",
+    });
+    expect(heading).toHaveClass("uppercase");
+    const chart = screen.getByTestId("recap-chord-chart");
+    const strengths = screen.getByTestId("recap-strengths");
+    const following =
+      chart.compareDocumentPosition(strengths) &
+      Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(following).toBeTruthy();
   });
 });
