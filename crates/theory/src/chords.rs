@@ -161,6 +161,34 @@ pub const MIN_CHORD_CONF: f32 = 0.5;
 /// well above it (a sounding pitch class folds to ≳1.0).
 const CHROMA_SILENCE_FLOOR: f32 = 0.1;
 
+/// #382: a candidate with MORE template tones than the incumbent best must
+/// beat it by this absolute score margin. Real-piano partials (7th, 9th,
+/// 15th) leave residue in exactly the extension pitch classes, and an
+/// extended template double-benefits from covering them (residue moves
+/// from out-of-chord penalty to in-chord reward) — so without a margin,
+/// every dominant decorates itself into a 9/13 and every major grows a
+/// maj7 ("over-decorated with extensions that weren't actually present",
+/// VA runs 2026-07-14 and -16).
+const EXTENSION_MARGIN: f32 = 0.10;
+
+/// #382: any pitch class sounding at least this fraction of the strongest
+/// bin is a REAL note, and a template that doesn't contain it is not the
+/// chord being played — a loud C natural disqualifies Dmaj7 no matter how
+/// well the other bins fit (the cluster→"Dmaj7" invention this run).
+const STRONG_OUTSIDER_RATIO: f32 = 0.6;
+
+/// #382: an extension-class template tone (anything past root/3rd/5th in a
+/// 4+-tone quality) must sound at least this fraction of the strongest bin
+/// to count as PLAYED. Real-piano partial residue peaks around 25–45% of
+/// max after log compression; a genuinely played tone reads ≥ ~90%. Between
+/// the two, the honest call is "not played".
+const EXTENSION_MIN_RATIO: f32 = 0.5;
+
+/// Root/third/fifth pitch-class offsets — the tones ANY voicing carries.
+/// (Folded 3 covers both the minor 3rd and the folded #9; that ambiguity is
+/// inherent to pitch-class templates and errs toward accepting.)
+const BASE_TRIAD_INTERVALS: [u8; 4] = [0, 3, 4, 7];
+
 /// How many chroma bins are "sounding" under the matcher's own definition
 /// (≥ [`ACTIVE_BIN_RATIO`] of the strongest bin). Lets callers tell honest
 /// polyphony-without-a-name (≥ [`MIN_CHORD_BINS`] active, no confident
@@ -224,25 +252,52 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
                 let pc = usize::from((root + iv) % 12);
                 template_mask[pc] = true;
                 let v = chroma[pc];
+                // #382: extension tones need REAL evidence, not residue —
+                // partial bleed lands exactly on 7th/9th/13th classes and
+                // sits well above the plain active threshold after log
+                // compression. Base-triad tones keep the active bar.
+                let is_extension = intervals.len() > 3 && !BASE_TRIAD_INTERVALS.contains(&iv);
+                let bar = if is_extension {
+                    max_bin * EXTENSION_MIN_RATIO
+                } else {
+                    max_bin * ACTIVE_BIN_RATIO
+                };
                 // Required tones must actually sound (shells may drop the
                 // optional ones — at a small cost, tallied below).
-                if v < max_bin * ACTIVE_BIN_RATIO {
+                if v < bar {
                     if !optional.contains(&iv) {
                         continue 'quality;
                     }
                     missing += 1;
+                    continue;
                 }
                 in_chord += v;
             }
-            let out_of_chord: f32 = (0..12)
-                .filter(|&pc| !template_mask[pc])
-                .map(|pc| chroma[pc])
-                .sum();
+            let mut out_of_chord = 0.0f32;
+            for pc in (0..12).filter(|&pc| !template_mask[pc]) {
+                // #382: a strongly-sounding tone outside the template is a
+                // played note this chord doesn't explain — veto, don't
+                // just penalize (a cluster's loud C must kill Dmaj7).
+                if chroma[pc] >= max_bin * STRONG_OUTSIDER_RATIO {
+                    continue 'quality;
+                }
+                out_of_chord += chroma[pc];
+            }
             let score = (in_chord - NON_CHORD_PENALTY * out_of_chord) / total
                 - MISSING_TONE_PENALTY * missing as f32;
             // Strictly-better wins; ties keep the earlier (simpler) quality
             // and the earlier root — deterministic and triad-favoring.
-            if score > best.map_or(MIN_CHORD_CONF, |b| b.confidence) {
+            // #382: a RICHER template (more tones than the incumbent) must
+            // additionally clear EXTENSION_MARGIN — partial residue alone
+            // can't buy a decoration.
+            let bar = match &best {
+                None => MIN_CHORD_CONF,
+                Some(b) => {
+                    let richer = intervals.len() > b.quality.intervals().len();
+                    b.confidence + if richer { EXTENSION_MARGIN } else { 0.0 }
+                }
+            };
+            if score > bar {
                 let bass = bass_pc.filter(|&b| {
                     b % 12 != root && intervals.iter().any(|&iv| (root + iv) % 12 == b % 12)
                 });

@@ -33,8 +33,20 @@ const MIDI_LO: usize = 36;
 /// Number of semitone bins: C2..=B6, five full octaves.
 const NUM_BINS: usize = 60;
 /// Fraction of a lower semitone's energy subtracted from where its
-/// 2nd/3rd/4th/5th partials land (+12, +19, +24, +28 semitones).
-const HARMONIC_BLEED: [(usize, f32); 4] = [(12, 0.4), (19, 0.3), (24, 0.25), (28, 0.2)];
+/// 2nd/3rd/4th/5th partials land (+12, +19, +24, +28 semitones), and
+/// #382 extends to the 7th (+34 ≈ minor 7th) and 9th (+38 ≈ major 9th):
+/// on a real piano those partials carry audible energy that the log
+/// compression downstream inflates, and their pitch classes are exactly
+/// the phantom "extensions" that decorated every label (G7→G13, C→Cmaj9)
+/// in the VA's 2026-07-14/-16 runs.
+const HARMONIC_BLEED: [(usize, f32); 6] = [
+    (12, 0.4),
+    (19, 0.3),
+    (24, 0.25),
+    (28, 0.2),
+    (34, 0.15),
+    (38, 0.12),
+];
 /// Smoothing time constant for the folded pitch-class bins.
 const SMOOTHING_TAU_SECS: f32 = 0.25;
 /// Gain inside the log compressor: `ln(1 + G·x) / ln(1 + G)`.
