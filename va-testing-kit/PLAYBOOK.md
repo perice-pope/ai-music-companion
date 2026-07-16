@@ -60,6 +60,48 @@ Note for the report: web mode can't test mic, upload, or AI critique.
 
 ## DESKTOP walkthrough (MODE = desktop) — the real test
 
+### 🎯 FOCUSED VERIFICATION RUN — do THIS first (2026-07-16 edition, ~30–40 min)
+
+Three big fixes shipped since your last run, and this short session verifies exactly those —
+skip the full five-run plan below unless the manager asks for it. One report at the end, same
+template as always.
+
+**PART A — Jazz ears re-check (Piano, at a real piano, ~15 min).**
+The chord brain was retuned this week against exactly what you caught (decorated labels, slow
+G7, invented chords). Fresh session on Piano, then your same four checks — plus what changed:
+
+1. **Play a C major triad** (C–E–G, middle of the piano) and hold it. Expect: **"C"** — not
+   Cmaj7, not Cmaj9 — within about a second, and it should STAY "C" while you hold. Any label
+   that appears and then changes while you hold the same chord is a finding (note both labels).
+2. **Play G7** (G–B–D–F). Expect: **"G7"**, undecorated — not G9/G13, and not a long "hearing
+   several notes…" stall. Note roughly how long it takes.
+3. **Play C/E** (E low in the left hand; C–E–G above). Expect: **"C/E"**.
+4. **One note** (a single low E, let it ring): expect NO chord label at any point.
+   **Forearm mash**: expect "hearing several notes…" and silence — no invented names.
+5. **Jam-along spot check (~5 min):** "Listen to the room" over a simple recording — do the
+   chips now name plain chords (G, C, D7…) instead of sus/add9/maj9/13 everything? Tap one chip
+   to confirm the 12-key deal still works.
+
+**PART B — Tally check (~3 min, same session).**
+Load a score, play a few notes so the ✓/~/✗ tally shows, note the numbers. Tap a measure to row
+it through 12 keys, then "Back to listening." **Is the tally still visible, with the same
+numbers?** (Last run you reported it missing — we need to know if the strip was GONE or the
+counts were RESET to zero. Say which.)
+
+**PART C — Installer smoke, FRESH download (~15 min).**
+Delete any old installer/DMG first — this is the whole point. Download fresh from the public
+site, install, and check exactly three things in the packaged app:
+1. Practice-with-score: is the **cursor** visible and following (the translucent green
+   highlight you saw in the dev build)?
+2. Drop the sample **.wav**: does the import produce sheet music (no "audio engine couldn't
+   start" error)? Also note — honestly — whether you DRAG the file or use "Choose file…", and
+   whether any "Listening for notes…" message appears either way.
+3. The version in the Mac menu bar → About (we expect it still says 0.1.0 — that fix is queued;
+   just record it).
+
+If all three parts come back clean, tell the manager plainly: **"verification run clean"** —
+that sentence moves the pilot forward.
+
 ### ⭐ RUN PLAN — multiple tests back to back (2026-07-12 edition)
 
 This week shipped SIX releases (the app should say **v2.26.0** or later — check and record it).
