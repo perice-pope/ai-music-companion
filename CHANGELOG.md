@@ -1,3 +1,9 @@
+## [2.28.5](https://github.com/perice-pope/ai-music-companion/compare/v2.28.4...v2.28.5) (2026-07-16)
+
+### Bug Fixes
+
+* **score:** dedup imports by content hash — re-dropping a file reuses its entry ([#385](https://github.com/perice-pope/ai-music-companion/issues/385)) ([#398](https://github.com/perice-pope/ai-music-companion/issues/398)) ([fd52dff](https://github.com/perice-pope/ai-music-companion/commit/fd52dff03a0bc5756a9f855e14ef2ef8a1855195))
+
 ## [2.28.4](https://github.com/perice-pope/ai-music-companion/compare/v2.28.3...v2.28.4) (2026-07-16)
 
 ### Bug Fixes
