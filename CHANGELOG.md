@@ -1,3 +1,9 @@
+## [2.28.6](https://github.com/perice-pope/ai-music-companion/compare/v2.28.5...v2.28.6) (2026-07-16)
+
+### Bug Fixes
+
+* **theory:** chord labels stop decorating — extensions need real evidence ([#407](https://github.com/perice-pope/ai-music-companion/issues/407)) ([a8c71d4](https://github.com/perice-pope/ai-music-companion/commit/a8c71d43502c03073e0d0b231170136fb7583717)), closes [#382](https://github.com/perice-pope/ai-music-companion/issues/382)
+
 ## [2.28.5](https://github.com/perice-pope/ai-music-companion/compare/v2.28.4...v2.28.5) (2026-07-16)
 
 ### Bug Fixes
