@@ -619,6 +619,19 @@ function newId(): string {
   }
 }
 
+/**
+ * Put an imported entry at the front of the library without duplicating it.
+ * The backend dedups re-imports by content (#385) and hands back the
+ * existing entry, so a blind prepend would show the same score twice until
+ * the next refresh.
+ */
+function upsertScoreEntry(
+  library: ScoreLibraryEntry[],
+  entry: ScoreLibraryEntry,
+): ScoreLibraryEntry[] {
+  return [entry, ...library.filter((s) => s.id !== entry.id)];
+}
+
 export const usePracticeStore = create<PracticeState>((set, get) => ({
   screen: "selector",
   status: "idle",
@@ -679,7 +692,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         activeScore: entry,
         activeScoreXml: loaded.music_xml,
         cursorPosition: null,
-        scoreLibrary: [entry, ...state.scoreLibrary],
+        scoreLibrary: upsertScoreEntry(state.scoreLibrary, entry),
       }));
     } catch (err) {
       throw new Error(`Failed to load score: ${err}`);
@@ -704,7 +717,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         activeScore: entry,
         activeScoreXml: loaded.music_xml,
         cursorPosition: null,
-        scoreLibrary: [entry, ...state.scoreLibrary],
+        scoreLibrary: upsertScoreEntry(state.scoreLibrary, entry),
       }));
       return entry;
     } catch (err) {
@@ -727,7 +740,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         activeScore: result.entry,
         activeScoreXml: loaded.music_xml,
         cursorPosition: null,
-        scoreLibrary: [result.entry, ...state.scoreLibrary],
+        scoreLibrary: upsertScoreEntry(state.scoreLibrary, result.entry),
       }));
       return result;
     } catch (err) {
@@ -769,7 +782,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         activeScore: entry,
         activeScoreXml: loaded.music_xml,
         cursorPosition: null,
-        scoreLibrary: [entry, ...state.scoreLibrary],
+        scoreLibrary: upsertScoreEntry(state.scoreLibrary, entry),
       }));
       return entry;
     } catch (err) {

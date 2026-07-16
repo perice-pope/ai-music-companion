@@ -874,6 +874,31 @@ describe("practiceStore — score loading", () => {
     expect(s.activeScore).toBeNull();
     expect(s.activeScoreXml).toBeNull();
   });
+
+  it("re-importing the same file keeps ONE library entry, moved to front (#385)", async () => {
+    const useStore = await freshStore();
+    const older = { ...ENTRY, id: "score-0", title: "Older Piece" };
+    useStore.setState({ scoreLibrary: [older] });
+    // The backend dedups by content and returns the SAME entry both times —
+    // the store must not stack a second copy of it in the visible list.
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
+      if (cmd === "get_score")
+        return Promise.resolve({ entry: ENTRY, music_xml: XML });
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+
+    await useStore
+      .getState()
+      .importMusicXmlFromFile("scale.musicxml", [60], 0);
+    await useStore
+      .getState()
+      .importMusicXmlFromFile("scale.musicxml", [60], 0);
+
+    const s = useStore.getState();
+    expect(s.scoreLibrary.map((e) => e.id)).toEqual(["score-1", "score-0"]);
+    expect(s.activeScore?.id).toBe("score-1");
+  });
 });
 
 describe("practiceStore — follow-me accompaniment", () => {

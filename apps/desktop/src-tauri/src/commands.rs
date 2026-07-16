@@ -6498,6 +6498,61 @@ mod tests {
         assert!(listed.is_empty(), "failed import must not persist a row");
     }
 
+    /// #385: dropping the same MIDI file twice (the back-to-back VA flow)
+    /// must not stack a duplicate — the second import returns the first
+    /// entry, and "My Scores" stays at one row.
+    #[test]
+    fn reimporting_the_same_midi_file_dedups_to_one_entry() {
+        let s = state();
+        let bytes = build_test_midi(Some("C Major Scale"));
+
+        let first = s
+            .import_midi("scales.mid".to_string(), bytes.clone())
+            .expect("first import");
+        let second = s
+            .import_midi("scales.mid".to_string(), bytes)
+            .expect("re-import");
+
+        assert_eq!(second.id, first.id, "re-import must reuse the entry");
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert_eq!(listed.len(), 1, "no duplicate library row");
+    }
+
+    /// #385: re-importing the same MusicXML + same chosen part dedups, but
+    /// picking the OTHER part of the same file is a genuinely new entry.
+    #[test]
+    fn reimporting_same_musicxml_dedups_per_chosen_part() {
+        let s = state();
+
+        let trombone = s
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                1,
+            )
+            .expect("first import");
+        let again = s
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                1,
+            )
+            .expect("re-import same part");
+        assert_eq!(again.id, trombone.id, "same file + same part must dedup");
+
+        let trumpet = s
+            .import_musicxml(
+                "duet.musicxml".to_string(),
+                TWO_PART_MUSICXML.to_string(),
+                0,
+            )
+            .expect("import the other part");
+        assert_ne!(trumpet.id, trombone.id, "the other part is its own entry");
+
+        let listed = s.score_store.lock().unwrap().list().expect("list scores");
+        assert_eq!(listed.len(), 2, "one entry per (file, part)");
+    }
+
     /// A minimal valid PDF header — enough to pass the OMR pipeline's front
     /// door. The `StaticOmrEngine` ignores the bytes and returns a fixed score.
     const FAKE_PDF: &[u8] = b"%PDF-1.7\nscan\n";
