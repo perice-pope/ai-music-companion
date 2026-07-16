@@ -1,6 +1,15 @@
 import { useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { usePracticeStore, type ImportedAudio } from "../stores/practiceStore";
+import {
+  importClearedBreadcrumb,
+  importFirstFrameBreadcrumb,
+  importHoldBreadcrumb,
+  importSeededBreadcrumb,
+  type ImportEntryPath,
+  type ImportOutcome,
+} from "../lib/importBreadcrumbs";
+import { sendBreadcrumb } from "../lib/positionBreadcrumbs";
 
 const MIDI_EXTS = ["mid", "midi"];
 // Uncompressed MusicXML is plain text we can parse directly. Compressed `.mxl`
@@ -119,7 +128,10 @@ export default function ScoreDropZone({
   // Audio → backend transcribe (basic-pitch) → MIDI → MusicXML → library, with
   // live progress and a calm quality note. MusicXML still needs frontend
   // metadata parsing (a later slice), so it surfaces an honest "not yet".
-  const handleFile = async (file: File) => {
+  // `entry` is diagnostic only (#336): Tauri's drag-drop and the file picker
+  // may deliver differently in the real shell, so breadcrumbs record which
+  // path each import took.
+  const handleFile = async (file: File, entry: ImportEntryPath) => {
     importSeq.current += 1;
     const seq = importSeq.current;
     const isCurrentImport = () => importSeq.current === seq;
@@ -171,6 +183,10 @@ export default function ScoreDropZone({
 
     if (AUDIO_EXTS.includes(ext)) {
       let unlisten: (() => void) | undefined;
+      // #336 diagnostics: which exit the feedback lifecycle takes. "error"
+      // until the success path proves otherwise; a stale import whose
+      // writes were silenced reports "superseded" instead.
+      let outcome: ImportOutcome = "error";
       try {
         setStatus(`Transcribing ${file.name}…`);
         unlisten = await listen<ImportProgress>("import-progress", (event) => {
@@ -184,11 +200,19 @@ export default function ScoreDropZone({
         // (the backend's own beats are fixed constants; events refine it).
         const shownAt = performance.now();
         setProgress({ stage: "transcribing", pct: 45 });
+        sendBreadcrumb(importSeededBreadcrumb("transcribing", entry, ext));
+        // The first frame the shell could paint after the seed: log what
+        // the indicator's DOM actually shows there (or that it's absent).
+        requestAnimationFrame(() =>
+          sendBreadcrumb(importFirstFrameBreadcrumb(document)),
+        );
         const result = await importAudioFromFile(file.name, bytes);
         // Success keeps the indicator up for a perceivable minimum (#336);
         // a failure below skips straight to the error. A newer import may
         // have started during the hold — then this one stays silent.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
+        sendBreadcrumb(importHoldBreadcrumb(performance.now() - shownAt));
+        outcome = "success";
         if (isCurrentImport()) {
           // AC2 (#337 S1): transcription is the beta tier — say so at import
           // time, every time, not only when quality looks off.
@@ -209,6 +233,8 @@ export default function ScoreDropZone({
       } finally {
         unlisten?.();
         if (isCurrentImport()) setProgress(null);
+        else outcome = "superseded";
+        sendBreadcrumb(importClearedBreadcrumb(outcome));
       }
       return;
     }
@@ -217,6 +243,7 @@ export default function ScoreDropZone({
       // PDF → on-device OMR → MusicXML, then the SAME "which part?" picker and
       // import path as MusicXML (OMR is just another front-end producing it).
       let unlisten: (() => void) | undefined;
+      let outcome: ImportOutcome = "error";
       try {
         setStatus(`Reading ${file.name}…`);
         unlisten = await listen<ImportProgress>("import-progress", (event) => {
@@ -227,10 +254,16 @@ export default function ScoreDropZone({
         // #336: same event-independent seed as the audio path.
         const shownAt = performance.now();
         setProgress({ stage: "reading-notes", pct: 55 });
+        sendBreadcrumb(importSeededBreadcrumb("reading-notes", entry, ext));
+        requestAnimationFrame(() =>
+          sendBreadcrumb(importFirstFrameBreadcrumb(document)),
+        );
         const recognized = await recognizePdfFromFile(file.name, bytes);
         // Same perceivable minimum as the audio path (#336); same
         // newer-import-wins rule after it.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
+        sendBreadcrumb(importHoldBreadcrumb(performance.now() - shownAt));
+        outcome = "success";
         if (isCurrentImport()) {
           // OMR is approximate — always surface the "read from a scan" note.
           setScanNote({ lowContent: recognized.low_content });
@@ -256,6 +289,8 @@ export default function ScoreDropZone({
       } finally {
         unlisten?.();
         if (isCurrentImport()) setProgress(null);
+        else outcome = "superseded";
+        sendBreadcrumb(importClearedBreadcrumb(outcome));
       }
       return;
     }
@@ -293,7 +328,7 @@ export default function ScoreDropZone({
     setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
-    await handleFile(files[0]);
+    await handleFile(files[0], "drag-drop");
   };
 
   const handleBrowse = () => {
@@ -303,7 +338,7 @@ export default function ScoreDropZone({
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.currentTarget.files;
     if (!files || files.length === 0) return;
-    await handleFile(files[0]);
+    await handleFile(files[0], "file-picker");
   };
 
   // The honesty gate (#331): the verdict is classified in the Rust core;
