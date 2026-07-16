@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 import { confidenceDots } from "../lib/confidenceDots";
-import type { GrooveDescriptor, IntonationSummary } from "../types/brain";
+import type {
+  ChartEntry,
+  GrooveDescriptor,
+  IntonationSummary,
+} from "../types/brain";
 import { keyName } from "../types/brain";
 import ToneSummary from "./ToneSummary";
 
@@ -245,6 +249,71 @@ export default function SessionRecap() {
           </div>
         )}
 
+        {/* #349 T4a / #390: the jam's chord chart sketch — the label sequence
+          the room played, timestamped, with the same honesty cues as the lane.
+          Consecutive unresolved entries collapse into ONE muted span with the
+          stretch's duration, so a mumbly recording reads like a chart, not a
+          log; a session that resolved nothing gets one honest line instead. */}
+        {jamChart && jamChart.length > 0 && (
+          <div
+            className="rounded border border-gray-700 bg-gray-800/60 p-3"
+            data-testid="recap-chord-chart"
+          >
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-400">
+              What the room played
+            </h3>
+            {jamChart.some((e) => !e.unresolved) ? (
+              <ol className="flex flex-wrap gap-x-4 gap-y-1">
+                {chartRows(jamChart, recap.duration_secs).map((row, i) =>
+                  row.kind === "chord" ? (
+                    <li
+                      key={`${row.entry.at_secs}-${i}`}
+                      data-testid="chart-chord"
+                      className="flex items-baseline gap-1.5 text-sm"
+                    >
+                      <span className="font-mono text-[10px] text-gray-500">
+                        {formatChartTime(row.entry.at_secs)}
+                      </span>
+                      <span className="font-semibold text-gray-100">
+                        {row.entry.label}
+                        <span className="ml-1 text-[9px] tracking-widest text-gray-500">
+                          {confidenceDots(row.entry.confidence)}
+                        </span>
+                      </span>
+                    </li>
+                  ) : (
+                    <li
+                      key={`${row.atSecs}-${i}`}
+                      data-testid="chart-unresolved"
+                      className="flex items-baseline gap-1.5 text-sm"
+                    >
+                      <span className="font-mono text-[10px] text-gray-500">
+                        {formatChartTime(row.atSecs)}
+                      </span>
+                      <span className="italic text-gray-500">
+                        · · ·
+                        {row.durationSecs >= 1
+                          ? ` (${formatUnclearSpan(row.durationSecs)} unclear)`
+                          : ""}
+                      </span>
+                    </li>
+                  ),
+                )}
+              </ol>
+            ) : (
+              <p
+                className="text-sm italic text-gray-400"
+                data-testid="chart-all-unclear"
+              >
+                Mostly blended sound — nothing settled long enough to name.
+              </p>
+            )}
+            <p className="mt-2 text-[10px] text-gray-600">
+              Labels only — nothing was recorded or sent anywhere.
+            </p>
+          </div>
+        )}
+
         {/* Tone read-out (secondary to the coaching text above). Only shown
           when tone analysis produced a session aggregate. */}
         {!isEmptyState && fingerprint?.tone && (
@@ -344,50 +413,6 @@ export default function SessionRecap() {
           </div>
         )}
 
-        {/* #349 T4a: the jam's chord chart sketch — the label sequence the
-          room played, timestamped, with the same honesty cues as the lane
-          (confidence dots; unresolved stretches shown as such). */}
-        {jamChart && jamChart.length > 0 && (
-          <div
-            className="mt-4 rounded border border-gray-700 bg-gray-800/60 p-3"
-            data-testid="recap-chord-chart"
-          >
-            <p className="mb-2 text-sm font-medium text-gray-200">
-              What the room played
-            </p>
-            <ol className="flex flex-wrap gap-x-4 gap-y-1">
-              {jamChart.map((e, i) => (
-                <li
-                  key={`${e.at_secs}-${i}`}
-                  data-testid={
-                    e.unresolved ? "chart-unresolved" : "chart-chord"
-                  }
-                  className="flex items-baseline gap-1.5 text-sm"
-                >
-                  <span className="font-mono text-[10px] text-gray-500">
-                    {formatChartTime(e.at_secs)}
-                  </span>
-                  {e.unresolved ? (
-                    <span className="italic text-gray-400">
-                      several notes…
-                    </span>
-                  ) : (
-                    <span className="font-semibold text-gray-100">
-                      {e.label}
-                      <span className="ml-1 text-[9px] tracking-widest text-gray-500">
-                        {confidenceDots(e.confidence)}
-                      </span>
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ol>
-            <p className="mt-2 text-[10px] text-gray-600">
-              Labels only — nothing was recorded or sent anywhere.
-            </p>
-          </div>
-        )}
-
         <RecapActions onDone={returnToSelector} />
       </section>
     </RecapScreen>
@@ -399,6 +424,43 @@ function formatChartTime(secs: number): string {
   const m = Math.floor(secs / 60);
   const ss = Math.floor(secs % 60);
   return `${m}:${ss.toString().padStart(2, "0")}`;
+}
+
+type ChartRow =
+  | { kind: "chord"; entry: ChartEntry }
+  | { kind: "unclear"; atSecs: number; durationSecs: number };
+
+/**
+ * Collapse consecutive unresolved entries into one span (#390). A run's
+ * duration ends at the next labeled entry; a trailing run ends at session
+ * end (clamped so a short session clock can't produce a negative span).
+ */
+function chartRows(entries: ChartEntry[], sessionSecs: number): ChartRow[] {
+  const rows: ChartRow[] = [];
+  let i = 0;
+  while (i < entries.length) {
+    const e = entries[i];
+    if (!e.unresolved) {
+      rows.push({ kind: "chord", entry: e });
+      i += 1;
+      continue;
+    }
+    const start = e.at_secs;
+    while (i < entries.length && entries[i].unresolved) i += 1;
+    const end = i < entries.length ? entries[i].at_secs : sessionSecs;
+    rows.push({
+      kind: "unclear",
+      atSecs: start,
+      durationSecs: Math.max(0, end - start),
+    });
+  }
+  return rows;
+}
+
+/** Impressionistic duration for a collapsed unclear span: "45s" / "2m". */
+function formatUnclearSpan(secs: number): string {
+  const s = Math.max(1, Math.round(secs));
+  return s < 60 ? `${s}s` : `${Math.round(secs / 60)}m`;
 }
 
 
