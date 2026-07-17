@@ -1,3 +1,9 @@
+## [2.28.9](https://github.com/perice-pope/ai-music-companion/compare/v2.28.8...v2.28.9) (2026-07-17)
+
+### Bug Fixes
+
+* **brain:** retention hysteresis — a held chord's label must not decay with it ([#413](https://github.com/perice-pope/ai-music-companion/issues/413)) ([1e8311d](https://github.com/perice-pope/ai-music-companion/commit/1e8311dcb4ff002925379a9f01820f47f08fa97d)), closes [#382](https://github.com/perice-pope/ai-music-companion/issues/382) [#411](https://github.com/perice-pope/ai-music-companion/issues/411) [#412](https://github.com/perice-pope/ai-music-companion/issues/412)
+
 ## [2.28.8](https://github.com/perice-pope/ai-music-companion/compare/v2.28.7...v2.28.8) (2026-07-17)
 
 ### Bug Fixes
