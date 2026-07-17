@@ -169,11 +169,13 @@ const CHROMA_SILENCE_FLOOR: f32 = 0.1;
 /// 60% of max on legitimately held chords, and the veto was killing every
 /// candidate for a reading (her G7 flashing unrelated roots, C dropping
 /// out). Played wrong notes read ≥ ~85%; the veto now waits for those.
-/// HONESTY NOTE: no synthetic fixture discriminates 0.6 vs 0.75 (a
-/// sustained synthetic drone is a genuinely ambiguous sonority, and
-/// transient spikes are absorbed by the tracker dwell either way) — this
-/// value is pinned by the VA's field report only, until her recorded
-/// piano fixtures land and can pin it for real.
+/// HONESTY NOTE (round 3): the drone fixture
+/// (`c_triad_with_a_moderate_drone_never_drops`) pins the SCENARIO —
+/// with retention hysteresis in place, the tracker absorbs even a
+/// 0.6-veto's dropouts, so the exact constant is individually redundant
+/// (see the ensemble mutation note in the rich-piano suite). The value
+/// stays at 0.75 on the VA's field evidence; her recorded piano fixtures
+/// remain the eventual real pin.
 const STRONG_OUTSIDER_RATIO: f32 = 0.75;
 
 /// #382: an extension-class template tone (anything past root/3rd/5th in a
@@ -260,7 +262,18 @@ pub fn best_match_retentive(
 
     let mut best: Option<ChordMatch> = None;
     for root in 0u8..12 {
-        if chroma[usize::from(root)] < max_bin * ROOT_BIN_RATIO {
+        // #411 round 2 (review MF2): the ROOT bar also gets retention.
+        // Unison-string beating dips the root fundamental below the
+        // promotion bar on a held chord, which deleted the incumbent from
+        // candidacy entirely and elected its upper structure (Cmaj7→Em)
+        // or dropped the label. Promotion proved the root once; keeping
+        // the name only requires the root to stay AUDIBLE.
+        let root_bar = if incumbent.is_some_and(|(r, _)| r == root) {
+            ACTIVE_BIN_RATIO
+        } else {
+            ROOT_BIN_RATIO
+        };
+        if chroma[usize::from(root)] < max_bin * root_bar {
             continue;
         }
         'quality: for &q in ChordQuality::all() {

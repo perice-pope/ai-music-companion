@@ -155,6 +155,68 @@ fn single_e3_never_labels_a_chord() {
     assert_eq!(label, None, "a single rich E3 must not become a chord");
 }
 
+/// Review MF2 pins: LONG holds. Unison beating dips the root fundamental
+/// on real strings; the incumbent must survive the dips for the whole
+/// hold (the stability helper turns any rename or dropout red).
+#[test]
+fn held_cmaj7_stays_cmaj7_for_eight_seconds() {
+    let label = settled_label(&rich_render(&[60, 64, 67, 71], 8.0));
+    assert_eq!(label.as_deref(), Some("Cmaj7"));
+}
+
+/// Her verbatim "C … dropped" (#411): a plain held triad must never
+/// drop out mid-hold.
+#[test]
+fn held_c_triad_never_drops_over_eight_seconds() {
+    let label = settled_label(&rich_render(&[60, 64, 67], 8.0));
+    assert_eq!(label.as_deref(), Some("C"));
+}
+
+/// Review MF1 pins: enharmonic rotations are ONE sound. Cm7b5 ≡ Ebm6 and
+/// Cdim7 ≡ Adim7 share pitch-class sets; the label must pick one name and
+/// keep it for the whole hold.
+#[test]
+fn held_half_diminished_keeps_one_name() {
+    let label = settled_label(&rich_render(&[60, 63, 66, 70], 8.0));
+    assert!(
+        matches!(label.as_deref(), Some("Cm7b5") | Some("Ebm6")),
+        "one stable name for the half-diminished sound, got {label:?}"
+    );
+}
+
+#[test]
+fn held_diminished_seventh_keeps_one_name() {
+    let label = settled_label(&rich_render(&[60, 63, 66, 69], 8.0));
+    assert!(
+        matches!(
+            label.as_deref(),
+            Some("Cdim7") | Some("Ebdim7") | Some("Gbdim7") | Some("Adim7")
+        ),
+        "one stable name for the diminished-seventh sound, got {label:?}"
+    );
+}
+
+/// Review MF3: the veto pin the round-2 review constructed (refuting the
+/// 'unpinnable' claim). A moderate room drone on a non-chord pitch class
+/// (F# at ~0.71 of max — below where the sonority genuinely flips, which
+/// their probe places at ≥0.80) must not veto the label into a dropout.
+/// At the old STRONG_OUTSIDER_RATIO of 0.6 this goes red with a mid-take
+/// drop — her exact #411 symptom.
+#[test]
+fn c_triad_with_a_moderate_drone_never_drops() {
+    let mut audio = rich_render(&[60, 64, 67], 3.0);
+    let w = std::f32::consts::TAU * midi_freq(66) / SR as f32;
+    for (i, o) in audio.iter_mut().enumerate() {
+        *o += 0.22 * (w * i as f32).sin();
+    }
+    let label = settled_label(&audio);
+    assert_eq!(
+        label.as_deref(),
+        Some("C"),
+        "a moderate non-chord drone must not veto the true label"
+    );
+}
+
 /// Retention must not become a lie: when the player LIFTS the seventh and
 /// keeps the triad ringing, the label has to follow reality down to "G".
 /// (The stability helper forbids churn, so this test tracks the final

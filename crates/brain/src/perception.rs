@@ -282,6 +282,32 @@ fn same_chord(a: &ChordMatch, b: &ChordMatch) -> bool {
     a.root_pc == b.root_pc && a.quality == b.quality
 }
 
+/// The chord's pitch-class set as a 12-bit mask.
+fn pc_mask(root: u8, quality: theory::ChordQuality) -> u16 {
+    quality
+        .intervals()
+        .iter()
+        .fold(0u16, |m, &iv| m | (1 << ((root + iv) % 12)))
+}
+
+/// #411 round 2 (review MF1): an ENHARMONIC ROTATION of the incumbent —
+/// identical pitch-class set under a different root name (Cm7b5 ≡ Ebm6,
+/// Cdim7 ≡ Adim7) — carries zero new information about what's sounding;
+/// renaming on one is pure churn. Treated as the same chord.
+fn enharmonic_rotation(a: &ChordMatch, b: &ChordMatch) -> bool {
+    pc_mask(a.root_pc, a.quality) == pc_mask(b.root_pc, b.quality)
+}
+
+/// #411 round 2 (review MF1/MF2): a challenger whose pitch classes are a
+/// SUBSET of the incumbent's (Em ⊂ Cmaj7, G ⊂ G7) is what a beating dip
+/// looks like, not what a player's change looks like — it gets the slow
+/// requalify dwell so a sub-second dip can't rename the chord.
+fn subset_of(challenger: &ChordMatch, incumbent: &ChordMatch) -> bool {
+    let c = pc_mask(challenger.root_pc, challenger.quality);
+    let i = pc_mask(incumbent.root_pc, incumbent.quality);
+    c & i == c
+}
+
 impl ChordTracker {
     fn observe(&mut self, chroma: &[f32; 12], bass_pc: Option<u8>) {
         // #411 retention hysteresis: the incumbent's extensions only need
@@ -313,6 +339,15 @@ impl ChordTracker {
         };
         self.none_count = 0;
         if let Some(cur) = &mut self.current {
+            // An enharmonic rotation of the incumbent is the same sound —
+            // refresh the incumbent's confidence, never rename (MF1). The
+            // incumbent's spelling stays; the rotation's confidence rides.
+            if enharmonic_rotation(cur, &m) && !same_chord(cur, &m) {
+                cur.confidence = m.confidence;
+                self.candidate = None;
+                self.candidate_count = 0;
+                return;
+            }
             if same_chord(cur, &m) {
                 // Same chord: refresh confidence from the freshest reading
                 // and stand any identity challenger down. The SLASH only
@@ -349,7 +384,10 @@ impl ChordTracker {
         // #382 dwell asymmetry: same-root quality churn (decoration flicker)
         // must sustain twice as long as a real root change before it can
         // rename the label.
-        let dwell = if self.current.is_some_and(|cur| cur.root_pc == m.root_pc) {
+        let dwell = if self
+            .current
+            .is_some_and(|cur| cur.root_pc == m.root_pc || subset_of(&m, &cur))
+        {
             CHORD_REQUALIFY_READINGS
         } else {
             CHORD_PROMOTE_READINGS
