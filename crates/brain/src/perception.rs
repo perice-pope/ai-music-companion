@@ -219,8 +219,28 @@ impl PerceptionSnapshot {
 /// (~300 ms at the ~10 Hz chroma cadence) — the anti-flap dwell, mirroring
 /// [`KeyTracker`]'s per-note dwell.
 const CHORD_PROMOTE_READINGS: u8 = 3;
+/// #382 direction 3 (dwell asymmetry): a SAME-root challenger — C↔Cmaj7↔
+/// Cmaj9 decoration churn — needs twice the dwell of a root change. On a
+/// real piano the extension bins hover at the matcher's evidence bar and
+/// cross it for 300 ms at a time (the VA's 2026-07-17 "never locked"
+/// regression); a genuinely re-voiced quality sustains, threshold flicker
+/// doesn't. A root change is a real harmonic move and keeps the fast dwell.
+const CHORD_REQUALIFY_READINGS: u8 = 6;
 /// Consecutive no-chord readings before the shown label clears.
 const CHORD_CLEAR_READINGS: u8 = 3;
+/// No-match readings that still hear ≥ [`theory::MIN_CHORD_BINS`] pitch
+/// classes (ambiguity, not silence) clear the shown label this much more
+/// slowly: mid-hold the matcher transiently refuses as residue crosses its
+/// thresholds, and dropping to "hearing several notes…" for those readings
+/// is the label dropout the VA flagged (#411). True silence keeps the fast
+/// clear — a stale chord never outlives the sound.
+const CHORD_CLEAR_AMBIGUOUS_READINGS: u8 = 8;
+/// Consecutive same-identity readings that must agree on a DIFFERENT slash
+/// before the shown one changes. The slash rides the bass detectors, which
+/// flicker between chord tones on a held chord (left-hand C3/E3 alternation
+/// reads "C"↔"C/E" per reading); identity dwell can't help because the
+/// slash is deliberately outside the identity.
+const CHORD_SLASH_READINGS: u8 = 3;
 /// How close a challenger's confidence must come to the incumbent's for a
 /// switch (it may be slightly lower — the incumbent's number can be stale).
 const CHORD_SWITCH_MARGIN: f32 = 0.05;
@@ -235,14 +255,19 @@ const BASS_MAX_HZ: f64 = 220.0;
 
 /// Anti-flap hysteresis over raw chord matches: a new identity must win
 /// [`CHORD_PROMOTE_READINGS`] consecutive readings (and roughly match the
-/// incumbent's confidence) before the label changes, so a passing tone
-/// can't rename the chord for a frame.
+/// incumbent's confidence) before the label changes — twice that when it
+/// shares the incumbent's root ([`CHORD_REQUALIFY_READINGS`]) — so a
+/// passing tone or a hovering extension bin can't rename the chord for a
+/// frame. Slash changes and ambiguous dropouts dwell separately.
 #[derive(Debug, Default)]
 struct ChordTracker {
     current: Option<ChordMatch>,
     candidate: Option<ChordMatch>,
     candidate_count: u8,
     none_count: u8,
+    /// Pending slash change on the CURRENT identity: the challenger slash
+    /// (`None` = drop it) and its consecutive-agreement streak.
+    slash_candidate: Option<(Option<u8>, u8)>,
     /// Last reading heard ≥3 pitch classes but matched nothing confidently.
     unresolved: bool,
 }
@@ -264,18 +289,43 @@ impl ChordTracker {
             self.candidate = None;
             self.candidate_count = 0;
             self.none_count = self.none_count.saturating_add(1);
-            if self.none_count >= CHORD_CLEAR_READINGS {
+            // Ambiguity (still hearing a chord's worth of notes) holds the
+            // label much longer than silence — see the constants.
+            let clear_after = if self.unresolved {
+                CHORD_CLEAR_AMBIGUOUS_READINGS
+            } else {
+                CHORD_CLEAR_READINGS
+            };
+            if self.none_count >= clear_after {
                 self.current = None;
+                self.slash_candidate = None;
             }
             return;
         };
         self.none_count = 0;
         if let Some(cur) = &mut self.current {
             if same_chord(cur, &m) {
-                // Same chord: refresh confidence AND the slash from the
-                // freshest reading (its bass already passed the register +
-                // freshness gates), and reset any challenger's dwell.
-                *cur = m;
+                // Same chord: refresh confidence from the freshest reading
+                // and stand any identity challenger down. The SLASH only
+                // follows after CHORD_SLASH_READINGS consecutive agreeing
+                // readings — the bass detectors flicker between chord tones
+                // on one held chord, and the slash must not ride that.
+                if m.bass_pc == cur.bass_pc {
+                    self.slash_candidate = None;
+                    *cur = m;
+                } else {
+                    let streak = match self.slash_candidate {
+                        Some((b, n)) if b == m.bass_pc => n.saturating_add(1),
+                        _ => 1,
+                    };
+                    if streak >= CHORD_SLASH_READINGS {
+                        self.slash_candidate = None;
+                        *cur = m;
+                    } else {
+                        self.slash_candidate = Some((m.bass_pc, streak));
+                        cur.confidence = m.confidence;
+                    }
+                }
                 self.candidate = None;
                 self.candidate_count = 0;
                 return;
@@ -284,6 +334,14 @@ impl ChordTracker {
         let near_incumbent = self
             .current
             .is_none_or(|cur| m.confidence + CHORD_SWITCH_MARGIN >= cur.confidence);
+        // #382 dwell asymmetry: same-root quality churn (decoration flicker)
+        // must sustain twice as long as a real root change before it can
+        // rename the label.
+        let dwell = if self.current.is_some_and(|cur| cur.root_pc == m.root_pc) {
+            CHORD_REQUALIFY_READINGS
+        } else {
+            CHORD_PROMOTE_READINGS
+        };
         match &self.candidate {
             Some(c) if same_chord(c, &m) => {
                 self.candidate = Some(m);
@@ -292,11 +350,12 @@ impl ChordTracker {
                 // check only gates the *fast* switch — twice the dwell of
                 // consistent disagreement wins regardless, because the
                 // incumbent's stale confidence must not pin a wrong label.
-                if self.candidate_count >= CHORD_PROMOTE_READINGS && near_incumbent
-                    || self.candidate_count >= 2 * CHORD_PROMOTE_READINGS
+                if self.candidate_count >= dwell && near_incumbent
+                    || self.candidate_count >= 2 * dwell
                 {
                     self.current = self.candidate.take();
                     self.candidate_count = 0;
+                    self.slash_candidate = None;
                 }
             }
             _ => {
@@ -1252,6 +1311,153 @@ mod tests {
             "consistent disagreement must eventually win (stale conf {})",
             first.confidence
         );
+    }
+
+    /// #382 direction 3 / VA #411 ("C → Cmaj7 → C/E → dropped, never
+    /// locked"): same-root decoration flicker — the extension bin hovering
+    /// at the matcher's evidence bar, crossing it for a few readings at a
+    /// time — must never rename the label. Fails if the same-root dwell
+    /// drops back to the root-change dwell (bursts of 3 then rename).
+    #[test]
+    fn same_root_decoration_flicker_never_renames_the_label() {
+        let mut p = PerceptionTracker::new();
+        let c = chroma_of(&[0, 4, 7]);
+        let cmaj7 = chroma_of(&[0, 4, 7, 11]);
+        for i in 0..4 {
+            p.observe_chroma(&c, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        // Residue hovering: Cmaj7 reads in bursts of 3 (a whole dwell of the
+        // old rule), broken by one honest C reading — over and over.
+        for burst in 0..5 {
+            let t0 = 0.5 + burst as f64 * 0.4;
+            for i in 0..3 {
+                p.observe_chroma(&cmaj7, t0 + i as f64 * 0.1);
+                assert_eq!(
+                    p.snapshot(t0 + i as f64 * 0.1).chord.expect("shown").label,
+                    "C",
+                    "decoration burst {burst} reading {i} must not rename"
+                );
+            }
+            p.observe_chroma(&c, t0 + 0.3);
+        }
+    }
+
+    /// The counterpart: a genuinely re-voiced quality on the same root DOES
+    /// rename once it sustains the (longer) requalify dwell — asymmetry
+    /// must not make same-root changes impossible.
+    #[test]
+    fn a_sustained_same_root_requalification_still_renames() {
+        let mut p = PerceptionTracker::new();
+        let c = chroma_of(&[0, 4, 7]);
+        let cmaj7 = chroma_of(&[0, 4, 7, 11]);
+        for i in 0..4 {
+            p.observe_chroma(&c, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        for i in 0..6 {
+            p.observe_chroma(&cmaj7, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(1.1).chord.expect("shown").label,
+            "Cmaj7",
+            "a sustained requalification must still win"
+        );
+    }
+
+    /// VA #411 ("C → … → C/E" on a root-position chord): a slash change on
+    /// the held identity needs its own dwell — one fresh bass reading must
+    /// not instantly re-label. Fails if the slash refreshes per reading.
+    #[test]
+    fn a_slash_change_needs_its_own_dwell() {
+        let mut p = PerceptionTracker::new();
+        let c_major = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_major, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        // The poly engine now hears a true E2 under the still-ringing chord.
+        p.observe_poly_bass(40, 0.45);
+        for i in 0..2 {
+            p.observe_chroma(&c_major, 0.5 + i as f64 * 0.1);
+            assert_eq!(
+                p.snapshot(0.5 + i as f64 * 0.1).chord.expect("shown").label,
+                "C",
+                "slash reading {i} is below the dwell"
+            );
+        }
+        p.observe_chroma(&c_major, 0.7);
+        assert_eq!(
+            p.snapshot(0.7).chord.expect("shown").label,
+            "C/E",
+            "a sustained slash change must land"
+        );
+    }
+
+    /// Bass-detector flicker between chord tones (left hand alternating
+    /// C2/E2 on one held C chord) must never churn the label. Fails if the
+    /// slash follows each reading's bass.
+    #[test]
+    fn bass_flicker_between_chord_tones_never_churns_the_slash() {
+        let mut p = PerceptionTracker::new();
+        let c_major = chroma_of(&[0, 4, 7]);
+        let mut t = 0.0;
+        for i in 0..4 {
+            // E2 on even readings, C2 on odd — per-reading alternation.
+            p.observe_poly_bass(if i % 2 == 0 { 40 } else { 36 }, t);
+            p.observe_chroma(&c_major, t);
+            t += 0.1;
+        }
+        let shown = p.snapshot(t).chord.expect("shown").label;
+        for i in 0..10 {
+            p.observe_poly_bass(if i % 2 == 0 { 40 } else { 36 }, t);
+            p.observe_chroma(&c_major, t);
+            assert_eq!(
+                p.snapshot(t).chord.expect("still shown").label,
+                shown,
+                "bass alternation reading {i} churned the label"
+            );
+            t += 0.1;
+        }
+    }
+
+    /// VA #411 ("…then dropped to 'hearing several notes…'"): no-match
+    /// readings that still hear a chord's worth of notes are ambiguity, not
+    /// silence — the shown label must survive a transient refusal streak
+    /// and only clear once the ambiguity sustains. Fails if the ambiguous
+    /// clear dwell collapses to the silence one.
+    #[test]
+    fn transient_ambiguity_does_not_drop_the_label_but_sustained_does() {
+        let mut p = PerceptionTracker::new();
+        let g7 = chroma_of(&[7, 11, 2, 5]);
+        let cluster = chroma_of(&[0, 1, 2, 3, 5, 6, 8, 9, 10, 11]);
+        for i in 0..4 {
+            p.observe_chroma(&g7, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "G7");
+        // Five unresolved readings — past the silence dwell, below the
+        // ambiguous one: the label holds.
+        for i in 0..5 {
+            p.observe_chroma(&cluster, 0.5 + i as f64 * 0.1);
+            assert_eq!(
+                p.snapshot(0.5 + i as f64 * 0.1)
+                    .chord
+                    .expect("held through ambiguity")
+                    .label,
+                "G7",
+                "ambiguous reading {i} must not drop the label"
+            );
+        }
+        // Sustained ambiguity is a real change of material: it clears.
+        for i in 5..8 {
+            p.observe_chroma(&cluster, 0.5 + i as f64 * 0.1);
+        }
+        let s = p.snapshot(1.3);
+        assert!(
+            s.chord.is_none(),
+            "sustained ambiguity must clear the label"
+        );
+        assert!(s.hearing_polyphony, "and report the honest state");
     }
 
     /// #349 wire contract: the new snapshot fields are ADDITIVE — a payload
