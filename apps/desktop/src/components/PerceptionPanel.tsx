@@ -14,8 +14,26 @@ const KEY_CONFIDENCE_THRESHOLD = 0.55;
  *
  * Also carries a quiet speakers tip: Bluetooth output drops the band out while
  * the mic is live (a confirmed gotcha), so built-in/wired is most reliable.
+ *
+ * Chord surfaces gate on the instrument's polyphonic capability (#392): a
+ * singer can't produce a chord, so on mono instruments the chord label and
+ * "hearing several notes…" are room noise, never perception. Room listening
+ * lifts the gate — there the ROOM is the signal, on any instrument.
  */
-export default function PerceptionPanel() {
+export default function PerceptionPanel({
+  instrumentPolyphonic,
+  roomListening,
+}: {
+  /** From the active instrument's `InstrumentInfo` (profile attack type). */
+  instrumentPolyphonic: boolean;
+  /**
+   * "Listen to the room" is ON and the jam lane is actually the stage.
+   * The session computes this — the raw store flag survives into lesson /
+   * explore / score views where the mic is back on the player, and there
+   * the gate must hold (the reviewer's two-click repro on #392).
+   */
+  roomListening: boolean;
+}) {
   const status = usePracticeStore((s) => s.status);
   const perception = usePracticeStore((s) => s.perception);
   const keyPinned = usePracticeStore((s) => s.keyPinned);
@@ -32,8 +50,11 @@ export default function PerceptionPanel() {
   const tempo = perception?.tempo_bpm ?? null;
   const locked = perception?.locked ?? false;
   const key = perception?.key ?? null;
-  const chord = perception?.chord ?? null;
-  const hearingPolyphony = perception?.hearing_polyphony ?? false;
+  const chordCapable = instrumentPolyphonic || roomListening;
+  const chord = chordCapable ? (perception?.chord ?? null) : null;
+  const hearingPolyphony = chordCapable
+    ? (perception?.hearing_polyphony ?? false)
+    : false;
 
   const tempoText =
     tempo == null

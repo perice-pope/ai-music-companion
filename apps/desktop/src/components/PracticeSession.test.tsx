@@ -24,9 +24,33 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const TEST_INSTRUMENTS: InstrumentInfo[] = [
-  { name: "Trumpet", family: "Brass", freqMinHz: 165, freqMaxHz: 1047, vibratoToleranceCents: 20, emoji: "\uD83C\uDFBA" },
-  { name: "Piano", family: "Keyboard", freqMinHz: 28, freqMaxHz: 4186, vibratoToleranceCents: 10, emoji: "\uD83C\uDFB9" },
-  { name: "Violin", family: "Strings", freqMinHz: 196, freqMaxHz: 3136, vibratoToleranceCents: 30, emoji: "\uD83C\uDFBB" },
+  {
+    name: "Trumpet",
+    family: "Brass",
+    freqMinHz: 165,
+    freqMaxHz: 1047,
+    vibratoToleranceCents: 20,
+    emoji: "\uD83C\uDFBA",
+    polyphonic: false,
+  },
+  {
+    name: "Piano",
+    family: "Keyboard",
+    freqMinHz: 28,
+    freqMaxHz: 4186,
+    vibratoToleranceCents: 10,
+    emoji: "\uD83C\uDFB9",
+    polyphonic: true,
+  },
+  {
+    name: "Violin",
+    family: "Strings",
+    freqMinHz: 196,
+    freqMaxHz: 3136,
+    vibratoToleranceCents: 30,
+    emoji: "\uD83C\uDFBB",
+    polyphonic: false,
+  },
 ];
 
 function seedListeningSession() {
@@ -34,6 +58,8 @@ function seedListeningSession() {
     screen: "session",
     status: "listening",
     sessionId: "sid",
+    perception: null,
+    listenToRoom: false,
     instrumentName: "Trumpet",
     segmentId: null,
     startedAtMs: Date.now(),
@@ -81,6 +107,83 @@ describe("PracticeSession", () => {
     expect(btn.textContent).toContain("Trumpet");
   });
 
+  // #392: the session plumbs the ACTIVE instrument's polyphonic capability
+  // into the perception strip — a Trumpet session gates the chord surfaces,
+  // a Piano session keeps them. Pins the wiring, not just the panel logic.
+  it("gates the strip's chord surfaces by the active instrument's capability", async () => {
+    usePracticeStore.setState({
+      perception: {
+        tempo_bpm: 92,
+        swing_ratio: null,
+        locked: true,
+        key: null,
+        chord: { root_pc: 0, label: "Cmaj7", bass_pc: null, confidence: 0.8 },
+      },
+    });
+    render(<PracticeSession />);
+    // Once the catalog resolves, Trumpet (mono) must suppress the label.
+    await vi.waitFor(() => {
+      expect(screen.queryByTestId("perception-chord")).toBeNull();
+    });
+
+    cleanup();
+    usePracticeStore.setState({ instrumentName: "Piano" });
+    render(<PracticeSession />);
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("perception-chord")).toHaveTextContent("Cmaj7");
+    });
+  });
+
+  // #392 review must-fix: `listenToRoom` survives into views where the jam
+  // lane is off stage (the toggle unmounts with the free-play branch, and
+  // starting a lesson doesn't clear the flag). There the mic is back on the
+  // player, so the room exemption must NOT hold.
+  it("a lesson suspends the room exemption — no chord surfaces on a mono instrument mid-drill", async () => {
+    usePracticeStore.setState({
+      listenToRoom: true,
+      lessonDrill: LESSON_DRILL,
+      perception: {
+        tempo_bpm: 92,
+        swing_ratio: null,
+        locked: true,
+        key: null,
+        chord: { root_pc: 0, label: "Cmaj7", bass_pc: null, confidence: 0.8 },
+        hearing_polyphony: true,
+      },
+    });
+    render(<PracticeSession />);
+    // Trumpet + lesson: gated even though the room flag is still set. The
+    // fail-open pre-catalog window shows the chord briefly, so wait for the
+    // catalog-resolved suppression rather than a vacuous instant pass.
+    await vi.waitFor(() => {
+      expect(screen.queryByTestId("perception-chord")).toBeNull();
+    });
+    expect(screen.queryByTestId("perception-polyphony")).toBeNull();
+  });
+
+  // #392: the fail-open default is deliberate — an instrument the catalog
+  // can't resolve must NOT lose chord surfaces (suppressing on Piano would
+  // be a feature loss; the gate exists to stop mono noise).
+  it("fails open when the active instrument is missing from the catalog", async () => {
+    usePracticeStore.setState({
+      instrumentName: "Theremin Choir",
+      perception: {
+        tempo_bpm: 92,
+        swing_ratio: null,
+        locked: true,
+        key: null,
+        chord: { root_pc: 0, label: "Cmaj7", bass_pc: null, confidence: 0.8 },
+      },
+    });
+    render(<PracticeSession />);
+    // The chord is visible pre-catalog too (fail-open window), so anchor
+    // the assertion on a signal that only exists AFTER the catalog applied:
+    // the switch menu's options render from the resolved list.
+    fireEvent.click(screen.getByTestId("instrument-switch-button"));
+    await screen.findByTestId("instrument-switch-option-piano");
+    expect(screen.getByTestId("perception-chord")).toHaveTextContent("Cmaj7");
+  });
+
   it("toggles the instrument-switch menu on click", async () => {
     render(<PracticeSession />);
     // Let the `list_instruments` effect resolve so the menu can render.
@@ -108,7 +211,9 @@ describe("PracticeSession", () => {
       expect(mockInvoke).toHaveBeenCalledWith("list_instruments");
     });
     fireEvent.click(screen.getByTestId("instrument-switch-button"));
-    fireEvent.click(await screen.findByTestId("instrument-switch-option-piano"));
+    fireEvent.click(
+      await screen.findByTestId("instrument-switch-option-piano"),
+    );
 
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("switch_instrument", {
@@ -241,7 +346,12 @@ describe("PracticeSession", () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
       if (cmd === "start_lesson")
-        return Promise.resolve({ seed: 1, score: null, drill: LESSON_DRILL, recap: null });
+        return Promise.resolve({
+          seed: 1,
+          score: null,
+          drill: LESSON_DRILL,
+          recap: null,
+        });
       return Promise.reject(new Error(`no mock configured for "${cmd}"`));
     });
     render(<PracticeSession />);
@@ -356,9 +466,7 @@ describe("PracticeSession", () => {
       lessonDrill: null,
     });
     render(<PracticeSession />);
-    expect(
-      screen.getByTestId(/reveal-card/).closest("div.hidden"),
-    ).toBeNull();
+    expect(screen.getByTestId(/reveal-card/).closest("div.hidden")).toBeNull();
   });
 
   // #349 T4a: the "Listen to the room" toggle swaps the free-play

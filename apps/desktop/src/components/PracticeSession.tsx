@@ -217,7 +217,20 @@ export default function PracticeSession() {
         </div>
       </header>
 
-      <PerceptionPanel />
+      {/* #392: chord surfaces gate on the instrument's capability. Until the
+          catalog resolves (or on an unknown name) fail OPEN — suppressing on
+          Piano would be a feature loss; the gate exists to stop mono noise.
+          The room exemption holds only while the jam lane is the stage: a
+          lesson/explore/score view puts the mic back on the player, and a
+          still-set room flag must not keep the noise surfaces alive. */}
+      <PerceptionPanel
+        instrumentPolyphonic={
+          instruments.find((i) => i.name === instrumentName)?.polyphonic ?? true
+        }
+        roomListening={
+          listenToRoom && !lessonActive && !exploreActive && !activeScoreXml
+        }
+      />
 
       {lessonActive ? (
         // Guided lesson (#254): the drill's sheet music takes the stage.

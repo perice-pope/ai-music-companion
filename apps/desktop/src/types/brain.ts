@@ -560,6 +560,13 @@ export interface InstrumentInfo {
   freqMaxHz: number;
   vibratoToleranceCents: number;
   emoji: string;
+  /**
+   * The instrument can sound simultaneous notes (derived in Rust from the
+   * profile's struck/plucked attack — piano, guitar). Mono instruments gate
+   * the chord-label/polyphony surfaces off: a singer can't produce a chord,
+   * so "hearing several notes…" on Voice is room noise, not perception (#392).
+   */
+  polyphonic: boolean;
 }
 
 /** Payload of the `session-status` Tauri event. */
