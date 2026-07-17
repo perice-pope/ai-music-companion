@@ -204,7 +204,10 @@ fn held_diminished_seventh_keeps_one_name() {
 /// drop — her exact #411 symptom.
 #[test]
 fn c_triad_with_a_moderate_drone_never_drops() {
-    let mut audio = rich_render(&[60, 64, 67], 3.0);
+    // 4.0 s, deliberately: under the old 0.6 veto the dropout begins at
+    // ~3.1 s — a 3.0 s render ended just before it and pinned nothing
+    // (round-3 review must-fix 1, verified in both directions).
+    let mut audio = rich_render(&[60, 64, 67], 4.0);
     let w = std::f32::consts::TAU * midi_freq(66) / SR as f32;
     for (i, o) in audio.iter_mut().enumerate() {
         *o += 0.22 * (w * i as f32).sin();

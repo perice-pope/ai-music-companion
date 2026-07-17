@@ -169,13 +169,10 @@ const CHROMA_SILENCE_FLOOR: f32 = 0.1;
 /// 60% of max on legitimately held chords, and the veto was killing every
 /// candidate for a reading (her G7 flashing unrelated roots, C dropping
 /// out). Played wrong notes read ≥ ~85%; the veto now waits for those.
-/// HONESTY NOTE (round 3): the drone fixture
-/// (`c_triad_with_a_moderate_drone_never_drops`) pins the SCENARIO —
-/// with retention hysteresis in place, the tracker absorbs even a
-/// 0.6-veto's dropouts, so the exact constant is individually redundant
-/// (see the ensemble mutation note in the rich-piano suite). The value
-/// stays at 0.75 on the VA's field evidence; her recorded piano fixtures
-/// remain the eventual real pin.
+/// PINNED (round 3): `c_triad_with_a_moderate_drone_never_drops` (4 s)
+/// goes red at 0.6 and green at 0.75 — the constant is individually
+/// pinned. Her recorded piano fixtures remain the eventual real-world
+/// calibration.
 const STRONG_OUTSIDER_RATIO: f32 = 0.75;
 
 /// #382: an extension-class template tone (anything past root/3rd/5th in a

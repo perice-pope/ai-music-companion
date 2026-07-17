@@ -301,7 +301,10 @@ fn enharmonic_rotation(a: &ChordMatch, b: &ChordMatch) -> bool {
 /// #411 round 2 (review MF1/MF2): a challenger whose pitch classes are a
 /// SUBSET of the incumbent's (Em ⊂ Cmaj7, G ⊂ G7) is what a beating dip
 /// looks like, not what a player's change looks like — it gets the slow
-/// requalify dwell so a sub-second dip can't rename the chord.
+/// requalify dwell so a sub-second dip can't rename the chord. (Honest
+/// subset transitions — actually lifting the 7th — pay ~0.8 s of extra
+/// latency for this; `releasing_the_seventh_releases_the_label` bounds
+/// it.)
 fn subset_of(challenger: &ChordMatch, incumbent: &ChordMatch) -> bool {
     let c = pc_mask(challenger.root_pc, challenger.quality);
     let i = pc_mask(incumbent.root_pc, incumbent.quality);
@@ -346,6 +349,9 @@ impl ChordTracker {
                 cur.confidence = m.confidence;
                 self.candidate = None;
                 self.candidate_count = 0;
+                // Rotation readings deliberately leave the slash streak
+                // untouched (neither advance nor reset): they're rare
+                // beat-dip artifacts, not bass opinions (round-3 review).
                 return;
             }
             if same_chord(cur, &m) {
