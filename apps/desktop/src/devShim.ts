@@ -32,6 +32,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 155,
     freqMaxHz: 988,
     emoji: "🎺",
+    polyphonic: false,
   },
   // Trombone deliberately NOT 🎺 — that's a trumpet, not a trombone.
   // Unicode has no dedicated trombone glyph; 🎶 is a neutral fallback
@@ -43,6 +44,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 58,
     freqMaxHz: 587,
     emoji: "🎶",
+    polyphonic: false,
   },
   {
     name: "French Horn",
@@ -50,6 +52,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 87,
     freqMaxHz: 880,
     emoji: "📯",
+    polyphonic: false,
   },
   {
     name: "Voice",
@@ -57,6 +60,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 82,
     freqMaxHz: 1047,
     emoji: "🎤",
+    polyphonic: false,
   },
   {
     name: "Violin",
@@ -64,6 +68,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 196,
     freqMaxHz: 2637,
     emoji: "🎻",
+    polyphonic: false,
   },
   {
     name: "Cello",
@@ -71,6 +76,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 65,
     freqMaxHz: 988,
     emoji: "🎻",
+    polyphonic: false,
   },
   {
     name: "Flute",
@@ -78,6 +84,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 262,
     freqMaxHz: 2093,
     emoji: "🪈",
+    polyphonic: false,
   },
   {
     name: "Clarinet",
@@ -85,6 +92,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 147,
     freqMaxHz: 1568,
     emoji: "🎷",
+    polyphonic: false,
   },
   {
     name: "Piano",
@@ -92,6 +100,7 @@ const MOCK_INSTRUMENTS = [
     freqMinHz: 27,
     freqMaxHz: 4186,
     emoji: "🎹",
+    polyphonic: true,
   },
 ];
 

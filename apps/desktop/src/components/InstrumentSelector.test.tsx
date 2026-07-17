@@ -19,6 +19,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 1047,
     vibratoToleranceCents: 20,
     emoji: "\uD83C\uDFBA",
+    polyphonic: false,
   },
   {
     name: "Trombone",
@@ -27,6 +28,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 587,
     vibratoToleranceCents: 20,
     emoji: "\uD83C\uDFB5",
+    polyphonic: false,
   },
   {
     name: "French Horn",
@@ -35,6 +37,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 880,
     vibratoToleranceCents: 20,
     emoji: "\uD83D\uDCEF",
+    polyphonic: false,
   },
   {
     name: "Violin",
@@ -43,6 +46,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 3136,
     vibratoToleranceCents: 30,
     emoji: "\uD83C\uDFBB",
+    polyphonic: false,
   },
   {
     name: "Cello",
@@ -51,6 +55,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 988,
     vibratoToleranceCents: 30,
     emoji: "\uD83C\uDFB6",
+    polyphonic: false,
   },
   {
     name: "Flute",
@@ -59,6 +64,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 2093,
     vibratoToleranceCents: 20,
     emoji: "\uD83C\uDFB6",
+    polyphonic: false,
   },
   {
     name: "Clarinet",
@@ -67,6 +73,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 1568,
     vibratoToleranceCents: 20,
     emoji: "\uD83C\uDFB5",
+    polyphonic: false,
   },
   {
     name: "Voice",
@@ -75,6 +82,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 1047,
     vibratoToleranceCents: 35,
     emoji: "\uD83C\uDFA4",
+    polyphonic: false,
   },
   {
     name: "Piano",
@@ -83,6 +91,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
     freqMaxHz: 4186,
     vibratoToleranceCents: 10,
     emoji: "\uD83C\uDFB9",
+    polyphonic: true,
   },
 ];
 
