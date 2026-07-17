@@ -198,7 +198,9 @@ pub struct PerceptionSnapshot {
     pub chord: Option<ChordReading>,
     /// True when several notes are clearly sounding but no chord in the
     /// vocabulary fits confidently — the honest "hearing several notes…"
-    /// state (#349 §5.3): we say that rather than guess a name.
+    /// state (#349 §5.3): we say that rather than guess a name. May briefly
+    /// coexist with a still-shown `chord` while its ambiguous-clear dwell
+    /// runs; consumers show the chord first.
     #[serde(default)]
     pub hearing_polyphony: bool,
 }
@@ -288,6 +290,10 @@ impl ChordTracker {
         let Some(m) = matched else {
             self.candidate = None;
             self.candidate_count = 0;
+            // A no-match reading breaks the slash streak too — the dwell
+            // counts CONSECUTIVE same-identity readings, or three bass
+            // opinions scattered across a mush stretch would still move it.
+            self.slash_candidate = None;
             self.none_count = self.none_count.saturating_add(1);
             // Ambiguity (still hearing a chord's worth of notes) holds the
             // label much longer than silence — see the constants.
@@ -298,7 +304,6 @@ impl ChordTracker {
             };
             if self.none_count >= clear_after {
                 self.current = None;
-                self.slash_candidate = None;
             }
             return;
         };
@@ -331,6 +336,9 @@ impl ChordTracker {
                 return;
             }
         }
+        // A different-identity reading also breaks the slash streak (same
+        // consecutiveness rule as the no-match branch above).
+        self.slash_candidate = None;
         let near_incumbent = self
             .current
             .is_none_or(|cur| m.confidence + CHORD_SWITCH_MARGIN >= cur.confidence);
@@ -355,7 +363,6 @@ impl ChordTracker {
                 {
                     self.current = self.candidate.take();
                     self.candidate_count = 0;
-                    self.slash_candidate = None;
                 }
             }
             _ => {
@@ -1365,6 +1372,43 @@ mod tests {
         );
     }
 
+    /// The same-root analogue of the stale-incumbent escape: a pristine
+    /// incumbent ("C" at confidence ~1.0) must not pin the label forever
+    /// against a genuinely re-voiced same-root chord that reads below the
+    /// switch margin — the margin holds it at one requalify dwell, twice
+    /// the dwell of consistent disagreement wins regardless. Fails if the
+    /// forced-switch clause stops covering same-root challengers.
+    #[test]
+    fn a_stale_confident_incumbent_yields_to_a_sustained_same_root_change() {
+        let mut p = PerceptionTracker::new();
+        let c_clean = chroma_of(&[0, 4, 7]);
+        for i in 0..4 {
+            p.observe_chroma(&c_clean, i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
+        // The player re-voices to Cm7, smeared: a strong F# bin (a true
+        // non-chord tone, under the outsider veto) keeps its confidence
+        // clearly below the pristine incumbent's.
+        let mut cm7_smeared = chroma_of(&[0, 3, 7, 10]);
+        cm7_smeared[6] = 0.55;
+        for i in 0..6 {
+            p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(1.1).chord.expect("shown").label,
+            "C",
+            "the margin must hold a below-margin challenger at 1x dwell"
+        );
+        for i in 6..12 {
+            p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
+        }
+        assert_eq!(
+            p.snapshot(1.7).chord.expect("shown").label,
+            "Cm7",
+            "sustained same-root disagreement must eventually win"
+        );
+    }
+
     /// VA #411 ("C → … → C/E" on a root-position chord): a slash change on
     /// the held identity needs its own dwell — one fresh bass reading must
     /// not instantly re-label. Fails if the slash refreshes per reading.
@@ -1418,6 +1462,36 @@ mod tests {
                 "bass alternation reading {i} churned the label"
             );
             t += 0.1;
+        }
+    }
+
+    /// The slash dwell counts CONSECUTIVE same-identity readings: bass
+    /// opinions scattered across a mush stretch (drop-slash reading,
+    /// cluster, drop-slash reading, …) must never accumulate into a slash
+    /// change. Fails if no-match readings stop resetting the streak.
+    #[test]
+    fn an_interleaved_slash_streak_does_not_move_the_slash() {
+        let mut p = PerceptionTracker::new();
+        let c_major = chroma_of(&[0, 4, 7]);
+        let cluster = chroma_of(&[0, 1, 2, 3, 5, 6, 8, 9, 10, 11]);
+        p.observe_poly_bass(40, 0.05); // E2 → promotes as C/E
+        for i in 0..4 {
+            p.observe_chroma(&c_major, 0.1 + i as f64 * 0.1);
+        }
+        assert_eq!(p.snapshot(0.5).chord.expect("shown").label, "C/E");
+        // Past BASS_FRESH_SECS: each C reading now carries NO bass (a
+        // drop-slash opinion), interleaved with cluster mush. Five rounds
+        // give five scattered drop-slash readings — never 3 consecutive.
+        let mut t = 4.0;
+        for round in 0..5 {
+            p.observe_chroma(&c_major, t);
+            assert_eq!(
+                p.snapshot(t).chord.expect("still shown").label,
+                "C/E",
+                "round {round}: scattered slash opinions must not move the slash"
+            );
+            p.observe_chroma(&cluster, t + 0.1);
+            t += 0.2;
         }
     }
 
