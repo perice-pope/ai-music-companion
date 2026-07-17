@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   render,
   screen,
@@ -48,6 +48,8 @@ const AUDIO_RESULT = {
 
 function installInvokeMock() {
   mockInvoke.mockImplementation((cmd: string) => {
+    // #336 diagnostics: fire-and-forget log lines; accept them.
+    if (cmd === "frontend_breadcrumb") return Promise.resolve();
     if (cmd === "import_midi_file") return Promise.resolve(ENTRY);
     if (cmd === "import_audio_file") return Promise.resolve(AUDIO_RESULT);
     if (cmd === "import_musicxml_file") return Promise.resolve(ENTRY);
@@ -82,6 +84,17 @@ function fileWithBytes(name: string, bytes: number[]): File {
   });
   return file;
 }
+
+// The #336 first-frame probe rides requestAnimationFrame and may sample a
+// second frame; a test that ends mid-probe would otherwise leak the probe's
+// breadcrumb into the NEXT test's mock history. Wait two real frames so any
+// pending probe finishes before the next test's beforeEach clears the mocks.
+afterEach(async () => {
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await nextFrame();
+  await nextFrame();
+});
 
 function fileInput(): HTMLInputElement {
   // The drop zone's <input type="file"> is hidden but present in the DOM.
@@ -804,5 +817,209 @@ describe("staleness guards on error/quality paths (#336 audit S1–S3)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// #336, the instrumentation round: after six VA runs with no .wav loading
+// message and every test green, the founder's plan is to log the four
+// moments of the feedback lifecycle from inside the real shell. These pin
+// the wiring — each moment reaches `frontend_breadcrumb`, in order, with
+// the entry path recorded — so the diagnostic can't silently rot before
+// the VA run that needs it.
+describe("import-feedback breadcrumbs (#336)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installInvokeMock();
+  });
+
+  const breadcrumbs = () =>
+    mockInvoke.mock.calls
+      .filter((c) => c[0] === "frontend_breadcrumb")
+      .map((c) => (c[1] as { message: string }).message);
+
+  it("logs seed → first frame → hold done → cleared, in order, for a picker .wav", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScoreDropZone />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("take.wav", [1, 2])] },
+      });
+
+      // Seed logs with the import running; the rAF first-frame probe
+      // (fake rAF fires at ~16ms, second sample ~32ms) lands next. The
+      // hold hasn't elapsed, so neither closing moment may have logged.
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(breadcrumbs()).toEqual([
+        "import feedback #1: seeded stage=transcribing via file-picker (.wav)",
+        expect.stringMatching(/^import feedback #1: first frame — /),
+      ]);
+
+      // The hold elapses → hold done, then cleared, complete the four.
+      await act(() => vi.advanceTimersByTimeAsync(1300));
+      const lines = breadcrumbs();
+      expect(lines).toHaveLength(4);
+      expect(lines[2]).toMatch(/^import feedback #1: hold done after \d+ms$/);
+      expect(lines[3]).toBe("import feedback #1: cleared (success)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The probe must observe the REAL indicator, not just emit a line: with
+  // the import held in flight and the message provably on screen, the
+  // logged frame line carries the indicator's visible label and computed
+  // style. Kills a probe that runs synchronously at seed time (only ever
+  // sees pre-commit DOM) or one that hardcodes its report.
+  it("the first-frame probe reports the indicator it actually observes", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "frontend_breadcrumb") return Promise.resolve();
+      if (cmd === "import_audio_file") return new Promise(() => {}); // in flight
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone />);
+    fireEvent.change(fileInput(), {
+      target: { files: [fileWithBytes("take.wav", [1])] },
+    });
+
+    await screen.findByText("Listening for notes…");
+    await waitFor(() =>
+      expect(
+        breadcrumbs().some((l) =>
+          /first frame — (?:.*second frame — )?"Listening for notes…" x=-?\d+ y=-?\d+ w=\d+ h=\d+ display=block visibility=visible$/.test(
+            l,
+          ),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("records the drag-drop entry path when a .wav is dropped", async () => {
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
+    fireEvent.drop(screen.getByTestId("score-drop-zone"), {
+      dataTransfer: { files: [fileWithBytes("take.wav", [1])] },
+    });
+
+    await waitFor(() =>
+      expect(breadcrumbs()).toContain(
+        "import feedback #1: seeded stage=transcribing via drag-drop (.wav)",
+      ),
+    );
+    // The first-frame probe fires on this entry path too.
+    await waitFor(() =>
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
+    );
+  });
+
+  it("logs cleared (error) — and no hold line — when the import fails", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "frontend_breadcrumb") return Promise.resolve();
+      if (cmd === "import_audio_file")
+        return Promise.reject(new Error("Couldn't decode that recording"));
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
+    fireEvent.change(fileInput(), {
+      target: { files: [fileWithBytes("broken.wav", [1])] },
+    });
+
+    await screen.findByText(/Couldn't decode that recording/);
+    await waitFor(() =>
+      expect(breadcrumbs()).toContain("import feedback #1: cleared (error)"),
+    );
+    expect(breadcrumbs().some((l) => l.includes("hold done"))).toBe(false);
+    // The first-frame probe fires on this path too.
+    await waitFor(() =>
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
+    );
+  });
+
+  it("attributes a superseded import's cleared line to it, with its own ending", async () => {
+    vi.useFakeTimers();
+    try {
+      let audioCalls = 0;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "frontend_breadcrumb") return Promise.resolve();
+        if (cmd === "import_audio_file") {
+          audioCalls += 1;
+          return audioCalls === 1
+            ? Promise.resolve(AUDIO_RESULT)
+            : new Promise(() => {}); // second import pends forever
+        }
+        if (cmd === "get_score")
+          return Promise.resolve({ entry: ENTRY, music_xml: "<score/>" });
+        return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+      });
+      render(<ScoreDropZone />);
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("first.wav", [1])] },
+      });
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      fireEvent.change(fileInput(), {
+        target: { files: [fileWithBytes("second.wav", [2])] },
+      });
+
+      // The first import's hold elapses while the second still pends: its
+      // writes were silenced, and its cleared line must say so — while
+      // staying attributable (#1) and keeping its own ending.
+      await act(() => vi.advanceTimersByTimeAsync(1300));
+      expect(breadcrumbs()).toContain(
+        "import feedback #1: cleared (superseded, was success)",
+      );
+      expect(breadcrumbs()).toContain(
+        "import feedback #2: seeded stage=transcribing via file-picker (.wav)",
+      );
+      expect(breadcrumbs()).not.toContain("import feedback #1: cleared (success)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs the full lifecycle for a PDF import, with its own stage", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScoreDropZone />);
+      fireEvent.change(fileInput(), {
+        target: {
+          files: [fileWithBytes("etude.pdf", [0x25, 0x50, 0x44, 0x46])],
+        },
+      });
+
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(breadcrumbs()).toEqual([
+        "import feedback #1: seeded stage=reading-notes via file-picker (.pdf)",
+        expect.stringMatching(/^import feedback #1: first frame — /),
+      ]);
+
+      await act(() => vi.advanceTimersByTimeAsync(1300));
+      const lines = breadcrumbs();
+      expect(lines).toHaveLength(4);
+      expect(lines[2]).toMatch(/^import feedback #1: hold done after \d+ms$/);
+      expect(lines[3]).toBe("import feedback #1: cleared (success)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs cleared (error) — and no hold line — when PDF recognition fails", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "frontend_breadcrumb") return Promise.resolve();
+      if (cmd === "recognize_pdf_score")
+        return Promise.reject(new Error("scan too blurry"));
+      return Promise.reject(new Error(`no mock for invoke("${cmd}")`));
+    });
+    render(<ScoreDropZone importFeedbackMinMs={0} />);
+    fireEvent.change(fileInput(), {
+      target: { files: [fileWithBytes("etude.pdf", [1])] },
+    });
+
+    await screen.findByText(/scan too blurry/);
+    await waitFor(() =>
+      expect(breadcrumbs()).toContain("import feedback #1: cleared (error)"),
+    );
+    expect(breadcrumbs().some((l) => l.includes("hold done"))).toBe(false);
+    // The first-frame probe fires on this path too.
+    await waitFor(() =>
+      expect(breadcrumbs().some((l) => l.includes("first frame"))).toBe(true),
+    );
   });
 });

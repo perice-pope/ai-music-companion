@@ -1,6 +1,15 @@
 import { useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { usePracticeStore, type ImportedAudio } from "../stores/practiceStore";
+import {
+  importClearedBreadcrumb,
+  importHoldBreadcrumb,
+  importSeededBreadcrumb,
+  scheduleImportFirstFrameProbe,
+  type ImportEntryPath,
+  type ImportOutcome,
+} from "../lib/importBreadcrumbs";
+import { sendBreadcrumb } from "../lib/positionBreadcrumbs";
 
 const MIDI_EXTS = ["mid", "midi"];
 // Uncompressed MusicXML is plain text we can parse directly. Compressed `.mxl`
@@ -80,6 +89,8 @@ export default function ScoreDropZone({
     midiTrackIndices?: number[];
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Scopes the #336 first-frame probe's DOM query to this drop zone.
+  const rootRef = useRef<HTMLDivElement>(null);
   // Single-shot guard for the part-picker buttons: two clicks in one frame
   // both see the pre-dismissal partChoice and would import twice (review S7).
   const partImportInFlight = useRef(false);
@@ -119,7 +130,10 @@ export default function ScoreDropZone({
   // Audio → backend transcribe (basic-pitch) → MIDI → MusicXML → library, with
   // live progress and a calm quality note. MusicXML still needs frontend
   // metadata parsing (a later slice), so it surfaces an honest "not yet".
-  const handleFile = async (file: File) => {
+  // `entry` is diagnostic only (#336): Tauri's drag-drop and the file picker
+  // may deliver differently in the real shell, so breadcrumbs record which
+  // path each import took.
+  const handleFile = async (file: File, entry: ImportEntryPath) => {
     importSeq.current += 1;
     const seq = importSeq.current;
     const isCurrentImport = () => importSeq.current === seq;
@@ -171,6 +185,10 @@ export default function ScoreDropZone({
 
     if (AUDIO_EXTS.includes(ext)) {
       let unlisten: (() => void) | undefined;
+      // #336 diagnostics: which exit the feedback lifecycle takes. "error"
+      // until the success path proves otherwise; a stale import whose
+      // writes were silenced reports "superseded" instead.
+      let outcome: ImportOutcome = "error";
       try {
         setStatus(`Transcribing ${file.name}…`);
         unlisten = await listen<ImportProgress>("import-progress", (event) => {
@@ -184,11 +202,15 @@ export default function ScoreDropZone({
         // (the backend's own beats are fixed constants; events refine it).
         const shownAt = performance.now();
         setProgress({ stage: "transcribing", pct: 45 });
+        sendBreadcrumb(importSeededBreadcrumb(seq, "transcribing", entry, ext));
+        scheduleImportFirstFrameProbe(seq, rootRef.current, sendBreadcrumb);
         const result = await importAudioFromFile(file.name, bytes);
         // Success keeps the indicator up for a perceivable minimum (#336);
         // a failure below skips straight to the error. A newer import may
         // have started during the hold — then this one stays silent.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
+        sendBreadcrumb(importHoldBreadcrumb(seq, performance.now() - shownAt));
+        outcome = "success";
         if (isCurrentImport()) {
           // AC2 (#337 S1): transcription is the beta tier — say so at import
           // time, every time, not only when quality looks off.
@@ -208,7 +230,9 @@ export default function ScoreDropZone({
         }
       } finally {
         unlisten?.();
-        if (isCurrentImport()) setProgress(null);
+        const superseded = !isCurrentImport();
+        if (!superseded) setProgress(null);
+        sendBreadcrumb(importClearedBreadcrumb(seq, outcome, superseded));
       }
       return;
     }
@@ -217,6 +241,7 @@ export default function ScoreDropZone({
       // PDF → on-device OMR → MusicXML, then the SAME "which part?" picker and
       // import path as MusicXML (OMR is just another front-end producing it).
       let unlisten: (() => void) | undefined;
+      let outcome: ImportOutcome = "error";
       try {
         setStatus(`Reading ${file.name}…`);
         unlisten = await listen<ImportProgress>("import-progress", (event) => {
@@ -227,10 +252,16 @@ export default function ScoreDropZone({
         // #336: same event-independent seed as the audio path.
         const shownAt = performance.now();
         setProgress({ stage: "reading-notes", pct: 55 });
+        sendBreadcrumb(
+          importSeededBreadcrumb(seq, "reading-notes", entry, ext),
+        );
+        scheduleImportFirstFrameProbe(seq, rootRef.current, sendBreadcrumb);
         const recognized = await recognizePdfFromFile(file.name, bytes);
         // Same perceivable minimum as the audio path (#336); same
         // newer-import-wins rule after it.
         await holdImportFeedback(shownAt, importFeedbackMinMs);
+        sendBreadcrumb(importHoldBreadcrumb(seq, performance.now() - shownAt));
+        outcome = "success";
         if (isCurrentImport()) {
           // OMR is approximate — always surface the "read from a scan" note.
           setScanNote({ lowContent: recognized.low_content });
@@ -255,7 +286,9 @@ export default function ScoreDropZone({
         }
       } finally {
         unlisten?.();
-        if (isCurrentImport()) setProgress(null);
+        const superseded = !isCurrentImport();
+        if (!superseded) setProgress(null);
+        sendBreadcrumb(importClearedBreadcrumb(seq, outcome, superseded));
       }
       return;
     }
@@ -293,7 +326,7 @@ export default function ScoreDropZone({
     setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
-    await handleFile(files[0]);
+    await handleFile(files[0], "drag-drop");
   };
 
   const handleBrowse = () => {
@@ -303,7 +336,7 @@ export default function ScoreDropZone({
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.currentTarget.files;
     if (!files || files.length === 0) return;
-    await handleFile(files[0]);
+    await handleFile(files[0], "file-picker");
   };
 
   // The honesty gate (#331): the verdict is classified in the Rust core;
@@ -319,7 +352,10 @@ export default function ScoreDropZone({
     : null;
 
   return (
-    <div className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8">
+    <div
+      ref={rootRef}
+      className="rounded-lg border-2 border-dashed border-gray-600 bg-gray-800 p-8"
+    >
       <div
         data-testid="score-drop-zone"
         onDrop={handleDrop}
