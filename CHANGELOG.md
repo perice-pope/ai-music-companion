@@ -1,3 +1,10 @@
+## [2.28.8](https://github.com/perice-pope/ai-music-companion/compare/v2.28.7...v2.28.8) (2026-07-17)
+
+### Bug Fixes
+
+* **import:** breadcrumb the four moments of import feedback ([#336](https://github.com/perice-pope/ai-music-companion/issues/336)) ([#409](https://github.com/perice-pope/ai-music-companion/issues/409)) ([0d88d51](https://github.com/perice-pope/ai-music-companion/commit/0d88d5155395056140f6ca23153e7a115a68b9a0)), closes [#396](https://github.com/perice-pope/ai-music-companion/issues/396)
+* **release:** stamp the version into the Tauri sources; show it in-app ([#384](https://github.com/perice-pope/ai-music-companion/issues/384)) ([#410](https://github.com/perice-pope/ai-music-companion/issues/410)) ([266b173](https://github.com/perice-pope/ai-music-companion/commit/266b173d47593b04d672d59efc9b3dadf215deb9))
+
 ## [2.28.7](https://github.com/perice-pope/ai-music-companion/compare/v2.28.6...v2.28.7) (2026-07-17)
 
 ### Bug Fixes
