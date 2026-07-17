@@ -1,3 +1,9 @@
+## [2.28.7](https://github.com/perice-pope/ai-music-companion/compare/v2.28.6...v2.28.7) (2026-07-17)
+
+### Bug Fixes
+
+* **perception:** chord labels lock instead of flickering — dwell asymmetry, slash dwell, ambiguity hold ([#382](https://github.com/perice-pope/ai-music-companion/issues/382)) ([#412](https://github.com/perice-pope/ai-music-companion/issues/412)) ([395e056](https://github.com/perice-pope/ai-music-companion/commit/395e05650f0e3cc6c89e85f9cf8436c2889a6568)), closes [#411](https://github.com/perice-pope/ai-music-companion/issues/411)
+
 ## [2.28.6](https://github.com/perice-pope/ai-music-companion/compare/v2.28.5...v2.28.6) (2026-07-16)
 
 ### Bug Fixes
