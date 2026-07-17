@@ -227,7 +227,7 @@ const CHORD_PROMOTE_READINGS: u8 = 3;
 /// cross it for 300 ms at a time (the VA's 2026-07-17 "never locked"
 /// regression); a genuinely re-voiced quality sustains, threshold flicker
 /// doesn't. A root change is a real harmonic move and keeps the fast dwell.
-const CHORD_REQUALIFY_READINGS: u8 = 6;
+const CHORD_REQUALIFY_READINGS: u8 = 8;
 /// Consecutive no-chord readings before the shown label clears.
 const CHORD_CLEAR_READINGS: u8 = 3;
 /// No-match readings that still hear ≥ [`theory::MIN_CHORD_BINS`] pitch
@@ -284,7 +284,11 @@ fn same_chord(a: &ChordMatch, b: &ChordMatch) -> bool {
 
 impl ChordTracker {
     fn observe(&mut self, chroma: &[f32; 12], bass_pc: Option<u8>) {
-        let matched = theory::best_match(chroma, bass_pc);
+        // #411 retention hysteresis: the incumbent's extensions only need
+        // to still be AUDIBLE, not to re-prove promotion-grade evidence
+        // every reading — a held chord's label must not decay with it.
+        let incumbent = self.current.map(|c| (c.root_pc, c.quality));
+        let matched = theory::best_match_retentive(chroma, bass_pc, incumbent);
         self.unresolved =
             matched.is_none() && theory::active_bin_count(chroma) >= theory::MIN_CHORD_BINS;
         let Some(m) = matched else {
@@ -1362,11 +1366,11 @@ mod tests {
             p.observe_chroma(&c, i as f64 * 0.1);
         }
         assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
-        for i in 0..6 {
+        for i in 0..CHORD_REQUALIFY_READINGS as usize {
             p.observe_chroma(&cmaj7, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.1).chord.expect("shown").label,
+            p.snapshot(1.5).chord.expect("shown").label,
             "Cmaj7",
             "a sustained requalification must still win"
         );
@@ -1391,19 +1395,26 @@ mod tests {
         // clearly below the pristine incumbent's.
         let mut cm7_smeared = chroma_of(&[0, 3, 7, 10]);
         cm7_smeared[6] = 0.55;
-        for i in 0..6 {
+        let dwell = CHORD_REQUALIFY_READINGS as usize;
+        for i in 0..dwell {
             p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.1).chord.expect("shown").label,
+            p.snapshot(0.5 + dwell as f64 * 0.1)
+                .chord
+                .expect("shown")
+                .label,
             "C",
             "the margin must hold a below-margin challenger at 1x dwell"
         );
-        for i in 6..12 {
+        for i in dwell..2 * dwell {
             p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.7).chord.expect("shown").label,
+            p.snapshot(0.5 + 2.0 * dwell as f64 * 0.1)
+                .chord
+                .expect("shown")
+                .label,
             "Cm7",
             "sustained same-root disagreement must eventually win"
         );
