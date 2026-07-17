@@ -165,13 +165,29 @@ const CHROMA_SILENCE_FLOOR: f32 = 0.1;
 /// bin is a REAL note, and a template that doesn't contain it is not the
 /// chord being played — a loud C natural disqualifies Dmaj7 no matter how
 /// well the other bins fit (the cluster→"Dmaj7" invention this run).
-const STRONG_OUTSIDER_RATIO: f32 = 0.6;
+/// Round 2 (#411): raised 0.6 → 0.75 — real rooms spike resonance past
+/// 60% of max on legitimately held chords, and the veto was killing every
+/// candidate for a reading (her G7 flashing unrelated roots, C dropping
+/// out). Played wrong notes read ≥ ~85%; the veto now waits for those.
+/// PINNED (round 3): `c_triad_with_a_moderate_drone_never_drops` (4 s)
+/// goes red at 0.6 and green at 0.75 — the constant is individually
+/// pinned. Her recorded piano fixtures remain the eventual real-world
+/// calibration.
+const STRONG_OUTSIDER_RATIO: f32 = 0.75;
 
 /// #382: an extension-class template tone (anything past root/3rd/5th in a
 /// 4+-tone quality) must sound at least this fraction of the strongest bin
 /// to count as PLAYED. Real-piano partial residue peaks around 25–45% of
-/// max after log compression; a genuinely played tone reads ≥ ~90%. Between
-/// the two, the honest call is "not played".
+/// max after log compression; a genuinely played tone reads ≥ ~90% at the
+/// attack. Between the two, the honest call is "not played".
+///
+/// Round 2 (#411): this bar applies to PROMOTION only. A held piano chord
+/// DECAYS — the seventh that read 90% at the attack reads 30% two seconds
+/// later, and demanding promotion-grade evidence every reading made the
+/// label decay with the note ("G7" → "G" mid-hold, the VA's flicker). The
+/// INCUMBENT chord retains its extensions at the plain active bar instead
+/// (see [`best_match_retentive`]) — still sounding means still named;
+/// truly released (below active) still switches.
 const EXTENSION_MIN_RATIO: f32 = 0.5;
 
 /// Root/third/fifth pitch-class offsets — the tones ANY voicing carries.
@@ -203,6 +219,20 @@ pub fn active_bin_count(chroma: &[f32; 12]) -> usize {
 /// template clears [`MIN_CHORD_CONF`] — the caller shows the honest
 /// "hearing several notes…" state instead of a guess (#349 §5.3).
 pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch> {
+    best_match_retentive(chroma, bass_pc, None)
+}
+
+/// [`best_match`] with retention hysteresis (#411): `incumbent` is the
+/// currently displayed (root, quality), whose template gets the plain
+/// ACTIVE bar for its extension tones instead of the promotion bar — a
+/// held chord keeps its name while its decaying tones still sound at all,
+/// and a genuinely released tone (below active) still lets go. Promotion
+/// of any OTHER identity keeps full evidence requirements.
+pub fn best_match_retentive(
+    chroma: &[f32; 12],
+    bass_pc: Option<u8>,
+    incumbent: Option<(u8, ChordQuality)>,
+) -> Option<ChordMatch> {
     let total: f32 = chroma.iter().sum();
     if total <= f32::EPSILON {
         return None;
@@ -229,7 +259,18 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
 
     let mut best: Option<ChordMatch> = None;
     for root in 0u8..12 {
-        if chroma[usize::from(root)] < max_bin * ROOT_BIN_RATIO {
+        // #411 round 2 (review MF2): the ROOT bar also gets retention.
+        // Unison-string beating dips the root fundamental below the
+        // promotion bar on a held chord, which deleted the incumbent from
+        // candidacy entirely and elected its upper structure (Cmaj7→Em)
+        // or dropped the label. Promotion proved the root once; keeping
+        // the name only requires the root to stay AUDIBLE.
+        let root_bar = if incumbent.is_some_and(|(r, _)| r == root) {
+            ACTIVE_BIN_RATIO
+        } else {
+            ROOT_BIN_RATIO
+        };
+        if chroma[usize::from(root)] < max_bin * root_bar {
             continue;
         }
         'quality: for &q in ChordQuality::all() {
@@ -247,7 +288,8 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
                 // sits well above the plain active threshold after log
                 // compression. Base-triad tones keep the active bar.
                 let is_extension = intervals.len() > 3 && !BASE_TRIAD_INTERVALS.contains(&iv);
-                let bar = if is_extension {
+                let retained = incumbent == Some((root, q));
+                let bar = if is_extension && !retained {
                     max_bin * EXTENSION_MIN_RATIO
                 } else {
                     max_bin * ACTIVE_BIN_RATIO

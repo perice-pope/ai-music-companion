@@ -22,20 +22,42 @@ fn midi_freq(m: i32) -> f32 {
     440.0 * (((m - 69) as f32) / 12.0).exp2()
 }
 
-/// Piano-ish additive tone: 10 partials, 1/k^1.1 rolloff (bright but
-/// plausible for mezzo-forte in the middle register), slight per-partial
-/// phase spread so peaks don't align artificially.
+/// Piano-ish additive tone. Round 2 (#411): the 10-partial 1/k^1.1 render
+/// validated a fix that then REGRESSED on the VA's real piano — real
+/// partials read hotter and stack messier. This render is calibrated to
+/// reproduce her 2026-07-17 failures red-first: 14 partials, 1/k^0.7
+/// rolloff (bright, mic-proximate), string inharmonicity (f_k scales by
+/// sqrt(1 + B*k^2)), and louder low notes (real left hands are heavy).
 fn rich_render(midis: &[i32], secs: f32) -> Vec<f32> {
     let n = (secs * SR as f32) as usize;
     let mut out = vec![0.0f32; n];
     for (mi, &m) in midis.iter().enumerate() {
         let f = midi_freq(m);
-        for k in 1..=10u32 {
-            let amp = 1.0 / (k as f32).powf(1.1);
-            let w = std::f32::consts::TAU * f * k as f32 / SR as f32;
-            let phase = (mi * 7 + k as usize) as f32 * 0.61;
-            for (i, o) in out.iter_mut().enumerate() {
-                *o += amp * (w * i as f32 + phase).sin();
+        // Heavier low register: real left hands are heavy.
+        let note_gain = if m < 60 { 1.6 } else { 1.0 };
+        const B: f32 = 0.0004; // mid-register string inharmonicity
+                               // Two detuned unison strings per note (real pianos have 2–3):
+                               // ±1.2 cents produces the slow amplitude beating that modulates
+                               // every partial over a hold — the spectrum MOVES, which is what
+                               // static renders could never show and what her flicker rides on.
+        for (si, detune_cents) in [-1.2f32, 1.2].into_iter().enumerate() {
+            let fs = f * (detune_cents / 1200.0).exp2();
+            for k in 1..=14u32 {
+                let kf = k as f32;
+                let amp = 0.5 * note_gain / kf.powf(0.7);
+                let stretched = fs * kf * (1.0 + B * kf * kf).sqrt();
+                if stretched * 2.0 >= SR as f32 {
+                    break;
+                }
+                // Higher partials decay faster (hammer brightness fades):
+                // tau_1 ≈ 4 s, tau_k = tau_1 / k.
+                let tau = 4.0 / kf;
+                let w = std::f32::consts::TAU * stretched / SR as f32;
+                let phase = (mi * 7 + si * 3 + k as usize) as f32 * 0.61;
+                for (i, o) in out.iter_mut().enumerate() {
+                    let t = i as f32 / SR as f32;
+                    *o += amp * (-t / tau).exp() * (w * i as f32 + phase).sin();
+                }
             }
         }
     }
@@ -131,6 +153,99 @@ fn c_over_e_labels_the_slash() {
 fn single_e3_never_labels_a_chord() {
     let label = settled_label(&rich_render(&[52], 3.0));
     assert_eq!(label, None, "a single rich E3 must not become a chord");
+}
+
+/// Review MF2 pins: LONG holds. Unison beating dips the root fundamental
+/// on real strings; the incumbent must survive the dips for the whole
+/// hold (the stability helper turns any rename or dropout red).
+#[test]
+fn held_cmaj7_stays_cmaj7_for_eight_seconds() {
+    let label = settled_label(&rich_render(&[60, 64, 67, 71], 8.0));
+    assert_eq!(label.as_deref(), Some("Cmaj7"));
+}
+
+/// Her verbatim "C … dropped" (#411): a plain held triad must never
+/// drop out mid-hold.
+#[test]
+fn held_c_triad_never_drops_over_eight_seconds() {
+    let label = settled_label(&rich_render(&[60, 64, 67], 8.0));
+    assert_eq!(label.as_deref(), Some("C"));
+}
+
+/// Review MF1 pins: enharmonic rotations are ONE sound. Cm7b5 ≡ Ebm6 and
+/// Cdim7 ≡ Adim7 share pitch-class sets; the label must pick one name and
+/// keep it for the whole hold.
+#[test]
+fn held_half_diminished_keeps_one_name() {
+    let label = settled_label(&rich_render(&[60, 63, 66, 70], 8.0));
+    assert!(
+        matches!(label.as_deref(), Some("Cm7b5") | Some("Ebm6")),
+        "one stable name for the half-diminished sound, got {label:?}"
+    );
+}
+
+#[test]
+fn held_diminished_seventh_keeps_one_name() {
+    let label = settled_label(&rich_render(&[60, 63, 66, 69], 8.0));
+    assert!(
+        matches!(
+            label.as_deref(),
+            Some("Cdim7") | Some("Ebdim7") | Some("Gbdim7") | Some("Adim7")
+        ),
+        "one stable name for the diminished-seventh sound, got {label:?}"
+    );
+}
+
+/// Review MF3: the veto pin the round-2 review constructed (refuting the
+/// 'unpinnable' claim). A moderate room drone on a non-chord pitch class
+/// (F# at ~0.71 of max — below where the sonority genuinely flips, which
+/// their probe places at ≥0.80) must not veto the label into a dropout.
+/// At the old STRONG_OUTSIDER_RATIO of 0.6 this goes red with a mid-take
+/// drop — her exact #411 symptom.
+#[test]
+fn c_triad_with_a_moderate_drone_never_drops() {
+    // 4.0 s, deliberately: under the old 0.6 veto the dropout begins at
+    // ~3.1 s — a 3.0 s render ended just before it and pinned nothing
+    // (round-3 review must-fix 1, verified in both directions).
+    let mut audio = rich_render(&[60, 64, 67], 4.0);
+    let w = std::f32::consts::TAU * midi_freq(66) / SR as f32;
+    for (i, o) in audio.iter_mut().enumerate() {
+        *o += 0.22 * (w * i as f32).sin();
+    }
+    let label = settled_label(&audio);
+    assert_eq!(
+        label.as_deref(),
+        Some("C"),
+        "a moderate non-chord drone must not veto the true label"
+    );
+}
+
+/// Retention must not become a lie: when the player LIFTS the seventh and
+/// keeps the triad ringing, the label has to follow reality down to "G".
+/// (The stability helper forbids churn, so this test tracks the final
+/// label only — one honest G7→G transition is the expected behavior.)
+#[test]
+fn releasing_the_seventh_releases_the_label() {
+    let mut audio = rich_render(&[55, 59, 62, 65], 1.5);
+    audio.extend(rich_render(&[55, 59, 62], 2.5));
+    let mut ex = ChromaExtractor::new(SR);
+    let mut tracker = PerceptionTracker::new();
+    let mut now = 0.0f64;
+    for (i, w) in audio.chunks(1024).enumerate() {
+        ex.feed(w);
+        now += w.len() as f64 / f64::from(SR);
+        if i % 4 != 3 {
+            continue;
+        }
+        if let Some(c) = ex.chroma() {
+            tracker.observe_chroma(&c, now);
+        }
+    }
+    assert_eq!(
+        tracker.snapshot(now).chord.map(|c| c.label).as_deref(),
+        Some("G"),
+        "with the 7th genuinely released, retention must let go"
+    );
 }
 
 /// The other side of the coin (review fast-follow 2): a genuinely played

@@ -29,7 +29,8 @@ mod key;
 mod tracker;
 
 pub use chords::{
-    active_bin_count, best_match, ChordMatch, ChordQuality, MIN_CHORD_BINS, MIN_CHORD_CONF,
+    active_bin_count, best_match, best_match_retentive, ChordMatch, ChordQuality, MIN_CHORD_BINS,
+    MIN_CHORD_CONF,
 };
 pub use intonation::{
     cents_off_equal_temperament, summarize_intonation, DegreeTendency, IntonationSummary,

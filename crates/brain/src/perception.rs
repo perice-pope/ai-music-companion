@@ -227,7 +227,7 @@ const CHORD_PROMOTE_READINGS: u8 = 3;
 /// cross it for 300 ms at a time (the VA's 2026-07-17 "never locked"
 /// regression); a genuinely re-voiced quality sustains, threshold flicker
 /// doesn't. A root change is a real harmonic move and keeps the fast dwell.
-const CHORD_REQUALIFY_READINGS: u8 = 6;
+const CHORD_REQUALIFY_READINGS: u8 = 8;
 /// Consecutive no-chord readings before the shown label clears.
 const CHORD_CLEAR_READINGS: u8 = 3;
 /// No-match readings that still hear ≥ [`theory::MIN_CHORD_BINS`] pitch
@@ -282,9 +282,42 @@ fn same_chord(a: &ChordMatch, b: &ChordMatch) -> bool {
     a.root_pc == b.root_pc && a.quality == b.quality
 }
 
+/// The chord's pitch-class set as a 12-bit mask.
+fn pc_mask(root: u8, quality: theory::ChordQuality) -> u16 {
+    quality
+        .intervals()
+        .iter()
+        .fold(0u16, |m, &iv| m | (1 << ((root + iv) % 12)))
+}
+
+/// #411 round 2 (review MF1): an ENHARMONIC ROTATION of the incumbent —
+/// identical pitch-class set under a different root name (Cm7b5 ≡ Ebm6,
+/// Cdim7 ≡ Adim7) — carries zero new information about what's sounding;
+/// renaming on one is pure churn. Treated as the same chord.
+fn enharmonic_rotation(a: &ChordMatch, b: &ChordMatch) -> bool {
+    pc_mask(a.root_pc, a.quality) == pc_mask(b.root_pc, b.quality)
+}
+
+/// #411 round 2 (review MF1/MF2): a challenger whose pitch classes are a
+/// SUBSET of the incumbent's (Em ⊂ Cmaj7, G ⊂ G7) is what a beating dip
+/// looks like, not what a player's change looks like — it gets the slow
+/// requalify dwell so a sub-second dip can't rename the chord. (Honest
+/// subset transitions — actually lifting the 7th — pay ~0.8 s of extra
+/// latency for this; `releasing_the_seventh_releases_the_label` bounds
+/// it.)
+fn subset_of(challenger: &ChordMatch, incumbent: &ChordMatch) -> bool {
+    let c = pc_mask(challenger.root_pc, challenger.quality);
+    let i = pc_mask(incumbent.root_pc, incumbent.quality);
+    c & i == c
+}
+
 impl ChordTracker {
     fn observe(&mut self, chroma: &[f32; 12], bass_pc: Option<u8>) {
-        let matched = theory::best_match(chroma, bass_pc);
+        // #411 retention hysteresis: the incumbent's extensions only need
+        // to still be AUDIBLE, not to re-prove promotion-grade evidence
+        // every reading — a held chord's label must not decay with it.
+        let incumbent = self.current.map(|c| (c.root_pc, c.quality));
+        let matched = theory::best_match_retentive(chroma, bass_pc, incumbent);
         self.unresolved =
             matched.is_none() && theory::active_bin_count(chroma) >= theory::MIN_CHORD_BINS;
         let Some(m) = matched else {
@@ -309,6 +342,18 @@ impl ChordTracker {
         };
         self.none_count = 0;
         if let Some(cur) = &mut self.current {
+            // An enharmonic rotation of the incumbent is the same sound —
+            // refresh the incumbent's confidence, never rename (MF1). The
+            // incumbent's spelling stays; the rotation's confidence rides.
+            if enharmonic_rotation(cur, &m) && !same_chord(cur, &m) {
+                cur.confidence = m.confidence;
+                self.candidate = None;
+                self.candidate_count = 0;
+                // Rotation readings deliberately leave the slash streak
+                // untouched (neither advance nor reset): they're rare
+                // beat-dip artifacts, not bass opinions (round-3 review).
+                return;
+            }
             if same_chord(cur, &m) {
                 // Same chord: refresh confidence from the freshest reading
                 // and stand any identity challenger down. The SLASH only
@@ -345,7 +390,10 @@ impl ChordTracker {
         // #382 dwell asymmetry: same-root quality churn (decoration flicker)
         // must sustain twice as long as a real root change before it can
         // rename the label.
-        let dwell = if self.current.is_some_and(|cur| cur.root_pc == m.root_pc) {
+        let dwell = if self
+            .current
+            .is_some_and(|cur| cur.root_pc == m.root_pc || subset_of(&m, &cur))
+        {
             CHORD_REQUALIFY_READINGS
         } else {
             CHORD_PROMOTE_READINGS
@@ -1362,11 +1410,11 @@ mod tests {
             p.observe_chroma(&c, i as f64 * 0.1);
         }
         assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
-        for i in 0..6 {
+        for i in 0..CHORD_REQUALIFY_READINGS as usize {
             p.observe_chroma(&cmaj7, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.1).chord.expect("shown").label,
+            p.snapshot(1.5).chord.expect("shown").label,
             "Cmaj7",
             "a sustained requalification must still win"
         );
@@ -1391,19 +1439,26 @@ mod tests {
         // clearly below the pristine incumbent's.
         let mut cm7_smeared = chroma_of(&[0, 3, 7, 10]);
         cm7_smeared[6] = 0.55;
-        for i in 0..6 {
+        let dwell = CHORD_REQUALIFY_READINGS as usize;
+        for i in 0..dwell {
             p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.1).chord.expect("shown").label,
+            p.snapshot(0.5 + dwell as f64 * 0.1)
+                .chord
+                .expect("shown")
+                .label,
             "C",
             "the margin must hold a below-margin challenger at 1x dwell"
         );
-        for i in 6..12 {
+        for i in dwell..2 * dwell {
             p.observe_chroma(&cm7_smeared, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.7).chord.expect("shown").label,
+            p.snapshot(0.5 + 2.0 * dwell as f64 * 0.1)
+                .chord
+                .expect("shown")
+                .label,
             "Cm7",
             "sustained same-root disagreement must eventually win"
         );
