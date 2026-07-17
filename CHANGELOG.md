@@ -1,3 +1,9 @@
+## [2.28.10](https://github.com/perice-pope/ai-music-companion/compare/v2.28.9...v2.28.10) (2026-07-17)
+
+### Bug Fixes
+
+* **face:** mono instruments never show chord surfaces in the strip ([#392](https://github.com/perice-pope/ai-music-companion/issues/392)) ([#414](https://github.com/perice-pope/ai-music-companion/issues/414)) ([447c115](https://github.com/perice-pope/ai-music-companion/commit/447c115623117604b1afdbe060abc68f479330d8))
+
 ## [2.28.9](https://github.com/perice-pope/ai-music-companion/compare/v2.28.8...v2.28.9) (2026-07-17)
 
 ### Bug Fixes
