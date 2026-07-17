@@ -1,5 +1,6 @@
 import { useConnectionsStore } from "../stores/connectionsStore";
 import { usePracticeStore } from "../stores/practiceStore";
+import AppVersionBadge from "./AppVersionBadge";
 
 /**
  * Connections & Privacy — the one place that names every feature which can
@@ -199,6 +200,9 @@ export default function ConnectionsPrivacy() {
         >
           Back
         </button>
+
+        {/* Which build am I running? Quotable in bug reports (#384). */}
+        <AppVersionBadge className="mt-6" />
       </div>
     </main>
   );

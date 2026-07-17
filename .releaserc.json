@@ -10,8 +10,16 @@
     ["@semantic-release/changelog", {
       "changelogFile": "CHANGELOG.md"
     }],
+    ["@semantic-release/exec", {
+      "prepareCmd": "node scripts/stamp-version.mjs ${nextRelease.version}"
+    }],
     ["@semantic-release/git", {
-      "assets": ["CHANGELOG.md"],
+      "assets": [
+        "CHANGELOG.md",
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "apps/desktop/src-tauri/Cargo.toml",
+        "apps/desktop/src-tauri/Cargo.lock"
+      ],
       "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
     }],
     "@semantic-release/github"

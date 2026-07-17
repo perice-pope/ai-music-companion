@@ -91,6 +91,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+// The version badge in the picker footer (#384) reads the bundle version
+// through the app API; give it a stable value here.
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: () => Promise.resolve("2.29.0"),
+}));
+
 // Route `list_instruments` to the fixture and forward everything else
 // to per-test `.mockResolvedValueOnce` setups.
 function installDefaultInvokeMock() {
@@ -153,6 +159,13 @@ describe("InstrumentSelector", () => {
       // would otherwise leak into the next.
       practiceMode: "practice",
     });
+  });
+
+  it("shows the running app version in the footer (#384)", async () => {
+    render(<InstrumentSelector />);
+    expect(await screen.findByTestId("app-version")).toHaveTextContent(
+      "v2.29.0",
+    );
   });
 
   it("renders all instrument cards from the backend catalog", async () => {
