@@ -1,3 +1,9 @@
+## [2.32.0](https://github.com/perice-pope/ai-music-companion/compare/v2.31.0...v2.32.0) (2026-07-18)
+
+### Features
+
+* recaps speak the instrument's language — fixed-pitch gating ([#417](https://github.com/perice-pope/ai-music-companion/issues/417)-4) ([#428](https://github.com/perice-pope/ai-music-companion/issues/428)) ([1df0bb2](https://github.com/perice-pope/ai-music-companion/commit/1df0bb2c157d991bbe947669b7e6aac80fe63cef)), closes [#417-4](https://github.com/perice-pope/ai-music-companion/issues/417-4) [#389](https://github.com/perice-pope/ai-music-companion/issues/389) [#417-4](https://github.com/perice-pope/ai-music-companion/issues/417-4)
+
 ## [2.31.0](https://github.com/perice-pope/ai-music-companion/compare/v2.30.1...v2.31.0) (2026-07-18)
 
 ### Features
