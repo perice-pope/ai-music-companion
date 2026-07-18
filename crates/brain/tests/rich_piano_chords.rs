@@ -256,12 +256,35 @@ fn releasing_the_seventh_releases_the_label() {
 /// instead of silently killing low-register extension detection.
 #[test]
 fn low_register_c9_still_speaks() {
-    // C3 E3 G3 Bb3 D4 — a full dominant ninth, low and thick.
-    let label = settled_label(&rich_render(&[48, 52, 55, 58, 62], 3.0));
+    // C3 E3 G3 Bb3 D4 — a full dominant ninth, low and thick. On THIS
+    // synthetic render the 9th's evidence builds over the first second,
+    // so the honest path is C7 → C9 (the superset upgrade paying its
+    // double dwell); on real recordings all tones are struck at once and
+    // C9 reads immediately. Assert the converged label and permit only
+    // the documented upgrade path — any other churn still fails.
+    let audio = rich_render(&[48, 52, 55, 58, 62], 4.0);
+    let mut ex = ChromaExtractor::new(SR);
+    let mut tracker = PerceptionTracker::new();
+    let mut now = 0.0f64;
+    for (i, w) in audio.chunks(1024).enumerate() {
+        ex.feed(w);
+        now += w.len() as f64 / f64::from(SR);
+        if i % 4 != 3 {
+            continue;
+        }
+        if let Some(c) = ex.chroma() {
+            tracker.observe_chroma(&c, now);
+            let label = tracker.snapshot(now).chord.map(|c| c.label);
+            assert!(
+                matches!(label.as_deref(), None | Some("C7") | Some("C9")),
+                "only the C7→C9 upgrade path is honest here, got {label:?}"
+            );
+        }
+    }
     assert_eq!(
-        label.as_deref(),
+        tracker.snapshot(now).chord.map(|c| c.label).as_deref(),
         Some("C9"),
-        "a played low-register C9 must still be heard as C9"
+        "a played low-register C9 must converge on C9"
     );
 }
 

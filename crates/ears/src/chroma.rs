@@ -39,12 +39,18 @@ const NUM_BINS: usize = 60;
 /// compression downstream inflates, and their pitch classes are exactly
 /// the phantom "extensions" that decorated every label (G7→G13, C→Cmaj9)
 /// in the VA's 2026-07-14/-16 runs.
-const HARMONIC_BLEED: [(usize, f32); 6] = [
-    (12, 0.4),
-    (19, 0.3),
-    (24, 0.25),
-    (28, 0.2),
-    (34, 0.15),
+/// Round 5 (#415): weights recalibrated against REAL piano recordings
+/// (Iowa MIS fixtures) — fortissimo hammers put the 2nd partial near the
+/// fundamental and the 5th partial at ~90% of max in the folded reading
+/// (a single real E3 matched an E major triad on its own partials). The
+/// synth-era weights were roughly half reality.
+const HARMONIC_BLEED: [(usize, f32); 7] = [
+    (12, 0.55),
+    (19, 0.7),
+    (24, 0.3),
+    (28, 0.6),
+    (31, 0.35),
+    (34, 0.18),
     (38, 0.12),
 ];
 /// Smoothing time constant for the folded pitch-class bins.

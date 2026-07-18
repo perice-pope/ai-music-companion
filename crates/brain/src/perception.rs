@@ -390,7 +390,17 @@ impl ChordTracker {
         // #382 dwell asymmetry: same-root quality churn (decoration flicker)
         // must sustain twice as long as a real root change before it can
         // rename the label.
-        let dwell = if self
+        // Round 5 (#415): a same-root SUPERSET rename (C → Cmaj7) adds
+        // exactly one tone — the residue-prone extension — so it needs
+        // sustained evidence twice as long as any other requalification
+        // (real players re-strike when they add a seventh; residue rides
+        // in ~1 s stretches).
+        let superset_upgrade = self
+            .current
+            .is_some_and(|cur| cur.root_pc == m.root_pc && subset_of(&cur, &m));
+        let dwell = if superset_upgrade {
+            2 * CHORD_REQUALIFY_READINGS
+        } else if self
             .current
             .is_some_and(|cur| cur.root_pc == m.root_pc || subset_of(&m, &cur))
         {
