@@ -4793,6 +4793,17 @@ mod tests {
             text.contains("your piano reads about") && text.contains("instrument"),
             "the strong flat read surfaces as the instrument's tuning: {text}"
         );
+        // Review MF2 (AC2): the SUGGESTION bank fires too — the overall
+        // line shares the "reads about" prefix, so pin the tuning-visit
+        // line where it lives.
+        assert!(
+            recap
+                .next_session_suggestions
+                .iter()
+                .any(|s| s.to_lowercase().contains("a tuning visit")),
+            "the >=10-cent tendency earns the tuning-visit suggestion: {:?}",
+            recap.next_session_suggestions
+        );
     }
 
     /// #389 acceptance, other half: the same detuned session on TRUMPET

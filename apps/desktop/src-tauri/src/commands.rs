@@ -5567,6 +5567,53 @@ mod tests {
         );
     }
 
+    /// #417-4 review MF1: the REAL end-session path — session start with
+    /// "Piano", offline policy, panicking HTTP client — must produce a
+    /// keyboard-vocabulary recap. This is the threading pin: it fails if
+    /// `end_practice_session_impl` stops resolving the family (commands
+    /// call site), if `generate_recap_with_context` stops writing it into
+    /// the input (session.rs), or if the resolver maps Piano wrongly.
+    #[tokio::test]
+    async fn ending_a_piano_session_threads_the_family_into_the_recap() {
+        let mut s = state();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+        start_practice_session_impl(&s, "Piano".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .expect("start should succeed");
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(recap.instrument, "Piano");
+        let text = format!(
+            "{} {} {} {}",
+            recap.overall_assessment,
+            recap.strengths.join(" "),
+            recap.areas_to_improve.join(" "),
+            recap.next_session_suggestions.join(" ")
+        )
+        .to_lowercase();
+        for forbidden in ["tuner", "drone", "long tones"] {
+            assert!(
+                !text.contains(forbidden),
+                "the real end-session path must route the family: {text}"
+            );
+        }
+        assert!(
+            text.contains("slow scale"),
+            "keyboard vocabulary through the real path: {text}"
+        );
+    }
+
     #[tokio::test]
     async fn start_session_then_end_session_produces_recap() {
         // Happy path with phrases exercises the rich-recap branch.
