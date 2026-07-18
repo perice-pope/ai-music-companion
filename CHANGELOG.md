@@ -1,3 +1,9 @@
+## [2.35.1](https://github.com/perice-pope/ai-music-companion/compare/v2.35.0...v2.35.1) (2026-07-18)
+
+### Bug Fixes
+
+* **brain,face:** recap never claims an end-state key the strip contradicted ([#404](https://github.com/perice-pope/ai-music-companion/issues/404)) ([#433](https://github.com/perice-pope/ai-music-companion/issues/433)) ([08b588b](https://github.com/perice-pope/ai-music-companion/commit/08b588bfb68832f32c9f22c7e8b4c889a83ed59a))
+
 ## [2.35.0](https://github.com/perice-pope/ai-music-companion/compare/v2.34.0...v2.35.0) (2026-07-18)
 
 ### Features
