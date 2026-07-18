@@ -4431,6 +4431,22 @@ mod tests {
             !dto.staff.notes.is_empty(),
             "the exploration renders on the staff"
         );
+        // #419 S2b round-3 MF3: the measure path stays FORWARD — the first
+        // segment follows the stored measure's contour (C D E F). A
+        // direction leak into this path goes red.
+        let m1 = dto
+            .music_xml
+            .split("<measure number=\"2\">")
+            .next()
+            .unwrap();
+        let steps: Vec<&str> = m1
+            .match_indices("<step>")
+            .map(|(i, _)| {
+                let rest = &m1[i + 6..];
+                &rest[..rest.find("</step>").unwrap()]
+            })
+            .collect();
+        assert_eq!(steps, vec!["C", "D", "E", "F"], "measure contour intact");
         assert!(
             dto.root_pitch_classes.len() >= 3,
             "rowed through multiple keys: {:?}",
@@ -7447,7 +7463,9 @@ mod tests {
         let folded = opener_impl(&state, &items, Some(120 + 9), None, false).unwrap();
         assert_eq!(folded.music_xml, in_a.music_xml, "120+9 folds to A");
         // Determinism: preview IS the exercise, with the new params too.
-        let begun = opener_impl(&state, &items, Some(9), None, true).unwrap();
+        // Round-3 review MF2: begin with the UNFOLDED value — the log row
+        // is the fold's only observable seam (music_xml folds internally).
+        let begun = opener_impl(&state, &items, Some(120 + 9), None, true).unwrap();
         assert_eq!(in_a.music_xml, begun.music_xml);
         // Review MF4: the exercise-log row records the LIVE tonic — the
         // % 12 fold's only observable seam, and what S4 recall will read.

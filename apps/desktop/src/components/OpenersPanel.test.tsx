@@ -483,4 +483,39 @@ describe("OpenersPanel (#419 S1)", () => {
       "stale reversed preview",
     );
   });
+
+  it("Begin's reset kills an in-flight refresh — no ghost repaint", async () => {
+    // Round-3 review MF1: a preview refresh airborne when Begin resolves
+    // must NOT repaint the just-reset builder with a ghost preview and a
+    // stale captured tonic.
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+
+    // A second item's preview goes airborne (slow)…
+    let resolveSlow: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementationOnce(
+      () => new Promise((res) => (resolveSlow = res)),
+    );
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(2),
+    );
+    // …while Begin resolves fast and resets the builder.
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    // The slow preview lands late — and changes NOTHING.
+    await act(async () => {
+      resolveSlow({ ...PREVIEW_DTO, label: "ghost preview" });
+      await Promise.resolve();
+    });
+    expect(usePracticeStore.getState().openerPreview).toBeNull();
+    expect(usePracticeStore.getState().openerTonic).toBeNull();
+    expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
+      "forward",
+    );
+  });
 });

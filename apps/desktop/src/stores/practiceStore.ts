@@ -1033,6 +1033,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       openerDirection: "forward",
       openerPreviewedDirection: "forward",
     });
+    // Round-3 review MF1: session end also invalidates in-flight opener
+    // refreshes (separate set — this one derives from current state).
+    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
   },
 
   startAccompaniment: async () => {
@@ -1358,7 +1361,18 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   clearOpener: () =>
-    set({ openerItems: [], openerPreview: null, openerNotice: null }),
+    set((s) => ({
+      openerItems: [],
+      openerPreview: null,
+      openerNotice: null,
+      openerTonic: null,
+      openerDirection: "forward",
+      openerPreviewedDirection: "forward",
+      // Round-3 review MF1: a reset INVALIDATES in-flight refreshes —
+      // otherwise a late response repaints a ghost preview (and a stale
+      // tonic) onto the just-cleared builder.
+      _openerRefreshSeq: s._openerRefreshSeq + 1,
+    })),
 
   setOpenerDirection: (direction) => {
     set({ openerDirection: direction });
@@ -1426,7 +1440,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       });
       // The opener becomes the session's exploration — the same surface a
       // lifted lick lands on — and the builder resets for next time.
-      set({
+      set((s) => ({
         explore: dto,
         exploreNotice: null,
         openerItems: [],
@@ -1435,7 +1449,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         openerTonic: null,
         openerDirection: "forward",
         openerPreviewedDirection: "forward",
-      });
+        // Round-3 review MF1: Begin's reset kills in-flight refreshes.
+        _openerRefreshSeq: s._openerRefreshSeq + 1,
+      }));
     } catch (err) {
       set({ openerNotice: String(err) });
     }
