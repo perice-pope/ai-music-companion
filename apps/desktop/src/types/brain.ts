@@ -492,6 +492,13 @@ export interface SessionRecap {
   phrase_count: number;
   instrument: string;
   /**
+   * The instrument can't bend a sounding note (struck/plucked mechanism —
+   * piano, guitar), so the recap presents the fingerprint's intonation as
+   * the instrument's tuning, never the player's (#389). Absent on recaps
+   * persisted before this field — treated as `false` (continuous-pitch).
+   */
+  fixed_pitch?: boolean;
+  /**
    * The session's musical fingerprint (tone, key, intonation, groove), when
    * anything was measured. `null`/absent when every dimension's gate failed.
    */

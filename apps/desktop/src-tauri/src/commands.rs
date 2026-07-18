@@ -513,6 +513,9 @@ impl MockRecapGenerator {
             ],
             duration_secs: 0.0,
             phrase_count: 0,
+            // Mirrors the real generators: the flag is copied from the input
+            // so the Face's presentation switch is exercised in mock runs too.
+            fixed_pitch: input.fixed_pitch,
             instrument: String::new(),
             fingerprint: None,
             flavour: None,
@@ -1947,6 +1950,9 @@ fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
         next_session_suggestions,
         duration_secs,
         phrase_count: 0,
+        // The empty state carries no fingerprint, so no intonation read-out
+        // ever renders from it — the presentation flag is moot here.
+        fixed_pitch: false,
         instrument,
         fingerprint: None,
         flavour: None,
@@ -7270,6 +7276,11 @@ mod tests {
     #[tokio::test]
     async fn piano_session_recap_critiques_the_instrument_not_the_player() {
         let recap = recap_for_out_of_tune_session("Piano").await;
+        assert!(
+            recap.fixed_pitch,
+            "the recap must carry the fixed-pitch fact so the Face can \
+             present the fingerprint's intonation as the instrument's tuning"
+        );
         let text = format!(
             "{}\n{}\n{}\n{}",
             recap.overall_assessment,

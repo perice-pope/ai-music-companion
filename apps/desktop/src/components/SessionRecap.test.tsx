@@ -289,9 +289,7 @@ describe("SessionRecap", () => {
     render(<SessionRecap />);
     fireEvent.click(screen.getByTestId("row-measure-7"));
     await screen.findByTestId("bridge-notice");
-    expect(screen.getByTestId("bridge-notice")).toHaveTextContent(
-      "all rests",
-    );
+    expect(screen.getByTestId("bridge-notice")).toHaveTextContent("all rests");
     // The recap and its summary are still standing.
     expect(screen.getByTestId("recap-score-summary")).toBeInTheDocument();
     expect(screen.getByTestId("recap-assessment")).toBeInTheDocument();
@@ -373,6 +371,55 @@ describe("SessionRecap", () => {
     const line = screen.getByTestId("recap-intonation").textContent ?? "";
     expect(line).toContain("tends sharp");
     expect(line).toContain("major 3rd");
+  });
+
+  it("presents intonation as the instrument's tuning on fixed-pitch instruments", () => {
+    // #389: a pianist can't bend a struck note — the read-out must name the
+    // instrument's tuning, never a player tendency, in-tune score, or degree
+    // callout (which would contradict the coaching text on the same screen).
+    seedRecap(
+      fullRecap({
+        fixed_pitch: true,
+        fingerprint: {
+          intonation: {
+            note_count: 24,
+            mean_cents: 20,
+            mean_abs_cents: 20,
+            in_tune_ratio: 0.1,
+            tendencies: [{ semitones_from_tonic: 4, mean_cents: 20, count: 6 }],
+          },
+        },
+      }),
+    );
+    const { rerender } = render(<SessionRecap />);
+    expect(screen.queryByTestId("recap-intonation")).toBeNull();
+    const line =
+      screen.getByTestId("recap-instrument-tuning").textContent ?? "";
+    expect(line).toContain("Instrument tuning");
+    expect(line).toContain("20 cents sharp");
+    expect(line).toContain("the instrument, not your playing");
+    expect(line).not.toContain("in tune");
+    expect(line).not.toContain("major 3rd");
+
+    // A near-centered instrument reads calm — no cents callout to act on.
+    seedRecap(
+      fullRecap({
+        fixed_pitch: true,
+        fingerprint: {
+          intonation: {
+            note_count: 24,
+            mean_cents: 2,
+            mean_abs_cents: 3,
+            in_tune_ratio: 0.9,
+            tendencies: [],
+          },
+        },
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-instrument-tuning").textContent).toContain(
+      "reads centered",
+    );
   });
 
   it("shows the groove read-out only when the recap carries one", () => {

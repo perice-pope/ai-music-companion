@@ -1054,6 +1054,9 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
+            // The Face needs this to present the fingerprint's intonation as
+            // the instrument's tuning on fixed-pitch instruments (#389).
+            fixed_pitch: input.fixed_pitch,
             fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
             // Theory-grounded flavour from mode + swing (#209), shared with the
             // offline path. Hedged, and `None` when there's no clear signal.
@@ -1469,6 +1472,9 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         duration_secs: input.duration_secs,
         phrase_count,
         instrument: input.instrument.clone(),
+        // The Face needs this to present the fingerprint's intonation as the
+        // instrument's tuning on fixed-pitch instruments (#389).
+        fixed_pitch: input.fixed_pitch,
         // Persist the measured fingerprint instead of throwing it away —
         // `None` only when nothing cleared a gate, so "nothing measured" stays
         // distinct from "some dimensions measured".
@@ -3376,6 +3382,12 @@ mod tests {
         assert!(
             !recap.overall_assessment.contains("tuning"),
             "no tuning note on a centered instrument, got:\n{}",
+            recap.overall_assessment
+        );
+        assert!(
+            !recap.overall_assessment.contains("Intonation:"),
+            "centered material must not fall through to the player-phrased \
+             'centered overall' praise either, got:\n{}",
             recap.overall_assessment
         );
         assert!(

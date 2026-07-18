@@ -326,6 +326,13 @@ pub struct SessionRecap {
     pub duration_secs: f64,
     /// Number of phrases played (copied from `RecapInput.phrases.len()`).
     pub phrase_count: usize,
+    /// Copied from [`RecapInput::fixed_pitch`] (#389): the instrument can't
+    /// bend a sounding note, so the Face must present the fingerprint's
+    /// intonation figures as the instrument's tuning, never the player's —
+    /// otherwise the read-out would contradict the coaching text on the same
+    /// screen. `serde(default)` so recaps persisted before this field load.
+    #[serde(default)]
+    pub fixed_pitch: bool,
     /// Instrument played (first-segment instrument for multi-segment
     /// sessions — copied from `RecapInput.instrument`).
     pub instrument: String,
@@ -928,6 +935,7 @@ mod tests {
             next_session_suggestions: vec!["Play the C major scale slowly with a drone.".to_owned()],
             duration_secs: 0.0,
             phrase_count: 0,
+            fixed_pitch: false,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
             flavour: None,
