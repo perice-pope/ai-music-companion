@@ -403,6 +403,38 @@ const PITCH_CLASS_NAMES = [
   "B",
 ];
 
+const FLAT_PITCH_CLASS_NAMES = [
+  "C",
+  "Db",
+  "D",
+  "Eb",
+  "E",
+  "F",
+  "Gb",
+  "G",
+  "Ab",
+  "A",
+  "Bb",
+  "B",
+];
+
+/**
+ * Fifths of the major key per tonic pitch class, flat-side where conventional.
+ * Mirrors `theory::MAJOR_KEY_FIFTHS` — keep in sync.
+ */
+const MAJOR_KEY_FIFTHS = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
+
+/** Offset of each mode's conventional key signature from its tonic's major. */
+const MODE_FIFTHS_OFFSET: Record<Mode, number> = {
+  ionian: 0,
+  dorian: -2,
+  phrygian: -4,
+  lydian: 1,
+  mixolydian: -1,
+  aeolian: -3,
+  locrian: -5,
+};
+
 const MODE_LABELS: Record<Mode, string> = {
   ionian: "major",
   aeolian: "minor",
@@ -413,10 +445,24 @@ const MODE_LABELS: Record<Mode, string> = {
   locrian: "Locrian",
 };
 
-/** Human label for a key, e.g. `"C major"`, `"G Mixolydian"`. */
+/**
+ * Tonic name spelled by the key's conventional signature (#387): flat keys
+ * name flats — "Ab major", never "G# major" — with the enharmonic wrap
+ * keeping ≤6-accidental spellings (Ab minor reads G# minor). Mirrors
+ * `theory::KeyEstimate::name`, so frontend-rendered names never contradict
+ * the strip names the backend sends.
+ */
+export function spelledTonicName(tonic: number, mode: Mode): string {
+  const pc = ((tonic % 12) + 12) % 12;
+  let fifths = MAJOR_KEY_FIFTHS[pc] + MODE_FIFTHS_OFFSET[mode];
+  if (fifths < -6) fifths += 12;
+  else if (fifths > 6) fifths -= 12;
+  return fifths < 0 ? FLAT_PITCH_CLASS_NAMES[pc] : PITCH_CLASS_NAMES[pc];
+}
+
+/** Human label for a key, e.g. `"C major"`, `"Ab major"`, `"G Mixolydian"`. */
 export function keyName(key: KeyEstimate): string {
-  const pc = PITCH_CLASS_NAMES[((key.tonic % 12) + 12) % 12];
-  return `${pc} ${MODE_LABELS[key.mode]}`;
+  return `${spelledTonicName(key.tonic, key.mode)} ${MODE_LABELS[key.mode]}`;
 }
 
 /**

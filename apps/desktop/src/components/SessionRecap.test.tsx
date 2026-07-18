@@ -160,13 +160,13 @@ describe("SessionRecap", () => {
     seedRecap(fullRecap({ fingerprint: { key, key_claim: "leaning" } }));
     const { rerender } = render(<SessionRecap />);
     expect(screen.getByTestId("recap-key").textContent).toContain(
-      "leaning G# major toward the end",
+      "leaning Ab major toward the end",
     );
 
     // Asserted → today's flat form, no hedge.
     seedRecap(fullRecap({ fingerprint: { key, key_claim: "asserted" } }));
     rerender(<SessionRecap />);
-    expect(screen.getByTestId("recap-key").textContent).toContain("G# major");
+    expect(screen.getByTestId("recap-key").textContent).toContain("Ab major");
     expect(screen.getByTestId("recap-key").textContent).not.toContain(
       "leaning",
     );
@@ -175,7 +175,7 @@ describe("SessionRecap", () => {
     // sessions don't retroactively hedge.
     seedRecap(fullRecap({ fingerprint: { key } }));
     rerender(<SessionRecap />);
-    expect(screen.getByTestId("recap-key").textContent).toContain("G# major");
+    expect(screen.getByTestId("recap-key").textContent).toContain("Ab major");
     expect(screen.getByTestId("recap-key").textContent).not.toContain(
       "leaning",
     );

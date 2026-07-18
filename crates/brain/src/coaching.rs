@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     /// #316 AC1 — the VA's half-step case (#313): G major wins the
-    /// confidence vote, but the live strip ENDED on G# major. The recap must
+    /// confidence vote, but the live strip ENDED on Ab major. The recap must
     /// defer to the final live reading, hedged — flatly asserting either key
     /// would contradict what the player watched. Fails on pre-#316 code,
     /// which asserted the vote winner ("G major") outright.
@@ -2326,7 +2326,7 @@ mod tests {
         let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
             panic!("a key was tracked");
         };
-        assert_eq!(key.name(), "G# major", "must follow the strip's end state");
+        assert_eq!(key.name(), "Ab major", "must follow the strip's end state");
         assert_eq!(
             strength,
             KeyClaimStrength::Leaning,
@@ -2354,7 +2354,7 @@ mod tests {
             p
         };
         let phrases = vec![
-            tracked(8, 0.7), // G# major, confidently…
+            tracked(8, 0.7), // Ab major, confidently…
             tracked(8, 0.7),
             tracked(7, 0.45), // …then the strip drifts to G and HOLDS it,
             tracked(7, 0.45), // displayed below the claim bar
@@ -2400,7 +2400,7 @@ mod tests {
         let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
             panic!("a key was tracked");
         };
-        assert_eq!(key.name(), "G# major");
+        assert_eq!(key.name(), "Ab major");
         assert_eq!(
             strength,
             KeyClaimStrength::Leaning,
@@ -2437,7 +2437,7 @@ mod tests {
             is_onset: false,
             note_info: None,
         };
-        // G# major, tonic and fifth emphasized, at the pipeline's real
+        // Ab major, tonic and fifth emphasized, at the pipeline's real
         // ~45 Hz frame rate — several phrases separated by breaths.
         let gs_major = [415.30, 466.16, 523.25, 554.37, 622.25, 698.46, 783.99];
         let mut t = 0.0;
@@ -2463,7 +2463,7 @@ mod tests {
         let KeyVerdict::Claimed(key, strength) = aggregate_key(phrases) else {
             panic!("a steady session must claim its key");
         };
-        assert_eq!(key.name(), "G# major", "got {}", key.name());
+        assert_eq!(key.name(), "Ab major", "got {}", key.name());
         assert_eq!(
             strength,
             KeyClaimStrength::Asserted,
@@ -2581,7 +2581,7 @@ mod tests {
         let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
             panic!("a key was tracked");
         };
-        assert_eq!(key.name(), "G# major");
+        assert_eq!(key.name(), "Ab major");
         assert_eq!(strength, KeyClaimStrength::Leaning, "settled late = hedge");
     }
 
@@ -2602,13 +2602,13 @@ mod tests {
             p
         };
 
-        // Stable session: G# major throughout → asserted, flat copy.
+        // Stable session: Ab major throughout → asserted, flat copy.
         let stable = recap_input_with(vec![tracked(8, 0.8), tracked(8, 0.8)], None);
         let recap = grounded_offline_recap(&stable);
         let fp = recap.fingerprint.as_ref().expect("key was measured");
         assert_eq!(fp.key_claim, Some(KeyClaimStrength::Asserted));
         assert!(
-            recap.strengths.join(" ").contains("sat firmly in G# major"),
+            recap.strengths.join(" ").contains("sat firmly in Ab major"),
             "an asserted key keeps the tonal-center strength: {:?}",
             recap.strengths
         );
@@ -2642,7 +2642,7 @@ mod tests {
         );
         let suggestions = recap.next_session_suggestions.join(" ");
         assert!(
-            suggestions.contains("leaning toward at the end") && suggestions.contains("G# major"),
+            suggestions.contains("leaning toward at the end") && suggestions.contains("Ab major"),
             "the suggestion hedges toward the final reading: {suggestions}"
         );
     }
@@ -2675,7 +2675,7 @@ mod tests {
         );
         let prompt = CoachingEngine::build_recap_user_prompt(&hedged);
         assert!(
-            prompt.contains("leaning G# major toward the end") && prompt.contains("tentatively"),
+            prompt.contains("leaning Ab major toward the end") && prompt.contains("tentatively"),
             "hedged key must read as tentative in the prompt: {prompt}"
         );
         assert!(

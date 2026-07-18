@@ -44,9 +44,43 @@ pub const PITCH_CLASS_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
+/// Pitch-class names, index 0 = C, using flats.
+pub const FLAT_PITCH_CLASS_NAMES: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+];
+
+/// Fifths of the MAJOR key rooted on each pitch class, favoring the
+/// conventional flat spelling where one exists (Db over C#, Eb, Ab, Bb;
+/// F# kept for pc 6). The single source of truth for key spelling — the
+/// engraver (`brain::coach::key_signature_for`) builds on the same table.
+pub const MAJOR_KEY_FIFTHS: [i8; 12] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
+
 /// Name a pitch class (0–11, C = 0). Out-of-range inputs wrap mod 12.
 pub fn pitch_class_name(pc: u8) -> &'static str {
     PITCH_CLASS_NAMES[(pc % 12) as usize]
+}
+
+/// Name a pitch class under a key signature's spelling: flat signatures name
+/// flats ("Ab"), everything else sharps. Out-of-range inputs wrap mod 12.
+pub fn spelled_pitch_class_name(pc: u8, fifths: i8) -> &'static str {
+    if fifths < 0 {
+        FLAT_PITCH_CLASS_NAMES[(pc % 12) as usize]
+    } else {
+        PITCH_CLASS_NAMES[(pc % 12) as usize]
+    }
+}
+
+/// Conventional key-signature fifths for a (tonic, mode) pair, wrapped
+/// enharmonically into −6..=6 so the ≤6-accidental spelling wins — Ab minor
+/// reads as G# minor (5 sharps), never a 7-flat signature.
+pub fn key_fifths(tonic: u8, mode: Mode) -> i8 {
+    let mut fifths = MAJOR_KEY_FIFTHS[(tonic % 12) as usize] + mode.fifths_offset();
+    if fifths < -6 {
+        fifths += 12;
+    } else if fifths > 6 {
+        fifths -= 12;
+    }
+    fifths
 }
 
 /// The seven diatonic (church) modes. `Ionian` is the major scale, `Aeolian`
@@ -86,6 +120,20 @@ impl Mode {
             Mode::Mixolydian => [0, 2, 4, 5, 7, 9, 10],
             Mode::Aeolian => [0, 2, 3, 5, 7, 8, 10],
             Mode::Locrian => [0, 1, 3, 5, 6, 8, 10],
+        }
+    }
+
+    /// Offset (in fifths) of the mode's conventional key signature from its
+    /// tonic's major — D Dorian shares C major's signature (−2), and so on.
+    pub fn fifths_offset(self) -> i8 {
+        match self {
+            Mode::Ionian => 0,
+            Mode::Dorian => -2,
+            Mode::Phrygian => -4,
+            Mode::Lydian => 1,
+            Mode::Mixolydian => -1,
+            Mode::Aeolian => -3,
+            Mode::Locrian => -5,
         }
     }
 

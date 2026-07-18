@@ -1395,7 +1395,7 @@ mod tests {
     /// collapses to under a second of audio, each phrase snapshots whatever
     /// relative mode the last bar happened to emphasize, and the recap's
     /// vote — diluted across readings the calm strip never displayed —
-    /// hedges a rock-steady session ("leaning G# major toward the end").
+    /// hedges a rock-steady session ("leaning Ab major toward the end").
     #[test]
     fn steady_material_reads_one_key_on_every_phrase() {
         let mut agg = PhraseAggregator::new(PhraseConfig {
@@ -1404,7 +1404,7 @@ mod tests {
             voiced_confidence_threshold: 0.5,
         })
         .unwrap();
-        // G# major (G# A# C C# D# F G), tonic-emphasized, as several phrases
+        // Ab major (Ab Bb C Db Eb F G), tonic-emphasized, as several phrases
         // separated by real silence gaps — the VA's steady singing session.
         let gs_major = [415.30, 466.16, 523.25, 554.37, 622.25, 698.46, 783.99];
         let mut t = 0.0;
@@ -1422,7 +1422,7 @@ mod tests {
         // flat assertion downstream (see coaching::aggregate_key).
         let names: Vec<Option<String>> = phrases.iter().map(|p| p.key.map(|k| k.name())).collect();
         assert!(
-            names[1..].iter().all(|n| n.as_deref() == Some("G# major")),
+            names[1..].iter().all(|n| n.as_deref() == Some("Ab major")),
             "after settling, every phrase snapshot must hold the steady key; got {names:?}"
         );
     }
