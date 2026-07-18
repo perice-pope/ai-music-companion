@@ -1,3 +1,9 @@
+## [2.35.0](https://github.com/perice-pope/ai-music-companion/compare/v2.34.0...v2.35.0) (2026-07-18)
+
+### Features
+
+* Openers row from the live key + pattern directions ([#419](https://github.com/perice-pope/ai-music-companion/issues/419) S2b) ([#432](https://github.com/perice-pope/ai-music-companion/issues/432)) ([3b542d8](https://github.com/perice-pope/ai-music-companion/commit/3b542d8e4b5dc1a56fbc978ada8083c267f7def6))
+
 ## [2.34.0](https://github.com/perice-pope/ai-music-companion/compare/v2.33.0...v2.34.0) (2026-07-18)
 
 ### Features
