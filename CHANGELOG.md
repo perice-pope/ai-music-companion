@@ -1,3 +1,9 @@
+## [2.36.0](https://github.com/perice-pope/ai-music-companion/compare/v2.35.1...v2.36.0) (2026-07-18)
+
+### Features
+
+* The Pocket S1 — Anchor click + count-in ([#421](https://github.com/perice-pope/ai-music-companion/issues/421)) ([#434](https://github.com/perice-pope/ai-music-companion/issues/434)) ([14e43af](https://github.com/perice-pope/ai-music-companion/commit/14e43aff145d26bcedc208405981862e9a8c43ce)), closes [#417](https://github.com/perice-pope/ai-music-companion/issues/417)
+
 ## [2.35.1](https://github.com/perice-pope/ai-music-companion/compare/v2.35.0...v2.35.1) (2026-07-18)
 
 ### Bug Fixes
