@@ -16,9 +16,12 @@ import type { StarterItem } from "../types/brain";
  * here blinks, slides, or vanishes.
  */
 
-/** Major-scale degree labels for the note buttons. */
+/**
+ * Major-scale degree labels for the note buttons. Taps send SEMANTIC
+ * degrees over the wire — the degree→semitone table lives in
+ * `brain::starter` only (review MF2: no pitch math in the frontend).
+ */
 const DEGREES = [1, 2, 3, 4, 5, 6, 7, 8] as const;
-const DEGREE_SEMITONES = [0, 2, 4, 5, 7, 9, 11, 12] as const;
 
 /** The classic openers, ready-made. */
 const SEQUENCE_PRESETS: { label: string; degrees: number[] }[] = [
@@ -37,17 +40,15 @@ const COMING_SOON = [
   "My patterns",
 ];
 
-/** Human label for an added item chip. */
+/** Human label for an added item chip — derived from the semantic wire
+ * shape, never from offsets (offsets are the backend's business). */
 function itemLabel(item: StarterItem): string {
   if (item.type === "notes") {
-    const deg = DEGREE_SEMITONES.indexOf(
-      item.offsets[0] as (typeof DEGREE_SEMITONES)[number],
-    );
-    return item.offsets.length === 1 && deg >= 0
-      ? `note ${DEGREES[deg]}`
-      : `notes ×${item.offsets.length}`;
+    return `notes ×${item.offsets.length}`;
   }
-  return item.degrees.join("-");
+  return item.degrees.length === 1
+    ? `note ${item.degrees[0]}`
+    : item.degrees.join("-");
 }
 
 export default function OpenersPanel() {
@@ -95,13 +96,13 @@ export default function OpenersPanel() {
         Notes
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
-        {DEGREES.map((d, i) => (
+        {DEGREES.map((d) => (
           <button
             key={d}
             type="button"
             data-testid={`opener-note-${d}`}
             onClick={() =>
-              void addOpenerItem({ type: "notes", offsets: [DEGREE_SEMITONES[i]] })
+              void addOpenerItem({ type: "note_sequence", degrees: [d] })
             }
             className="h-8 w-8 rounded-md bg-teal-800/60 text-sm font-semibold text-teal-100 hover:bg-teal-700"
           >

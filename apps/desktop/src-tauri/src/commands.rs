@@ -7208,9 +7208,28 @@ mod tests {
 
         let preview = opener_impl(&state, &items, false).expect("preview compiles");
         assert!(state.active_explore.lock_or_recover().is_none());
+        // Review MF4: preview fires on EVERY tap and must not touch the
+        // exercise log either — S3's My Patterns reads that log, and a
+        // regression would flood it with half-built recipes.
+        assert!(
+            state
+                .session_store
+                .lock_or_recover()
+                .list_exercise_log()
+                .unwrap()
+                .is_empty(),
+            "a pure preview must not write the exercise log"
+        );
 
         let begun = opener_impl(&state, &items, true).expect("begin compiles");
         assert!(state.active_explore.lock_or_recover().is_some());
+        let log = state
+            .session_store
+            .lock_or_recover()
+            .list_exercise_log()
+            .unwrap();
+        let sources: Vec<&str> = log.iter().map(|e| e.source.as_str()).collect();
+        assert_eq!(sources, vec!["opener"], "Begin logs exactly one opener row");
         // Deterministic seed: the preview IS the exercise.
         assert_eq!(preview.label, begun.label);
         assert_eq!(preview.music_xml, begun.music_xml);

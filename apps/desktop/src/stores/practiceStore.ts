@@ -997,6 +997,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonNotice: null,
       explore: null,
       exploreNotice: null,
+      // A half-built opener must not reappear in the NEXT session's panel.
+      openerItems: [],
+      openerPreview: null,
+      openerNotice: null,
     });
   },
 
@@ -1322,7 +1326,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     await get()._refreshOpenerPreview(items);
   },
 
-  clearOpener: () => set({ openerItems: [], openerPreview: null, openerNotice: null }),
+  clearOpener: () =>
+    set({ openerItems: [], openerPreview: null, openerNotice: null }),
 
   /** Internal: recompute the pure preview after any item change. */
   _refreshOpenerPreview: async (items: StarterItem[]) => {
@@ -1332,13 +1337,26 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("preview_opener", { items });
+      // Stale-response guard (review MF3): rapid taps race, and a late
+      // response must never paint music for items that changed under it —
+      // the items array identity is the sequence token (same pattern as
+      // ScoreDropZone's importSeq).
+      if (get().openerItems !== items) {
+        return;
+      }
       set({ openerPreview: dto, openerNotice: null });
     } catch (err) {
+      if (get().openerItems !== items) {
+        return;
+      }
       set({ openerPreview: null, openerNotice: String(err) });
     }
   },
 
   beginOpener: async () => {
+    if (get().status !== "listening") {
+      return;
+    }
     const items = get().openerItems;
     if (items.length === 0) {
       return;

@@ -131,15 +131,12 @@ mod tests {
     /// offender — a silent clamp would quietly reshape the music.
     #[test]
     fn out_of_range_degrees_refuse_by_name() {
-        let err = composite_cell(
-            &[StarterItem::NoteSequence { degrees: vec![9] }],
-            32,
-        )
-        .unwrap_err();
+        let err =
+            composite_cell(&[StarterItem::NoteSequence { degrees: vec![9] }], 32).unwrap_err();
         assert_eq!(err, StarterError::BadDegree(9));
         assert!(err.to_string().contains('9'));
-        let err = composite_cell(&[StarterItem::NoteSequence { degrees: vec![0] }], 32)
-            .unwrap_err();
+        let err =
+            composite_cell(&[StarterItem::NoteSequence { degrees: vec![0] }], 32).unwrap_err();
         assert_eq!(err, StarterError::BadDegree(0));
     }
 
@@ -177,6 +174,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cell, vec![0, -3, -5]);
+    }
+
+    /// The PANEL's exact wire JSON deserializes (review MF4): a
+    /// `#[serde(rename)]` on any field survived every suite because the
+    /// impl tests construct enums directly and the frontend mocks invoke.
+    /// This literal string is what OpenersPanel actually sends — if it
+    /// stops parsing, every tap in the app is broken, so this must be red.
+    #[test]
+    fn panel_wire_json_deserializes() {
+        let items: Vec<StarterItem> = serde_json::from_str(
+            r#"[{"type":"notes","offsets":[4]},{"type":"note_sequence","degrees":[1,2,3,5]}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            items,
+            vec![
+                StarterItem::Notes { offsets: vec![4] },
+                StarterItem::NoteSequence {
+                    degrees: vec![1, 2, 3, 5],
+                },
+            ]
+        );
+        assert_eq!(composite_cell(&items, 32).unwrap(), vec![4, 0, 2, 4, 7]);
     }
 
     /// The wire shape round-trips (stored recipes must survive releases).

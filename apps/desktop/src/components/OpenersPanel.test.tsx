@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import OpenersPanel from "./OpenersPanel";
 import { usePracticeStore } from "../stores/practiceStore";
 
@@ -32,6 +38,8 @@ beforeEach(() => {
     openerPreview: null,
     openerNotice: null,
     explore: null,
+    // Begin guards on a live session, like every sibling explore action.
+    status: "listening",
   });
 });
 
@@ -52,14 +60,16 @@ describe("OpenersPanel (#419 S1)", () => {
     fireEvent.click(screen.getByTestId("opener-note-3"));
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("preview_opener", {
-        items: [{ type: "notes", offsets: [4] }], // degree 3 = +4 semitones
+        // SEMANTIC wire shape — the degree→semitone table lives in Rust
+        // only (review MF2). A tap is a degree, never an offset.
+        items: [{ type: "note_sequence", degrees: [3] }],
       }),
     );
     // Never begin_opener from a preview — a preview that hijacks the
     // session on every tap is the bug this pins against.
-    expect(
-      mockInvoke.mock.calls.every(([cmd]) => cmd !== "begin_opener"),
-    ).toBe(true);
+    expect(mockInvoke.mock.calls.every(([cmd]) => cmd !== "begin_opener")).toBe(
+      true,
+    );
     await waitFor(() => screen.getByTestId("opener-preview"));
     screen.getByTestId("opener-chip-0");
   });
@@ -113,6 +123,28 @@ describe("OpenersPanel (#419 S1)", () => {
       ),
     );
     expect(usePracticeStore.getState().openerItems).toHaveLength(0);
+  });
+
+  it("a late preview response for removed items is dropped, not painted", async () => {
+    // Review MF3, reproduced at HEAD: tap → remove-while-in-flight → the
+    // late response used to paint an orphan preview over an empty builder.
+    let resolveLate: (dto: typeof PREVIEW_DTO) => void = () => {};
+    mockInvoke.mockImplementationOnce(
+      () => new Promise((res) => (resolveLate = res)),
+    );
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+    // Remove the item while its preview is still in flight…
+    fireEvent.click(screen.getByTestId("opener-chip-0"));
+    // …then let the stale response land.
+    await act(async () => {
+      resolveLate(PREVIEW_DTO);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(usePracticeStore.getState().openerPreview).toBeNull();
+    expect(screen.queryByTestId("opener-preview")).toBeNull();
   });
 
   it("a calm refusal surfaces in the panel, not a crash", async () => {
