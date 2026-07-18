@@ -28,21 +28,37 @@ use serde::{Deserialize, Serialize};
 /// a bug. The honesty rule is that the recap must not claim more certainty
 /// than the tracking earned: a key that dominated the session is `Asserted`
 /// ("G# major"); one that settled only late, or that the vote contested, is
-/// `Leaning` ("leaning G# major toward the end"); a session whose tracking
-/// never firmed up enough to claim any key is `Unsettled` ("the key kept
-/// moving") — and one that produced no tonal readings at all carries no
-/// claim whatsoever (percussive material isn't "moving", it's silent).
+/// `Leaning` ("leaning G# major toward the end"); one that carried the
+/// session but lost the strip by the close is `Drifted` ("mostly G# major —
+/// wandering by the end", #404); a session whose tracking never firmed up
+/// enough to claim any key is `Unsettled` ("the key kept moving") — and one
+/// that produced no tonal readings at all carries no claim whatsoever
+/// (percussive material isn't "moving", it's silent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyClaimStrength {
     /// The key held for a solid majority of the tracked session — state it
     /// plainly.
     Asserted,
-    /// The key settled late or was contested — hedge every reference to it.
+    /// The key settled late or was contested, and it IS where the strip
+    /// ended — hedge every reference to it, anchored to the session's close.
     Leaning,
+    /// The key carried the session's tracking mass, but the live reading had
+    /// wandered off it by session close (#404) — a whole-session claim only;
+    /// never phrase it as where the session ended.
+    Drifted,
     /// Tonal readings existed but never firmed up into a claimable key —
     /// say the key kept moving. `MusicalFingerprint::key` is `None`.
     Unsettled,
+}
+
+impl KeyClaimStrength {
+    /// `true` for the hedged claims (`Leaning`, `Drifted`) — a hedged key
+    /// must never be stated as, or build on, a flat fact (mode-named
+    /// flavours, "sat firmly" strengths, degree attributions).
+    pub fn hedged(self) -> bool {
+        matches!(self, Self::Leaning | Self::Drifted)
+    }
 }
 
 /// The four session-level measurements of a student's musicianship, each
@@ -69,8 +85,10 @@ pub struct MusicalFingerprint {
     pub key: Option<theory::KeyEstimate>,
     /// How firmly the recap may state `key` (#316 display honesty): `Asserted`
     /// when the key dominated the session's live tracking, `Leaning` when it
-    /// settled late or contested the vote, `Unsettled` (with `key` = `None`)
-    /// when readings existed but never firmed into a claim. `None` on
+    /// settled late or contested the vote, `Drifted` when it carried the
+    /// session but the strip wandered off it by the close (#404), `Unsettled`
+    /// (with `key` = `None`) when readings existed but never firmed into a
+    /// claim. `None` on
     /// fingerprints serialised before this field existed — readers must treat
     /// that as `Asserted` (the legacy behavior) so old recaps don't
     /// retroactively hedge — and on sessions with no tonal readings at all.
@@ -160,5 +178,22 @@ mod tests {
             legacy.key_claim, None,
             "absent field defaults, never errors"
         );
+    }
+
+    /// #404 AC7 — the drifted claim's wire form, and its hedged contract:
+    /// `"drifted"` round-trips, and `hedged()` covers exactly the two
+    /// claims that must never read as flat fact. Fails if a rename breaks
+    /// persisted recaps or a new consumer treats `Drifted` as asserted.
+    #[test]
+    fn drifted_claim_round_trips_and_is_hedged() {
+        let json = serde_json::to_string(&KeyClaimStrength::Drifted).expect("serialize");
+        assert_eq!(json, "\"drifted\"");
+        let back: KeyClaimStrength = serde_json::from_str("\"drifted\"").expect("deserialize");
+        assert_eq!(back, KeyClaimStrength::Drifted);
+
+        assert!(KeyClaimStrength::Drifted.hedged());
+        assert!(KeyClaimStrength::Leaning.hedged());
+        assert!(!KeyClaimStrength::Asserted.hedged());
+        assert!(!KeyClaimStrength::Unsettled.hedged());
     }
 }

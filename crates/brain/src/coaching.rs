@@ -837,6 +837,16 @@ All text should be written as a teacher would speak — warm, specific, and acti
                  if you mention key at all, phrase it tentatively, never as a fact\n",
                 k.name()
             ),
+            // #404: the key carried the session but the live reading wandered
+            // off it by the close — a whole-session claim. Saying it was the
+            // key "toward the end" would contradict the strip the player
+            // watched.
+            (Some(k), Some(KeyClaimStrength::Drifted)) => format!(
+                "- Key / mode: mostly {} — the reading wandered off it by the close; \
+                 if you mention key at all, say it carried most of the session, \
+                 never that it was the key at the end\n",
+                k.name()
+            ),
             (Some(k), _) => format!(
                 "- Key / mode: {} (confidence {:.2})\n",
                 k.name(),
@@ -1187,12 +1197,12 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
         });
 
     // Mode verdict: only when the key cleared its confidence gate AND the
-    // session earned a flat assertion (#316). A hedged (Leaning) key must not
-    // drive a mode-named flavour line — the swing legs still fire, so a
-    // hedged session degrades to the key-free variants rather than silence.
-    // `key_claim == None` with a key present is a legacy blob: treat as
-    // asserted, matching the behavior those recaps shipped with.
-    let key_asserted = fp.key_claim != Some(crate::fingerprint::KeyClaimStrength::Leaning);
+    // session earned a flat assertion (#316). A hedged (Leaning/Drifted) key
+    // must not drive a mode-named flavour line — the swing legs still fire,
+    // so a hedged session degrades to the key-free variants rather than
+    // silence. `key_claim == None` with a key present is a legacy blob:
+    // treat as asserted, matching the behavior those recaps shipped with.
+    let key_asserted = !fp.key_claim.is_some_and(|c| c.hedged());
     let modal = fp
         .key
         .as_ref()
@@ -1348,9 +1358,10 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         }
     }
     if let Some(k) = &fingerprint.key {
-        // "Sat firmly" is exactly the claim a Leaning key didn't earn (#316):
-        // the strength only renders on an asserted key.
-        if k.confidence >= 0.6 && fingerprint.key_claim != Some(KeyClaimStrength::Leaning) {
+        // "Sat firmly" is exactly the claim a hedged (Leaning/Drifted) key
+        // didn't earn (#316, #404): the strength only renders on an asserted
+        // key.
+        if k.confidence >= 0.6 && !fingerprint.key_claim.is_some_and(|c| c.hedged()) {
             strengths.push(format!(
                 "Clear tonal center — the session sat firmly in {}.",
                 k.name(),
@@ -1440,6 +1451,13 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                      hands together, listening for evenness between them.",
                     k.name()
                 ),
+                // #404: a drifted key was NOT the key at the end — anchor the
+                // suggestion to the session, never to "you ended on".
+                (true, Some(KeyClaimStrength::Drifted)) => format!(
+                    "Open with a slow scale in {} — the key that carried most of the \
+                     session — hands together, listening for evenness between them.",
+                    k.name()
+                ),
                 (true, _) => format!(
                     "Open with a slow scale in {}, hands together — even touch, one \
                      steady tempo.",
@@ -1447,6 +1465,10 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                 ),
                 (false, Some(KeyClaimStrength::Leaning)) => format!(
                     "Open with long tones in {} — the key you were leaning toward at the end.",
+                    k.name()
+                ),
+                (false, Some(KeyClaimStrength::Drifted)) => format!(
+                    "Open with long tones in {} — the key that carried most of the session.",
                     k.name()
                 ),
                 (false, _) => format!(
@@ -1851,9 +1873,11 @@ enum KeyVerdict {
 ///   at least two phrases (one reading is never "sat firmly").
 /// - Winner ≠ final reading — the VA's half-step case (#313): if the closing
 ///   key held ≥ 2 phrases, defer to it (what the player last watched),
-///   `Leaning`; if the session ended on a single-phrase blip, lean the
-///   dominant key instead — a blip may not hijack the recap. Either way,
-///   neither key is ever asserted flatly.
+///   `Leaning`; if the session ended on a single-phrase blip, claim the
+///   dominant key as `Drifted` instead — a blip may not hijack the recap,
+///   but the dominant key is not where the strip ended, so it must never be
+///   phrased as an end-state (#404). Either way, neither key is ever
+///   asserted flatly.
 /// - Readings but no eligible key → `Unsettled`. No readings → `Silent`.
 fn aggregate_key(phrases: &[PhraseSummary]) -> KeyVerdict {
     /// A key must have at least one sighting at/above this confidence to be
@@ -1913,13 +1937,17 @@ fn aggregate_key(phrases: &[PhraseSummary]) -> KeyVerdict {
     if id(&winner) != id(&final_reading) {
         // The vote and the strip's end state disagree — the exact
         // contradiction #313 caught. Never assert either key: defer to the
-        // closing key when it genuinely held (≥ 2 phrases), otherwise lean
+        // closing key when it genuinely held (≥ 2 phrases), otherwise claim
         // the dominant key — a single-phrase closing blip may not hijack
-        // the recap.
+        // the recap. The dominant key is `Drifted`, not `Leaning` (#404):
+        // it is NOT where the strip ended, so every "toward the end"
+        // phrasing downstream would name a key the player never watched
+        // there (the VA's "leaning F Phrygian" over a cycling
+        // E Locrian / F major close).
         return if final_run >= 2 {
             KeyVerdict::Claimed(final_reading, KeyClaimStrength::Leaning)
         } else {
-            KeyVerdict::Claimed(winner, KeyClaimStrength::Leaning)
+            KeyVerdict::Claimed(winner, KeyClaimStrength::Drifted)
         };
     }
     let strength = if winner_mass / total_mass >= ASSERT_SHARE && winner_count >= 2 {
@@ -2567,11 +2595,14 @@ mod tests {
         );
     }
 
-    /// #316 review SHOULD 3 — a single-phrase blip at session end must not
-    /// hijack the recap key: with C major dominant and one closing
-    /// G-Mixolydian phrase, the recap leans C (hedged), not the blip. Fails
-    /// if the contradiction branch defers to any final reading regardless of
-    /// how briefly it held.
+    /// #316 review SHOULD 3 + #404 — a single-phrase blip at session end
+    /// must not hijack the recap key: with C major dominant and one closing
+    /// G-Mixolydian phrase, the recap claims C (hedged), not the blip. And
+    /// the claim is `Drifted`, not `Leaning`: C is NOT where the strip
+    /// ended, so "leaning C toward the end" would name an end-state the
+    /// player never watched. Fails if the contradiction branch defers to any
+    /// final reading regardless of how briefly it held, or if it anchors the
+    /// dominant key to the session's close.
     #[test]
     fn a_single_phrase_closing_blip_does_not_hijack_the_recap_key() {
         let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
@@ -2601,8 +2632,46 @@ mod tests {
         );
         assert_eq!(
             strength,
-            KeyClaimStrength::Leaning,
-            "but the disagreement still costs the flat assertion"
+            KeyClaimStrength::Drifted,
+            "the dominant key was not the strip's end state — whole-session claim only"
+        );
+    }
+
+    /// #404 AC1 — the VA's literal shape: one key carries the session, then
+    /// the strip cycles between two other keys at the close (every closing
+    /// run is a single phrase). The recap must claim the dominant key as
+    /// `Drifted` — "mostly F Phrygian" — never `Leaning`, whose every
+    /// rendering says "toward the end" and contradicts the cycling strip the
+    /// player watched. Fails on pre-#404 code, which returned `Leaning` from
+    /// the blip branch.
+    #[test]
+    fn a_cycling_session_end_reads_mostly_the_dominant_key() {
+        let tracked = |tonic: u8, mode: theory::Mode, confidence: f32| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode,
+                confidence,
+                margin: 0.2,
+            });
+            p
+        };
+        let phrases = vec![
+            tracked(5, theory::Mode::Phrygian, 0.7), // F Phrygian carries…
+            tracked(5, theory::Mode::Phrygian, 0.7),
+            tracked(5, theory::Mode::Phrygian, 0.7),
+            tracked(4, theory::Mode::Locrian, 0.5), // …then the close cycles
+            tracked(5, theory::Mode::Ionian, 0.5),  // E Locrian / F major
+            tracked(4, theory::Mode::Locrian, 0.5),
+        ];
+        let KeyVerdict::Claimed(key, strength) = aggregate_key(&phrases) else {
+            panic!("a key was tracked");
+        };
+        assert_eq!(key.name(), "F Phrygian", "the session's carrier is named");
+        assert_eq!(
+            strength,
+            KeyClaimStrength::Drifted,
+            "a cycling close means the carrier was not the end state"
         );
     }
 
@@ -2741,6 +2810,38 @@ mod tests {
             suggestions.contains("leaning toward at the end") && suggestions.contains("G# major"),
             "the suggestion hedges toward the final reading: {suggestions}"
         );
+
+        // #404: G carries the session, a single-phrase G# close knocks the
+        // strip off it → drifted. No "sat firmly", and the suggestion anchors
+        // to the session — "ended on" or "at the end" would name an
+        // end-state the strip contradicted.
+        let drifted = recap_input_with(
+            vec![
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(8, 0.6),
+            ],
+            None,
+        );
+        let recap = grounded_offline_recap(&drifted);
+        let fp = recap.fingerprint.as_ref().expect("key was measured");
+        assert_eq!(fp.key_claim, Some(KeyClaimStrength::Drifted));
+        assert!(
+            !recap.strengths.join(" ").contains("sat firmly"),
+            "a drifted key must not claim a firm tonal center: {:?}",
+            recap.strengths
+        );
+        let suggestions = recap.next_session_suggestions.join(" ");
+        assert!(
+            suggestions.contains("the key that carried most of the session")
+                && suggestions.contains("G major"),
+            "the suggestion anchors a drifted key to the session: {suggestions}"
+        );
+        assert!(
+            !suggestions.contains("ended on") && !suggestions.contains("at the end"),
+            "a drifted key must never be phrased as an end-state: {suggestions}"
+        );
     }
 
     /// #316 AC4 — the LLM prompt states the claim honestly at every strength:
@@ -2779,6 +2880,30 @@ mod tests {
             "a hedged key must not also print a flat confidence figure"
         );
 
+        // Drifted (#404, the VA's cycling-close shape): the dominant key is
+        // named as a whole-session fact, with an explicit instruction never
+        // to call it the key at the end — "toward the end" here would
+        // contradict the strip the player watched close on other keys.
+        let drifted = recap_input_with(
+            vec![
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(7, 0.8),
+                tracked(8, 0.6), // single-phrase close off the carrier
+            ],
+            None,
+        );
+        let prompt = CoachingEngine::build_recap_user_prompt(&drifted);
+        assert!(
+            prompt.contains("mostly G major")
+                && prompt.contains("never that it was the key at the end"),
+            "a drifted key must read as a whole-session claim: {prompt}"
+        );
+        assert!(
+            !prompt.contains("toward the end"),
+            "a drifted key must not be anchored to the session's close: {prompt}"
+        );
+
         // Unsettled: tonal readings existed but never firmed into a claim →
         // the prompt forbids naming a key instead of staying silent (an
         // absent line lets the model guess).
@@ -2810,6 +2935,15 @@ mod tests {
         assert!(
             line.contains("jazz-leaning") && !line.contains("Dorian"),
             "hedged mode must degrade to the key-free variant: {line}"
+        );
+
+        // #404: a drifted key is hedged the same way — the strip contradicted
+        // its end, so a mode-named flavour would state it as fact.
+        fp.key_claim = Some(KeyClaimStrength::Drifted);
+        let line = theory_flavour(&fp).expect("swing leg still produces a line");
+        assert!(
+            line.contains("jazz-leaning") && !line.contains("Dorian"),
+            "a drifted mode must degrade to the key-free variant: {line}"
         );
 
         // Legacy blob: key present, claim field absent → original behavior.

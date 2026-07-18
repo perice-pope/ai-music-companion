@@ -371,10 +371,13 @@ Open the samples folder for her so she can drag a file:
    doesn't appear on a genuinely steady melodic session."
    **(b) Wandering:** "Now noodle around — drift between keys on purpose, maybe settle somewhere
    only right at the end, then end the session. The recap should NOT state a key flatly. It should
-   either say **'leaning … toward the end'** or **'kept moving — normal for exploratory
-   playing'**, and NO Strengths line may claim it 'sat firmly' anywhere." Flag hard: a flat key
-   claim that differs from the strip's end state (the original half-step bug), or a hedge on a
-   genuinely steady melodic session (the bug just fixed).
+   say **'leaning … toward the end'** (only when the strip actually ended there), **'mostly … —
+   wandering by the end'** (one key carried the session but the strip had moved off it by the
+   close), or **'kept moving — normal for exploratory playing'**, and NO Strengths line may claim
+   it 'sat firmly' anywhere." Flag hard: a flat key claim that differs from the strip's end state
+   (the original half-step bug), a 'toward the end' claim naming a key the strip was NOT showing
+   at the end (the #404 bug), or a hedge on a genuinely steady melodic session (the bug just
+   fixed).
 14. **The big question** — "Did it feel like the app truly **heard you** and gave **helpful,
     specific feedback on the music**? What was missing or wrong?"
 15. **Overall** — "1 to 5 overall, and the single thing you'd most want changed?"
@@ -509,8 +512,10 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
   session (watch the strip while playing; compare at the end): <answer>
 - **[#316 re-test — the 'coin flip' fix]** Stable one-key session → recap states the key plainly
   and it matches the strip's end state: <answer>
-- **[#316 re-test]** Wandering session → recap hedges ("leaning … toward the end") or says "kept
-  moving" — never flatly names a key, and no Strengths line claims it "sat firmly": <answer>
+- **[#316/#404 re-test]** Wandering session → recap hedges ("leaning … toward the end" — only if
+  the strip actually ended there — or "mostly … — wandering by the end") or says "kept moving" —
+  never flatly names a key, never says "toward the end" about a key the strip wasn't showing at
+  the end, and no Strengths line claims it "sat firmly": <answer>
 - **[#277 re-test]** The "Flavour" line changes between two different sessions (do one swung/jazzy,
   one plain — read both lines aloud): <answer>
 - Did the recap reflect her actual playing: <answer>

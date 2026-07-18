@@ -158,15 +158,19 @@ export default function SessionRecap() {
           </p>
           {/* Detected key/mode, stated only as firmly as the live tracking
             earned (#316): asserted keys read flat, late-settling keys lean,
-            and a session that never settled says so instead of guessing.
-            A missing key_claim is a pre-#316 recap → the flat form. */}
+            a key the strip wandered off by the close reads as a whole-session
+            fact (#404 — never "toward the end", which the strip would
+            contradict), and a session that never settled says so instead of
+            guessing. A missing key_claim is a pre-#316 recap → the flat form. */}
           {!isEmptyState && fingerprint?.key && (
             <p className="text-sm text-gray-400" data-testid="recap-key">
               Key:{" "}
               <span className="text-gray-200">
                 {fingerprint.key_claim === "leaning"
                   ? `leaning ${keyName(fingerprint.key)} toward the end`
-                  : keyName(fingerprint.key)}
+                  : fingerprint.key_claim === "drifted"
+                    ? `mostly ${keyName(fingerprint.key)} — wandering by the end`
+                    : keyName(fingerprint.key)}
               </span>
             </p>
           )}
