@@ -1,3 +1,9 @@
+## [2.34.0](https://github.com/perice-pope/ai-music-companion/compare/v2.33.0...v2.34.0) (2026-07-18)
+
+### Features
+
+* Openers item bank — intervals, chords, scales, enclosures ([#419](https://github.com/perice-pope/ai-music-companion/issues/419) S2a) ([#430](https://github.com/perice-pope/ai-music-companion/issues/430)) ([0a81ff5](https://github.com/perice-pope/ai-music-companion/commit/0a81ff546829f67a2fecb3420d936f7c51e6e30c))
+
 ## [2.33.0](https://github.com/perice-pope/ai-music-companion/compare/v2.32.0...v2.33.0) (2026-07-18)
 
 ### Features
