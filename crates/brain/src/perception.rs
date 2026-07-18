@@ -822,6 +822,23 @@ mod tests {
         assert!(alt.minor);
     }
 
+    /// #387 AC1 at the strip surface: flat keys render flat-side names in
+    /// both the headline and the relative alternative — an Ab-major reading
+    /// shows "Ab major" / "F minor", never "G# major". Fails if KeySnapshot
+    /// naming reverts to the sharp-only table.
+    #[test]
+    fn key_snapshot_names_flat_keys_conventionally() {
+        let s = key_snapshot(KeyEstimate {
+            tonic: 8,
+            mode: Mode::Ionian,
+            confidence: 0.8,
+            margin: 0.2,
+        });
+        assert_eq!(s.name, "Ab major");
+        let alt = s.alternative.expect("alternative");
+        assert_eq!(alt.name, "F minor");
+    }
+
     #[test]
     fn key_snapshot_minor_offers_relative_major() {
         let s = key_snapshot(KeyEstimate {

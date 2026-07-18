@@ -632,12 +632,8 @@ fn midi_to_hz(midi: u8) -> f64 {
     440.0 * 2f64.powf((f64::from(midi) - 69.0) / 12.0)
 }
 
-const SHARP_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-const FLAT_NAMES: [&str; 12] = [
-    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
-];
+const SHARP_NAMES: [&str; 12] = theory::PITCH_CLASS_NAMES;
+const FLAT_NAMES: [&str; 12] = theory::FLAT_PITCH_CLASS_NAMES;
 
 /// Display name for a tonic pitch class under a key signature: flat
 /// signatures name flats — the "C# major" lesson engraves as Db (5 flats),
@@ -693,9 +689,6 @@ pub fn respell_label(label: &str, fifths: i8) -> String {
 /// Locrian −5); chord/interval material uses the tonic's plain major or minor.
 /// The result is clamped into the engravable −7..=7.
 pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
-    /// fifths of the MAJOR key for each tonic pitch class, favoring the flat
-    /// spelling where conventional (Db over C#, Eb, Ab, Bb; F# kept for pc 6).
-    const MAJOR_FIFTHS: [i8; 12] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
     let label = mode_label.trim().to_lowercase();
     let (offset, minor_family) = if label.contains("dorian") {
         (-2, true)
@@ -722,7 +715,7 @@ pub fn key_signature_for(tonic: u8, mode_label: &str) -> KeySignature {
     // C# minor (+4), not a wrong Ab-minor signature; and prefer <=6 accidentals
     // so e.g. Db Dorian engraves as C# Dorian (5 sharps) rather than 7 flats.
     // Raw magnitude never exceeds 10, so one wrap suffices.
-    let mut fifths = MAJOR_FIFTHS[usize::from(tonic % 12)] + offset;
+    let mut fifths = theory::MAJOR_KEY_FIFTHS[usize::from(tonic % 12)] + offset;
     if fifths < -6 {
         fifths += 12;
     } else if fifths > 6 {

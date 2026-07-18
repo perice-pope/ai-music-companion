@@ -20,6 +20,7 @@ import type {
   LoadedScore,
 } from "../types/brain";
 import type { ChartEntry } from "../types/brain";
+import { spelledTonicName } from "../types/brain";
 import { useAudioStore } from "./audioStore";
 
 /**
@@ -535,25 +536,9 @@ export interface PracticeState {
   goToConnections: () => void;
 }
 
-/** Pitch-class names (sharps), index 0 = C. */
-const PITCH_CLASS_NAMES = [
-  "C",
-  "C#",
-  "D",
-  "D#",
-  "E",
-  "F",
-  "F#",
-  "G",
-  "G#",
-  "A",
-  "A#",
-  "B",
-];
-
 /** Build a displayable major/minor key option from a tonic + minor flag. */
 function keyOptionFor(tonic: number, minor: boolean): KeyOption {
-  const pc = PITCH_CLASS_NAMES[((tonic % 12) + 12) % 12];
+  const pc = spelledTonicName(tonic, minor ? "aeolian" : "ionian");
   return { tonic, minor, name: `${pc} ${minor ? "minor" : "major"}` };
 }
 

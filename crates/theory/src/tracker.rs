@@ -1,7 +1,11 @@
 //! Rolling key tracker: a decaying pitch-class profile + hysteresis, so a live
 //! reading follows modulation without flickering note-to-note.
 
-use crate::key::{correlation_for, estimate_key, KeyEstimate, PitchClassProfile};
+use crate::key::{
+    correlation_for, estimate_key, locrian_relatives, KeyEstimate, PitchClassProfile,
+    LOCRIAN_CLEAR_MARGIN,
+};
+use crate::Mode;
 
 /// Tuning for [`KeyTracker`].
 #[derive(Debug, Clone, Copy)]
@@ -107,9 +111,40 @@ impl KeyTracker {
         self.challenger = None;
     }
 
+    /// #387: a held Locrian must keep EARNING its name. `estimate_key` only
+    /// names Locrian when it clears [`LOCRIAN_CLEAR_MARGIN`] over both
+    /// relative readings — but an incumbent that once cleared it would
+    /// otherwise pin forever: when the material shifts back inside the band,
+    /// the demoted candidate's correlation is lower than the held Locrian's
+    /// by construction, so the normal switch can never fire (and the held
+    /// confidence stops refreshing). Re-apply the estimator's own rule to
+    /// the incumbent on the current profile.
+    fn recheck_locrian_hold(&mut self) {
+        let Some(held) = self.held else { return };
+        if held.mode != Mode::Locrian {
+            return;
+        }
+        let held_r = correlation_for(&self.profile, held.tonic, held.mode);
+        let ((alt_tonic, alt_mode), alt_r) = locrian_relatives(held.tonic)
+            .into_iter()
+            .map(|(t, m)| ((t, m), correlation_for(&self.profile, t, m)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("two candidates");
+        if held_r - alt_r < LOCRIAN_CLEAR_MARGIN {
+            self.held = Some(KeyEstimate {
+                tonic: alt_tonic,
+                mode: alt_mode,
+                confidence: alt_r.clamp(0.0, 1.0),
+                margin: 0.0,
+            });
+            self.challenger = None;
+        }
+    }
+
     /// Re-evaluate the held key against the current profile, applying the
     /// confidence floor and the anti-flicker switch margin.
     fn update(&mut self) {
+        self.recheck_locrian_hold();
         let Some(candidate) = estimate_key(&self.profile) else {
             return;
         };
@@ -318,6 +353,59 @@ mod tests {
         let est = t.current().unwrap();
         assert_eq!(est.tonic, 0);
         assert_eq!(est.mode, Mode::Ionian, "got {}", est.name());
+    }
+
+    /// #387: an incumbent Locrian must not pin. A genuinely-earned "B
+    /// Locrian" hold (B-hammered white-key drone) followed by leading-tone-
+    /// heavy C-major vamping lands INSIDE the demotion band: the candidate
+    /// arrives pre-demoted to C major with a correlation below the held
+    /// Locrian's, so the normal switch can never fire — without the
+    /// incumbent re-check the strip shows Locrian forever on exactly the
+    /// material #387 demotes. Fails if `recheck_locrian_hold` is dropped.
+    #[test]
+    fn a_held_locrian_yields_once_it_stops_clearing_the_margin() {
+        let mut t = KeyTracker::new();
+        // Earn the hold: true Locrian emphasis (tonic hammered, b5 next).
+        for _ in 0..8 {
+            for (i, &iv) in Mode::Locrian.intervals().iter().enumerate() {
+                let w = if i == 0 {
+                    3.0
+                } else if i == 4 {
+                    2.0
+                } else {
+                    1.0
+                };
+                t.observe_pc(11 + iv, w);
+            }
+        }
+        assert_eq!(
+            t.current().unwrap().name(),
+            "B Locrian",
+            "precondition: the drone must legitimately earn the Locrian hold"
+        );
+
+        // Shift to the leading-tone C-major vamp (the key::tests demotion
+        // profile shape) until the rolling window is dominated by it.
+        for _ in 0..30 {
+            for (pc, w) in [
+                (0u8, 3.0f32),
+                (2, 1.0),
+                (4, 1.0),
+                (5, 1.0),
+                (7, 2.0),
+                (9, 1.0),
+                (11, 4.0),
+            ] {
+                t.observe_pc(pc, w);
+            }
+        }
+        let est = t.current().expect("still holding a key");
+        assert_eq!(
+            est.name(),
+            "C major",
+            "a held Locrian inside the demotion band must yield; got {}",
+            est.name()
+        );
     }
 
     #[test]
