@@ -62,8 +62,11 @@ fn pocket_click_render_does_not_allocate() {
     metronome.render(&mut buf);
 
     COUNTING.with(|c| c.set(true));
-    // Two full seconds of render — count-in bar, live bars, many clicks.
-    for _ in 0..188 {
+    // Past the count-in→live transition (1 bar at 96 BPM = 120 000
+    // samples) and well into live clicking: 300 blocks ≈ 153 600 samples
+    // measure the count-in accents, the transition branch, AND the
+    // steady live pattern (review MF5 — the old window never left bar 1).
+    for _ in 0..300 {
         metronome.render(&mut buf);
     }
     COUNTING.with(|c| c.set(false));

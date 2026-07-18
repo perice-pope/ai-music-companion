@@ -920,7 +920,13 @@ mod tests {
                 first_negative = Some(i);
             }
         }
-        first_negative.expect("click produced a negative half-cycle") < 20
+        // Threshold derived from the voices themselves: midway between the
+        // two half-periods, so a legitimate retuning of either constant
+        // moves the boundary instead of silently breaking the detector.
+        let accent_half = (48_000.0 / ACCENT_FREQ_HZ / 2.0) as usize;
+        let normal_half = (48_000.0 / CLICK_FREQ_HZ / 2.0) as usize;
+        let threshold = (accent_half + normal_half) / 2;
+        first_negative.expect("click produced a negative half-cycle") < threshold
     }
 
     #[test]

@@ -6581,6 +6581,83 @@ mod tests {
         );
     }
 
+    /// #421 S1 AC8 (review MF1): ending the session stops the click — the
+    /// command's teardown + emit run BEFORE any device work, so the mock
+    /// runtime exercises them. The command errs (no active session); the
+    /// pocket event and the emptied slot are the assertions.
+    #[tokio::test]
+    async fn ending_the_session_stops_the_pocket() {
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("pocket-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        // No active session → the command errs AFTER the teardown+emit.
+        let _ = end_practice_session(handle, state.clone()).await;
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("session end emits pocket-status");
+        assert!(payload.contains("\"playing\":false"), "got: {payload}");
+        assert!(state.pocket.lock_or_recover().is_none());
+    }
+
+    /// #421 S1 review MF2: the pocket-status wire shape — App.tsx reads
+    /// payload.tempo_bpm; a serde rename ships a silently-dead pulse.
+    #[test]
+    fn pocket_status_payload_serializes_verbatim() {
+        assert_eq!(
+            serde_json::to_string(&PocketStatusPayload {
+                playing: true,
+                tempo_bpm: 96.0,
+            })
+            .unwrap(),
+            r#"{"playing":true,"tempo_bpm":96.0}"#
+        );
+    }
+
+    /// #421 S1 review MF4(a): the deterministic HALF of exclusivity — a
+    /// pocket start silences the band's status and empties its slot BEFORE
+    /// any device work, so this asserts on mock state regardless of whether
+    /// the device open succeeds (it may, briefly, on a dev machine — the
+    /// paired stop tears it down). Full audible exclusivity: manual verify.
+    #[tokio::test]
+    async fn starting_the_pocket_reports_the_band_stopped_first() {
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("accompaniment-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let _ = start_pocket(handle.clone(), state.clone(), 96.0, 4, true).await;
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("pocket start reports the band stopped");
+        assert!(payload.contains("\"playing\":false"), "got: {payload}");
+        assert!(state.accompaniment.lock_or_recover().is_none());
+        // If a real device opened, close it so the test leaves silence.
+        let _ = stop_pocket(handle, state.clone()).await;
+        assert!(state.pocket.lock_or_recover().is_none());
+    }
+
     /// #421 S1 AC3: the clamp table — played and reported values agree
     /// because one function produces both.
     #[test]
@@ -6604,8 +6681,9 @@ mod tests {
 
     /// #421 S1 AC2 (stop half): stop_pocket reports playing:false through
     /// the real command + mock runtime. (start needs a real output device —
-    /// covered by the ignored audible test + manual verify, the same
-    /// boundary the band's tests drew.)
+    /// covered by `plays_the_pocket_click_with_count_in` in ears'
+    /// output_engine_audible_test [ignored, manual] + the manual-verify
+    /// checklist, the same boundary the band's tests drew.)
     #[tokio::test]
     async fn stop_pocket_emits_status_playing_false() {
         use std::sync::Mutex as StdMutex;

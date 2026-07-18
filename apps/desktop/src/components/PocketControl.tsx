@@ -56,6 +56,15 @@ export default function PocketControl() {
             data-testid="pocket-tempo-input"
             disabled={!inSession}
             onChange={(e) => setPocketTempo(Number(e.target.value))}
+            onBlur={(e) => {
+              // A cleared field must not park at "0" — settle into range.
+              const n = Number(e.target.value);
+              setPocketTempo(
+                Number.isFinite(n) && n > 0
+                  ? Math.min(Math.max(n, 40), 220)
+                  : 90,
+              );
+            }}
             className="w-16 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-200 disabled:opacity-40"
             aria-label="Click tempo (BPM)"
           />

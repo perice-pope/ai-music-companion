@@ -231,6 +231,27 @@ export interface RecognizedPdf {
  */
 export const KEY_ASSERT_CONFIDENCE = 0.55;
 
+const POCKET_TEMPO_KEY = "ai-music-companion:pocket-tempo";
+
+/** #421 S1: the click tempo survives restarts (spec §4). Default 90. */
+function loadPocketTempo(): number {
+  try {
+    const raw = localStorage.getItem(POCKET_TEMPO_KEY);
+    const parsed = raw === null ? NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 90;
+  } catch {
+    return 90;
+  }
+}
+
+function savePocketTempo(bpm: number): void {
+  try {
+    localStorage.setItem(POCKET_TEMPO_KEY, String(bpm));
+  } catch {
+    // localStorage unavailable — the tempo still works for this session.
+  }
+}
+
 /** All the state the free-play flow needs. */
 export interface PracticeState {
   // Routing ---------------------------------------------------------------
@@ -1049,10 +1070,13 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   pocketPlaying: false,
-  pocketTempo: 90,
+  pocketTempo: loadPocketTempo(),
   pocketCountIn: true,
 
-  setPocketTempo: (bpm) => set({ pocketTempo: bpm }),
+  setPocketTempo: (bpm) => {
+    savePocketTempo(bpm);
+    set({ pocketTempo: bpm });
+  },
   setPocketCountIn: (on) => set({ pocketCountIn: on }),
 
   startPocket: async () => {

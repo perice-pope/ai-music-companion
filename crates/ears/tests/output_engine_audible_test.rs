@@ -46,3 +46,29 @@ fn plays_audible_metronome() {
     thread::sleep(Duration::from_secs(3));
     output.stop(); // joins both threads and releases the device -> silence
 }
+
+/// #421 S1: The Pocket's ACTUAL source — a bare [`Metronome`] as a
+/// [`RenderSource`] with a count-in — audibly verified. Run with
+/// `cargo test -p ears --test output_engine_audible_test -- --ignored --nocapture`
+/// and listen: one bar of high call-off clicks, then accent-on-1.
+#[test]
+#[ignore = "plays audio on the default output device — manual verify"]
+fn plays_the_pocket_click_with_count_in() {
+    use ears::output::{Metronome, MetronomeConfig};
+    let output = ears::output_engine::AudioOutput::start(|sample_rate| {
+        Metronome::new(
+            MetronomeConfig {
+                bpm: 96.0,
+                time_signature: (4, 4),
+                accent_first_beat: true,
+                volume: 0.8,
+            },
+            sample_rate,
+        )
+        .expect("valid config")
+        .with_count_in(1)
+    })
+    .expect("output device");
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    output.stop();
+}

@@ -86,5 +86,17 @@ describe("PocketControl (#421 S1)", () => {
     render(<PocketControl />);
     expect(screen.getByTestId("pocket-start")).toBeDisabled();
     expect(screen.getByTestId("pocket-tempo-input")).toBeDisabled();
+    expect(screen.getByTestId("pocket-count-in")).toBeDisabled();
+  });
+
+  it("a cleared tempo field settles into range on blur, never 0", () => {
+    render(<PocketControl />);
+    const input = screen.getByTestId("pocket-tempo-input");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input, { target: { value: "" } });
+    expect(usePracticeStore.getState().pocketTempo).toBe(90);
+    fireEvent.change(input, { target: { value: "500" } });
+    fireEvent.blur(input, { target: { value: "500" } });
+    expect(usePracticeStore.getState().pocketTempo).toBe(220);
   });
 });

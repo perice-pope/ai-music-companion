@@ -31,7 +31,7 @@ owns the device lifecycle with a zero-alloc render thread.
   "1-2-3-4!" call-off), then normal accent-on-downbeat. Pure, unit-tested
   in ears (no allocation changes to next_sample).
 - New commands (commands.rs, mirroring accompaniment's):
-  - `start_pocket(tempo_bpm: f32, beats_per_bar: u8, count_in: bool)` —
+  - `start_pocket(tempo_bpm: f64, beats_per_bar: u8, count_in: bool)` —
     clamps tempo to 40..=220, beats 2..=7; tears down any band; starts
     AudioOutput with a Metronome render source; emits `pocket-status
     { playing: true, tempo_bpm }`.
@@ -78,7 +78,7 @@ owns the device lifecycle with a zero-alloc render thread.
 | 1 | ears output.rs unit: count-in accent pattern by sample inspection |
 | 2 | commands mock-Tauri: start/stop event payloads |
 | 3 | commands: clamp table test |
-| 4 | commands: band→pocket and pocket→band exclusivity, both events |
+| 4 | commands: the DETERMINISTIC half — pocket start empties the band slot + emits its stopped status before any device work (mock runtime); full audible exclusivity is the ignored audible test + manual verify (the boundary the band's tests drew) |
 | 5 | brain tests: pocket_alloc_test (mirror accompaniment_alloc_test) |
 | 6 | PocketControl.test: wire shape, pulse node identity across state |
 | 7 | PocketControl.test: disabled off-session |
