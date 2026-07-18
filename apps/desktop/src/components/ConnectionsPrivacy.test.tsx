@@ -1,8 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import ConnectionsPrivacy from "./ConnectionsPrivacy";
 import { usePracticeStore } from "../stores/practiceStore";
 import { useConnectionsStore } from "../stores/connectionsStore";
+import { useUpdateStore } from "../stores/updateStore";
+
+// #58 MF4: the manual check button talks to the updater plugin — mocked.
+const mockUpdateCheck = vi.fn();
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: () => mockUpdateCheck(),
+}));
 
 // practiceStore pulls in @tauri-apps/api/core (invoke); stub it so the store
 // imports cleanly under jsdom. The panel itself never calls invoke.
@@ -112,6 +125,7 @@ describe("ConnectionsPrivacy", () => {
     const s = useConnectionsStore.getState();
     expect(s.cloudSyncEnabled).toBe(false);
     expect(s.teacherSharingEnabled).toBe(false);
+    expect(useConnectionsStore.getState().autoUpdateCheckEnabled).toBe(false);
   });
 
   it("renders the disclosure copy: what is sent, to whom, and the offline reassurance", () => {
@@ -147,7 +161,9 @@ describe("ConnectionsPrivacy", () => {
     // What is sent, to whom, and when — in plain language.
     expect(within(row).getByText(/contacts GitHub/i)).toBeTruthy();
     expect(
-      within(row).getByText(/never checks on startup and works fully offline/i),
+      within(row).getByText(
+        /Unless automatic checks are on, the app never checks on startup/i,
+      ),
     ).toBeTruthy();
     // The "no personal data" promise, the question parents ask.
     expect(
@@ -186,5 +202,28 @@ describe("ConnectionsPrivacy", () => {
     expect(useConnectionsStore.getState().cloudSyncEnabled).toBe(false);
     // Withdrawing sync also withdraws the teacher-sharing feature it carries.
     expect(useConnectionsStore.getState().teacherSharingEnabled).toBe(false);
+  });
+
+  // #58 review MF4: the manual "Check for updates" the copy has always
+  // promised now exists — user-initiated, independent of the toggle, with
+  // a calm up-to-date answer. Fails if the button disappears or stops
+  // calling the plugin.
+  it("the manual check button works regardless of the auto-check toggle", async () => {
+    mockUpdateCheck.mockResolvedValue(null); // up to date
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    useConnectionsStore.setState({ autoUpdateCheckEnabled: false });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "latest version",
+      ),
+    );
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(1);
   });
 });

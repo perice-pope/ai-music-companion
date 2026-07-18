@@ -80,6 +80,14 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     }
     try {
       const update = await check();
+      // Review MF2 (TOCTOU): the entry guard above ran BEFORE the await —
+      // if an install started while this check was in flight, a late
+      // resolution must not stomp the phase back to "available" (which
+      // re-enabled the button mid-download and could fire a second,
+      // concurrent install).
+      if (get().phase === "downloading" || get().phase === "ready") {
+        return;
+      }
       if (!update) {
         return; // Up to date — stay idle, render nothing.
       }
@@ -109,9 +117,12 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       // in-app relaunch button is a follow-up slice — no new plugin dep).
       set({ phase: "ready" });
     } catch (err) {
+      // Raw plugin errors (network, signature verification) are not calm
+      // reading — log them, show a fixed friendly line (review SF6).
+      console.error("update install failed:", err);
       set({
         phase: "error",
-        notice: `The update didn't finish — ${String(err)}. It will offer again next check.`,
+        notice: "The update didn't finish. It will offer again next check.",
       });
       pendingUpdate = null;
     }

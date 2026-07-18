@@ -38,7 +38,8 @@ export interface ConnectionsState {
    * #58: automatic update checks (on launch + every few hours). Off by
    * default — the shipped promise is "no update request on launch or in
    * the background" unless the user opts in here. The manual "Check for
-   * updates" button works regardless of this flag.
+   * updates" button in ConnectionsPrivacy works regardless of this flag
+   * (user-initiated is always allowed).
    */
   autoUpdateCheckEnabled: boolean;
 

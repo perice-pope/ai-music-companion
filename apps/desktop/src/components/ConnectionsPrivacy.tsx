@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useConnectionsStore } from "../stores/connectionsStore";
+import { useUpdateStore } from "../stores/updateStore";
 import { usePracticeStore } from "../stores/practiceStore";
 import AppVersionBadge from "./AppVersionBadge";
 
@@ -89,6 +91,48 @@ interface InfoRowProps {
  * pill instead of a control, so it is not counted among the off-by-default
  * toggles.
  */
+/**
+ * #58 review MF4: the manual "Check for updates" the disclosure copy has
+ * always described — now it actually exists. User-initiated, independent
+ * of the automatic-check toggle; a found update surfaces the pill, an
+ * up-to-date answer says so calmly right here.
+ */
+function CheckForUpdatesButton() {
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+  const phase = useUpdateStore((s) => s.phase);
+  const [state, setState] = useState<"idle" | "checking" | "done">("idle");
+
+  const onCheck = async () => {
+    setState("checking");
+    await checkForUpdate();
+    setState("done");
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-3">
+      <button
+        type="button"
+        data-testid="check-updates-now"
+        onClick={() => void onCheck()}
+        disabled={state === "checking"}
+        className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+      >
+        {state === "checking" ? "Checking…" : "Check for updates"}
+      </button>
+      {state === "done" && (
+        <span
+          className="text-sm text-gray-400"
+          data-testid="check-updates-result"
+        >
+          {phase === "idle"
+            ? "You're on the latest version."
+            : "Update found — see the pill, bottom left."}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function InfoRow({ testId, title, description, whenIdle }: InfoRowProps) {
   return (
     <div className="rounded-lg bg-gray-800 p-4" data-testid={testId}>
@@ -188,7 +232,7 @@ export default function ConnectionsPrivacy() {
             id="toggle-auto-update-check"
             title="Check for updates automatically"
             description="Lets the app quietly ask GitHub for the latest version when it opens (and every few hours while running). If a newer signed build exists, a small pill appears bottom-left — nothing downloads until you click it. The check sends no audio, no practice history, no personal data — just a request for the latest version number."
-            whenOff="The app makes no update request on launch or in the background. A check only happens when you choose \u201cCheck for updates\u201d yourself, and the app works fully offline forever."
+            whenOff="The app makes no update request on launch or in the background. A check only happens when you press the check button below yourself, and the app works fully offline forever."
             enabled={autoUpdateCheckEnabled}
             onChange={setAutoUpdateCheckEnabled}
           />
@@ -196,11 +240,12 @@ export default function ConnectionsPrivacy() {
           <InfoRow
             testId="info-app-updates"
             title="App updates"
-            description="Checking for updates contacts GitHub only when you ask (or automatically, if you turned that on above). If an update is found, it asks you before downloading the new signed version. The app never checks on startup and works fully offline. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
+            description="Checking for updates contacts GitHub only when you ask — or automatically, if you turned that on above. If an update is found, the pill asks you before downloading the new signed version. Unless automatic checks are on, the app never checks on startup, and it works fully offline either way. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
             whenIdle={
               "Nothing is sent. The app makes no update request on launch or in the background; a check only happens when you choose “Check for updates.” You can keep using the app without ever checking."
             }
           />
+          <CheckForUpdatesButton />
         </div>
 
         <p className="mt-6 text-sm text-gray-500">

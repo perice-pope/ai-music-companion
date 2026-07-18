@@ -138,6 +138,68 @@ describe("UpdatePill (#58)", () => {
     expect(screen.queryByTestId("update-pill")).toBeNull();
   });
 
+  it("a late check resolution never stomps an in-flight download — TOCTOU", async () => {
+    // Review MF2, proven at HEAD round 1: a heartbeat check in flight when
+    // the user clicks install used to flip the phase back to "available",
+    // re-enabling the button mid-download.
+    let resolveInstall: () => void = () => {};
+    const offered = {
+      version: "9.9.9",
+      downloadAndInstall: vi.fn(
+        () => new Promise<void>((res) => (resolveInstall = res)),
+      ),
+    };
+    mockCheck.mockResolvedValueOnce(offered);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    expect(useUpdateStore.getState().phase).toBe("available");
+
+    // A heartbeat check goes airborne (deferred), THEN the user installs.
+    let resolveLateCheck: (u: unknown) => void = () => {};
+    mockCheck.mockImplementationOnce(
+      () => new Promise((res) => (resolveLateCheck = res)),
+    );
+    const lateCheck = useUpdateStore.getState().checkForUpdate();
+    const installing = useUpdateStore.getState().installUpdate();
+    expect(useUpdateStore.getState().phase).toBe("downloading");
+
+    // The stale check lands mid-download — it must not stomp the phase.
+    await act(async () => {
+      resolveLateCheck({
+        version: "9.9.8",
+        downloadAndInstall: vi.fn(),
+      });
+      await lateCheck;
+    });
+    expect(useUpdateStore.getState().phase).toBe("downloading");
+
+    await act(async () => {
+      resolveInstall();
+      await installing;
+    });
+    expect(useUpdateStore.getState().phase).toBe("ready");
+    expect(offered.downloadAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("double-clicking install downloads exactly once", async () => {
+    let resolveInstall: () => void = () => {};
+    const handle = {
+      version: "9.9.9",
+      downloadAndInstall: vi.fn(
+        () => new Promise<void>((res) => (resolveInstall = res)),
+      ),
+    };
+    mockCheck.mockResolvedValue(handle);
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-install"));
+    // The button is gone in the downloading phase, but pin the store too.
+    await act(() => useUpdateStore.getState().installUpdate());
+    expect(handle.downloadAndInstall).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveInstall();
+    });
+  });
+
   it("the auto-check flag is OFF by default and persists when set", () => {
     // AC1's foundation: the default must be false — the shipped promise
     // is no background update requests unless the user opts in.
