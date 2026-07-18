@@ -34,12 +34,22 @@ export interface ConnectionsState {
    */
   teacherSharingEnabled: boolean;
 
+  /**
+   * #58: automatic update checks (on launch + every few hours). Off by
+   * default — the shipped promise is "no update request on launch or in
+   * the background" unless the user opts in here. The manual "Check for
+   * updates" button works regardless of this flag.
+   */
+  autoUpdateCheckEnabled: boolean;
+
   setCloudSyncEnabled: (on: boolean) => void;
   setTeacherSharingEnabled: (on: boolean) => void;
+  setAutoUpdateCheckEnabled: (on: boolean) => void;
 }
 
 const CLOUD_SYNC_KEY = "ai-music-companion:cloud-sync-enabled";
 const TEACHER_SHARING_KEY = "ai-music-companion:teacher-sharing-enabled";
+const AUTO_UPDATE_KEY = "ai-music-companion:auto-update-check-enabled";
 
 /** Read a persisted opt-in flag. Defaults to false (off) for everything. */
 function loadFlag(key: string): boolean {
@@ -62,6 +72,7 @@ function saveFlag(key: string, on: boolean): void {
 export const useConnectionsStore = create<ConnectionsState>((set) => ({
   cloudSyncEnabled: loadFlag(CLOUD_SYNC_KEY),
   teacherSharingEnabled: loadFlag(TEACHER_SHARING_KEY),
+  autoUpdateCheckEnabled: loadFlag(AUTO_UPDATE_KEY),
 
   setCloudSyncEnabled: (on) => {
     saveFlag(CLOUD_SYNC_KEY, on);
@@ -77,5 +88,10 @@ export const useConnectionsStore = create<ConnectionsState>((set) => ({
   setTeacherSharingEnabled: (on) => {
     saveFlag(TEACHER_SHARING_KEY, on);
     set({ teacherSharingEnabled: on });
+  },
+
+  setAutoUpdateCheckEnabled: (on) => {
+    saveFlag(AUTO_UPDATE_KEY, on);
+    set({ autoUpdateCheckEnabled: on });
   },
 }));

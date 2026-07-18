@@ -13,6 +13,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+// #58: the updater plugin — mocked so the AC1 test can PROVE no check
+// happens without the opt-in (the shipped offline-first promise).
+const mockUpdateCheck = vi.fn().mockResolvedValue(null);
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: () => mockUpdateCheck(),
+}));
+import { useConnectionsStore } from "./stores/connectionsStore";
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -262,5 +270,32 @@ describe("App", () => {
     render(<App />);
     screen.getByRole("heading", { name: "AI Music Companion" });
     screen.getByText(/Free Play/);
+  });
+
+  // #58 AC1: with the toggle OFF (the default), mounting the app and letting
+  // hours pass makes NO update request — the offline-first promise, pinned.
+  it("never checks for updates without the opt-in", async () => {
+    vi.useFakeTimers();
+    useConnectionsStore.setState({ autoUpdateCheckEnabled: false });
+    render(<App />);
+    await vi.advanceTimersByTimeAsync(9 * 60 * 60 * 1000);
+    expect(mockUpdateCheck).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  // #58 AC2/AC7: with the opt-in ON, the app checks on mount and again on
+  // the four-hour heartbeat; flipping it off stops the interval.
+  it("checks on mount and every four hours once opted in", async () => {
+    vi.useFakeTimers();
+    useConnectionsStore.setState({ autoUpdateCheckEnabled: true });
+    render(<App />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1000);
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(2);
+    useConnectionsStore.setState({ autoUpdateCheckEnabled: false });
+    await vi.advanceTimersByTimeAsync(8 * 60 * 60 * 1000);
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });

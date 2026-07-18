@@ -118,6 +118,12 @@ export default function ConnectionsPrivacy() {
 
   // Cloud sync + teacher sharing opt-in intent (off by default).
   const cloudSyncEnabled = useConnectionsStore((s) => s.cloudSyncEnabled);
+  const autoUpdateCheckEnabled = useConnectionsStore(
+    (s) => s.autoUpdateCheckEnabled,
+  );
+  const setAutoUpdateCheckEnabled = useConnectionsStore(
+    (s) => s.setAutoUpdateCheckEnabled,
+  );
   const setCloudSyncEnabled = useConnectionsStore((s) => s.setCloudSyncEnabled);
   const teacherSharingEnabled = useConnectionsStore(
     (s) => s.teacherSharingEnabled,
@@ -178,10 +184,19 @@ export default function ConnectionsPrivacy() {
             onChange={setTeacherSharingEnabled}
           />
 
+          <ToggleRow
+            id="toggle-auto-update-check"
+            title="Check for updates automatically"
+            description="Lets the app quietly ask GitHub for the latest version when it opens (and every few hours while running). If a newer signed build exists, a small pill appears bottom-left — nothing downloads until you click it. The check sends no audio, no practice history, no personal data — just a request for the latest version number."
+            whenOff="The app makes no update request on launch or in the background. A check only happens when you choose \u201cCheck for updates\u201d yourself, and the app works fully offline forever."
+            enabled={autoUpdateCheckEnabled}
+            onChange={setAutoUpdateCheckEnabled}
+          />
+
           <InfoRow
             testId="info-app-updates"
             title="App updates"
-            description="Checking for updates contacts GitHub only when you ask. If an update is found, it asks you before downloading the new signed version. The app never checks on startup and works fully offline. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
+            description="Checking for updates contacts GitHub only when you ask (or automatically, if you turned that on above). If an update is found, it asks you before downloading the new signed version. The app never checks on startup and works fully offline. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
             whenIdle={
               "Nothing is sent. The app makes no update request on launch or in the background; a check only happens when you choose “Check for updates.” You can keep using the app without ever checking."
             }

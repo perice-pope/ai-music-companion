@@ -70,13 +70,12 @@ describe("ConnectionsPrivacy", () => {
       expect(sw.checked).toBe(false);
     }
 
-    // The app-updates disclosure is an INFO row, not a toggle: it must not
-    // introduce a switch (the egress lives in the Tauri updater plugin, gated
-    // by the native consent dialog, not by a Face-layer flag). So the switch
-    // count stays at the three real opt-in toggles — adding a non-functional
-    // switch would be a dark pattern.
-    expect(screen.queryByRole("switch", { name: /App updates/i })).toBeNull();
-    expect(switches.length).toBe(3);
+    // The app-updates disclosure stays an INFO row (no switch of its own —
+    // a non-functional switch would be a dark pattern); #58 added a fourth
+    // REAL opt-in above it: automatic update checks. Count is pinned so a
+    // networked toggle can't appear without landing in this test.
+    expect(screen.queryByRole("switch", { name: /^App updates/i })).toBeNull();
+    expect(switches.length).toBe(4);
 
     // Named, so a regression that flips one on is caught by feature.
     expect(
@@ -94,6 +93,14 @@ describe("ConnectionsPrivacy", () => {
       (
         screen.getByRole("switch", {
           name: /Share with a teacher/i,
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    // #58: automatic update checks — the shipped promise is off-by-default.
+    expect(
+      (
+        screen.getByRole("switch", {
+          name: /Check for updates automatically/i,
         }) as HTMLInputElement
       ).checked,
     ).toBe(false);
