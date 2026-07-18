@@ -1,3 +1,9 @@
+## [2.30.0](https://github.com/perice-pope/ai-music-companion/compare/v2.29.0...v2.30.0) (2026-07-18)
+
+### Features
+
+* Session Starters S1 — the Openers builder ([#419](https://github.com/perice-pope/ai-music-companion/issues/419)) ([#424](https://github.com/perice-pope/ai-music-companion/issues/424)) ([4fa90da](https://github.com/perice-pope/ai-music-companion/commit/4fa90da2f9445f414eefa1c52443352ddc26e256)), closes [#417](https://github.com/perice-pope/ai-music-companion/issues/417)
+
 ## [2.29.0](https://github.com/perice-pope/ai-music-companion/compare/v2.28.12...v2.29.0) (2026-07-18)
 
 ### Features
