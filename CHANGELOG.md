@@ -1,3 +1,9 @@
+## [2.31.0](https://github.com/perice-pope/ai-music-companion/compare/v2.30.1...v2.31.0) (2026-07-18)
+
+### Features
+
+* keyboard lessons engrave on a grand staff ([#417](https://github.com/perice-pope/ai-music-companion/issues/417)-3) ([#427](https://github.com/perice-pope/ai-music-companion/issues/427)) ([da49cdf](https://github.com/perice-pope/ai-music-companion/commit/da49cdf096786517341ffa3139a78c98c7d547a9)), closes [#417-3](https://github.com/perice-pope/ai-music-companion/issues/417-3) [#417-2a](https://github.com/perice-pope/ai-music-companion/issues/417-2a) [#417-3](https://github.com/perice-pope/ai-music-companion/issues/417-3) [#417-3](https://github.com/perice-pope/ai-music-companion/issues/417-3) [#417-3](https://github.com/perice-pope/ai-music-companion/issues/417-3)
+
 ## [2.30.1](https://github.com/perice-pope/ai-music-companion/compare/v2.30.0...v2.30.1) (2026-07-18)
 
 ### Bug Fixes
