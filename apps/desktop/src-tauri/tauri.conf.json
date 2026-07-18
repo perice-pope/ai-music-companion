@@ -63,7 +63,8 @@
       "nsis": {
         "installMode": "perMachine"
       }
-    }
+    },
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
