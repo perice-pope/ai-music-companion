@@ -37,6 +37,11 @@ beforeEach(() => {
     openerItems: [],
     openerPreview: null,
     openerNotice: null,
+    // S2b state resets too — direction and captured tonic leak across
+    // tests otherwise (and did, in review).
+    openerTonic: null,
+    openerDirection: "forward",
+    perception: null,
     explore: null,
     // Begin guards on a live session, like every sibling explore action.
     status: "listening",
@@ -49,9 +54,10 @@ describe("OpenersPanel (#419 S1)", () => {
     fireEvent.click(screen.getByTestId("openers-toggle"));
     screen.getByText("Notes");
     screen.getByText("Note sequence");
-    // The rest of the bank is visible but resting — the honest roadmap.
+    // S2a/S2b made the bank live; only My patterns still rests.
     screen.getByText("Enclosures");
-    screen.getByText("Pattern directions");
+    screen.getByText("Pattern direction");
+    screen.getByText("My patterns");
   });
 
   it("a note tap adds an item and requests a PURE preview", async () => {
@@ -63,6 +69,8 @@ describe("OpenersPanel (#419 S1)", () => {
         // SEMANTIC wire shape — the degree→semitone table lives in Rust
         // only (review MF2). A tap is a degree, never an offset.
         items: [{ type: "note_sequence", degrees: [3] }],
+        tonic: null,
+        direction: "forward",
       }),
     );
     // Never begin_opener from a preview — a preview that hijacks the
@@ -81,6 +89,8 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("preview_opener", {
         items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: null,
+        direction: "forward",
       }),
     );
     screen.getByTestId("opener-chip-0");
@@ -96,6 +106,8 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
         items: [{ type: "note_sequence", degrees: [1, 3, 5, 8] }],
+        tonic: null,
+        direction: "forward",
       }),
     );
   });
@@ -113,6 +125,8 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("begin_opener", {
         items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: null,
+        direction: "forward",
       }),
     );
     // The dto lands on the SAME explore surface a lifted lick uses, and
@@ -168,6 +182,8 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
         items: [{ type: "interval", number: 5 }],
+        tonic: null,
+        direction: "forward",
       }),
     );
     fireEvent.click(screen.getByTestId("opener-chord-dominant_seventh"));
@@ -177,6 +193,8 @@ describe("OpenersPanel (#419 S1)", () => {
           { type: "interval", number: 5 },
           { type: "chord", kind: "dominant_seventh" },
         ],
+        tonic: null,
+        direction: "forward",
       }),
     );
     fireEvent.click(screen.getByTestId("opener-scale-blues"));
@@ -189,6 +207,8 @@ describe("OpenersPanel (#419 S1)", () => {
           { type: "scale", kind: "blues" },
           { type: "enclosure", style: "one_down_one_up" },
         ],
+        tonic: null,
+        direction: "forward",
       }),
     );
     // Chip labels read musically.
@@ -207,11 +227,95 @@ describe("OpenersPanel (#419 S1)", () => {
   it("the resting bank shrank to what actually rests", () => {
     render(<OpenersPanel />);
     fireEvent.click(screen.getByTestId("openers-toggle"));
-    screen.getByText("Pattern directions");
+    // S2b took directions live; only My patterns rests now.
     screen.getByText("My patterns");
+    expect(screen.queryByText("Pattern directions")).toBeNull();
     // The four S2a rows are live sections now, not resting chips.
     expect(screen.getAllByText("Intervals")).toHaveLength(1);
     expect(screen.getAllByText("Chords")).toHaveLength(1);
+  });
+
+  // ── #419 S2b: direction chips + the captured tonic ────────────────────
+
+  it("direction chips are exclusive and re-voice the preview", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+    fireEvent.click(screen.getByTestId("opener-direction-reversed"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: null,
+        direction: "reversed",
+      }),
+    );
+    expect(
+      screen
+        .getByTestId("opener-direction-reversed")
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByTestId("opener-direction-forward")
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
+
+  it("Begin sends the tonic the last PREVIEW captured, not a fresh read", async () => {
+    // A confident A-major room at preview time…
+    usePracticeStore.setState({
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 9,
+          mode: "major",
+          name: "A major",
+          confidence: 0.9,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      } as never,
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: 9,
+        direction: "forward",
+      }),
+    );
+    // …then the room drifts to D before Begin: Begin must still send A —
+    // the preview IS the exercise.
+    usePracticeStore.setState({
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 2,
+          mode: "major",
+          name: "D major",
+          confidence: 0.9,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      } as never,
+    });
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("begin_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: 9,
+        direction: "forward",
+      }),
+    );
   });
 
   it("custom entry parses spaces/dashes into ONE note_sequence item", async () => {
@@ -224,6 +328,8 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
         items: [{ type: "note_sequence", degrees: [1, 5, 3, 2] }],
+        tonic: null,
+        direction: "forward",
       }),
     );
     // Input clears for the next one.
@@ -249,7 +355,167 @@ describe("OpenersPanel (#419 S1)", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
         items: [{ type: "note_sequence", degrees: [9] }],
+        tonic: null,
+        direction: "forward",
       }),
+    );
+  });
+
+  it("the capture respects the assert threshold — 0.54 is a wobble", async () => {
+    // Review MF5: >= 0.55 captures; below stays C. Exactly-at included.
+    const withConfidence = (confidence: number) =>
+      ({
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 9,
+          mode: "major",
+          name: "A major",
+          confidence,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      }) as never;
+    usePracticeStore.setState({ perception: withConfidence(0.54) });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    usePracticeStore.setState({ perception: withConfidence(0.55) });
+    fireEvent.click(screen.getByTestId("opener-note-2"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "note_sequence", degrees: [1] },
+          { type: "note_sequence", degrees: [2] },
+        ],
+        tonic: 9,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("Begin resets direction and tonic — the next recipe starts fresh", async () => {
+    // Review MF6: a stale captured tonic leaking into the next recipe is
+    // the drift class this slice exists to prevent.
+    usePracticeStore.setState({
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 9,
+          mode: "major",
+          name: "A major",
+          confidence: 0.9,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      } as never,
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    fireEvent.click(screen.getByTestId("opener-direction-reversed"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: 9,
+        direction: "reversed",
+      }),
+    );
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    expect(usePracticeStore.getState().openerDirection).toBe("forward");
+    expect(usePracticeStore.getState().openerTonic).toBeNull();
+    // The room went silent; the NEXT recipe previews from C, forward.
+    usePracticeStore.setState({ perception: null });
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("a stale direction refresh cannot outpaint a newer one — seq token", async () => {
+    // Review MF2: two direction-triggered refreshes share the items array
+    // identity; only a monotonic token can order them. The FIRST refresh
+    // resolves LAST and must be dropped — preview, tonic, and previewed
+    // direction all stay with the newer response.
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+
+    let resolveSlow: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementationOnce(
+      () => new Promise((res) => (resolveSlow = res)),
+    );
+    fireEvent.click(screen.getByTestId("opener-direction-reversed"));
+    // The second flip's refresh resolves immediately.
+    fireEvent.click(screen.getByTestId("opener-direction-varied"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
+        "varied",
+      ),
+    );
+    // The slow "reversed" response lands late — and changes nothing.
+    await act(async () => {
+      resolveSlow({ ...PREVIEW_DTO, label: "stale reversed preview" });
+      await Promise.resolve();
+    });
+    expect(usePracticeStore.getState().openerPreviewedDirection).toBe("varied");
+    expect(usePracticeStore.getState().openerPreview?.label).not.toBe(
+      "stale reversed preview",
+    );
+  });
+
+  it("Begin's reset kills an in-flight refresh — no ghost repaint", async () => {
+    // Round-3 review MF1: a preview refresh airborne when Begin resolves
+    // must NOT repaint the just-reset builder with a ghost preview and a
+    // stale captured tonic.
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+
+    // A second item's preview goes airborne (slow)…
+    let resolveSlow: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementationOnce(
+      () => new Promise((res) => (resolveSlow = res)),
+    );
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(2),
+    );
+    // …while Begin resolves fast and resets the builder.
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    // The slow preview lands late — and changes NOTHING.
+    await act(async () => {
+      resolveSlow({ ...PREVIEW_DTO, label: "ghost preview" });
+      await Promise.resolve();
+    });
+    expect(usePracticeStore.getState().openerPreview).toBeNull();
+    expect(usePracticeStore.getState().openerTonic).toBeNull();
+    expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
+      "forward",
     );
   });
 });

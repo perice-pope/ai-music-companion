@@ -1,10 +1,13 @@
-import { usePracticeStore } from "../stores/practiceStore";
+import {
+  usePracticeStore,
+  KEY_ASSERT_CONFIDENCE,
+} from "../stores/practiceStore";
 import { colorForPitchClass } from "../lib/rvColors";
 
 /** Below this key confidence (0–1), the reading is shown tentatively ("maybe …")
  * rather than asserted. The relative alternative is always offered regardless —
  * it's the honesty cue, most useful exactly when we're unsure. */
-const KEY_CONFIDENCE_THRESHOLD = 0.55;
+const KEY_CONFIDENCE_THRESHOLD = KEY_ASSERT_CONFIDENCE;
 
 /**
  * Live "here's what I hear" strip, shown during a session. Surfaces the app's

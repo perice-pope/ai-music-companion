@@ -2927,7 +2927,13 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     };
     let (cell, first_midi) =
         lifted.ok_or_else(|| "play a little phrase first — then I can lift it".to_owned())?;
-    let (explore, seq) = brain::coach::start_explore_cell(cell, first_midi % 12, &model, seed);
+    let (explore, seq) = brain::coach::start_explore_cell(
+        cell,
+        first_midi % 12,
+        &model,
+        seed,
+        brain::coach::DirectionMode::Forward,
+    );
     let dto = explore_dto(&explore, &seq, &model);
     {
         let store = state.session_store.lock_or_recover();
@@ -3016,7 +3022,13 @@ pub fn explore_measure_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let (explore, seq) = brain::coach::start_explore_cell(cell, first % 12, &learner, seed);
+    let (explore, seq) = brain::coach::start_explore_cell(
+        cell,
+        first % 12,
+        &learner,
+        seed,
+        brain::coach::DirectionMode::Forward,
+    );
     let dto = explore_dto(&explore, &seq, &learner);
     {
         let store = state.session_store.lock_or_recover();
@@ -3045,10 +3057,26 @@ pub fn explore_measure_impl(
 pub fn opener_impl(
     state: &AppState,
     items: &[brain::starter::StarterItem],
+    tonic: Option<u8>,
+    direction: Option<&str>,
     commit: bool,
 ) -> Result<ExploreDto, String> {
     let cell = brain::starter::composite_cell(items, brain::coach::LIFT_MAX_NOTES)
         .map_err(|e| e.to_string())?;
+    // #419 S2b: row from the key the room is in when the frontend heard
+    // one confidently; C otherwise. Folded defensively — the wire must
+    // never panic on a wild value.
+    let tonic = tonic.unwrap_or(0) % 12;
+    let direction = match direction.unwrap_or("forward") {
+        "forward" => brain::coach::DirectionMode::Forward,
+        "reversed" => brain::coach::DirectionMode::Reversed,
+        "varied" => brain::coach::DirectionMode::RandomPerRoot,
+        other => {
+            return Err(format!(
+                "direction can be forward, reversed, or varied — not {other:?}"
+            ))
+        }
+    };
     // Deterministic per-recipe seed (session-local determinism only — the
     // hash need not be stable across releases, just between the preview
     // and the Begin that follows it).
@@ -3066,7 +3094,7 @@ pub fn opener_impl(
         .unwrap_or_default();
     // Openers speak in abstract degrees, so the row starts from C and
     // travels the 12 keys from there (S1 simplification, noted in #419).
-    let (explore, seq) = brain::coach::start_explore_cell(cell, 0, &model, seed);
+    let (explore, seq) = brain::coach::start_explore_cell(cell, tonic, &model, seed, direction);
     let dto = explore_dto(&explore, &seq, &model);
     if commit {
         {
@@ -3094,8 +3122,10 @@ pub fn opener_impl(
 pub fn preview_opener(
     state: State<'_, AppState>,
     items: Vec<brain::starter::StarterItem>,
+    tonic: Option<u8>,
+    direction: Option<String>,
 ) -> Result<ExploreDto, String> {
-    opener_impl(&state, &items, false)
+    opener_impl(&state, &items, tonic, direction.as_deref(), false)
 }
 
 /// #419 S1: Begin — the built opener becomes the session's exploration.
@@ -3103,8 +3133,10 @@ pub fn preview_opener(
 pub fn begin_opener(
     state: State<'_, AppState>,
     items: Vec<brain::starter::StarterItem>,
+    tonic: Option<u8>,
+    direction: Option<String>,
 ) -> Result<ExploreDto, String> {
-    opener_impl(&state, &items, true)
+    opener_impl(&state, &items, tonic, direction.as_deref(), true)
 }
 
 /// #337 S5: row one measure of a stored score through 12 keys.
@@ -4399,6 +4431,22 @@ mod tests {
             !dto.staff.notes.is_empty(),
             "the exploration renders on the staff"
         );
+        // #419 S2b round-3 MF3: the measure path stays FORWARD — the first
+        // segment follows the stored measure's contour (C D E F). A
+        // direction leak into this path goes red.
+        let m1 = dto
+            .music_xml
+            .split("<measure number=\"2\">")
+            .next()
+            .unwrap();
+        let steps: Vec<&str> = m1
+            .match_indices("<step>")
+            .map(|(i, _)| {
+                let rest = &m1[i + 6..];
+                &rest[..rest.find("</step>").unwrap()]
+            })
+            .collect();
+        assert_eq!(steps, vec!["C", "D", "E", "F"], "measure contour intact");
         assert!(
             dto.root_pitch_classes.len() >= 3,
             "rowed through multiple keys: {:?}",
@@ -4976,6 +5024,26 @@ mod tests {
         assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
         assert!(!dto.root_pitch_classes.is_empty());
         assert!(!dto.staff.notes.is_empty());
+        // #419 S2b review MF7: the lift path stays FORWARD — the first
+        // segment's steps follow the played lick's contour (D F E A D).
+        // A direction leak into the lift path (the S2b param) breaks this.
+        let m1 = dto
+            .music_xml
+            .split("<measure number=\"2\">")
+            .next()
+            .unwrap();
+        let steps: Vec<&str> = m1
+            .match_indices("<step>")
+            .map(|(i, _)| {
+                let rest = &m1[i + 6..];
+                &rest[..rest.find("</step>").unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            vec!["D", "F", "E", "A", "D"],
+            "lifted contour intact"
+        );
         // And it's immediately editable (#292): the correction UX this loop
         // was built for.
         let edited =
@@ -7348,7 +7416,7 @@ mod tests {
             degrees: vec![1, 2, 3, 5],
         }];
 
-        let preview = opener_impl(&state, &items, false).expect("preview compiles");
+        let preview = opener_impl(&state, &items, None, None, false).expect("preview compiles");
         assert!(state.active_explore.lock_or_recover().is_none());
         // Review MF4: preview fires on EVERY tap and must not touch the
         // exercise log either — S3's My Patterns reads that log, and a
@@ -7363,7 +7431,7 @@ mod tests {
             "a pure preview must not write the exercise log"
         );
 
-        let begun = opener_impl(&state, &items, true).expect("begin compiles");
+        let begun = opener_impl(&state, &items, None, None, true).expect("begin compiles");
         assert!(state.active_explore.lock_or_recover().is_some());
         let log = state
             .session_store
@@ -7377,15 +7445,104 @@ mod tests {
         assert_eq!(preview.music_xml, begun.music_xml);
     }
 
+    /// #419 S2b AC1/AC4: the opener rows from the given live tonic (A=9)
+    /// and defaults to C; preview and Begin stay deterministic with the
+    /// same items+tonic+direction.
+    #[test]
+    fn opener_rows_from_the_live_tonic() {
+        let state = AppState::with_mocks();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+        let in_a = opener_impl(&state, &items, Some(9), None, false).unwrap();
+        let in_c = opener_impl(&state, &items, None, None, false).unwrap();
+        assert_ne!(in_a.music_xml, in_c.music_xml, "A row differs from C row");
+        assert_eq!(in_a.root_pitch_classes.first(), Some(&9u8), "starts in A");
+        assert_eq!(in_c.root_pitch_classes.first(), Some(&0u8), "defaults to C");
+        // Wild wire tonic folds instead of panicking (AC edge).
+        let folded = opener_impl(&state, &items, Some(120 + 9), None, false).unwrap();
+        assert_eq!(folded.music_xml, in_a.music_xml, "120+9 folds to A");
+        // Determinism: preview IS the exercise, with the new params too.
+        // Round-3 review MF2: begin with the UNFOLDED value — the log row
+        // is the fold's only observable seam (music_xml folds internally).
+        let begun = opener_impl(&state, &items, Some(120 + 9), None, true).unwrap();
+        assert_eq!(in_a.music_xml, begun.music_xml);
+        // Review MF4: the exercise-log row records the LIVE tonic — the
+        // % 12 fold's only observable seam, and what S4 recall will read.
+        let log = state
+            .session_store
+            .lock_or_recover()
+            .list_exercise_log()
+            .unwrap();
+        let last = log.last().expect("Begin logged a row");
+        assert_eq!(last.source, "opener");
+        assert_eq!(last.tonic, 9, "logged tonic is the folded live key");
+    }
+
+    /// #419 S2b AC3/AC7: directions re-voice the row — reversed differs
+    /// from forward, varied is seed-stable — and junk refuses by name.
+    #[test]
+    fn opener_directions_revoice_and_refuse_calmly() {
+        let state = AppState::with_mocks();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+        let forward = opener_impl(&state, &items, None, Some("forward"), false).unwrap();
+        let default = opener_impl(&state, &items, None, None, false).unwrap();
+        assert_eq!(
+            forward.music_xml, default.music_xml,
+            "forward IS the default"
+        );
+        let reversed = opener_impl(&state, &items, None, Some("reversed"), false).unwrap();
+        assert_ne!(reversed.music_xml, forward.music_xml);
+        // Review MF3: "reversed" must BE the reversal — the first root
+        // segment's pitch steps read backwards, not merely differently.
+        let steps = |xml: &str| -> Vec<String> {
+            let seg = xml.split("<measure number=\"2\">").next().unwrap();
+            seg.match_indices("<step>")
+                .map(|(i, _)| {
+                    let rest = &seg[i + 6..];
+                    rest[..rest.find("</step>").unwrap()].to_string()
+                })
+                .collect()
+        };
+        let fwd_steps = steps(&forward.music_xml);
+        let mut rev_expected = fwd_steps.clone();
+        rev_expected.reverse();
+        assert_eq!(
+            steps(&reversed.music_xml),
+            rev_expected,
+            "reversed is the reversal of forward's first segment"
+        );
+        let varied_a = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
+        let varied_b = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
+        assert_eq!(
+            varied_a.music_xml, varied_b.music_xml,
+            "varied is seed-stable"
+        );
+        assert_ne!(
+            varied_a.music_xml, forward.music_xml,
+            "varied differs from forward (AC3)"
+        );
+        let err = opener_impl(&state, &items, None, Some("sideways"), false).unwrap_err();
+        assert!(err.contains("forward, reversed, or varied"), "got: {err}");
+        assert!(
+            state.active_explore.lock_or_recover().is_none(),
+            "a refused direction commits nothing"
+        );
+    }
+
     /// The player-facing refusals surface verbatim through the command.
     #[test]
     fn opener_refuses_calmly_on_empty_and_bad_degrees() {
         let state = AppState::with_mocks();
-        let err = opener_impl(&state, &[], false).unwrap_err();
+        let err = opener_impl(&state, &[], None, None, false).unwrap_err();
         assert!(err.contains("add a note or two"), "got: {err}");
         let err = opener_impl(
             &state,
             &[brain::starter::StarterItem::NoteSequence { degrees: vec![9] }],
+            None,
+            None,
             false,
         )
         .unwrap_err();

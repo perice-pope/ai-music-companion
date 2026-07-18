@@ -92,7 +92,13 @@ fn main() {
                     examples.push(format!("root {} cell {:?}", first, cell));
                 }
                 // Row + render the REAL lick through the full pipeline.
-                let (state, seq) = start_explore_cell(cell, first % 12, &model, 7);
+                let (state, seq) = start_explore_cell(
+                    cell,
+                    first % 12,
+                    &model,
+                    7,
+                    brain::coach::DirectionMode::Forward,
+                );
                 let chips = suggest_chips(&state, &model);
                 assert!(!chips.is_empty() && chips.len() <= 3);
                 let key = brain::coach::key_signature_for(state.tonic, "major");

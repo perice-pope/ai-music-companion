@@ -18,12 +18,13 @@ use crate::learner::{
     apply_difficulty, apply_drill_result, DrillResult, LearnerModel, MAX_DIFFICULTY,
 };
 use crate::score::{KeyMode, KeySignature, Measure, ScoreModel, ScoreNote, TimeSignature};
+pub use variations::DirectionMode;
 pub use variations::GeneratedSequence;
 pub use variations::VariationSpec;
 
 use variations::{
-    generate, ArpeggioPattern, ChordModifier, ChordType, DirectionMode, Enclosure,
-    IntervalModifier, ProgressionStep, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
+    generate, ArpeggioPattern, ChordModifier, ChordType, Enclosure, IntervalModifier,
+    ProgressionStep, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
 };
 
 /// The canonical drill kinds, in play order.
@@ -1356,11 +1357,14 @@ pub fn start_explore_cell(
     tonic: u8,
     model: &LearnerModel,
     seed: u64,
+    direction: DirectionMode,
 ) -> (ExploreState, GeneratedSequence) {
     let (mut state, _) = start_explore(tonic, "major", model, seed);
     state.spec.cell = Some(cell);
     state.spec.enclosure = None;
-    state.spec.direction = DirectionMode::Forward;
+    // #419 S2b: openers choose their direction; every other cell path
+    // (lift, measure) passes Forward — behavior unchanged there.
+    state.spec.direction = direction;
     if state.spec.roots.len() < LIFT_MIN_ROOTS {
         state.spec.roots = roots_for(tonic, LIFT_MIN_ROOTS);
         state.spec.randomize_roots = true; // the RV shuffle, from the start
@@ -2485,7 +2489,7 @@ mod tests {
     fn a_lifted_cell_rows_through_the_keys() {
         let model = crate::learner::apply_difficulty(&LearnerModel::default(), 3, 1);
         let cell = vec![0i8, 3, 2, 7];
-        let (state, seq) = start_explore_cell(cell.clone(), 2, &model, 11);
+        let (state, seq) = start_explore_cell(cell.clone(), 2, &model, 11, DirectionMode::Forward);
         assert_eq!(state.spec.cell.as_ref(), Some(&cell));
         let roots = seq.root_order.len();
         assert!(roots >= 2);
@@ -2587,7 +2591,8 @@ mod tests {
     #[test]
     fn a_fresh_learners_lick_still_rows_through_keys() {
         let model = LearnerModel::default(); // difficulty 0
-        let (state, seq) = start_explore_cell(vec![0, 3, 2, 7], 2, &model, 11);
+        let (state, seq) =
+            start_explore_cell(vec![0, 3, 2, 7], 2, &model, 11, DirectionMode::Forward);
         assert!(
             seq.root_order.len() >= LIFT_MIN_ROOTS,
             "got {} roots",

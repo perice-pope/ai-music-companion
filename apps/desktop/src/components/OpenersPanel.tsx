@@ -66,8 +66,18 @@ const ENCLOSURES: { label: string; style: StarterEnclosureStyle }[] = [
   { label: "enclose ↑↓", style: "one_up_one_down" },
 ];
 
-/** Still resting: direction rides S2b, My patterns rides S3. */
-const COMING_SOON = ["Pattern directions", "My patterns"];
+/** #419 S2b: recipe-level directions — exclusive chips, forward default. */
+const DIRECTIONS: {
+  label: string;
+  value: "forward" | "reversed" | "varied";
+}[] = [
+  { label: "forward", value: "forward" },
+  { label: "reversed", value: "reversed" },
+  { label: "varied", value: "varied" },
+];
+
+/** Still resting: My patterns rides S3. */
+const COMING_SOON = ["My patterns"];
 
 const CHORD_LABELS: Record<StarterChordKind, string> = {
   major_triad: "maj",
@@ -139,6 +149,8 @@ export default function OpenersPanel() {
   const addOpenerItem = usePracticeStore((s) => s.addOpenerItem);
   const removeOpenerItem = usePracticeStore((s) => s.removeOpenerItem);
   const beginOpener = usePracticeStore((s) => s.beginOpener);
+  const openerDirection = usePracticeStore((s) => s.openerDirection);
+  const setOpenerDirection = usePracticeStore((s) => s.setOpenerDirection);
   const [open, setOpen] = useState(false);
   const [customSeq, setCustomSeq] = useState("");
   const [customNotice, setCustomNotice] = useState<string | null>(null);
@@ -318,6 +330,28 @@ export default function OpenersPanel() {
             className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
           >
             {en.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+        Pattern direction
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {DIRECTIONS.map((d) => (
+          <button
+            key={d.value}
+            type="button"
+            data-testid={`opener-direction-${d.value}`}
+            aria-pressed={openerDirection === d.value}
+            onClick={() => setOpenerDirection(d.value)}
+            className={`rounded-md px-2.5 py-1 text-sm ${
+              openerDirection === d.value
+                ? "bg-teal-600 font-semibold text-white"
+                : "bg-teal-800/60 text-teal-100 hover:bg-teal-700"
+            }`}
+          >
+            {d.label}
           </button>
         ))}
       </div>
