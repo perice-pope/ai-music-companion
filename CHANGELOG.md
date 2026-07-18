@@ -1,3 +1,9 @@
+## [2.30.1](https://github.com/perice-pope/ai-music-companion/compare/v2.30.0...v2.30.1) (2026-07-18)
+
+### Bug Fixes
+
+* **face:** reveal card frames itself as a key catalog, never song ID ([#417](https://github.com/perice-pope/ai-music-companion/issues/417)-2a) ([#425](https://github.com/perice-pope/ai-music-companion/issues/425)) ([be564e1](https://github.com/perice-pope/ai-music-companion/commit/be564e16ae8663be8329e1f06560fea4332d8fab)), closes [#417-2a](https://github.com/perice-pope/ai-music-companion/issues/417-2a)
+
 ## [2.30.0](https://github.com/perice-pope/ai-music-companion/compare/v2.29.0...v2.30.0) (2026-07-18)
 
 ### Features
