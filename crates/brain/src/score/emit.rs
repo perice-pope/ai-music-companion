@@ -84,6 +84,11 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     // `<direction><dynamics>` when the marking *changes* — matching how the
     // parser carries `current_dynamic` forward.
     let mut current_dynamic: Option<Dynamic> = None;
+    // #417-3 review MF3: the staff a rest inherits carries across BARLINES —
+    // `push_span` splits a cross-barline breath into per-measure rests, and
+    // a bass phrase's measure-opening rest must stay in the left hand, not
+    // teleport to the empty treble staff. Opening rests of the piece: treble.
+    let mut carry_staff = 1u8;
 
     for (idx, measure) in model.measures.iter().enumerate() {
         out.push_str(&format!("    <measure number=\"{}\">\n", measure.number));
@@ -162,7 +167,12 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
         // Two onsets within this many beats count as simultaneous (a chord).
         const CHORD_ONSET_EPSILON: f64 = 1e-6;
         // #417-3: on a grand staff every note (and rest) carries its staff.
-        let staves = model.grand_staff.then(|| staff_positions(&measure.notes));
+        let staves = model
+            .grand_staff
+            .then(|| staff_positions(&measure.notes, carry_staff));
+        if let Some(last) = staves.as_ref().and_then(|s| s.last()) {
+            carry_staff = *last;
+        }
         let beams = beam_positions(
             &measure.notes,
             model.time_signature.beats,
@@ -323,13 +333,14 @@ fn beam_positions(
 /// at/above middle C (midi 60), staff 2 (bass) below. A chord — notes
 /// sharing an onset — stays WHOLE on its lowest note's staff; cross-staff
 /// chords need `<voice>`/`<backup>` writing and are a spec non-goal. A rest
-/// follows the previous sounding note's staff, so a bass phrase's breaths
-/// stay in the left hand (opening rests read treble).
-fn staff_positions(notes: &[ScoreNote]) -> Vec<u8> {
+/// follows the previous sounding note's staff — ACROSS barlines, via
+/// `carry` (review MF3) — so a bass phrase's breaths stay in the left hand;
+/// the piece's opening rests read treble (`carry` starts at 1).
+fn staff_positions(notes: &[ScoreNote], carry: u8) -> Vec<u8> {
     const EPS: f64 = 1e-6;
     const MIDDLE_C: u8 = 60;
     let mut out = vec![1u8; notes.len()];
-    let mut current = 1u8;
+    let mut current = carry;
     let mut i = 0;
     while i < notes.len() {
         if notes[i].is_rest {
@@ -1298,9 +1309,12 @@ mod tests {
     /// note's staff — never split across staves (spec non-goal).
     #[test]
     fn a_chord_stays_whole_on_its_lowest_notes_staff() {
+        // Review MF2: the FIRST chord member is treble-side — only the true
+        // LOWEST rule sends the group to staff 2. A first-member rule
+        // (or dropping the min accumulation) must fail here.
         let xml = score_model_to_musicxml(&grand(vec![
-            note(48, 1.0, 0.0), // C3 ┐
-            note(64, 1.0, 0.0), // E4 ├ one chord, lowest below middle C
+            note(64, 1.0, 0.0), // E4 ┐ first member ABOVE middle C
+            note(48, 1.0, 0.0), // C3 ├ the lowest — decides the staff
             note(67, 1.0, 0.0), // G4 ┘
             note(72, 1.0, 1.0), // C5 alone → treble
         ]));
@@ -1372,5 +1386,47 @@ mod tests {
             .map(|n| n.midi_number)
             .collect();
         assert_eq!(midis, vec![48, 64, 72]);
+    }
+
+    /// #417-3 review MF3: a bass phrase breathing ACROSS the barline keeps
+    /// its measure-opening rest in the left hand — the carry threads between
+    /// measures. A per-measure reset (rest → empty treble staff) fails here.
+    #[test]
+    fn a_rest_after_the_barline_stays_in_the_bass_phrase() {
+        let model = ScoreModel {
+            title: "Carry".to_string(),
+            composer: None,
+            instrument: Some("Piano".to_string()),
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 90.0,
+            grand_staff: true,
+            measures: vec![
+                Measure {
+                    number: 1,
+                    notes: vec![note(48, 3.0, 0.0), rest(1.0, 3.0)],
+                },
+                Measure {
+                    number: 2,
+                    notes: vec![rest(1.0, 0.0), note(50, 3.0, 1.0)],
+                },
+            ],
+        };
+        let xml = score_model_to_musicxml(&model);
+        // C3, breath, | breath, D3 — every staff is the left hand's.
+        assert_eq!(staff_seq(&xml), vec![2, 2, 2, 2]);
+    }
+
+    /// #417-3 review N1: the XSD child order inside <note> is a semantic
+    /// contract, not a fixture accident — <type> before <staff> before
+    /// <beam>. Survives fixture regeneration.
+    #[test]
+    fn note_children_keep_xsd_order() {
+        let run = |midi: u8, start: f64| note(midi, 0.5, start);
+        let xml = score_model_to_musicxml(&grand(vec![run(55, 0.0), run(57, 0.5)]));
+        let t = xml.find("<type>").expect("typed eighth");
+        let s = xml.find("<staff>").expect("staffed note");
+        let b = xml.find("<beam").expect("beamed pair");
+        assert!(t < s && s < b, "order must be type < staff < beam");
     }
 }

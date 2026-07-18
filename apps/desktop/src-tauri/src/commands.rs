@@ -1471,6 +1471,10 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         ("Clarinet", "Woodwind", 147.0, 1568.0),
         ("Voice", "Voice", 82.0, 1047.0),
         ("Piano", "Keyboard", 28.0, 4186.0),
+        // Plucked → polyphonic like the real profiles (profile_to_info),
+        // but Strings family: the case where polyphonic and grand-staff
+        // genuinely diverge (review MF1).
+        ("Guitar", "Strings", 82.0, 1319.0),
     ]
     .into_iter()
     .map(|(name, family, lo, hi)| InstrumentInfo {
@@ -1483,7 +1487,7 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         // Voice uses a lower gate so quiet singing registers (#185); others
         // keep the 0.5 default.
         voiced_confidence_threshold: if name == "Voice" { 0.3 } else { 0.5 },
-        polyphonic: family == "Keyboard",
+        polyphonic: family == "Keyboard" || name == "Guitar",
     })
     .collect()
 }
@@ -3597,17 +3601,26 @@ pub async fn start_lesson(
     // the chord drill as block chords. Resolved from the LIVE session's
     // instrument; no session or unknown instrument → melodic ladder.
     // #417-3: keyboard-family sessions also engrave lessons on a grand
-    // staff. Distinct from `polyphonic` (see LessonSpec) even though the
-    // two coincide today.
+    // staff. Distinct from `polyphonic` (see LessonSpec) — resolution
+    // lives in `lesson_instrument_traits` so it is testable (review MF1).
     let (polyphonic, grand_staff) = match state.active_session_instrument().await {
-        Some(name) => state
-            .instruments
-            .iter()
-            .find(|i| i.name == name)
-            .map_or((false, false), |i| (i.polyphonic, i.family == "Keyboard")),
+        Some(name) => lesson_instrument_traits(&state, &name),
         None => (false, false),
     };
     start_lesson_impl(&state, seed, polyphonic, grand_staff).map_err(|e| e.to_frontend())
+}
+
+/// #417-3: how the session instrument shapes its lesson. Polyphonic dealing
+/// and grand-staff engraving are SEPARATE facts — a guitar (Struck/Plucked,
+/// family Strings) deals block chords but engraves on ONE staff; only the
+/// keyboard family earns the grand staff. Unknown instrument → melodic,
+/// single staff.
+fn lesson_instrument_traits(state: &AppState, name: &str) -> (bool, bool) {
+    state
+        .instruments
+        .iter()
+        .find(|i| i.name == name)
+        .map_or((false, false), |i| (i.polyphonic, i.family == "Keyboard"))
 }
 
 /// Grade the just-played drill and step the lesson.
@@ -4498,6 +4511,19 @@ mod tests {
         }
     }
 
+    /// #417-3 review MF1: the trait resolution itself — polyphonic and
+    /// grand-staff are separate facts. Guitar is the divergence case (deals
+    /// chords, engraves on ONE staff); resolving grand staff from
+    /// `polyphonic` instead of the family must fail here.
+    #[test]
+    fn lesson_traits_split_polyphonic_from_grand_staff() {
+        let s = state();
+        assert_eq!(lesson_instrument_traits(&s, "Piano"), (true, true));
+        assert_eq!(lesson_instrument_traits(&s, "Guitar"), (true, false));
+        assert_eq!(lesson_instrument_traits(&s, "Trumpet"), (false, false));
+        assert_eq!(lesson_instrument_traits(&s, "Theremin"), (false, false));
+    }
+
     /// #417-3 AC5 at the command layer: a KEYBOARD lesson's drills engrave
     /// on a grand staff — the first drill AND the next one after a submit
     /// (the flag must thread through `advance`, not just lesson start) —
@@ -4512,13 +4538,15 @@ mod tests {
 
         play_current_drill_perfectly(&s);
         let next = submit_drill_impl(&s, 1_000).expect("submit succeeds");
-        if let Some(drill) = &next.drill {
-            assert!(
-                drill.music_xml.contains("<staves>2</staves>"),
-                "the NEXT drill must stay grand staff — the flag threads \
-                 through advance, not just lesson start"
-            );
-        }
+        let drill = next
+            .drill
+            .as_ref()
+            .expect("a 4-drill lesson has a next drill after one submit");
+        assert!(
+            drill.music_xml.contains("<staves>2</staves>"),
+            "the NEXT drill must stay grand staff — the flag threads \
+             through advance, not just lesson start"
+        );
 
         let s2 = state();
         let step2 = start_lesson_impl(&s2, 42, false, false).expect("melodic lesson starts");

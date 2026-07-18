@@ -35,7 +35,10 @@ lines below a treble staff — instantly non-credible to a pianist.
   `<staff>1|2</staff>` (after `<type>`, before `<beam>`).
 - Split rule: pitched note → staff 1 if `midi >= 60` (middle C), else staff 2.
   Chord group → the staff of its lowest note, whole. Rest → the staff of the
-  previous sounding note in the measure stream (opening rests → staff 1).
+  previous sounding note — carried ACROSS barlines (review MF3: `push_span`
+  splits cross-barline breaths into per-measure rests, and a bass phrase's
+  measure-opening rest must stay in the left hand); the piece's opening
+  rests → staff 1.
 
 ## 5. Acceptance criteria (numbered, testable)
 1. A keyboard lesson drill's MusicXML contains `<staves>2</staves>`, a G clef on
