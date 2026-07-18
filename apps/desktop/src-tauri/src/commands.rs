@@ -1811,12 +1811,14 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
 
     match session.recorder.complete() {
         Ok(completed) => {
+            let family = instrument_family_for(state, completed.primary_instrument());
             let recap = build_recap(
                 &completed,
                 &*generator,
                 taste_profile,
                 idiom_notes,
                 note_verdicts,
+                family,
             )
             .await?;
             // Persist the completed session so practice history, the stats
@@ -1877,11 +1879,30 @@ async fn build_recap(
     taste_profile: Option<TasteProfile>,
     idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
     note_verdicts: Vec<brain::follower::NoteVerdict>,
+    instrument_family: String,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap_with_context(generator, taste_profile, idiom_notes, note_verdicts)
+        .generate_recap_with_context(
+            generator,
+            taste_profile,
+            idiom_notes,
+            note_verdicts,
+            instrument_family,
+        )
         .await
         .map_err(CommandError::from)
+}
+
+/// #417-4/#389: the instrument catalog's family for a name ("Piano" →
+/// "Keyboard"); empty when unknown, which the recap composer treats as
+/// continuous-pitch (today's behavior).
+fn instrument_family_for(state: &AppState, name: &str) -> String {
+    state
+        .instruments
+        .iter()
+        .find(|i| i.name == name)
+        .map(|i| i.family.clone())
+        .unwrap_or_default()
 }
 
 /// A session can be in this state for ~this long before we stop assuming the
@@ -4314,9 +4335,16 @@ mod tests {
             },
         ];
         let generator = MockRecapGenerator;
-        let recap = build_recap(&completed, &generator, None, Vec::new(), verdicts)
-            .await
-            .expect("recap builds");
+        let recap = build_recap(
+            &completed,
+            &generator,
+            None,
+            Vec::new(),
+            verdicts,
+            String::new(),
+        )
+        .await
+        .expect("recap builds");
         let summary = recap
             .score_summary
             .as_ref()
@@ -7311,6 +7339,7 @@ mod tests {
 
         let input = RecapInput {
             instrument: "Trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 300.0,
             practice_mode: PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -7331,6 +7360,71 @@ mod tests {
         assert!(
             recap.connections.is_empty(),
             "offline recap must not carry LLM connections"
+        );
+    }
+
+    /// #389 acceptance + #417-4 at the command layer: an OFFLINE piano
+    /// recap — family resolved from the real catalog — contains no tuner/
+    /// drone/long-tone advice and speaks keyboard practice language, while
+    /// the same session on trumpet keeps the wind opener. Fails if the
+    /// family stops reaching the recap composer.
+    #[tokio::test]
+    async fn offline_piano_recap_never_suggests_a_tuner() {
+        let mut s = AppState::with_mocks();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+        assert_eq!(instrument_family_for(&s, "Piano"), "Keyboard");
+
+        let input_for = |instrument: &str| RecapInput {
+            instrument: instrument.to_owned(),
+            instrument_family: instrument_family_for(&s, instrument),
+            duration_secs: 300.0,
+            practice_mode: PracticeMode::default(),
+            phrases: vec![sample_phrase()],
+            tips: Vec::new(),
+            score_title: None,
+            note_verdicts: Vec::new(),
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+        };
+        let text_of = |r: &brain::session::SessionRecap| {
+            format!(
+                "{} {} {} {}",
+                r.overall_assessment,
+                r.strengths.join(" "),
+                r.areas_to_improve.join(" "),
+                r.next_session_suggestions.join(" ")
+            )
+            .to_lowercase()
+        };
+
+        let piano = s
+            .recap_generator
+            .generate_recap(&input_for("Piano"))
+            .await
+            .expect("offline piano recap succeeds");
+        let piano_text = text_of(&piano);
+        for forbidden in ["tuner", "drone", "long tones"] {
+            assert!(
+                !piano_text.contains(forbidden),
+                "piano recap must not say {forbidden:?}: {piano_text}"
+            );
+        }
+        assert!(
+            piano_text.contains("slow scale"),
+            "keyboard warmup vocabulary expected: {piano_text}"
+        );
+
+        let trumpet = s
+            .recap_generator
+            .generate_recap(&input_for("Trumpet"))
+            .await
+            .expect("offline trumpet recap succeeds");
+        assert!(
+            text_of(&trumpet).contains("long tones"),
+            "trumpet keeps the wind opener"
         );
     }
 

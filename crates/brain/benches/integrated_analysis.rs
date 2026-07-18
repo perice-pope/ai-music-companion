@@ -125,6 +125,7 @@ fn bench_integrated_analysis(c: &mut Criterion) {
             let new_phrases: Vec<PhraseSummary> = aggregator.take_new_phrases();
             let recap = RecapInput {
                 instrument: "violin".to_string(),
+                instrument_family: String::new(),
                 duration_secs: event.timestamp_secs,
                 practice_mode: PracticeMode::Practice,
                 phrases: new_phrases,

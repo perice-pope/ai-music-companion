@@ -260,6 +260,14 @@ pub struct RecapInput {
     /// this is the instrument of the first segment (lossy — see
     /// `docs/design/story-14-free-play-mode.md`).
     pub instrument: String,
+    /// #417-4/#389: the instrument's family (e.g. "Keyboard", "Brass"),
+    /// resolved by the command layer from the instrument catalog. Routes
+    /// the recap composer's vocabulary: fixed-pitch families get no
+    /// player-intonation critique and keyboard practice language.
+    /// `serde(default)` (empty = continuous-pitch behavior) so stored
+    /// inputs load unchanged.
+    #[serde(default)]
+    pub instrument_family: String,
     /// Total session duration in seconds.
     pub duration_secs: f64,
     /// Practice mode during the session (affects coaching style).
@@ -484,6 +492,9 @@ impl CompletedSession {
         let primary_segment = &self.participants[0].segments[0];
         RecapInput {
             instrument: primary_segment.instrument.clone(),
+            // Family is a catalog fact the command layer owns; it is set by
+            // `generate_recap_with_context` (empty = continuous-pitch).
+            instrument_family: String::new(),
             duration_secs: self.duration_secs,
             practice_mode: primary_segment.practice_mode,
             phrases: self.all_phrases(),
@@ -520,7 +531,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new())
+        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new(), String::new())
             .await
     }
 
@@ -535,7 +546,7 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new())
+        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new(), String::new())
             .await
     }
 
@@ -547,7 +558,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         idiom_notes: Vec<IdiomMatch>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new())
+        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new(), String::new())
             .await
     }
 
@@ -568,10 +579,12 @@ impl CompletedSession {
         profile: Option<TasteProfile>,
         idiom_notes: Vec<IdiomMatch>,
         note_verdicts: Vec<crate::follower::NoteVerdict>,
+        instrument_family: String,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
         input.note_verdicts = note_verdicts;
+        input.instrument_family = instrument_family;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();

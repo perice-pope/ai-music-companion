@@ -657,7 +657,8 @@ impl RecapGenerator for CoachingEngine {
         // the prompt's grounding instructions and the response parsing key off
         // this single gate, so they can never drift apart.
         let connections_enabled = connections_gate_open(input);
-        let system_prompt = Self::build_recap_system_prompt(connections_enabled);
+        let system_prompt =
+            Self::build_recap_system_prompt(connections_enabled, &input.instrument_family);
         let user_prompt = Self::build_recap_user_prompt(input);
 
         let request_body = self.build_request_body(&system_prompt, &user_prompt);
@@ -695,7 +696,7 @@ impl CoachingEngine {
     /// grounding contract. When false, the prompt is byte-for-byte the existing
     /// recap prompt: no `connections` field, no cross-genre framing — the coach
     /// behaves exactly as before (cold-start / thin-signal fallback).
-    fn build_recap_system_prompt(connections_enabled: bool) -> String {
+    fn build_recap_system_prompt(connections_enabled: bool, instrument_family: &str) -> String {
         let base = "\
 You are a warm, experienced music teacher writing end-of-session notes for a student.
 Your role is to provide honest, encouraging feedback that celebrates progress and
@@ -710,6 +711,28 @@ IMPORTANT RULES:
 - Celebrate genuine progress and specific strengths.
 - For areas to improve, be constructive and give concrete next steps.
 - Use warm, conversational language.";
+
+        // #417-4/#389: on a fixed-pitch instrument the player cannot bend
+        // pitch — the model must never critique intonation or reach for the
+        // wind-instrument practice bag. Same voice the TIP path already has
+        // (prompts.rs piano branch); recaps finally match it.
+        let base = if fixed_pitch_family(instrument_family) {
+            format!(
+                "{base}\n\n\
+FIXED-PITCH INSTRUMENT RULES (this student plays one, e.g. piano):\n\
+- The player CANNOT alter intonation. Never critique the player's tuning; never \
+suggest tuner drones, drone work, or long-tone pitch practice.\n\
+- If the notes read sharp or flat overall, that is the INSTRUMENT's tuning — \
+mention it at most once, phrased as the instrument (\"your piano reads a touch \
+flat\"), never as the player's skill.\n\
+- Never use breath, air, or embouchure vocabulary. Speak this instrument's own \
+practice language: evenness between the hands, chord voicing and balance, \
+articulation consistency, pedal clarity, and steady tempo through position \
+shifts."
+            )
+        } else {
+            base.to_owned()
+        };
 
         if !connections_enabled {
             return format!(
@@ -835,6 +858,20 @@ All text should be written as a teacher would speak — warm, specific, and acti
         // are *computed* cents figures — the model must not invent numbers, only
         // phrase the facts we hand it.
         let intonation_line = match &fingerprint.intonation {
+            // #417-4/#389: hand the model the honest framing, not raw player
+            // critique — on fixed pitch the cents belong to the instrument.
+            Some(s) if fixed_pitch_family(&input.instrument_family) => {
+                if s.mean_cents.abs() >= 10.0 {
+                    format!(
+                        "- Instrument tuning read (NOT player-controllable): about \
+                         {:.0} cents {} of center\n",
+                        s.mean_cents.abs(),
+                        if s.mean_cents > 0.0 { "sharp" } else { "flat" },
+                    )
+                } else {
+                    String::new()
+                }
+            }
             Some(s) => format!("- Intonation: {}\n", describe_intonation(s)),
             None => String::new(),
         };
@@ -1224,7 +1261,16 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
 /// therefore degrades to engagement-level encouragement with **no fabricated
 /// numeric claims**, and `fingerprint` is carried through (`None` only when
 /// nothing was measured), never thrown away.
+/// #417-4/#389: families whose pitch the PLAYER cannot bend. Intonation
+/// critique and tuner/drone advice are meaningless on these — measured
+/// pitch deviation is the INSTRUMENT's tuning and is phrased as such,
+/// and practice vocabulary speaks hands/voicing/evenness, never breath.
+pub(crate) fn fixed_pitch_family(family: &str) -> bool {
+    matches!(family, "Keyboard" | "Percussion")
+}
+
 pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
+    let fixed_pitch = fixed_pitch_family(&input.instrument_family);
     let fingerprint = build_fingerprint(&input.phrases);
     let flavour = theory_flavour(&fingerprint);
     let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
@@ -1241,17 +1287,31 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     );
     if let Some(s) = &fingerprint.intonation {
         let centered = s.mean_cents.abs() <= 1.0;
-        overall.push_str(&format!(
-            " Intonation: {} — {}.",
-            if centered {
-                "centered overall".to_owned()
-            } else if s.mean_cents > 0.0 {
-                "running a touch sharp".to_owned()
-            } else {
-                "running a touch flat".to_owned()
-            },
-            describe_intonation(s),
-        ));
+        if fixed_pitch {
+            // #389: the player cannot alter this — mention only a clear
+            // instrument-level tendency, phrased as the instrument.
+            if s.mean_cents.abs() >= 10.0 {
+                overall.push_str(&format!(
+                    " Your {} reads about {:.0} cents {} overall — that's the \
+                     instrument's tuning, not your playing.",
+                    input.instrument.to_lowercase(),
+                    s.mean_cents.abs(),
+                    if s.mean_cents > 0.0 { "sharp" } else { "flat" },
+                ));
+            }
+        } else {
+            overall.push_str(&format!(
+                " Intonation: {} — {}.",
+                if centered {
+                    "centered overall".to_owned()
+                } else if s.mean_cents > 0.0 {
+                    "running a touch sharp".to_owned()
+                } else {
+                    "running a touch flat".to_owned()
+                },
+                describe_intonation(s),
+            ));
+        }
     }
     if let Some(g) = &fingerprint.groove {
         overall.push_str(&format!(" Feel held {}.", describe_groove(g)));
@@ -1268,7 +1328,9 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     // Each is gated on a dimension that actually cleared its evidence bar.
     let mut strengths: Vec<String> = Vec::new();
     if let Some(s) = &fingerprint.intonation {
-        if s.in_tune_ratio >= 0.7 {
+        // #389: an in-tune ratio on a fixed-pitch instrument measures the
+        // instrument (and our polyphonic cent estimates), not the player.
+        if !fixed_pitch && s.in_tune_ratio >= 0.7 {
             strengths.push(format!(
                 "Solid intonation — {:.0}% of {} notes landed in tune.",
                 s.in_tune_ratio * 100.0,
@@ -1308,7 +1370,9 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
 
     // --- Areas to improve --------------------------------------------------
     let mut areas: Vec<String> = Vec::new();
-    if let Some(s) = &fingerprint.intonation {
+    // #389 acceptance: a fixed-pitch recap contains NO player-intonation
+    // critique — the whole block is the player-controllable path.
+    if let Some(s) = fingerprint.intonation.as_ref().filter(|_| !fixed_pitch) {
         if s.in_tune_ratio < 0.7 {
             areas.push(format!(
                 "Intonation drifted — only {:.0}% of notes sat in tune.",
@@ -1339,7 +1403,8 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         }
     }
     if let Some(t) = &fingerprint.tone {
-        if t.air_noise >= 0.5 {
+        // "Air in the tone" is breath vocabulary — meaningless on keys.
+        if !fixed_pitch && t.air_noise >= 0.5 {
             areas.push(
                 "A bit of air in the tone — tighten the core for a cleaner sound.".to_owned(),
             );
@@ -1368,12 +1433,23 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
             // A hedged key is still a fine practice anchor — the suggestion
             // just says what it is (#316): the key the session drifted
             // toward, not the key it "was".
-            suggestions.push(match fingerprint.key_claim {
-                Some(KeyClaimStrength::Leaning) => format!(
+            suggestions.push(match (fixed_pitch, fingerprint.key_claim) {
+                // #417-4: keyboard vocabulary — hands and evenness, not breath.
+                (true, Some(KeyClaimStrength::Leaning)) => format!(
+                    "Open with a slow scale in {} — the key you were leaning toward — \
+                     hands together, listening for evenness between them.",
+                    k.name()
+                ),
+                (true, _) => format!(
+                    "Open with a slow scale in {}, hands together — even touch, one \
+                     steady tempo.",
+                    k.name()
+                ),
+                (false, Some(KeyClaimStrength::Leaning)) => format!(
                     "Open with long tones in {} — the key you were leaning toward at the end.",
                     k.name()
                 ),
-                _ => format!(
+                (false, _) => format!(
                     "Open with long tones in {}, the key you ended on.",
                     k.name()
                 ),
@@ -1381,7 +1457,19 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         }
     }
     if let Some(s) = &fingerprint.intonation {
-        if let Some(worst) = s
+        if fixed_pitch {
+            // #389: never tuner/drone advice — but a strong instrument-level
+            // tendency earns the honest note, phrased as the instrument.
+            if s.mean_cents.abs() >= 10.0 {
+                suggestions.push(format!(
+                    "Your {} reads about {:.0} cents {} of center — a tuning visit \
+                     would make everything you practice sound truer.",
+                    input.instrument.to_lowercase(),
+                    s.mean_cents.abs(),
+                    if s.mean_cents > 0.0 { "sharp" } else { "flat" },
+                ));
+            }
+        } else if let Some(worst) = s
             .tendencies
             .iter()
             .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
@@ -1406,8 +1494,13 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         }
     }
     if suggestions.is_empty() {
-        suggestions
-            .push("Warm up with long tones, then revisit what felt hardest today.".to_owned());
+        suggestions.push(if fixed_pitch {
+            "Warm up with a slow scale, hands together, then revisit what felt \
+             hardest today."
+                .to_owned()
+        } else {
+            "Warm up with long tones, then revisit what felt hardest today.".to_owned()
+        });
     }
 
     SessionRecap {
@@ -2018,6 +2111,7 @@ mod tests {
         // to real bars.
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![
@@ -2052,6 +2146,7 @@ mod tests {
         // No score → no piece name, no measure map, no measure instruction.
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -2123,6 +2218,7 @@ mod tests {
         };
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![toned],
@@ -2865,6 +2961,7 @@ mod tests {
         p.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![p],
@@ -2935,6 +3032,7 @@ mod tests {
     ) -> RecapInput {
         RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases,
@@ -2952,6 +3050,7 @@ mod tests {
         // GROUNDED INPUT the model may hedge around — never as a hard fact.
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -2996,7 +3095,7 @@ mod tests {
 
         // The system prompt, with connections enabled, must carry the
         // anti-hallucination grounding contract.
-        let system = CoachingEngine::build_recap_system_prompt(true);
+        let system = CoachingEngine::build_recap_system_prompt(true, "");
         assert!(
             system.contains("GROUNDING CONTRACT"),
             "system prompt states the grounding contract"
@@ -3020,6 +3119,7 @@ mod tests {
         // No gated matches → the recap stays silent on idiom (no block).
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -3052,7 +3152,7 @@ mod tests {
             "no connection nudge at cold start"
         );
 
-        let system = CoachingEngine::build_recap_system_prompt(false);
+        let system = CoachingEngine::build_recap_system_prompt(false, "");
         assert!(
             !system.contains("GROUNDING CONTRACT"),
             "no grounding contract when connections are disabled"
@@ -3095,6 +3195,7 @@ mod tests {
         // fallback recap so the grounded "reminds me of" note still shows.
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -4055,6 +4156,7 @@ mod tests {
         p.onsets_secs = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![p],
@@ -4156,6 +4258,7 @@ mod tests {
 
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 1800.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase()],
@@ -4208,6 +4311,7 @@ mod tests {
 
         let input = RecapInput {
             instrument: "violin".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 2400.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 3],
@@ -4241,6 +4345,7 @@ mod tests {
 
         let input = RecapInput {
             instrument: "voice".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 1500.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 5],
@@ -4282,6 +4387,7 @@ mod tests {
 
         let input = RecapInput {
             instrument: "piano".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 3600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases: vec![sample_phrase(); 2],
@@ -4316,6 +4422,7 @@ mod tests {
     fn offline_input(phrases: Vec<PhraseSummary>) -> RecapInput {
         RecapInput {
             instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
             duration_secs: 600.0,
             practice_mode: crate::session::PracticeMode::default(),
             phrases,
@@ -4627,5 +4734,156 @@ mod tests {
         assert!(!recap.overall_assessment.is_empty());
         assert!(!recap.strengths.is_empty());
         assert!(!recap.next_session_suggestions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // #417-4 / #389 — family-aware recap vocabulary
+    // -----------------------------------------------------------------------
+
+    /// A deliberately detuned C-major session (~20 cents flat everywhere):
+    /// low in-tune ratio + a strong mean tendency — exactly the stats that
+    /// trigger every intonation phrase bank.
+    fn detuned_session_input(instrument: &str, family: &str) -> RecapInput {
+        let flat = 2f64.powf(-20.0 / 1200.0);
+        let mut input = offline_input(vec![phrase_from(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ]
+            .into_iter()
+            .map(|f| f * flat)
+            .collect(),
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        )]);
+        input.instrument = instrument.to_owned();
+        input.instrument_family = family.to_owned();
+        input
+    }
+
+    fn recap_text(r: &SessionRecap) -> String {
+        let mut all = vec![r.overall_assessment.clone()];
+        all.extend(r.strengths.clone());
+        all.extend(r.areas_to_improve.clone());
+        all.extend(r.next_session_suggestions.clone());
+        all.join(" | ").to_lowercase()
+    }
+
+    /// #389 acceptance, offline path: a PIANO recap contains no player-
+    /// intonation critique and no tuner/drone/long-tone advice — and the
+    /// strong flat tendency surfaces as the INSTRUMENT's tuning instead.
+    #[test]
+    fn piano_offline_recap_never_critiques_player_intonation() {
+        let recap = grounded_offline_recap(&detuned_session_input("Piano", "Keyboard"));
+        let text = recap_text(&recap);
+        for forbidden in [
+            "tuner",
+            "drone",
+            "long tones",
+            "intonation drifted",
+            "sat in tune",
+            "air in the tone",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "piano recap must not say {forbidden:?}: {text}"
+            );
+        }
+        // The honest instrument-level note (phrased as the instrument).
+        assert!(
+            text.contains("your piano reads about") && text.contains("instrument"),
+            "the strong flat read surfaces as the instrument's tuning: {text}"
+        );
+    }
+
+    /// #389 acceptance, other half: the same detuned session on TRUMPET
+    /// keeps the continuous-pitch bank — tuner/drone advice is correct there.
+    #[test]
+    fn trumpet_offline_recap_keeps_the_continuous_pitch_bank() {
+        let recap = grounded_offline_recap(&detuned_session_input("trumpet", "Brass"));
+        let text = recap_text(&recap);
+        assert!(
+            text.contains("drone") || text.contains("tuner"),
+            "continuous-pitch instruments keep intonation practice advice: {text}"
+        );
+        assert!(
+            !text.contains("your trumpet reads about"),
+            "the instrument-tuning note is fixed-pitch only: {text}"
+        );
+    }
+
+    /// #417-4: the key-anchored opener suggestion speaks each family's
+    /// practice language — hands/evenness for keyboard, long tones for
+    /// continuous pitch. Uses the in-tune C-major session (the key asserts,
+    /// so the opener fires).
+    #[test]
+    fn opener_suggestion_speaks_the_familys_language() {
+        let in_tune = || {
+            offline_input(vec![phrase_from(
+                vec![
+                    261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                    440.00, 261.63,
+                ],
+                vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            )])
+        };
+        let mut piano = in_tune();
+        piano.instrument = "Piano".to_owned();
+        piano.instrument_family = "Keyboard".to_owned();
+        let piano_text = recap_text(&grounded_offline_recap(&piano));
+        assert!(
+            !piano_text.contains("long tones"),
+            "keyboard opener must not breathe: {piano_text}"
+        );
+        assert!(
+            piano_text.contains("hands together") || piano_text.contains("slow scale"),
+            "keyboard opener speaks hands/evenness: {piano_text}"
+        );
+
+        let trumpet_text = recap_text(&grounded_offline_recap(&in_tune()));
+        assert!(
+            trumpet_text.contains("long tones"),
+            "continuous-pitch opener keeps long tones: {trumpet_text}"
+        );
+    }
+
+    /// #417-4: an UNKNOWN family (old stored inputs, serde default) behaves
+    /// exactly like continuous pitch — no silent behavior change.
+    #[test]
+    fn unknown_family_defaults_to_continuous_pitch_behavior() {
+        let recap = grounded_offline_recap(&detuned_session_input("trumpet", ""));
+        let text = recap_text(&recap);
+        assert!(text.contains("drone") || text.contains("tuner"), "{text}");
+    }
+
+    /// #417-4: the LLM system prompt carries the fixed-pitch guardrails for
+    /// keyboard family — and does NOT for continuous-pitch instruments.
+    #[test]
+    fn recap_system_prompt_gates_fixed_pitch_rules_by_family() {
+        let keyboard = CoachingEngine::build_recap_system_prompt(true, "Keyboard");
+        assert!(keyboard.contains("FIXED-PITCH INSTRUMENT RULES"));
+        assert!(keyboard.contains("evenness between the hands"));
+        assert!(keyboard.contains("Never critique the player's tuning"));
+        let brass = CoachingEngine::build_recap_system_prompt(true, "Brass");
+        assert!(!brass.contains("FIXED-PITCH"));
+        let unknown = CoachingEngine::build_recap_system_prompt(true, "");
+        assert!(!unknown.contains("FIXED-PITCH"));
+    }
+
+    /// #417-4: the LLM user prompt reframes the intonation FACT for fixed
+    /// pitch — instrument tuning, explicitly not player-controllable — and
+    /// keeps the player framing for continuous pitch.
+    #[test]
+    fn recap_user_prompt_reframes_intonation_for_fixed_pitch() {
+        let piano =
+            CoachingEngine::build_recap_user_prompt(&detuned_session_input("Piano", "Keyboard"));
+        assert!(
+            piano.contains("NOT player-controllable"),
+            "piano prompt frames cents as instrument tuning: {piano}"
+        );
+        assert!(!piano.contains("- Intonation:"));
+        let trumpet =
+            CoachingEngine::build_recap_user_prompt(&detuned_session_input("trumpet", "Brass"));
+        assert!(trumpet.contains("- Intonation:"));
+        assert!(!trumpet.contains("NOT player-controllable"));
     }
 }
