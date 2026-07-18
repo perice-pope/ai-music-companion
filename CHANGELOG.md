@@ -1,3 +1,9 @@
+## [2.33.0](https://github.com/perice-pope/ai-music-companion/compare/v2.32.0...v2.33.0) (2026-07-18)
+
+### Features
+
+* the update pill — opt-in auto-check, honest manual check ([#58](https://github.com/perice-pope/ai-music-companion/issues/58)) ([#429](https://github.com/perice-pope/ai-music-companion/issues/429)) ([6514f7e](https://github.com/perice-pope/ai-music-companion/commit/6514f7e5e2326fe08355f8b1b42d42fdbc7a87c9)), closes [#417](https://github.com/perice-pope/ai-music-companion/issues/417)
+
 ## [2.32.0](https://github.com/perice-pope/ai-music-companion/compare/v2.31.0...v2.32.0) (2026-07-18)
 
 ### Features
