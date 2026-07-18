@@ -110,85 +110,76 @@ describe("RevealCard", () => {
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.queryByText("Santana — Oye Como Va")).not.toBeInTheDocument();
 
-    // After the newer reveal's full linger + fade, the queue is empty and
-    // nothing slides back on.
+    // #417 rule 0: nothing auto-clears — the newest card STAYS until
+    // dismissed or replaced ("until it has something better to say").
     act(() => {
-      vi.advanceTimersByTime(12000);
-      vi.advanceTimersByTime(300);
+      vi.advanceTimersByTime(60_000);
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
-    expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
+    expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
   });
 
-  // The card auto-dismisses after its linger window, clearing the queue. Fails
-  // if reveals pile up forever (the panel would never return to calm).
-  it("auto-dismisses after its linger window", () => {
+  // #417 rule 0 (founder, 2026-07-18): the card NEVER auto-dismisses —
+  // "quick blinking … these things need to be static." It stays until the
+  // player dismisses it or a better reveal replaces it. Fails if a linger
+  // timer sneaks back in.
+  it("never auto-dismisses — it stays until dismissed or replaced", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", "B.B. King & blues-rock solos")],
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
 
-    vi.advanceTimersByTime(12000); // linger
-    vi.advanceTimersByTime(300); // fade-out
+    vi.advanceTimersByTime(120_000); // two full minutes of nothing
 
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
   });
 
-  // #266 AC3 + #277: once the live key CONFIDENTLY moves off the reveal's
-  // (tonic, mode), the card is dismissed — but never before its minimum
-  // readable dwell, so it can actually be read. Fails if a young card is
-  // killed instantly or a stale one lingers past the dwell.
-  it("dismisses the card when the live key moves off it — after the readable dwell", () => {
+  // #417 rewrite of #266/#277: a CONFIDENT contradiction DIMS the card in
+  // place (honest staleness) — it never removes it. Fails if dismissal
+  // returns, or if the dim never engages.
+  it("a confident key contradiction dims the card in place", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
     });
     render(<RevealCard />);
-    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-100");
 
-    // Live detection confidently moves to a different key/mode while the card
-    // is brand new → it must stay readable, not vanish (#277).
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
     });
+    // Still present, still in the queue — but visibly stale.
     expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
 
-    // After the readable dwell the contradiction wins.
+    // And it STAYS (dimmed) indefinitely — static, not blinking.
     act(() => {
-      vi.advanceTimersByTime(4000);
+      vi.advanceTimersByTime(60_000);
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
-    expect(screen.queryByTestId("reveal-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
   });
 
-  // #277: a confident contradiction arriving MID-dwell dismisses exactly when
-  // the readable dwell completes — not immediately, and not a full extra dwell
-  // later. Fails if the remaining-time math regresses to a fixed delay.
-  it("a mid-age contradiction dismisses when the dwell completes", () => {
+  // The dim heals: if the live key comes back to the card's key, full
+  // opacity returns — the card was never stale after all.
+  it("the dim heals when the live key returns to the card's key", () => {
     usePracticeStore.setState({
-      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
     });
     render(<RevealCard />);
-
-    // 2.5s into the card's life, a confident different key arrives.
     act(() => {
-      vi.advanceTimersByTime(2500);
       usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
-
-    // 1.5s later the 4s dwell completes → dismissed (a fixed 4s timer would
-    // still be pending here).
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
     act(() => {
-      vi.advanceTimersByTime(1500);
+      usePracticeStore.setState({ perception: perceptionWithKey(7, "dorian") });
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-100");
   });
 
-  // #277: a LOW-CONFIDENCE wander is not a contradiction — the card survives
-  // its full linger. Fails if wobbly detection can still evaporate cards.
-  it("a low-confidence key wander never dismisses the card", () => {
+  // #277: a LOW-CONFIDENCE wander is not a contradiction — the card stays
+  // at FULL opacity. Fails if wobbly detection can dim (or remove) cards.
+  it("a low-confidence key wander never dims the card", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')],
     });
@@ -211,34 +202,32 @@ describe("RevealCard", () => {
       vi.advanceTimersByTime(5000);
     });
     expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-100");
   });
 
-  // #266 AC3 (isolate the OR): only the MODE moves (same tonic) → dismiss. Fails
-  // if the dismiss condition were `&&` instead of `||`.
-  it("dismisses when only the mode moves off (same tonic)", () => {
+  // Isolate the staleness OR: only the MODE moves (same tonic) → dims.
+  // Fails if the condition regresses to `&&`.
+  it("dims when only the mode moves off (same tonic)", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
     });
     render(<RevealCard />);
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
-      vi.advanceTimersByTime(4000); // readable dwell
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
   });
 
-  // #266 AC3 (isolate the OR): only the TONIC moves (same mode) → dismiss. The
-  // other half of the `||`.
-  it("dismisses when only the tonic moves off (same mode)", () => {
+  // The other half of the `||`: only the TONIC moves (same mode) → dims.
+  it("dims when only the tonic moves off (same mode)", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')], // G(7) dorian
     });
     render(<RevealCard />);
     act(() => {
       usePracticeStore.setState({ perception: perceptionWithKey(5, "dorian") });
-      vi.advanceTimersByTime(4000); // readable dwell
     });
-    expect(usePracticeStore.getState().revealQueue).toHaveLength(0);
+    expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
   });
 
   // #255: the reveal is actionable — "Practice this sound" starts an
