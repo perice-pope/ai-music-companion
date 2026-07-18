@@ -754,7 +754,30 @@ export interface LoadedScore {
   music_xml: string;
 }
 
-/** #419 S1 — one Openers item. Mirrors `brain::starter::StarterItem`. */
+/** #419 S1/S2a — one Openers item. Mirrors `brain::starter::StarterItem`.
+ * All kinds are SEMANTIC — the semitone tables live in Rust only. */
 export type StarterItem =
   | { type: "notes"; offsets: number[] }
-  | { type: "note_sequence"; degrees: number[] };
+  | { type: "note_sequence"; degrees: number[] }
+  | { type: "interval"; number: number }
+  | { type: "chord"; kind: StarterChordKind }
+  | { type: "scale"; kind: StarterScaleKind }
+  | { type: "enclosure"; style: StarterEnclosureStyle };
+
+export type StarterChordKind =
+  | "major_triad"
+  | "minor_triad"
+  | "dominant_seventh"
+  | "major_seventh"
+  | "minor_seventh";
+
+export type StarterScaleKind =
+  | "major"
+  | "natural_minor"
+  | "major_pentatonic"
+  | "minor_pentatonic"
+  | "blues"
+  | "dorian"
+  | "mixolydian";
+
+export type StarterEnclosureStyle = "one_down_one_up" | "one_up_one_down";

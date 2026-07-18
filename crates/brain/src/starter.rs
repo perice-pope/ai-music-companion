@@ -10,6 +10,79 @@
 
 use serde::{Deserialize, Serialize};
 
+/// #419 S2a: chord kinds the bank offers — a curated subset of
+/// [`theory::ChordQuality`]; the intervals come from THAT table (the
+/// authoritative source), never re-declared here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterChord {
+    MajorTriad,
+    MinorTriad,
+    DominantSeventh,
+    MajorSeventh,
+    MinorSeventh,
+}
+
+impl StarterChord {
+    fn quality(self) -> theory::ChordQuality {
+        use theory::ChordQuality as Q;
+        match self {
+            StarterChord::MajorTriad => Q::Maj,
+            StarterChord::MinorTriad => Q::Min,
+            StarterChord::DominantSeventh => Q::Dom7,
+            StarterChord::MajorSeventh => Q::Maj7,
+            StarterChord::MinorSeventh => Q::Min7,
+        }
+    }
+}
+
+/// #419 S2a: scale kinds the bank offers — a curated subset of
+/// [`variations::ScaleType`]; semitones come from that catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterScale {
+    Major,
+    NaturalMinor,
+    MajorPentatonic,
+    MinorPentatonic,
+    Blues,
+    Dorian,
+    Mixolydian,
+}
+
+impl StarterScale {
+    fn scale_type(self) -> variations::ScaleType {
+        use variations::ScaleType as S;
+        match self {
+            StarterScale::Major => S::Major,
+            StarterScale::NaturalMinor => S::NaturalMinor,
+            StarterScale::MajorPentatonic => S::MajorPentatonic,
+            StarterScale::MinorPentatonic => S::MinorPentatonic,
+            StarterScale::Blues => S::Blues,
+            StarterScale::Dorian => S::Dorian,
+            StarterScale::Mixolydian => S::Mixolydian,
+        }
+    }
+}
+
+/// #419 S2a: enclosure styles offered as bank items — approach notes
+/// then the root, offsets from [`variations::Enclosure`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterEnclosure {
+    OneDownOneUp,
+    OneUpOneDown,
+}
+
+impl StarterEnclosure {
+    fn enclosure(self) -> variations::Enclosure {
+        match self {
+            StarterEnclosure::OneDownOneUp => variations::Enclosure::OneDownOneUp,
+            StarterEnclosure::OneUpOneDown => variations::Enclosure::OneUpOneDown,
+        }
+    }
+}
+
 /// One buildable item in an opener recipe (#419). Wire shape is tagged so
 /// the S2 item kinds extend without breaking stored recipes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +95,17 @@ pub enum StarterItem {
     /// A scale-degree sequence in the major scale of the cell's key:
     /// 1..=8 (8 = the octave). "1-2-3-5" is the classic opener.
     NoteSequence { degrees: Vec<u8> },
+    /// #419 S2a: a major-scale degree interval from the root — number
+    /// 2..=8 ("a 3rd", "a 5th") compiles to root + that degree.
+    Interval { number: u8 },
+    /// #419 S2a: an ascending arpeggio of the named chord quality.
+    Chord { kind: StarterChord },
+    /// #419 S2a: the named scale as an ascending run, root to octave.
+    Scale { kind: StarterScale },
+    /// #419 S2a: approach notes then the root — the RV enclosure as an
+    /// opener item (negative leading offsets are legal, like descending
+    /// openers).
+    Enclosure { style: StarterEnclosure },
 }
 
 /// Why a recipe refused to compile — every message is written for the
@@ -30,6 +114,7 @@ pub enum StarterItem {
 pub enum StarterError {
     Empty,
     BadDegree(u8),
+    BadInterval(u8),
     TooLong { notes: usize, cap: usize },
 }
 
@@ -39,6 +124,12 @@ impl std::fmt::Display for StarterError {
             StarterError::Empty => write!(f, "add a note or two first — then Begin"),
             StarterError::BadDegree(d) => {
                 write!(f, "scale degrees run 1 to 8 — {d} isn't one")
+            }
+            StarterError::BadInterval(n) => {
+                write!(
+                    f,
+                    "intervals run a 2nd to an octave (2 to 8) — {n} isn't one"
+                )
             }
             StarterError::TooLong { notes, cap } => write!(
                 f,
@@ -67,6 +158,32 @@ pub fn composite_cell(items: &[StarterItem], cap: usize) -> Result<Vec<i8>, Star
                     }
                     cell.push(MAJOR_DEGREE_SEMITONES[usize::from(d) - 1]);
                 }
+            }
+            StarterItem::Interval { number } => {
+                if !(2..=8).contains(number) {
+                    return Err(StarterError::BadInterval(*number));
+                }
+                cell.push(0);
+                cell.push(MAJOR_DEGREE_SEMITONES[usize::from(*number) - 1]);
+            }
+            // Delegation, not duplication: the interval formulas live in
+            // theory (chords) and variations (scales, enclosures).
+            StarterItem::Chord { kind } => {
+                cell.extend(kind.quality().intervals().iter().map(|&s| s as i8));
+            }
+            StarterItem::Scale { kind } => {
+                cell.extend(kind.scale_type().semitones().iter().map(|&s| s as i8));
+                cell.push(12);
+            }
+            StarterItem::Enclosure { style } => {
+                cell.extend(
+                    style
+                        .enclosure()
+                        .approach_semitones()
+                        .iter()
+                        .map(|&s| s as i8),
+                );
+                cell.push(0);
             }
         }
     }
@@ -213,6 +330,148 @@ mod tests {
         };
         let json = serde_json::to_string(&recipe).unwrap();
         assert!(json.contains("note_sequence"), "tagged wire shape: {json}");
+        let back: StarterRecipe = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, recipe);
+    }
+
+    // ── #419 S2a: the item bank ─────────────────────────────────────────
+
+    /// Each bank kind compiles to the AUTHORITATIVE table's offsets —
+    /// delegation pinned against theory/variations, not re-derived here
+    /// by copying the same constants twice.
+    #[test]
+    fn bank_items_delegate_to_the_authoritative_tables() {
+        // Interval: a 5th = root + 7.
+        assert_eq!(
+            composite_cell(&[StarterItem::Interval { number: 5 }], 32).unwrap(),
+            vec![0, 7]
+        );
+        // Chords: exactly ChordQuality::intervals(), in order.
+        for (kind, quality) in [
+            (StarterChord::MajorTriad, theory::ChordQuality::Maj),
+            (StarterChord::MinorTriad, theory::ChordQuality::Min),
+            (StarterChord::DominantSeventh, theory::ChordQuality::Dom7),
+            (StarterChord::MajorSeventh, theory::ChordQuality::Maj7),
+            (StarterChord::MinorSeventh, theory::ChordQuality::Min7),
+        ] {
+            let cell = composite_cell(&[StarterItem::Chord { kind }], 32).unwrap();
+            let expected: Vec<i8> = quality.intervals().iter().map(|&s| s as i8).collect();
+            assert_eq!(cell, expected, "{kind:?}");
+        }
+        // Scales: catalog semitones + the octave.
+        for (kind, scale) in [
+            (StarterScale::Major, variations::ScaleType::Major),
+            (StarterScale::Blues, variations::ScaleType::Blues),
+            (StarterScale::Dorian, variations::ScaleType::Dorian),
+        ] {
+            let cell = composite_cell(&[StarterItem::Scale { kind }], 32).unwrap();
+            let mut expected: Vec<i8> = scale.semitones().iter().map(|&s| s as i8).collect();
+            expected.push(12);
+            assert_eq!(cell, expected, "{kind:?}");
+        }
+        // Enclosures: approach offsets then the target root.
+        assert_eq!(
+            composite_cell(
+                &[StarterItem::Enclosure {
+                    style: StarterEnclosure::OneDownOneUp,
+                }],
+                32
+            )
+            .unwrap(),
+            {
+                let mut v: Vec<i8> = variations::Enclosure::OneDownOneUp
+                    .approach_semitones()
+                    .iter()
+                    .map(|&s| s as i8)
+                    .collect();
+                v.push(0);
+                v
+            }
+        );
+    }
+
+    /// Out-of-range intervals refuse by name, like degrees do.
+    #[test]
+    fn bad_intervals_refuse_by_name() {
+        for n in [0u8, 1, 9] {
+            let err = composite_cell(&[StarterItem::Interval { number: n }], 32).unwrap_err();
+            assert_eq!(err, StarterError::BadInterval(n));
+            assert!(err.to_string().contains("2 to 8"));
+        }
+    }
+
+    /// Bank items mix with S1 items in play order under the same cap.
+    #[test]
+    fn bank_items_compose_with_s1_items() {
+        let cell = composite_cell(
+            &[
+                StarterItem::Enclosure {
+                    style: StarterEnclosure::OneDownOneUp,
+                },
+                StarterItem::Chord {
+                    kind: StarterChord::MajorTriad,
+                },
+                StarterItem::NoteSequence { degrees: vec![8] },
+            ],
+            32,
+        )
+        .unwrap();
+        assert_eq!(cell, vec![-1, 1, 0, 0, 4, 7, 12]);
+    }
+
+    /// The PANEL's wire JSON for every S2a kind deserializes — same
+    /// end-to-end pin as S1's (a serde rename breaks every tap silently).
+    #[test]
+    fn s2a_panel_wire_json_deserializes() {
+        let items: Vec<StarterItem> = serde_json::from_str(
+            r#"[{"type":"interval","number":3},
+                {"type":"chord","kind":"dominant_seventh"},
+                {"type":"scale","kind":"minor_pentatonic"},
+                {"type":"enclosure","style":"one_up_one_down"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            items,
+            vec![
+                StarterItem::Interval { number: 3 },
+                StarterItem::Chord {
+                    kind: StarterChord::DominantSeventh,
+                },
+                StarterItem::Scale {
+                    kind: StarterScale::MinorPentatonic,
+                },
+                StarterItem::Enclosure {
+                    style: StarterEnclosure::OneUpOneDown,
+                },
+            ]
+        );
+    }
+
+    /// S1's stored wire shapes still parse — the new arms are additive.
+    #[test]
+    fn s1_wire_shapes_still_deserialize() {
+        let items: Vec<StarterItem> = serde_json::from_str(
+            r#"[{"type":"notes","offsets":[4]},{"type":"note_sequence","degrees":[1,2,3,5]}]"#,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 2);
+        // And a recipe holding every arm round-trips.
+        let recipe = StarterRecipe {
+            name: "everything".into(),
+            items: vec![
+                StarterItem::Interval { number: 6 },
+                StarterItem::Chord {
+                    kind: StarterChord::MinorSeventh,
+                },
+                StarterItem::Scale {
+                    kind: StarterScale::Mixolydian,
+                },
+                StarterItem::Enclosure {
+                    style: StarterEnclosure::OneDownOneUp,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&recipe).unwrap();
         let back: StarterRecipe = serde_json::from_str(&json).unwrap();
         assert_eq!(back, recipe);
     }
