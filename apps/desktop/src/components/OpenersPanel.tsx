@@ -1,0 +1,186 @@
+import { useState } from "react";
+import { usePracticeStore } from "../stores/practiceStore";
+import CellStaff from "./CellStaff";
+import type { StarterItem } from "../types/brain";
+
+/**
+ * #419 S1 — Openers: "start with something in your hands."
+ *
+ * The RV builder's front door, reborn: compose an opener from the item
+ * bank, watch it render live on the RV dot staff, and Begin — the opener
+ * becomes the session's exploration (rowed through 12 keys) and hands off
+ * into normal listening when you're done. S1 ships the first two bank
+ * entries; the rest are visible but resting (the roadmap, honestly).
+ *
+ * #417 rule 0 applies from birth: the preview updates in place; nothing
+ * here blinks, slides, or vanishes.
+ */
+
+/** Major-scale degree labels for the note buttons. */
+const DEGREES = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+const DEGREE_SEMITONES = [0, 2, 4, 5, 7, 9, 11, 12] as const;
+
+/** The classic openers, ready-made. */
+const SEQUENCE_PRESETS: { label: string; degrees: number[] }[] = [
+  { label: "1-2-3-5", degrees: [1, 2, 3, 5] },
+  { label: "1-3-5-8", degrees: [1, 3, 5, 8] },
+  { label: "5-4-3-2-1", degrees: [5, 4, 3, 2, 1] },
+];
+
+/** The S2+ bank, shown resting so the shape of the builder reads now. */
+const COMING_SOON = [
+  "Intervals",
+  "Chords",
+  "Scales",
+  "Enclosures",
+  "Pattern directions",
+  "My patterns",
+];
+
+/** Human label for an added item chip. */
+function itemLabel(item: StarterItem): string {
+  if (item.type === "notes") {
+    const deg = DEGREE_SEMITONES.indexOf(
+      item.offsets[0] as (typeof DEGREE_SEMITONES)[number],
+    );
+    return item.offsets.length === 1 && deg >= 0
+      ? `note ${DEGREES[deg]}`
+      : `notes ×${item.offsets.length}`;
+  }
+  return item.degrees.join("-");
+}
+
+export default function OpenersPanel() {
+  const openerItems = usePracticeStore((s) => s.openerItems);
+  const openerPreview = usePracticeStore((s) => s.openerPreview);
+  const openerNotice = usePracticeStore((s) => s.openerNotice);
+  const addOpenerItem = usePracticeStore((s) => s.addOpenerItem);
+  const removeOpenerItem = usePracticeStore((s) => s.removeOpenerItem);
+  const beginOpener = usePracticeStore((s) => s.beginOpener);
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        data-testid="openers-toggle"
+        onClick={() => setOpen(true)}
+        className="rounded-full border border-teal-700 bg-teal-900/30 px-4 py-1.5 text-sm text-teal-200 hover:bg-teal-900/50"
+      >
+        🎬 Openers — start with something in your hands
+      </button>
+    );
+  }
+
+  return (
+    <div
+      data-testid="openers-panel"
+      className="w-full max-w-md rounded-lg border border-teal-800 bg-teal-950/30 p-4 text-left"
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-teal-200">🎬 Openers</p>
+        <button
+          type="button"
+          data-testid="openers-close"
+          onClick={() => setOpen(false)}
+          className="text-sm text-teal-400/70 hover:text-teal-200"
+          aria-label="Close openers"
+        >
+          ×
+        </button>
+      </div>
+
+      {/* The bank — S1's two live entries. */}
+      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+        Notes
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {DEGREES.map((d, i) => (
+          <button
+            key={d}
+            type="button"
+            data-testid={`opener-note-${d}`}
+            onClick={() =>
+              void addOpenerItem({ type: "notes", offsets: [DEGREE_SEMITONES[i]] })
+            }
+            className="h-8 w-8 rounded-md bg-teal-800/60 text-sm font-semibold text-teal-100 hover:bg-teal-700"
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+        Note sequence
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {SEQUENCE_PRESETS.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            data-testid={`opener-seq-${p.label}`}
+            onClick={() =>
+              void addOpenerItem({ type: "note_sequence", degrees: p.degrees })
+            }
+            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* The rest of the bank, resting — the builder's shape, honestly. */}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {COMING_SOON.map((name) => (
+          <span
+            key={name}
+            className="rounded-md border border-teal-900 px-2 py-0.5 text-xs text-teal-700"
+            title="coming soon"
+          >
+            {name}
+          </span>
+        ))}
+      </div>
+
+      {/* What's been added. */}
+      {openerItems.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5" data-testid="opener-chips">
+          {openerItems.map((item, i) => (
+            <button
+              key={`${itemLabel(item)}-${i}`}
+              type="button"
+              data-testid={`opener-chip-${i}`}
+              onClick={() => void removeOpenerItem(i)}
+              title="Remove"
+              className="rounded-full bg-teal-800 px-2.5 py-0.5 text-xs text-teal-100 hover:bg-red-900/60"
+            >
+              {itemLabel(item)} ×
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* The live staff preview — the credibility moment. */}
+      {openerPreview && (
+        <div className="mt-3" data-testid="opener-preview">
+          <CellStaff staff={openerPreview.staff} />
+        </div>
+      )}
+      {openerNotice && (
+        <p className="mt-2 text-sm text-amber-300" data-testid="opener-notice">
+          {openerNotice}
+        </p>
+      )}
+
+      <button
+        type="button"
+        data-testid="opener-begin"
+        disabled={openerItems.length === 0}
+        onClick={() => void beginOpener()}
+        className="mt-4 w-full rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-40"
+      >
+        Begin
+      </button>
+    </div>
+  );
+}

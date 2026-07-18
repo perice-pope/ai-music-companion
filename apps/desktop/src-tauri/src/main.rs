@@ -78,6 +78,8 @@ fn main() {
             ai_music_companion::commands::import_midi_file,
             ai_music_companion::commands::list_midi_parts,
             ai_music_companion::commands::explore_measure,
+            ai_music_companion::commands::preview_opener,
+            ai_music_companion::commands::begin_opener,
             ai_music_companion::commands::explore_chord,
             ai_music_companion::commands::explore_progression,
             ai_music_companion::commands::session_chord_chart,

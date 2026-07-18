@@ -28,6 +28,7 @@ pub mod phrase;
 pub mod score;
 pub mod scoring;
 pub mod session;
+pub mod starter;
 pub mod stats;
 pub mod store;
 pub mod wheel;
