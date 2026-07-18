@@ -1,3 +1,9 @@
+## [2.29.0](https://github.com/perice-pope/ai-music-companion/compare/v2.28.12...v2.29.0) (2026-07-18)
+
+### Features
+
+* **face:** the anti-blink pass — surfaces hold their last state ([#417](https://github.com/perice-pope/ai-music-companion/issues/417)) ([#422](https://github.com/perice-pope/ai-music-companion/issues/422)) ([0d2b3b8](https://github.com/perice-pope/ai-music-companion/commit/0d2b3b860bc833db3a780e00c3da919e88a781f5))
+
 ## [2.28.12](https://github.com/perice-pope/ai-music-companion/compare/v2.28.11...v2.28.12) (2026-07-18)
 
 ### Bug Fixes
