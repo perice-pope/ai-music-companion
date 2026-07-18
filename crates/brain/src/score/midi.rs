@@ -294,6 +294,7 @@ pub fn parse_midi_bytes_track(
         key_signature,
         tempo_bpm,
         measures,
+        grand_staff: false,
     })
 }
 

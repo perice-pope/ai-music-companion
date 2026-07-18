@@ -3357,10 +3357,13 @@ pub struct LessonStepDto {
     pub recap: Option<LessonRecap>,
 }
 
-fn drill_dto(drill: &Drill, drill_count: u8) -> DrillDto {
+fn drill_dto(drill: &Drill, drill_count: u8, grand_staff: bool) -> DrillDto {
     let key = brain::coach::key_signature_for(drill.tonic, &drill.mode);
     let fifths = key.fifths;
-    let model = sequence_to_score_model(&drill.sequence, &drill.sequence.label, key);
+    let mut model = sequence_to_score_model(&drill.sequence, &drill.sequence.label, key);
+    // #417-3: a keyboard lesson engraves on a grand staff — the emitter
+    // splits at middle C. All staff logic lives in Rust; OSMD just renders.
+    model.grand_staff = grand_staff;
     DrillDto {
         index: drill.index,
         drill_count,
@@ -3403,6 +3406,7 @@ pub fn start_lesson_impl(
     state: &AppState,
     seed: u64,
     polyphonic: bool,
+    grand_staff: bool,
 ) -> Result<LessonStepDto, CommandError> {
     if state.active_lesson.lock_or_recover().is_some() {
         return Err(CommandError::LessonActive);
@@ -3418,9 +3422,10 @@ pub fn start_lesson_impl(
         drill_count: 4u8.clamp(3, 4),
         start_difficulty: model.difficulty.min(brain::learner::MAX_DIFFICULTY),
         polyphonic,
+        grand_staff,
     };
     let first = build_first(&spec, &model);
-    let dto = drill_dto(&first, spec.drill_count);
+    let dto = drill_dto(&first, spec.drill_count, spec.grand_staff);
     let phrase_mark = state.phrase_buffer.lock_or_recover().len();
     let chord_mark = state.chord_buffer.lock_or_recover().len();
     *state.active_lesson.lock_or_recover() = Some(ActiveLesson {
@@ -3514,7 +3519,7 @@ pub fn submit_drill_impl(
 
     match advance(&lesson.current, &score, &lesson.spec) {
         Some(next) => {
-            let dto = drill_dto(&next, lesson.spec.drill_count);
+            let dto = drill_dto(&next, lesson.spec.drill_count, lesson.spec.grand_staff);
             let completed = std::mem::replace(&mut lesson.current, next);
             lesson.completed.push((completed, score));
             lesson.phrase_mark = state.phrase_buffer.lock_or_recover().len();
@@ -3591,15 +3596,18 @@ pub async fn start_lesson(
     // #349 T2b: a lesson on a polyphonic instrument (piano, guitar) deals
     // the chord drill as block chords. Resolved from the LIVE session's
     // instrument; no session or unknown instrument → melodic ladder.
-    let polyphonic = match state.active_session_instrument().await {
+    // #417-3: keyboard-family sessions also engrave lessons on a grand
+    // staff. Distinct from `polyphonic` (see LessonSpec) even though the
+    // two coincide today.
+    let (polyphonic, grand_staff) = match state.active_session_instrument().await {
         Some(name) => state
             .instruments
             .iter()
             .find(|i| i.name == name)
-            .is_some_and(|i| i.polyphonic),
-        None => false,
+            .map_or((false, false), |i| (i.polyphonic, i.family == "Keyboard")),
+        None => (false, false),
     };
-    start_lesson_impl(&state, seed, polyphonic).map_err(|e| e.to_frontend())
+    start_lesson_impl(&state, seed, polyphonic, grand_staff).map_err(|e| e.to_frontend())
 }
 
 /// Grade the just-played drill and step the lesson.
@@ -4490,6 +4498,36 @@ mod tests {
         }
     }
 
+    /// #417-3 AC5 at the command layer: a KEYBOARD lesson's drills engrave
+    /// on a grand staff — the first drill AND the next one after a submit
+    /// (the flag must thread through `advance`, not just lesson start) —
+    /// while a melodic lesson's XML carries no staff machinery at all.
+    #[test]
+    fn keyboard_lesson_drills_render_a_grand_staff() {
+        let s = state();
+        let step = start_lesson_impl(&s, 42, true, true).expect("keyboard lesson starts");
+        let xml = &step.drill.as_ref().unwrap().music_xml;
+        assert!(xml.contains("<staves>2</staves>"), "first drill: staves");
+        assert!(xml.contains("<staff>"), "first drill: per-note staff");
+
+        play_current_drill_perfectly(&s);
+        let next = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+        if let Some(drill) = &next.drill {
+            assert!(
+                drill.music_xml.contains("<staves>2</staves>"),
+                "the NEXT drill must stay grand staff — the flag threads \
+                 through advance, not just lesson start"
+            );
+        }
+
+        let s2 = state();
+        let step2 = start_lesson_impl(&s2, 42, false, false).expect("melodic lesson starts");
+        let xml2 = &step2.drill.as_ref().unwrap().music_xml;
+        assert!(!xml2.contains("<staves>"), "melodic: no staves");
+        assert!(!xml2.contains("<staff>"), "melodic: no staff elements");
+        assert!(!xml2.contains("<clef"), "melodic: no clef (OSMD default)");
+    }
+
     /// #349 T2b end-to-end at the command layer: a POLYPHONIC lesson deals
     /// the chord drill as block chords and grades it from the chord buffer
     /// via the T1-engine judge — while melodic drills in the same lesson
@@ -4498,7 +4536,7 @@ mod tests {
     #[test]
     fn a_polyphonic_lesson_deals_and_grades_chord_drills() {
         let s = state();
-        let mut last = start_lesson_impl(&s, 42, true).expect("lesson starts");
+        let mut last = start_lesson_impl(&s, 42, true, true).expect("lesson starts");
         let mut saw_chord_drill = false;
         let mut steps = 0;
         while last.drill.is_some() {
@@ -4569,7 +4607,7 @@ mod tests {
     #[test]
     fn lesson_lifecycle_grades_ramps_and_persists() {
         let s = state();
-        let step0 = start_lesson_impl(&s, 42, false).expect("lesson starts");
+        let step0 = start_lesson_impl(&s, 42, false, false).expect("lesson starts");
         let drill0 = step0.drill.as_ref().expect("drill 0 present");
         assert_eq!(drill0.index, 0);
         assert!(drill0.music_xml.contains("<score-partwise"));
@@ -4622,7 +4660,7 @@ mod tests {
             .expect("model persisted");
         assert!(!model.key_mastery.is_empty());
         assert_eq!(model.difficulty, recap.end_difficulty);
-        let again = start_lesson_impl(&s, 43, false).unwrap();
+        let again = start_lesson_impl(&s, 43, false, false).unwrap();
         assert_eq!(
             again.drill.unwrap().difficulty,
             recap.end_difficulty,
@@ -4636,7 +4674,7 @@ mod tests {
     fn submit_without_lesson_errs_and_end_abandons() {
         let s = state();
         assert!(submit_drill_impl(&s, 0).is_err());
-        start_lesson_impl(&s, 1, false).unwrap();
+        start_lesson_impl(&s, 1, false, false).unwrap();
         end_lesson_impl(&s, 10);
         assert!(
             submit_drill_impl(&s, 0).is_err(),
@@ -4678,7 +4716,7 @@ mod tests {
     #[test]
     fn early_end_persists_completed_drills_only() {
         let s = state();
-        start_lesson_impl(&s, 2, false).unwrap();
+        start_lesson_impl(&s, 2, false, false).unwrap();
         play_current_drill_perfectly(&s);
         let step = submit_drill_impl(&s, 100).unwrap();
         assert!(step.drill.is_some(), "one drill done, lesson continues");
@@ -4706,7 +4744,7 @@ mod tests {
     #[test]
     fn drill_grading_is_isolated_to_its_own_phrase_window() {
         let s = state();
-        start_lesson_impl(&s, 3, false).unwrap();
+        start_lesson_impl(&s, 3, false, false).unwrap();
         play_current_drill_perfectly(&s);
         let step1 = submit_drill_impl(&s, 100).unwrap();
         assert!(step1.score.unwrap().accuracy > 0.99);
@@ -4732,7 +4770,7 @@ mod tests {
     #[test]
     fn heard_but_imperfect_takes_still_grade() {
         let s = state();
-        start_lesson_impl(&s, 12, false).unwrap();
+        start_lesson_impl(&s, 12, false, false).unwrap();
         // Unpitched noise WITH onsets: grades (0%), never DrillNotHeard.
         let mut claps = sample_phrase();
         claps.pitch_stats.pitches = Vec::new();
@@ -4758,7 +4796,7 @@ mod tests {
     #[test]
     fn eager_submit_before_any_phrase_is_a_calm_not_yet() {
         let s = state();
-        start_lesson_impl(&s, 12, false).unwrap();
+        start_lesson_impl(&s, 12, false, false).unwrap();
         assert!(matches!(
             submit_drill_impl(&s, 100),
             Err(CommandError::DrillNotHeard)
@@ -4776,7 +4814,7 @@ mod tests {
     fn exercises_leave_evidence_in_the_log() {
         let s = state();
         // A graded lesson drill…
-        start_lesson_impl(&s, 12, false).unwrap();
+        start_lesson_impl(&s, 12, false, false).unwrap();
         play_current_drill_perfectly(&s);
         submit_drill_impl(&s, 100).unwrap();
         // …an explore deal + a chip…
@@ -5333,6 +5371,7 @@ mod tests {
                 drill_count: 4,
                 start_difficulty: 0,
                 polyphonic: false,
+                grand_staff: false,
             },
             &{
                 // Practice every tonic except Bb so the picker trains Bb (10).
@@ -5352,7 +5391,7 @@ mod tests {
             },
         );
         assert_eq!(drill.tonic, 10, "picker should choose the unpracticed Bb");
-        let dto = drill_dto(&drill, 4);
+        let dto = drill_dto(&drill, 4, false);
         assert!(
             dto.music_xml.contains("<fifths>-2</fifths>"),
             "Bb-major drill must engrave 2 flats, got fifths line: {:?}",
@@ -5365,9 +5404,9 @@ mod tests {
     #[test]
     fn double_start_lesson_is_refused() {
         let s = state();
-        start_lesson_impl(&s, 4, false).unwrap();
+        start_lesson_impl(&s, 4, false, false).unwrap();
         assert!(matches!(
-            start_lesson_impl(&s, 5, false),
+            start_lesson_impl(&s, 5, false, false),
             Err(CommandError::LessonActive)
         ));
     }
@@ -5382,7 +5421,7 @@ mod tests {
         start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
             .await
             .expect("session starts");
-        start_lesson_impl(&s, 6, false).unwrap();
+        start_lesson_impl(&s, 6, false, false).unwrap();
         play_current_drill_perfectly(&s);
         submit_drill_impl(&s, 100).unwrap();
 

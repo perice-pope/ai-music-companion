@@ -44,6 +44,13 @@ pub struct ScoreModel {
     pub key_signature: KeySignature,
     pub tempo_bpm: f64,
     pub measures: Vec<Measure>,
+    /// #417-3: emit as a keyboard GRAND STAFF (two staves, treble + bass,
+    /// notes split at middle C). Set only where the score's instrument is
+    /// known to be keyboard-family (lesson drills); parsed/imported scores
+    /// keep their own staff layout and leave this false. `serde(default)`
+    /// so every stored model deserializes unchanged.
+    #[serde(default)]
+    pub grand_staff: bool,
 }
 
 /// Time signature (e.g. 4/4, 3/4, 6/8).
@@ -284,6 +291,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![ScoreNote {

@@ -116,6 +116,21 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
                 model.time_signature.beat_type
             ));
             out.push_str("        </time>\n");
+            // #417-3: keyboard scores are a GRAND STAFF — two staves, treble
+            // over bass, both clefs declared up front (an empty bass staff
+            // with whole rests is how real piano music shows a silent left
+            // hand). XSD order: <staves> before <clef>.
+            if model.grand_staff {
+                out.push_str("        <staves>2</staves>\n");
+                out.push_str("        <clef number=\"1\">\n");
+                out.push_str("          <sign>G</sign>\n");
+                out.push_str("          <line>2</line>\n");
+                out.push_str("        </clef>\n");
+                out.push_str("        <clef number=\"2\">\n");
+                out.push_str("          <sign>F</sign>\n");
+                out.push_str("          <line>4</line>\n");
+                out.push_str("        </clef>\n");
+            }
             out.push_str("      </attributes>\n");
 
             // #356: a <direction> with no <direction-type> child is invalid
@@ -146,10 +161,13 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
 
         // Two onsets within this many beats count as simultaneous (a chord).
         const CHORD_ONSET_EPSILON: f64 = 1e-6;
+        // #417-3: on a grand staff every note (and rest) carries its staff.
+        let staves = model.grand_staff.then(|| staff_positions(&measure.notes));
         let beams = beam_positions(
             &measure.notes,
             model.time_signature.beats,
             model.time_signature.beat_type,
+            staves.as_deref(),
         );
         // Onset of the previous sounding note, so a note sharing it can be
         // flagged as a chord member. MusicXML stacks notes only when the
@@ -181,6 +199,7 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
                 is_chord,
                 model.key_signature.fifths < 0,
                 beams[note_idx],
+                staves.as_ref().map(|s| s[note_idx]),
             );
             if !note.is_rest {
                 prev_sounding_start = Some(note.start_beat);
@@ -237,7 +256,17 @@ fn close_beam_group(group: &mut Vec<usize>, out: &mut [Option<BeamPos>]) {
 /// beam of their own — they ride their anchor. Non-quarter denominators
 /// (6/8 …) are left unbeamed for now: compound-meter grouping is a
 /// different rule and flags are honest there.
-fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<BeamPos>> {
+///
+/// #417-3: on a grand staff (`staves` present) a staff change also breaks
+/// the group — a run crossing middle C must not beam across staves
+/// (cross-staff beaming is real notation, but renderer support is shaky
+/// and flags are honest).
+fn beam_positions(
+    notes: &[ScoreNote],
+    beats: u8,
+    beat_type: u8,
+    staves: Option<&[u8]>,
+) -> Vec<Option<BeamPos>> {
     const EPS: f64 = 1e-6;
     let mut out = vec![None; notes.len()];
     if beat_type != 4 {
@@ -276,7 +305,10 @@ fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<B
         let same_region = group
             .first()
             .is_none_or(|&first| region_of(notes[first].start_beat) == region_of(n.start_beat));
-        let extends_group = contiguous && same_region && group.len() < 4;
+        let same_staff = group
+            .first()
+            .is_none_or(|&first| staves.is_none_or(|s| s[first] == s[i]));
+        let extends_group = contiguous && same_region && same_staff && group.len() < 4;
         if !group.is_empty() && !extends_group {
             close_beam_group(&mut group, &mut out);
         }
@@ -287,6 +319,44 @@ fn beam_positions(notes: &[ScoreNote], beats: u8, beat_type: u8) -> Vec<Option<B
     out
 }
 
+/// #417-3: per-note staff assignment for a grand staff. Staff 1 (treble)
+/// at/above middle C (midi 60), staff 2 (bass) below. A chord — notes
+/// sharing an onset — stays WHOLE on its lowest note's staff; cross-staff
+/// chords need `<voice>`/`<backup>` writing and are a spec non-goal. A rest
+/// follows the previous sounding note's staff, so a bass phrase's breaths
+/// stay in the left hand (opening rests read treble).
+fn staff_positions(notes: &[ScoreNote]) -> Vec<u8> {
+    const EPS: f64 = 1e-6;
+    const MIDDLE_C: u8 = 60;
+    let mut out = vec![1u8; notes.len()];
+    let mut current = 1u8;
+    let mut i = 0;
+    while i < notes.len() {
+        if notes[i].is_rest {
+            out[i] = current;
+            i += 1;
+            continue;
+        }
+        // The chord group sharing this onset (members are adjacent by
+        // construction — see the main loop's `prev_sounding_start` rule).
+        let mut end = i + 1;
+        let mut lowest = notes[i].midi_number;
+        while end < notes.len()
+            && !notes[end].is_rest
+            && (notes[end].start_beat - notes[i].start_beat).abs() < EPS
+        {
+            lowest = lowest.min(notes[end].midi_number);
+            end += 1;
+        }
+        current = if lowest >= MIDDLE_C { 1 } else { 2 };
+        for slot in &mut out[i..end] {
+            *slot = current;
+        }
+        i = end;
+    }
+    out
+}
+
 /// Write a single `<note>` element (rest or pitched).
 fn write_note(
     out: &mut String,
@@ -294,6 +364,7 @@ fn write_note(
     is_chord: bool,
     flats: bool,
     beam: Option<BeamPos>,
+    staff: Option<u8>,
 ) {
     let duration_divs = beats_to_divs(note.duration_beats);
 
@@ -319,8 +390,14 @@ fn write_note(
     // Beamed notes are eighths by construction (see `beam_positions`). The
     // <type> makes the beam well-formed MusicXML — renderers pair the beam
     // with the note value rather than inferring it from the duration.
-    if let Some(pos) = beam {
+    // XSD child order within <note>: <type> … <staff> … <beam>.
+    if beam.is_some() {
         out.push_str("        <type>eighth</type>\n");
+    }
+    if let Some(staff) = staff {
+        out.push_str(&format!("        <staff>{staff}</staff>\n"));
+    }
+    if let Some(pos) = beam {
         out.push_str(&format!(
             "        <beam number=\"1\">{}</beam>\n",
             pos.tag()
@@ -488,6 +565,7 @@ mod tests {
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
             measures: vec![Measure { number: 1, notes }],
+            grand_staff: false,
         }
     }
 
@@ -584,6 +662,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 100.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![note(61, 1.0, 0.0), note(66, 1.0, 1.0), note(70, 1.0, 2.0)],
@@ -607,6 +686,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![note(60, 1.0, 0.0), rest(1.0, 1.0), note(62, 2.0, 2.0)],
@@ -635,6 +715,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![n0, n1, n2],
@@ -657,6 +738,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![note(60, 0.5, 0.0), note(62, 1.0 / 3.0, 0.5)],
@@ -688,6 +770,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![
                 Measure {
                     number: 1,
@@ -1132,6 +1215,7 @@ mod tests {
                 mode: KeyMode::Major,
             },
             tempo_bpm: 80.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![
@@ -1160,5 +1244,133 @@ mod tests {
             .map(|n| n.midi_number)
             .collect();
         assert_eq!(midis, vec![70, 63]);
+    }
+
+    // ── #417-3: grand staff for keyboard scores ──────────────────────────
+
+    /// A one-measure grand-staff model over the given notes.
+    fn grand(notes: Vec<ScoreNote>) -> ScoreModel {
+        ScoreModel {
+            title: "Piano Drill".to_string(),
+            composer: None,
+            instrument: Some("Piano".to_string()),
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 90.0,
+            measures: vec![Measure { number: 1, notes }],
+            grand_staff: true,
+        }
+    }
+
+    /// Every `<staff>N</staff>` in emission order.
+    fn staff_seq(xml: &str) -> Vec<u8> {
+        xml.match_indices("<staff>")
+            .map(|(i, _)| xml[i + 7..i + 8].parse().unwrap())
+            .collect()
+    }
+
+    /// #417-3 AC1+AC2: two staves, both clefs, and per-note staff split at
+    /// middle C — midi 60 itself is TREBLE (the pinned boundary).
+    #[test]
+    fn grand_staff_emits_two_staves_and_splits_at_middle_c() {
+        let xml = score_model_to_musicxml(&grand(vec![
+            note(48, 1.0, 0.0), // C3 → bass
+            note(64, 1.0, 1.0), // E4 → treble
+            note(60, 1.0, 2.0), // middle C exactly → treble
+            note(59, 1.0, 3.0), // B3 → bass
+        ]));
+        assert!(
+            xml.contains("<staves>2</staves>"),
+            "staves declared:\n{xml}"
+        );
+        assert!(
+            xml.contains("<clef number=\"1\">\n          <sign>G</sign>"),
+            "treble clef on staff 1"
+        );
+        assert!(
+            xml.contains("<clef number=\"2\">\n          <sign>F</sign>"),
+            "bass clef on staff 2"
+        );
+        assert_eq!(staff_seq(&xml), vec![2, 1, 1, 2]);
+    }
+
+    /// #417-3 AC3: a chord straddling middle C stays WHOLE on its lowest
+    /// note's staff — never split across staves (spec non-goal).
+    #[test]
+    fn a_chord_stays_whole_on_its_lowest_notes_staff() {
+        let xml = score_model_to_musicxml(&grand(vec![
+            note(48, 1.0, 0.0), // C3 ┐
+            note(64, 1.0, 0.0), // E4 ├ one chord, lowest below middle C
+            note(67, 1.0, 0.0), // G4 ┘
+            note(72, 1.0, 1.0), // C5 alone → treble
+        ]));
+        assert_eq!(staff_seq(&xml), vec![2, 2, 2, 1]);
+        // Still ONE chord: exactly two <chord/> members ride the anchor.
+        assert_eq!(xml.matches("<chord/>").count(), 2);
+    }
+
+    /// #417-3 AC7: rests follow the previous sounding note's staff, so a
+    /// bass phrase's breaths stay in the left hand; opening rests read
+    /// treble (nothing has sounded yet).
+    #[test]
+    fn rests_follow_the_previous_notes_staff() {
+        let xml = score_model_to_musicxml(&grand(vec![
+            rest(1.0, 0.0),     // opening rest → treble by default
+            note(50, 1.0, 1.0), // D3 → bass
+            rest(1.0, 2.0),     // breath inside the bass phrase → bass
+            note(52, 1.0, 3.0), // E3 → bass
+        ]));
+        assert_eq!(staff_seq(&xml), vec![1, 2, 2, 2]);
+    }
+
+    /// #417-3: an eighth run crossing middle C breaks its beam at the staff
+    /// change — two pairs, never one four-group beamed across staves
+    /// (renderer support for cross-staff beams is shaky; flags are honest).
+    #[test]
+    fn beams_break_at_the_staff_change() {
+        let run = |midi: u8, start: f64| note(midi, 0.5, start);
+        let xml = score_model_to_musicxml(&grand(vec![
+            run(55, 0.0), // G3 bass ┐ pair
+            run(57, 0.5), // A3 bass ┘
+            run(60, 1.0), // C4 treble ┐ pair
+            run(64, 1.5), // E4 treble ┘
+        ]));
+        assert_eq!(xml.matches("<beam number=\"1\">begin</beam>").count(), 2);
+        assert_eq!(xml.matches("<beam number=\"1\">end</beam>").count(), 2);
+        assert_eq!(xml.matches("continue").count(), 0);
+    }
+
+    /// #417-3 AC4: a non-grand-staff model's output carries no staff
+    /// machinery at all — byte-for-byte today's single-staff behavior.
+    #[test]
+    fn non_grand_staff_output_is_unchanged() {
+        let mut model = grand(vec![note(48, 2.0, 0.0), note(64, 2.0, 2.0)]);
+        model.grand_staff = false;
+        let xml = score_model_to_musicxml(&model);
+        assert!(!xml.contains("<staves>"));
+        assert!(!xml.contains("<clef"));
+        assert!(!xml.contains("<staff>"));
+    }
+
+    /// #417-3 parse edge: grand-staff XML round-trips through the parser —
+    /// notes and durations survive, staff/clef elements don't break it.
+    #[test]
+    fn grand_staff_xml_parses_back() {
+        let model = grand(vec![
+            note(48, 1.0, 0.0),
+            note(64, 1.0, 1.0),
+            rest(1.0, 2.0),
+            note(72, 1.0, 3.0),
+        ]);
+        let xml = score_model_to_musicxml(&model);
+        let parsed =
+            crate::score::musicxml::parse_musicxml_str(&xml).expect("grand-staff XML parses");
+        let midis: Vec<u8> = parsed.measures[0]
+            .notes
+            .iter()
+            .filter(|n| !n.is_rest)
+            .map(|n| n.midi_number)
+            .collect();
+        assert_eq!(midis, vec![48, 64, 72]);
     }
 }

@@ -39,6 +39,7 @@ fn main() {
         time_signature: TimeSignature::default(),
         key_signature: KeySignature::default(),
         tempo_bpm: 60.0,
+        grand_staff: false,
         measures: vec![Measure { number: 1, notes }],
     };
     print!("{}", score_model_to_musicxml(&model));

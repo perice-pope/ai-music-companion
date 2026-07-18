@@ -64,6 +64,12 @@ pub struct LessonSpec {
     /// instruments keep the arpeggio walk. Additive: old specs parse false.
     #[serde(default)]
     pub polyphonic: bool,
+    /// #417-3: the session's instrument reads on a grand staff (keyboard
+    /// family). Its OWN flag, not a `polyphonic` alias — plucked strings
+    /// may join `polyphonic` one day and still engrave on one staff.
+    /// Additive: old specs parse false.
+    #[serde(default)]
+    pub grand_staff: bool,
 }
 
 /// One drill: the F1 spec + its generated sequence, tagged with the key/scale
@@ -786,6 +792,7 @@ pub fn sequence_to_score_model(
         key_signature: key,
         tempo_bpm: seq.tempo_bpm,
         measures,
+        grand_staff: false,
     }
 }
 
@@ -1558,6 +1565,7 @@ mod tests {
             drill_count: 4,
             start_difficulty: 0,
             polyphonic: false,
+            grand_staff: false,
         }
     }
 
@@ -1747,6 +1755,7 @@ mod tests {
     fn a_polyphonic_lesson_deals_the_chord_drill_stacked() {
         let poly = LessonSpec {
             polyphonic: true,
+            grand_staff: false,
             ..lesson(9)
         };
         for difficulty in [0u8, 5, 7] {
@@ -1871,6 +1880,7 @@ mod tests {
             drill_count: 4,
             start_difficulty: 3,
             polyphonic: false,
+            grand_staff: false,
         };
         let model = LearnerModel::default();
         let d0 = build_first(&spec, &model);
@@ -1897,6 +1907,7 @@ mod tests {
                 drill_count: requested,
                 start_difficulty: 0,
                 polyphonic: false,
+                grand_staff: false,
             };
             let mut n = 1;
             let mut drill = build_first(&spec, &model);

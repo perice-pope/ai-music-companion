@@ -169,6 +169,7 @@ fn eighth_run_model() -> ScoreModel {
         time_signature: TimeSignature::default(),
         key_signature: KeySignature::default(),
         tempo_bpm: 60.0,
+        grand_staff: false,
         measures: vec![Measure { number: 1, notes }],
     }
 }
@@ -185,5 +186,73 @@ fn beamed_fixture_matches_emitter_output() {
         score_model_to_musicxml(&eighth_run_model()),
         FIXTURE_EIGHTH_RUN,
         "emitted-eighth-run.musicxml drifted from the emitter"
+    );
+}
+
+/// #417-3: the piano grand-staff fixture's model — must stay in sync with
+/// `examples/gen_grand_staff_fixture.rs` (regeneration command).
+fn piano_drill_model() -> ScoreModel {
+    use brain::score::{KeySignature, Measure, ScoreNote, TimeSignature};
+    let note = |midi: u8, beats: f64, start: f64| ScoreNote {
+        pitch_hz: brain::score::midi_to_hz(f64::from(midi)),
+        midi_number: midi,
+        duration_beats: beats,
+        start_beat: start,
+        dynamic: None,
+        is_rest: false,
+    };
+    let rest = |beats: f64, start: f64| ScoreNote {
+        pitch_hz: 0.0,
+        midi_number: 0,
+        duration_beats: beats,
+        start_beat: start,
+        dynamic: None,
+        is_rest: true,
+    };
+    let m1 = vec![
+        note(48, 1.0, 0.0),
+        note(64, 1.0, 0.0),
+        note(67, 1.0, 0.0),
+        rest(1.0, 1.0),
+        note(55, 0.5, 2.0),
+        note(57, 0.5, 2.5),
+        note(60, 0.5, 3.0),
+        note(64, 0.5, 3.5),
+    ];
+    let m2 = vec![note(60, 1.0, 0.0), note(64, 1.0, 1.0), note(67, 2.0, 2.0)];
+    ScoreModel {
+        title: "Piano Drill".to_string(),
+        composer: None,
+        instrument: Some("Piano".to_string()),
+        time_signature: TimeSignature::default(),
+        key_signature: KeySignature::default(),
+        tempo_bpm: 90.0,
+        grand_staff: true,
+        measures: vec![
+            Measure {
+                number: 1,
+                notes: m1,
+            },
+            Measure {
+                number: 2,
+                notes: m2,
+            },
+        ],
+    }
+}
+
+const FIXTURE_GRAND_STAFF: &str =
+    include_str!("../../../apps/desktop/src/test-fixtures/emitted-piano-grand-staff.musicxml");
+
+/// #417-3: the grand-staff fixture IS the emitter's output for the piano
+/// drill model — same drift contract as the other fixtures: if this fails,
+/// regenerate (`cargo run -p brain --example gen_grand_staff_fixture`) and
+/// re-run the frontend OSMD sweep.
+#[test]
+fn grand_staff_fixture_matches_emitter_output() {
+    assert_eq!(
+        score_model_to_musicxml(&piano_drill_model()),
+        FIXTURE_GRAND_STAFF,
+        "emitted-piano-grand-staff.musicxml drifted from the emitter"
     );
 }

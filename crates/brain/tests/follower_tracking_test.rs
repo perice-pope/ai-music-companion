@@ -62,6 +62,7 @@ fn asc_desc_scale() -> ScoreModel {
             mode: KeyMode::Major,
         },
         tempo_bpm: 120.0,
+        grand_staff: false,
         measures,
     }
 }
