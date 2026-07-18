@@ -5008,6 +5008,26 @@ mod tests {
         assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
         assert!(!dto.root_pitch_classes.is_empty());
         assert!(!dto.staff.notes.is_empty());
+        // #419 S2b review MF7: the lift path stays FORWARD — the first
+        // segment's steps follow the played lick's contour (D F E A D).
+        // A direction leak into the lift path (the S2b param) breaks this.
+        let m1 = dto
+            .music_xml
+            .split("<measure number=\"2\">")
+            .next()
+            .unwrap();
+        let steps: Vec<&str> = m1
+            .match_indices("<step>")
+            .map(|(i, _)| {
+                let rest = &m1[i + 6..];
+                &rest[..rest.find("</step>").unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            vec!["D", "F", "E", "A", "D"],
+            "lifted contour intact"
+        );
         // And it's immediately editable (#292): the correction UX this loop
         // was built for.
         let edited =
@@ -7429,6 +7449,16 @@ mod tests {
         // Determinism: preview IS the exercise, with the new params too.
         let begun = opener_impl(&state, &items, Some(9), None, true).unwrap();
         assert_eq!(in_a.music_xml, begun.music_xml);
+        // Review MF4: the exercise-log row records the LIVE tonic — the
+        // % 12 fold's only observable seam, and what S4 recall will read.
+        let log = state
+            .session_store
+            .lock_or_recover()
+            .list_exercise_log()
+            .unwrap();
+        let last = log.last().expect("Begin logged a row");
+        assert_eq!(last.source, "opener");
+        assert_eq!(last.tonic, 9, "logged tonic is the folded live key");
     }
 
     /// #419 S2b AC3/AC7: directions re-voice the row — reversed differs
@@ -7447,11 +7477,34 @@ mod tests {
         );
         let reversed = opener_impl(&state, &items, None, Some("reversed"), false).unwrap();
         assert_ne!(reversed.music_xml, forward.music_xml);
+        // Review MF3: "reversed" must BE the reversal — the first root
+        // segment's pitch steps read backwards, not merely differently.
+        let steps = |xml: &str| -> Vec<String> {
+            let seg = xml.split("<measure number=\"2\">").next().unwrap();
+            seg.match_indices("<step>")
+                .map(|(i, _)| {
+                    let rest = &seg[i + 6..];
+                    rest[..rest.find("</step>").unwrap()].to_string()
+                })
+                .collect()
+        };
+        let fwd_steps = steps(&forward.music_xml);
+        let mut rev_expected = fwd_steps.clone();
+        rev_expected.reverse();
+        assert_eq!(
+            steps(&reversed.music_xml),
+            rev_expected,
+            "reversed is the reversal of forward's first segment"
+        );
         let varied_a = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
         let varied_b = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
         assert_eq!(
             varied_a.music_xml, varied_b.music_xml,
             "varied is seed-stable"
+        );
+        assert_ne!(
+            varied_a.music_xml, forward.music_xml,
+            "varied differs from forward (AC3)"
         );
         let err = opener_impl(&state, &items, None, Some("sideways"), false).unwrap_err();
         assert!(err.contains("forward, reversed, or varied"), "got: {err}");

@@ -223,6 +223,14 @@ export interface RecognizedPdf {
   low_content: boolean;
 }
 
+/**
+ * The key-confidence bar at which surfaces treat the detected key as
+ * ASSERTED (the "I hear" header drops its hedge, the reveal card dims on
+ * contradiction, the opener captures its tonic). One constant so the
+ * surfaces can never silently disagree (#419 S2b review MF5).
+ */
+export const KEY_ASSERT_CONFIDENCE = 0.55;
+
 /** All the state the free-play flow needs. */
 export interface PracticeState {
   // Routing ---------------------------------------------------------------
@@ -281,6 +289,14 @@ export interface PracticeState {
   /** #419 S2b: the recipe-level direction setting (a setting, not an
    * item — it survives item edits, resets after Begin/session end). */
   openerDirection: "forward" | "reversed" | "varied";
+  /** The direction the painted preview was built with — Begin sends
+   * THIS (with openerTonic): Begin plays what you SEE, not a setting a
+   * mid-flight refresh hasn't painted yet (review MF2). */
+  openerPreviewedDirection: "forward" | "reversed" | "varied";
+  /** Monotonic refresh token — replaces the S1 items-identity guard,
+   * which two direction-triggered refreshes could defeat (same array
+   * identity). Only the latest refresh may commit ANY opener state. */
+  _openerRefreshSeq: number;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -676,6 +692,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   openerNotice: null,
   openerTonic: null,
   openerDirection: "forward" as const,
+  openerPreviewedDirection: "forward" as const,
+  _openerRefreshSeq: 0,
   exploreNotice: null,
   recap: null,
   recapError: null,
@@ -1013,6 +1031,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       openerNotice: null,
       openerTonic: null,
       openerDirection: "forward",
+      openerPreviewedDirection: "forward",
     });
   },
 
@@ -1349,33 +1368,40 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   /** Internal: recompute the pure preview after any item change. */
   _refreshOpenerPreview: async (items: StarterItem[]) => {
+    // S2b review MF2: a MONOTONIC token — the S1 items-identity guard
+    // couldn't tell two direction-triggered refreshes apart (same array).
+    // Only the latest refresh commits anything: dto, tonic, direction.
+    const seq = get()._openerRefreshSeq + 1;
+    set({ _openerRefreshSeq: seq });
     if (items.length === 0) {
       set({ openerPreview: null, openerNotice: null });
       return;
     }
     // #419 S2b: read the live key ONCE per refresh — confident reads only
-    // (the same assert threshold the reveal card uses). The captured value
-    // is what Begin will send: the preview IS the exercise, even if the
-    // room's key drifts between preview and Begin.
+    // (the shared assert threshold, KEY_ASSERT_CONFIDENCE).
     const key = get().perception?.key;
-    const tonic = key && key.confidence >= 0.55 ? key.tonic : null;
-    set({ openerTonic: tonic });
+    const tonic =
+      key && key.confidence >= KEY_ASSERT_CONFIDENCE ? key.tonic : null;
+    const direction = get().openerDirection;
     try {
       const dto = await invoke<ExploreDto>("preview_opener", {
         items,
         tonic,
-        direction: get().openerDirection,
+        direction,
       });
-      // Stale-response guard (review MF3): rapid taps race, and a late
-      // response must never paint music for items that changed under it —
-      // the items array identity is the sequence token (same pattern as
-      // ScoreDropZone's importSeq).
-      if (get().openerItems !== items) {
-        return;
+      if (get()._openerRefreshSeq !== seq) {
+        return; // A newer refresh owns the surface now.
       }
-      set({ openerPreview: dto, openerNotice: null });
+      // Tonic and direction commit WITH the dto they built — Begin sends
+      // exactly the pair the player is looking at.
+      set({
+        openerPreview: dto,
+        openerNotice: null,
+        openerTonic: tonic,
+        openerPreviewedDirection: direction,
+      });
     } catch (err) {
-      if (get().openerItems !== items) {
+      if (get()._openerRefreshSeq !== seq) {
         return;
       }
       set({ openerPreview: null, openerNotice: String(err) });
@@ -1393,9 +1419,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     try {
       const dto = await invoke<ExploreDto>("begin_opener", {
         items,
-        // The tonic the last PREVIEW captured — never a fresh read.
+        // The pair the last ACCEPTED preview committed — never a fresh
+        // read, never a setting a mid-flight refresh hasn't painted.
         tonic: get().openerTonic,
-        direction: get().openerDirection,
+        direction: get().openerPreviewedDirection,
       });
       // The opener becomes the session's exploration — the same surface a
       // lifted lick lands on — and the builder resets for next time.
@@ -1407,6 +1434,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         openerNotice: null,
         openerTonic: null,
         openerDirection: "forward",
+        openerPreviewedDirection: "forward",
       });
     } catch (err) {
       set({ openerNotice: String(err) });

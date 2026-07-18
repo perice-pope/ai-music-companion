@@ -360,4 +360,127 @@ describe("OpenersPanel (#419 S1)", () => {
       }),
     );
   });
+
+  it("the capture respects the assert threshold — 0.54 is a wobble", async () => {
+    // Review MF5: >= 0.55 captures; below stays C. Exactly-at included.
+    const withConfidence = (confidence: number) =>
+      ({
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 9,
+          mode: "major",
+          name: "A major",
+          confidence,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      }) as never;
+    usePracticeStore.setState({ perception: withConfidence(0.54) });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    usePracticeStore.setState({ perception: withConfidence(0.55) });
+    fireEvent.click(screen.getByTestId("opener-note-2"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "note_sequence", degrees: [1] },
+          { type: "note_sequence", degrees: [2] },
+        ],
+        tonic: 9,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("Begin resets direction and tonic — the next recipe starts fresh", async () => {
+    // Review MF6: a stale captured tonic leaking into the next recipe is
+    // the drift class this slice exists to prevent.
+    usePracticeStore.setState({
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key: {
+          tonic: 9,
+          mode: "major",
+          name: "A major",
+          confidence: 0.9,
+          alternative: null,
+        },
+        chord: null,
+        hearing_polyphony: false,
+      } as never,
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    fireEvent.click(screen.getByTestId("opener-direction-reversed"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+        tonic: 9,
+        direction: "reversed",
+      }),
+    );
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    expect(usePracticeStore.getState().openerDirection).toBe("forward");
+    expect(usePracticeStore.getState().openerTonic).toBeNull();
+    // The room went silent; the NEXT recipe previews from C, forward.
+    usePracticeStore.setState({ perception: null });
+    fireEvent.click(screen.getByTestId("opener-note-1"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("a stale direction refresh cannot outpaint a newer one — seq token", async () => {
+    // Review MF2: two direction-triggered refreshes share the items array
+    // identity; only a monotonic token can order them. The FIRST refresh
+    // resolves LAST and must be dropped — preview, tonic, and previewed
+    // direction all stay with the newer response.
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+
+    let resolveSlow: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementationOnce(
+      () => new Promise((res) => (resolveSlow = res)),
+    );
+    fireEvent.click(screen.getByTestId("opener-direction-reversed"));
+    // The second flip's refresh resolves immediately.
+    fireEvent.click(screen.getByTestId("opener-direction-varied"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
+        "varied",
+      ),
+    );
+    // The slow "reversed" response lands late — and changes nothing.
+    await act(async () => {
+      resolveSlow({ ...PREVIEW_DTO, label: "stale reversed preview" });
+      await Promise.resolve();
+    });
+    expect(usePracticeStore.getState().openerPreviewedDirection).toBe("varied");
+    expect(usePracticeStore.getState().openerPreview?.label).not.toBe(
+      "stale reversed preview",
+    );
+  });
 });

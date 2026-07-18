@@ -188,7 +188,13 @@ fn legacy_database_survives_the_whole_new_stack() {
     }
     let (cell, first) = lifted.expect("the clean lick must lift");
     assert_eq!(cell, vec![0, 3, 2, 7, 0]);
-    let (state, seq) = start_explore_cell(cell, first % 12, &model, 7);
+    let (state, seq) = start_explore_cell(
+        cell,
+        first % 12,
+        &model,
+        7,
+        brain::coach::DirectionMode::Forward,
+    );
     assert!(seq.root_order.len() >= LIFT_MIN_ROOTS);
     let staff = cell_staff_view(&seq, brain::coach::key_signature_for(state.tonic, "major"));
     assert_eq!(staff.notes.len(), seq.target_midi.len());

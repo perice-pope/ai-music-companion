@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { usePracticeStore } from "../stores/practiceStore";
+import {
+  usePracticeStore,
+  KEY_ASSERT_CONFIDENCE,
+} from "../stores/practiceStore";
 
 /**
  * A key change only DIMS a card when the NEW reading is at least this
@@ -8,7 +11,7 @@ import { usePracticeStore } from "../stores/practiceStore";
  * where it drops the "maybe" hedge), so an asserted header can never sit
  * contradicting a lingering card.
  */
-const DISMISS_MIN_CONFIDENCE = 0.55;
+const DISMISS_MIN_CONFIDENCE = KEY_ASSERT_CONFIDENCE;
 
 /**
  * A single real-world music "reveal". Slides in from the right and STAYS
