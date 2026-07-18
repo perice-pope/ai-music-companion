@@ -146,7 +146,11 @@ const ACTIVE_BIN_RATIO: f32 = 0.25;
 /// never its root — without this, a noise bin at ~0.3 lets a 5-note
 /// template (e.g. Dom7b9 rooted on the noise) swallow a clean dim7 whose
 /// every real tone it happens to contain.
-const ROOT_BIN_RATIO: f32 = 0.4;
+// Round 5 (#415): 0.4 → 0.32, pinned by `real_g7_says_g7` — at 0.4 the
+// real G7 fixture promotes "Bdim" (G7's rootless upper structure) in the
+// early window where the folded G sits under 40% of max. A real chord's
+// root can transiently be its weakest tone.
+const ROOT_BIN_RATIO: f32 = 0.32;
 /// Weight of the penalty for strong energy OUTSIDE the template.
 const NON_CHORD_PENALTY: f32 = 0.8;
 /// Score penalty per omitted optional tone, so an exact interpretation of
@@ -188,7 +192,11 @@ const STRONG_OUTSIDER_RATIO: f32 = 0.75;
 /// INCUMBENT chord retains its extensions at the plain active bar instead
 /// (see [`best_match_retentive`]) — still sounding means still named;
 /// truly released (below active) still switches.
-const EXTENSION_MIN_RATIO: f32 = 0.5;
+const EXTENSION_MIN_RATIO: f32 = 0.55;
+
+/// Round 5 (#415): see the maj7 note at the use site — the 3rd-partial
+/// class needs a stronger claim than other extensions.
+const MAJ7_MIN_RATIO: f32 = 0.7;
 
 /// Root/third/fifth pitch-class offsets — the tones ANY voicing carries.
 /// (Folded 3 covers both the minor 3rd and the folded #9; that ambiguity is
@@ -289,8 +297,17 @@ pub fn best_match_retentive(
                 // compression. Base-triad tones keep the active bar.
                 let is_extension = intervals.len() > 3 && !BASE_TRIAD_INTERVALS.contains(&iv);
                 let retained = incumbent == Some((root, q));
+                // Round 5: the MAJOR SEVENTH (iv 11) sits exactly where the
+                // bass/third's 3rd partial lands — the single most
+                // residue-prone interval on real piano (a real C/E read
+                // "Cmaj7/E" off the E's partials). Claiming maj7 takes a
+                // genuinely prominent seventh.
                 let bar = if is_extension && !retained {
-                    max_bin * EXTENSION_MIN_RATIO
+                    if iv == 11 {
+                        max_bin * MAJ7_MIN_RATIO
+                    } else {
+                        max_bin * EXTENSION_MIN_RATIO
+                    }
                 } else {
                     max_bin * ACTIVE_BIN_RATIO
                 };
