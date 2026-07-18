@@ -296,6 +296,15 @@ pub struct RecapInput {
     /// its existing genre-neutral behavior — silence over a hollow connection.
     #[serde(default)]
     pub taste_profile: Option<TasteProfile>,
+    /// The player cannot alter the intonation of a sounding note — the pitch
+    /// is set by the instrument's mechanism (struck/plucked: piano, mallets,
+    /// fretted strings). The recap must then never critique *player*
+    /// intonation or prescribe tuning drills; an average cents offset is the
+    /// instrument's tuning, not the playing (#389). Threaded in by the shell
+    /// from the instrument profile, like `taste_profile`; `false` (the
+    /// continuous-pitch behavior) for inputs persisted before this field.
+    #[serde(default)]
+    pub fixed_pitch: bool,
 }
 
 /// The post-session recap shown to the student.
@@ -317,6 +326,13 @@ pub struct SessionRecap {
     pub duration_secs: f64,
     /// Number of phrases played (copied from `RecapInput.phrases.len()`).
     pub phrase_count: usize,
+    /// Copied from [`RecapInput::fixed_pitch`] (#389): the instrument can't
+    /// bend a sounding note, so the Face must present the fingerprint's
+    /// intonation figures as the instrument's tuning, never the player's —
+    /// otherwise the read-out would contradict the coaching text on the same
+    /// screen. `serde(default)` so recaps persisted before this field load.
+    #[serde(default)]
+    pub fixed_pitch: bool,
     /// Instrument played (first-segment instrument for multi-segment
     /// sessions — copied from `RecapInput.instrument`).
     pub instrument: String,
@@ -499,6 +515,11 @@ impl CompletedSession {
             // at coaching time (see `generate_recap_with_context`). A bare
             // `CompletedSession` carries no profile, so default to `None` here.
             taste_profile: None,
+            // Like the taste profile, instrument capabilities are owned by the
+            // shell's profile catalog — it threads the real value in at
+            // coaching time (#389). Defaulting to continuous-pitch keeps the
+            // stricter (critiquing) behavior when nothing is threaded.
+            fixed_pitch: false,
         }
     }
 
@@ -520,7 +541,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new())
+        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new(), false)
             .await
     }
 
@@ -535,7 +556,7 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new())
+        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new(), false)
             .await
     }
 
@@ -547,7 +568,7 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         idiom_notes: Vec<IdiomMatch>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new())
+        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new(), false)
             .await
     }
 
@@ -559,6 +580,10 @@ impl CompletedSession {
     /// depend on a taste profile. The other `generate_recap*` methods are thin
     /// wrappers that default one or both of these to "absent".
     ///
+    /// `fixed_pitch` (#389) carries the instrument-profile fact that the player
+    /// cannot alter a sounding note's intonation (struck/plucked mechanism) —
+    /// the wrappers default it to `false`, the continuous-pitch behavior.
+    ///
     /// The same authoritative-fields guarantee as [`Self::generate_recap`]
     /// applies: `duration_secs`, `phrase_count`, and `instrument` are
     /// overwritten from this session regardless of what the generator emits.
@@ -568,10 +593,12 @@ impl CompletedSession {
         profile: Option<TasteProfile>,
         idiom_notes: Vec<IdiomMatch>,
         note_verdicts: Vec<crate::follower::NoteVerdict>,
+        fixed_pitch: bool,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
         input.note_verdicts = note_verdicts;
+        input.fixed_pitch = fixed_pitch;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
@@ -908,6 +935,7 @@ mod tests {
             next_session_suggestions: vec!["Play the C major scale slowly with a drone.".to_owned()],
             duration_secs: 0.0,
             phrase_count: 0,
+            fixed_pitch: false,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
             flavour: None,
@@ -1335,6 +1363,37 @@ mod tests {
         assert!(
             captured.taste_profile.is_none(),
             "cold start must leave the recap input profile-free"
+        );
+    }
+
+    /// #389 — the shell owns the instrument-capability fact, and this is its
+    /// join point: `fixed_pitch` must land on the `RecapInput` the generator
+    /// sees, while the wrappers keep the continuous-pitch default. Fails if
+    /// the flag is dropped between the context call and the input.
+    #[tokio::test]
+    async fn generate_recap_with_context_threads_fixed_pitch_into_input() {
+        let mock = RecordingMockGenerator::new(canned_recap());
+        let input_handle = mock.last_input_handle();
+
+        let mut recorder = SessionRecorder::new("piano".to_owned(), PracticeMode::default());
+        recorder.record_phrase(phrase(0)).unwrap();
+        let completed = recorder.complete().unwrap();
+
+        completed
+            .generate_recap_with_context(&mock, None, Vec::new(), Vec::new(), true)
+            .await
+            .unwrap();
+        let captured = input_handle.lock().unwrap().clone().unwrap();
+        assert!(
+            captured.fixed_pitch,
+            "the fixed-pitch fact must reach the generator's input"
+        );
+
+        completed.generate_recap(&mock).await.unwrap();
+        let captured = input_handle.lock().unwrap().clone().unwrap();
+        assert!(
+            !captured.fixed_pitch,
+            "the plain wrapper defaults to continuous-pitch"
         );
     }
 

@@ -513,6 +513,9 @@ impl MockRecapGenerator {
             ],
             duration_secs: 0.0,
             phrase_count: 0,
+            // Mirrors the real generators: the flag is copied from the input
+            // so the Face's presentation switch is exercised in mock runs too.
+            fixed_pitch: input.fixed_pitch,
             instrument: String::new(),
             fingerprint: None,
             flavour: None,
@@ -1811,12 +1814,23 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
 
     match session.recorder.complete() {
         Ok(completed) => {
+            // #389: on a struck/plucked instrument the player can't bend a
+            // sounding note, so the recap must treat measured cents offsets as
+            // the instrument's tuning, never the player's intonation. The
+            // catalog's `polyphonic` bit encodes exactly that struck/plucked
+            // mechanism (#349 T2b), so it doubles as the fixed-pitch signal.
+            let fixed_pitch = state
+                .list_instruments()
+                .iter()
+                .find(|i| i.name.eq_ignore_ascii_case(completed.primary_instrument()))
+                .is_some_and(|i| i.polyphonic);
             let recap = build_recap(
                 &completed,
                 &*generator,
                 taste_profile,
                 idiom_notes,
                 note_verdicts,
+                fixed_pitch,
             )
             .await?;
             // Persist the completed session so practice history, the stats
@@ -1877,9 +1891,16 @@ async fn build_recap(
     taste_profile: Option<TasteProfile>,
     idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
     note_verdicts: Vec<brain::follower::NoteVerdict>,
+    fixed_pitch: bool,
 ) -> Result<SessionRecap, CommandError> {
     completed
-        .generate_recap_with_context(generator, taste_profile, idiom_notes, note_verdicts)
+        .generate_recap_with_context(
+            generator,
+            taste_profile,
+            idiom_notes,
+            note_verdicts,
+            fixed_pitch,
+        )
         .await
         .map_err(CommandError::from)
 }
@@ -1929,6 +1950,9 @@ fn empty_state_recap(duration_secs: f64, instrument: String) -> SessionRecap {
         next_session_suggestions,
         duration_secs,
         phrase_count: 0,
+        // The empty state carries no fingerprint, so no intonation read-out
+        // ever renders from it — the presentation flag is moot here.
+        fixed_pitch: false,
         instrument,
         fingerprint: None,
         flavour: None,
@@ -4244,7 +4268,7 @@ mod tests {
             },
         ];
         let generator = MockRecapGenerator;
-        let recap = build_recap(&completed, &generator, None, Vec::new(), verdicts)
+        let recap = build_recap(&completed, &generator, None, Vec::new(), verdicts, false)
             .await
             .expect("recap builds");
         let summary = recap
@@ -7194,6 +7218,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         // Must not panic (no HTTP) and must return the grounded fallback recap.
@@ -7206,6 +7231,85 @@ mod tests {
         assert!(
             recap.connections.is_empty(),
             "offline recap must not carry LLM connections"
+        );
+    }
+
+    /// A phrase sitting ~20 cents sharp of A440 — past the 15¢ in-tune
+    /// tolerance, so a session of these trips every player-intonation
+    /// surface of the fallback recap (#389's reproduction shape).
+    fn sharp_phrase() -> PhraseSummary {
+        let mut p = sample_phrase();
+        p.pitch_stats.pitches = vec![440.0 * 2f64.powf(20.0 / 1200.0); 16];
+        p
+    }
+
+    async fn recap_for_out_of_tune_session(instrument: &str) -> SessionRecap {
+        let mut s = AppState::with_mocks();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        start_practice_session_impl(
+            &s,
+            instrument.to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("session starts");
+        {
+            let mut buf = s.phrase_buffer.lock().unwrap();
+            buf.push(sharp_phrase());
+            buf.push(sharp_phrase());
+        }
+        end_practice_session_impl(&s)
+            .await
+            .expect("session ends with a grounded fallback recap")
+    }
+
+    /// #389 end-to-end at the command boundary: a Piano session that reads
+    /// sharp gets a recap with no player-intonation critique or tuner/drone
+    /// advice — the offset is phrased as the instrument's tuning — while the
+    /// same playing on Trumpet keeps the coaching. Fails if the catalog's
+    /// struck/plucked fact stops reaching the recap composer (the wiring
+    /// this issue was opened about).
+    #[tokio::test]
+    async fn piano_session_recap_critiques_the_instrument_not_the_player() {
+        let recap = recap_for_out_of_tune_session("Piano").await;
+        assert!(
+            recap.fixed_pitch,
+            "the recap must carry the fixed-pitch fact so the Face can \
+             present the fingerprint's intonation as the instrument's tuning"
+        );
+        let text = format!(
+            "{}\n{}\n{}\n{}",
+            recap.overall_assessment,
+            recap.strengths.join("\n"),
+            recap.areas_to_improve.join("\n"),
+            recap.next_session_suggestions.join("\n"),
+        );
+        for forbidden in ["tuner", "drone", "Intonation drifted"] {
+            assert!(
+                !text.contains(forbidden),
+                "a piano recap must not say {forbidden:?}, got:\n{text}"
+            );
+        }
+        assert!(
+            recap
+                .overall_assessment
+                .contains("the instrument's tuning, not your playing"),
+            "the sharp read is phrased as the piano's tuning, got:\n{}",
+            recap.overall_assessment
+        );
+
+        let recap = recap_for_out_of_tune_session("Trumpet").await;
+        assert!(
+            recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains("Intonation drifted")),
+            "the same playing on trumpet keeps the player critique, got: {:?}",
+            recap.areas_to_improve
         );
     }
 

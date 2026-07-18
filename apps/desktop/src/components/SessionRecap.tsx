@@ -51,6 +51,18 @@ function intonationLine(s: IntonationSummary): string {
   return line;
 }
 
+/**
+ * The fixed-pitch counterpart of `intonationLine` (#389): on a piano the
+ * player can't alter a sounding note's intonation, so the read-out names the
+ * instrument's tuning — no player tendency, no in-tune score, no degree
+ * callout. Below ~5 cents the offset is normal instrument state.
+ */
+function instrumentTuningLine(s: IntonationSummary): string {
+  const cents = Math.round(s.mean_cents);
+  if (Math.abs(cents) < 5) return "reads centered";
+  return `reads ~${Math.abs(cents)} cents ${cents > 0 ? "sharp" : "flat"} — the instrument, not your playing`;
+}
+
 /** One quiet line summarising rhythmic feel: tempo, swing, steadiness. */
 function grooveLine(g: GrooveDescriptor): string {
   const parts: string[] = [];
@@ -174,7 +186,10 @@ export default function SessionRecap() {
             (the explicit unsettled claim) — a percussive/groove-only session
             with no tonal readings says nothing about key at all. */}
           {!isEmptyState && fingerprint?.key_claim === "unsettled" && (
-            <p className="text-sm text-gray-400" data-testid="recap-key-unsettled">
+            <p
+              className="text-sm text-gray-400"
+              data-testid="recap-key-unsettled"
+            >
               Key:{" "}
               <span className="text-gray-200">
                 kept moving — normal for exploratory playing
@@ -321,15 +336,30 @@ export default function SessionRecap() {
         )}
 
         {/* Intonation read-out — quiet, factual. Only shown when enough notes
-          were observed to report honestly (backend gate). */}
-        {!isEmptyState && fingerprint?.intonation && (
-          <p className="text-sm text-gray-400" data-testid="recap-intonation">
-            Intonation:{" "}
-            <span className="text-gray-200">
-              {intonationLine(fingerprint.intonation)}
-            </span>
-          </p>
-        )}
+          were observed to report honestly (backend gate). On a fixed-pitch
+          instrument the same figures are the instrument's tuning, not the
+          player's — presenting them as player intonation would contradict
+          the coaching text above (#389). */}
+        {!isEmptyState &&
+          fingerprint?.intonation &&
+          (recap.fixed_pitch ? (
+            <p
+              className="text-sm text-gray-400"
+              data-testid="recap-instrument-tuning"
+            >
+              Instrument tuning:{" "}
+              <span className="text-gray-200">
+                {instrumentTuningLine(fingerprint.intonation)}
+              </span>
+            </p>
+          ) : (
+            <p className="text-sm text-gray-400" data-testid="recap-intonation">
+              Intonation:{" "}
+              <span className="text-gray-200">
+                {intonationLine(fingerprint.intonation)}
+              </span>
+            </p>
+          ))}
 
         {/* Rhythmic-feel read-out — quiet, factual. Only shown when enough
           onsets were observed to estimate groove (backend gate). */}
@@ -464,8 +494,6 @@ function formatUnclearSpan(secs: number): string {
   const s = Math.round(secs);
   return s < 60 ? `${s}s` : `${Math.round(secs / 60)}m`;
 }
-
-
 
 /**
  * Full-height dark surface for the recap. Every other screen owns its own

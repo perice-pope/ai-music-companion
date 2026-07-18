@@ -833,9 +833,27 @@ All text should be written as a teacher would speak — warm, specific, and acti
 
         // Intonation over the session, when enough notes were observed. These
         // are *computed* cents figures — the model must not invent numbers, only
-        // phrase the facts we hand it.
+        // phrase the facts we hand it. On a fixed-pitch instrument the figures
+        // describe the instrument's tuning, so the model is told to never
+        // critique the player's intonation or prescribe tuning drills (#389).
         let intonation_line = match &fingerprint.intonation {
+            Some(s) if input.fixed_pitch => format!(
+                "- Intonation: {} — NOTE: {} is fixed-pitch, so the player cannot alter \
+                 intonation; treat any offset as the instrument's tuning, never critique the \
+                 player's intonation, and never suggest tuning drills (drones, tuner work)\n",
+                describe_intonation(s),
+                input.instrument,
+            ),
             Some(s) => format!("- Intonation: {}\n", describe_intonation(s)),
+            // Even without the aggregate, the phrase-stat numbers above can
+            // read as intonation — keep the instruction so the model never
+            // coaches a pianist's pitch.
+            None if input.fixed_pitch => format!(
+                "- NOTE: {} is fixed-pitch, so the player cannot alter intonation; never \
+                 critique the player's intonation, and never suggest tuning drills (drones, \
+                 tuner work)\n",
+                input.instrument,
+            ),
             None => String::new(),
         };
 
@@ -1045,6 +1063,9 @@ All text should be written as a teacher would speak — warm, specific, and acti
             duration_secs: input.duration_secs,
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
+            // The Face needs this to present the fingerprint's intonation as
+            // the instrument's tuning on fixed-pitch instruments (#389).
+            fixed_pitch: input.fixed_pitch,
             fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
             // Theory-grounded flavour from mode + swing (#209), shared with the
             // offline path. Hedged, and `None` when there's no clear signal.
@@ -1225,6 +1246,12 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
 /// numeric claims**, and `fingerprint` is carried through (`None` only when
 /// nothing was measured), never thrown away.
 pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
+    /// On a fixed-pitch instrument, below this average |cents| offset the
+    /// tuning note is omitted — a few cents is normal instrument state, not
+    /// something worth sending the user to a technician over. Matches the
+    /// ≥ 5 cents bar the degree-tendency critique uses.
+    const INSTRUMENT_TUNING_NOTE_MIN_CENTS: f32 = 5.0;
+
     let fingerprint = build_fingerprint(&input.phrases);
     let flavour = theory_flavour(&fingerprint);
     let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
@@ -1240,18 +1267,34 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         if phrase_count == 1 { "" } else { "s" },
     );
     if let Some(s) = &fingerprint.intonation {
-        let centered = s.mean_cents.abs() <= 1.0;
-        overall.push_str(&format!(
-            " Intonation: {} — {}.",
-            if centered {
-                "centered overall".to_owned()
-            } else if s.mean_cents > 0.0 {
-                "running a touch sharp".to_owned()
-            } else {
-                "running a touch flat".to_owned()
-            },
-            describe_intonation(s),
-        ));
+        if input.fixed_pitch {
+            // A pianist can't bend a struck note — the measured offset is the
+            // instrument's tuning, not the playing (#389). Phrase it as the
+            // instrument when it's notable, and say nothing when it's slight:
+            // "your intonation was centered" would be praise nobody earned.
+            if s.mean_cents.abs() >= INSTRUMENT_TUNING_NOTE_MIN_CENTS {
+                overall.push_str(&format!(
+                    " Your {} reads about {:.0} cents {} overall — that's the instrument's \
+                     tuning, not your playing.",
+                    input.instrument,
+                    s.mean_cents.abs(),
+                    if s.mean_cents > 0.0 { "sharp" } else { "flat" },
+                ));
+            }
+        } else {
+            let centered = s.mean_cents.abs() <= 1.0;
+            overall.push_str(&format!(
+                " Intonation: {} — {}.",
+                if centered {
+                    "centered overall".to_owned()
+                } else if s.mean_cents > 0.0 {
+                    "running a touch sharp".to_owned()
+                } else {
+                    "running a touch flat".to_owned()
+                },
+                describe_intonation(s),
+            ));
+        }
     }
     if let Some(g) = &fingerprint.groove {
         overall.push_str(&format!(" Feel held {}.", describe_groove(g)));
@@ -1268,7 +1311,10 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     // Each is gated on a dimension that actually cleared its evidence bar.
     let mut strengths: Vec<String> = Vec::new();
     if let Some(s) = &fingerprint.intonation {
-        if s.in_tune_ratio >= 0.7 {
+        // On a fixed-pitch instrument the in-tune ratio measures the
+        // instrument, so praising it as the player's is as hollow as
+        // critiquing it (#389).
+        if s.in_tune_ratio >= 0.7 && !input.fixed_pitch {
             strengths.push(format!(
                 "Solid intonation — {:.0}% of {} notes landed in tune.",
                 s.in_tune_ratio * 100.0,
@@ -1308,7 +1354,14 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
 
     // --- Areas to improve --------------------------------------------------
     let mut areas: Vec<String> = Vec::new();
-    if let Some(s) = &fingerprint.intonation {
+    // Intonation is only ever an "area to work on" when the player can work
+    // on it — on a fixed-pitch instrument these critiques would grade the
+    // instrument's tuning as the player's failing (#389).
+    if let Some(s) = fingerprint
+        .intonation
+        .as_ref()
+        .filter(|_| !input.fixed_pitch)
+    {
         if s.in_tune_ratio < 0.7 {
             areas.push(format!(
                 "Intonation drifted — only {:.0}% of notes sat in tune.",
@@ -1380,7 +1433,13 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
             });
         }
     }
-    if let Some(s) = &fingerprint.intonation {
+    // Drone and tuner work only make sense where the player controls the
+    // pitch — never prescribed on a fixed-pitch instrument (#389).
+    if let Some(s) = fingerprint
+        .intonation
+        .as_ref()
+        .filter(|_| !input.fixed_pitch)
+    {
         if let Some(worst) = s
             .tendencies
             .iter()
@@ -1422,6 +1481,9 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         duration_secs: input.duration_secs,
         phrase_count,
         instrument: input.instrument.clone(),
+        // The Face needs this to present the fingerprint's intonation as the
+        // instrument's tuning on fixed-pitch instruments (#389).
+        fixed_pitch: input.fixed_pitch,
         // Persist the measured fingerprint instead of throwing it away —
         // `None` only when nothing cleared a gate, so "nothing measured" stays
         // distinct from "some dimensions measured".
@@ -2029,6 +2091,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2060,6 +2123,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2131,6 +2195,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
@@ -2873,6 +2938,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -2943,6 +3009,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile,
+            fixed_pitch: false,
         }
     }
 
@@ -2960,6 +3027,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
+            fixed_pitch: false,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3028,6 +3096,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3103,6 +3172,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
+            fixed_pitch: false,
         };
         let recap = CoachingEngine::fallback_recap(&input);
         assert_eq!(
@@ -3198,6 +3268,188 @@ mod tests {
         assert!(
             recap.connections.is_empty(),
             "offline fallback must carry no connections"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #389 — fixed-pitch instruments: critique the instrument, not the player
+    // -----------------------------------------------------------------------
+
+    /// Phrases sitting ~20 cents sharp (past the 15¢ in-tune tolerance) in an
+    /// asserted A♭-major key — enough notes for the intonation aggregate to
+    /// report, with degree tendencies. The worst honest case for #389: every
+    /// intonation surface of the recap would fire on it.
+    fn sharp_session_phrases() -> Vec<PhraseSummary> {
+        let sharp = |hz: f64| hz * 2f64.powf(20.0 / 1200.0);
+        let tracked = |tonic: u8| {
+            let mut p = sample_phrase();
+            p.key = Some(theory::KeyEstimate {
+                tonic,
+                mode: theory::Mode::Ionian,
+                confidence: 0.8,
+                margin: 0.2,
+            });
+            p.pitch_stats.pitches = (0..16).map(|_| sharp(440.0)).collect();
+            p
+        };
+        vec![tracked(8), tracked(8)]
+    }
+
+    fn joined_recap_text(recap: &SessionRecap) -> String {
+        let mut text = recap.overall_assessment.clone();
+        for line in recap
+            .strengths
+            .iter()
+            .chain(&recap.areas_to_improve)
+            .chain(&recap.next_session_suggestions)
+        {
+            text.push('\n');
+            text.push_str(line);
+        }
+        text
+    }
+
+    /// #389 AC1 — a piano session that reads sharp must not grade the player
+    /// on intonation the mechanism decides: no drifted critique, no tuner or
+    /// drone advice, no degree callout — the offset is re-phrased as the
+    /// instrument's tuning instead. Fails if any of the recap's intonation
+    /// surfaces (overall, strengths, areas, suggestions) forgets the
+    /// fixed-pitch gate.
+    #[test]
+    fn fixed_pitch_recap_critiques_the_instrument_not_the_player() {
+        let mut input = recap_input_with(sharp_session_phrases(), None);
+        input.instrument = "Piano".to_owned();
+        input.fixed_pitch = true;
+        let recap = CoachingEngine::fallback_recap(&input);
+
+        let text = joined_recap_text(&recap);
+        for forbidden in ["tuner", "drone", "Intonation drifted", "running a touch"] {
+            assert!(
+                !text.contains(forbidden),
+                "a fixed-pitch recap must not say {forbidden:?}, got:\n{text}"
+            );
+        }
+        assert!(
+            recap
+                .overall_assessment
+                .contains("the instrument's tuning, not your playing"),
+            "a notable offset is re-phrased as the instrument's, got:\n{}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap.overall_assessment.contains("20 cents sharp"),
+            "the measured offset still reports honestly, got:\n{}",
+            recap.overall_assessment
+        );
+    }
+
+    /// #389 AC2 — the same sharp session on a continuous-pitch instrument
+    /// keeps the full player-intonation coaching (critique, degree callout,
+    /// drone work). Fails if the fixed-pitch gate leaks into the default
+    /// path — i.e. if trumpet recaps lose their intonation coaching.
+    #[test]
+    fn continuous_pitch_recap_keeps_player_intonation_coaching() {
+        let input = recap_input_with(sharp_session_phrases(), None);
+        assert!(!input.fixed_pitch, "trumpet input is continuous-pitch");
+        let recap = CoachingEngine::fallback_recap(&input);
+
+        assert!(
+            recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains("Intonation drifted")),
+            "the sharp session still earns the intonation critique, got: {:?}",
+            recap.areas_to_improve
+        );
+        assert!(
+            recap
+                .next_session_suggestions
+                .iter()
+                .any(|s| s.contains("drone")),
+            "the drone suggestion survives for a player who controls pitch, got: {:?}",
+            recap.next_session_suggestions
+        );
+        assert!(
+            recap.overall_assessment.contains("running a touch sharp"),
+            "the overall line keeps the player-phrased read, got:\n{}",
+            recap.overall_assessment
+        );
+    }
+
+    /// #389 — a slight offset on a fixed-pitch instrument is normal
+    /// instrument state, not worth a tuning note; and an in-tune ratio the
+    /// player didn't earn must not become a "solid intonation" strength.
+    /// Fails if the tuning note fires on centered material or if the
+    /// strength line skips the fixed-pitch gate.
+    #[test]
+    fn fixed_pitch_recap_stays_silent_on_centered_material() {
+        let mut input = recap_input_with(vec![groundable_phrase()], None);
+        input.instrument = "Piano".to_owned();
+        input.fixed_pitch = true;
+        let recap = CoachingEngine::fallback_recap(&input);
+
+        assert!(
+            !recap.overall_assessment.contains("tuning"),
+            "no tuning note on a centered instrument, got:\n{}",
+            recap.overall_assessment
+        );
+        assert!(
+            !recap.overall_assessment.contains("Intonation:"),
+            "centered material must not fall through to the player-phrased \
+             'centered overall' praise either, got:\n{}",
+            recap.overall_assessment
+        );
+        assert!(
+            !recap
+                .strengths
+                .iter()
+                .any(|s| s.contains("intonation") || s.contains("Intonation")),
+            "in-tune notes on a piano are not the player's strength, got: {:?}",
+            recap.strengths
+        );
+    }
+
+    /// #389 — the LLM path gets the same honesty: a fixed-pitch input marks
+    /// the intonation figures as the instrument's tuning and forbids
+    /// player-intonation critique and tuning drills; a continuous-pitch
+    /// input's prompt is unchanged. Fails if the prompt line drops the gate
+    /// in either direction.
+    #[test]
+    fn recap_prompt_marks_fixed_pitch_intonation_as_instrument_tuning() {
+        let mut piano = recap_input_with(sharp_session_phrases(), None);
+        piano.instrument = "Piano".to_owned();
+        piano.fixed_pitch = true;
+        let prompt = CoachingEngine::build_recap_user_prompt(&piano);
+        assert!(
+            prompt.contains("Piano is fixed-pitch")
+                && prompt.contains("never critique the player's intonation")
+                && prompt.contains("never suggest tuning drills"),
+            "fixed-pitch prompt instructs the model, got:\n{prompt}"
+        );
+
+        let trumpet = recap_input_with(sharp_session_phrases(), None);
+        let prompt = CoachingEngine::build_recap_user_prompt(&trumpet);
+        assert!(
+            prompt.contains("- Intonation:") && !prompt.contains("fixed-pitch"),
+            "continuous-pitch prompt keeps the plain intonation line, got:\n{prompt}"
+        );
+
+        // Too few notes for the intonation aggregate — the prompt still hands
+        // the model phrase-stat numbers, so the instruction must survive the
+        // aggregate's absence.
+        let mut thin = sample_phrase();
+        thin.pitch_stats.pitches = vec![440.0; 4];
+        let mut piano = recap_input_with(vec![thin], None);
+        piano.instrument = "Piano".to_owned();
+        piano.fixed_pitch = true;
+        let prompt = CoachingEngine::build_recap_user_prompt(&piano);
+        assert!(
+            !prompt.contains("- Intonation:"),
+            "no aggregate line without enough notes, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("never critique the player's intonation"),
+            "the fixed-pitch instruction must not ride on the aggregate, got:\n{prompt}"
         );
     }
 
@@ -4063,6 +4315,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         // Must NOT panic (no HttpClient call) and must return the fallback.
@@ -4164,6 +4417,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4216,6 +4470,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4249,6 +4504,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4290,6 +4546,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4324,6 +4581,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            fixed_pitch: false,
         }
     }
 
