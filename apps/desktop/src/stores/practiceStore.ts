@@ -475,6 +475,16 @@ export interface PracticeState {
    * `accompaniment-status` event, so this doesn't set `accompanimentPlaying`
    * optimistically — it surfaces an error if the command fails.
    */
+  /** #421 S1: The Pocket — strict Anchor click state. */
+  pocketPlaying: boolean;
+  pocketTempo: number;
+  pocketCountIn: boolean;
+  setPocketTempo: (bpm: number) => void;
+  setPocketCountIn: (on: boolean) => void;
+  startPocket: () => Promise<void>;
+  stopPocket: () => Promise<void>;
+  setPocketStatus: (playing: boolean, tempoBpm: number) => void;
+
   startAccompaniment: () => Promise<void>;
   /** Stop the follow-me accompaniment. Fires `stop_accompaniment`. */
   stopAccompaniment: () => Promise<void>;
@@ -1037,6 +1047,36 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // refreshes (separate set — this one derives from current state).
     set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
   },
+
+  pocketPlaying: false,
+  pocketTempo: 90,
+  pocketCountIn: true,
+
+  setPocketTempo: (bpm) => set({ pocketTempo: bpm }),
+  setPocketCountIn: (on) => set({ pocketCountIn: on }),
+
+  startPocket: async () => {
+    // Semantic settings only — clamping and validation are the backend's.
+    await invoke("start_pocket", {
+      tempoBpm: get().pocketTempo,
+      beatsPerBar: 4,
+      countIn: get().pocketCountIn,
+    });
+  },
+
+  stopPocket: async () => {
+    await invoke("stop_pocket");
+  },
+
+  // Authoritative playing state comes from the pocket-status event, same
+  // discipline as the band (#421 rule: never optimistically flip).
+  setPocketStatus: (playing, tempoBpm) =>
+    set((s) => ({
+      pocketPlaying: playing,
+      // The backend reports the CLAMPED tempo it actually plays — mirror
+      // it so the pulse and label can never lie.
+      pocketTempo: playing && tempoBpm > 0 ? tempoBpm : s.pocketTempo,
+    })),
 
   startAccompaniment: async () => {
     // Authoritative `playing` comes from the `accompaniment-status` event, so we
