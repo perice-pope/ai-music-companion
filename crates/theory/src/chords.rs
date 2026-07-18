@@ -146,10 +146,10 @@ const ACTIVE_BIN_RATIO: f32 = 0.25;
 /// never its root — without this, a noise bin at ~0.3 lets a 5-note
 /// template (e.g. Dom7b9 rooted on the noise) swallow a clean dim7 whose
 /// every real tone it happens to contain.
-// Round 5 (#415): 0.4 → 0.32 — on the real G7 fixture the root G reads
-// 38% of max while its chord-mates read ~90%, so G-rooted templates never
-// competed and "Bdim" (G7's rootless upper structure) won the promotion.
-// A real chord's root can be its weakest tone.
+// Round 5 (#415): 0.4 → 0.32, pinned by `real_g7_says_g7` — at 0.4 the
+// real G7 fixture promotes "Bdim" (G7's rootless upper structure) in the
+// early window where the folded G sits under 40% of max. A real chord's
+// root can transiently be its weakest tone.
 const ROOT_BIN_RATIO: f32 = 0.32;
 /// Weight of the penalty for strong energy OUTSIDE the template.
 const NON_CHORD_PENALTY: f32 = 0.8;
@@ -196,26 +196,7 @@ const EXTENSION_MIN_RATIO: f32 = 0.55;
 
 /// Round 5 (#415): see the maj7 note at the use site — the 3rd-partial
 /// class needs a stronger claim than other extensions.
-const MAJ7_MIN_RATIO: f32 = 0.8;
-
-/// Round 5 (#415): a single real note's overtone series lands exactly on
-/// the partial pitch classes {+2, +4, +7, +10} — which is why a lone
-/// fortissimo E3 matched an E MAJOR triad (and never a minor one; +3 is
-/// not a partial class). A candidate whose non-root intervals are all
-/// partial classes, with a root this much stronger than every other
-/// template tone, is one note's overtones — not a chord. The incumbent
-/// is exempt: a legitimately promoted chord decaying into root dominance
-/// keeps its name (retention), it just can't be BORN from overtones.
-const PARTIAL_DOMINANCE_RATIO: f32 = 1.3;
-
-/// Round 5 (#415): a plain triad's FIFTH must genuinely sound. The last
-/// surviving single-note fake (a lone ff E3 reading as "E") had the
-/// third at ~88% (5th partial) but the fifth barely at the active edge
-/// (~27%) — real recorded triads carry their fifth at 49–74%. Applies to
-/// 3-tone qualities only; the incumbent is exempt (a held triad may
-/// decay through this, it just can't be born below it).
-const TRIAD_FIFTH_MIN_RATIO: f32 = 0.33;
-const PARTIAL_CLASSES: [u8; 4] = [2, 4, 7, 10];
+const MAJ7_MIN_RATIO: f32 = 0.7;
 
 /// Root/third/fifth pitch-class offsets — the tones ANY voicing carries.
 /// (Folded 3 covers both the minor 3rd and the folded #9; that ambiguity is
@@ -247,11 +228,6 @@ pub fn active_bin_count(chroma: &[f32; 12]) -> usize {
 /// "hearing several notes…" state instead of a guess (#349 §5.3).
 pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch> {
     best_match_retentive(chroma, bass_pc, None)
-}
-
-/// Is this (root, quality) the retained incumbent?
-fn retained_root_quality(incumbent: Option<(u8, ChordQuality)>, root: u8, q: ChordQuality) -> bool {
-    incumbent == Some((root, q))
 }
 
 /// [`best_match`] with retention hysteresis (#411): `incumbent` is the
@@ -345,32 +321,6 @@ pub fn best_match_retentive(
                     continue;
                 }
                 in_chord += v;
-            }
-            // Round 5: a newborn plain triad needs a real fifth (see
-            // TRIAD_FIFTH_MIN_RATIO).
-            if intervals.len() == 3
-                && intervals.contains(&7)
-                && !retained_root_quality(incumbent, root, q)
-                && chroma[usize::from((root + 7) % 12)] < max_bin * TRIAD_FIFTH_MIN_RATIO
-            {
-                continue 'quality;
-            }
-            // Round 5: one-note overtone guard (see PARTIAL_DOMINANCE_RATIO).
-            if !retained_root_quality(incumbent, root, q) {
-                let partials_only = intervals
-                    .iter()
-                    .all(|&iv| iv == 0 || PARTIAL_CLASSES.contains(&iv));
-                if partials_only {
-                    let root_v = chroma[usize::from(root)];
-                    let max_other = intervals
-                        .iter()
-                        .filter(|&&iv| iv != 0)
-                        .map(|&iv| chroma[usize::from((root + iv) % 12)])
-                        .fold(0.0f32, f32::max);
-                    if root_v >= PARTIAL_DOMINANCE_RATIO * max_other {
-                        continue 'quality;
-                    }
-                }
             }
             let mut out_of_chord = 0.0f32;
             for pc in (0..12).filter(|&pc| !template_mask[pc]) {

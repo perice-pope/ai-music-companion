@@ -265,6 +265,7 @@ fn low_register_c9_still_speaks() {
     let audio = rich_render(&[48, 52, 55, 58, 62], 4.0);
     let mut ex = ChromaExtractor::new(SR);
     let mut tracker = PerceptionTracker::new();
+    let mut seen_c9 = false;
     let mut now = 0.0f64;
     for (i, w) in audio.chunks(1024).enumerate() {
         ex.feed(w);
@@ -279,6 +280,14 @@ fn low_register_c9_still_speaks() {
                 matches!(label.as_deref(), None | Some("C7") | Some("C9")),
                 "only the C7→C9 upgrade path is honest here, got {label:?}"
             );
+            // Monotone (review r5): once upgraded, never back — flapping
+            // C7↔C9 would otherwise pass the per-reading check.
+            if seen_c9 {
+                assert_ne!(label.as_deref(), Some("C7"), "C9→C7 relapse");
+            }
+            if label.as_deref() == Some("C9") {
+                seen_c9 = true;
+            }
         }
     }
     assert_eq!(

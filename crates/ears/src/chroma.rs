@@ -46,9 +46,9 @@ const NUM_BINS: usize = 60;
 /// synth-era weights were roughly half reality.
 const HARMONIC_BLEED: [(usize, f32); 7] = [
     (12, 0.55),
-    (19, 0.7),
+    (19, 0.4),
     (24, 0.3),
-    (28, 0.6),
+    (28, 0.4),
     (31, 0.35),
     (34, 0.18),
     (38, 0.12),

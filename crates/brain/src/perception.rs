@@ -1420,11 +1420,14 @@ mod tests {
             p.observe_chroma(&c, i as f64 * 0.1);
         }
         assert_eq!(p.snapshot(0.4).chord.expect("shown").label, "C");
-        for i in 0..CHORD_REQUALIFY_READINGS as usize {
+        // C → Cmaj7 is a same-root SUPERSET upgrade (#382 round 5): it
+        // pays DOUBLE the requalify dwell, because its one new tone is
+        // the most residue-prone interval there is.
+        for i in 0..(2 * CHORD_REQUALIFY_READINGS) as usize {
             p.observe_chroma(&cmaj7, 0.5 + i as f64 * 0.1);
         }
         assert_eq!(
-            p.snapshot(1.5).chord.expect("shown").label,
+            p.snapshot(2.2).chord.expect("shown").label,
             "Cmaj7",
             "a sustained requalification must still win"
         );

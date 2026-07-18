@@ -60,7 +60,7 @@ fn settled_label_with_bass(audio: &[f32], bass_midi: Option<u8>) -> Option<Strin
     let mut ex = ChromaExtractor::new(SR);
     let mut tracker = PerceptionTracker::new();
     let mut now = 0.0f64;
-    let mut first_label: Option<String> = None;
+    let mut first_label: Option<(String, f64)> = None;
     for (i, w) in audio.chunks(1024).enumerate() {
         ex.feed(w);
         now += w.len() as f64 / f64::from(SR);
@@ -74,16 +74,28 @@ fn settled_label_with_bass(audio: &[f32], bass_midi: Option<u8>) -> Option<Strin
             tracker.observe_chroma(&c, now);
             let label = tracker.snapshot(now).chord.map(|c| c.label);
             match (&first_label, &label) {
-                (Some(seen), Some(l)) => {
+                (Some((seen, _)), Some(l)) => {
                     assert_eq!(l, seen, "label churned mid-take (was {seen:?}, now {l:?})")
                 }
-                (None, Some(_)) => first_label = label.clone(),
+                (None, Some(l)) => first_label = Some((l.clone(), now)),
                 _ => {}
             }
         }
     }
+    // Review r5 MF2: "eventually right" hid a 4-second recognition gap
+    // inside a green test — the first label must arrive fast enough for
+    // a player to SEE it respond.
+    if let Some((_, at)) = &first_label {
+        assert!(
+            *at <= FIRST_LABEL_DEADLINE_SECS,
+            "first label arrived at {at:.2}s — she cannot see 'eventually'"
+        );
+    }
     tracker.snapshot(now).chord.map(|c| c.label)
 }
+
+/// See the use above (review r5 MF2).
+const FIRST_LABEL_DEADLINE_SECS: f64 = 1.0;
 
 fn settled_label(audio: &[f32]) -> Option<String> {
     settled_label_with_bass(audio, None)
@@ -153,6 +165,23 @@ fn real_single_e3_never_invents_a_wrong_root() {
         None,
         "the ring-out must end unlabeled"
     );
+}
+
+/// Review r5 MF3: the most common amateur voicing — left-hand root an
+/// octave down, right-hand triad. The bass sits 12/19/28 semitones under
+/// the triad tones, exactly where the harmonic-subtraction rows land —
+/// this pins the bleed weights against eating genuinely played upper
+/// tones. Root-position (bass = root): plain "C", fast.
+#[test]
+#[ignore = "the committed TARGET, not yet met (#382): sum-folding lets a \
+doubled root's octave stack out-mass single played tones ~6:1, so the E \
+and G of an LH-root+RH-triad C major sink under the denoise floor and \
+the first label takes >2s. A mean-of-octaves fold fixes this fixture but \
+regresses c-over-e — the fold architecture needs its own calibration \
+round. Run with --ignored to see current behavior."]
+fn real_c_major_over_bass_c_says_c() {
+    let label = settled_label_with_bass(&load_wav("c-major-over-c3"), Some(48));
+    assert_eq!(label.as_deref(), Some("C"), "LH-root + RH-triad C major");
 }
 
 /// A real four-note cluster must stay at the honest silence.
