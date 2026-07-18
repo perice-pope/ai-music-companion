@@ -97,7 +97,12 @@ function itemLabel(item: StarterItem): string {
         ? `note ${item.degrees[0]}`
         : item.degrees.join("-");
     case "interval":
-      return item.number === 8 ? "8ve" : `${item.number}th`;
+      // Review MF4: real ordinals ("2th" is not music). The bank table is
+      // the single source for these labels.
+      return (
+        INTERVALS.find((iv) => iv.number === item.number)?.label ??
+        `${item.number}th`
+      );
     case "chord":
       return CHORD_LABELS[item.kind];
     case "scale":
@@ -118,6 +123,9 @@ export function parseCustomSequence(raw: string): number[] | null {
   }
   const parts = trimmed.split(/[\s,-]+/).filter((p) => p.length > 0);
   const degrees = parts.map((p) => Number(p));
+  // The 0..99 bound is load-bearing: it keeps every crossing value in u8
+  // range, so the backend always answers with its calm NAMED refusal and
+  // never a raw serde overflow error.
   if (degrees.some((d) => !Number.isInteger(d) || d < 0 || d > 99)) {
     return null;
   }

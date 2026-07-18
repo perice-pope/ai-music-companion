@@ -193,6 +193,10 @@ describe("OpenersPanel (#419 S1)", () => {
     );
     // Chip labels read musically.
     expect(screen.getByTestId("opener-chip-0").textContent).toContain("5th");
+    // Review MF4: ordinals are real music words — "3rd", never "3th".
+    fireEvent.click(screen.getByTestId("opener-interval-3"));
+    await waitFor(() => screen.getByTestId("opener-chip-4"));
+    expect(screen.getByTestId("opener-chip-4").textContent).toContain("3rd");
     expect(screen.getByTestId("opener-chip-1").textContent).toContain("7");
     expect(screen.getByTestId("opener-chip-2").textContent).toContain("blues");
     expect(screen.getByTestId("opener-chip-3").textContent).toContain(

@@ -176,13 +176,8 @@ pub fn composite_cell(items: &[StarterItem], cap: usize) -> Result<Vec<i8>, Star
                 cell.push(12);
             }
             StarterItem::Enclosure { style } => {
-                cell.extend(
-                    style
-                        .enclosure()
-                        .approach_semitones()
-                        .iter()
-                        .map(|&s| s as i8),
-                );
+                // approach_semitones() is already &[i8] — no cast.
+                cell.extend_from_slice(style.enclosure().approach_semitones());
                 cell.push(0);
             }
         }
@@ -358,35 +353,57 @@ mod tests {
             let expected: Vec<i8> = quality.intervals().iter().map(|&s| s as i8).collect();
             assert_eq!(cell, expected, "{kind:?}");
         }
-        // Scales: catalog semitones + the octave.
+        // Scales: catalog semitones + the octave — EXHAUSTIVE (review MF3:
+        // a swapped mapping on an untested variant shipped wrong music
+        // with every suite green).
         for (kind, scale) in [
             (StarterScale::Major, variations::ScaleType::Major),
+            (
+                StarterScale::NaturalMinor,
+                variations::ScaleType::NaturalMinor,
+            ),
+            (
+                StarterScale::MajorPentatonic,
+                variations::ScaleType::MajorPentatonic,
+            ),
+            (
+                StarterScale::MinorPentatonic,
+                variations::ScaleType::MinorPentatonic,
+            ),
             (StarterScale::Blues, variations::ScaleType::Blues),
             (StarterScale::Dorian, variations::ScaleType::Dorian),
+            (StarterScale::Mixolydian, variations::ScaleType::Mixolydian),
         ] {
             let cell = composite_cell(&[StarterItem::Scale { kind }], 32).unwrap();
             let mut expected: Vec<i8> = scale.semitones().iter().map(|&s| s as i8).collect();
             expected.push(12);
             assert_eq!(cell, expected, "{kind:?}");
         }
-        // Enclosures: approach offsets then the target root.
+        // Enclosures: approach offsets then the target root — both styles.
+        for (style, enclosure) in [
+            (
+                StarterEnclosure::OneDownOneUp,
+                variations::Enclosure::OneDownOneUp,
+            ),
+            (
+                StarterEnclosure::OneUpOneDown,
+                variations::Enclosure::OneUpOneDown,
+            ),
+        ] {
+            let cell = composite_cell(&[StarterItem::Enclosure { style }], 32).unwrap();
+            let mut expected: Vec<i8> = enclosure.approach_semitones().to_vec();
+            expected.push(0);
+            assert_eq!(cell, expected, "{style:?}");
+        }
+        // Interval boundaries: 2 (first slot) and 8 (last slot — the
+        // off-by-one mutation panics out of bounds here).
         assert_eq!(
-            composite_cell(
-                &[StarterItem::Enclosure {
-                    style: StarterEnclosure::OneDownOneUp,
-                }],
-                32
-            )
-            .unwrap(),
-            {
-                let mut v: Vec<i8> = variations::Enclosure::OneDownOneUp
-                    .approach_semitones()
-                    .iter()
-                    .map(|&s| s as i8)
-                    .collect();
-                v.push(0);
-                v
-            }
+            composite_cell(&[StarterItem::Interval { number: 2 }], 32).unwrap(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            composite_cell(&[StarterItem::Interval { number: 8 }], 32).unwrap(),
+            vec![0, 12]
         );
     }
 
@@ -423,27 +440,75 @@ mod tests {
     /// end-to-end pin as S1's (a serde rename breaks every tap silently).
     #[test]
     fn s2a_panel_wire_json_deserializes() {
-        let items: Vec<StarterItem> = serde_json::from_str(
-            r#"[{"type":"interval","number":3},
-                {"type":"chord","kind":"dominant_seventh"},
-                {"type":"scale","kind":"minor_pentatonic"},
-                {"type":"enclosure","style":"one_up_one_down"}]"#,
-        )
-        .unwrap();
+        // EVERY kind literal the panel can send (review MF2: a serde
+        // rename on any of the 14 shipped silently when only one variant
+        // per enum was pinned).
+        let json = r#"[
+            {"type":"interval","number":3},
+            {"type":"chord","kind":"major_triad"},
+            {"type":"chord","kind":"minor_triad"},
+            {"type":"chord","kind":"dominant_seventh"},
+            {"type":"chord","kind":"major_seventh"},
+            {"type":"chord","kind":"minor_seventh"},
+            {"type":"scale","kind":"major"},
+            {"type":"scale","kind":"natural_minor"},
+            {"type":"scale","kind":"major_pentatonic"},
+            {"type":"scale","kind":"minor_pentatonic"},
+            {"type":"scale","kind":"blues"},
+            {"type":"scale","kind":"dorian"},
+            {"type":"scale","kind":"mixolydian"},
+            {"type":"enclosure","style":"one_down_one_up"},
+            {"type":"enclosure","style":"one_up_one_down"}]"#;
+        let items: Vec<StarterItem> = serde_json::from_str(json).unwrap();
+        assert_eq!(items.len(), 15);
+        assert_eq!(items[0], StarterItem::Interval { number: 3 });
+        let chords: Vec<StarterChord> = items[1..6]
+            .iter()
+            .map(|i| match i {
+                StarterItem::Chord { kind } => *kind,
+                other => panic!("expected chord, got {other:?}"),
+            })
+            .collect();
         assert_eq!(
-            items,
+            chords,
             vec![
-                StarterItem::Interval { number: 3 },
-                StarterItem::Chord {
-                    kind: StarterChord::DominantSeventh,
-                },
-                StarterItem::Scale {
-                    kind: StarterScale::MinorPentatonic,
-                },
-                StarterItem::Enclosure {
-                    style: StarterEnclosure::OneUpOneDown,
-                },
+                StarterChord::MajorTriad,
+                StarterChord::MinorTriad,
+                StarterChord::DominantSeventh,
+                StarterChord::MajorSeventh,
+                StarterChord::MinorSeventh,
             ]
+        );
+        let scales: Vec<StarterScale> = items[6..13]
+            .iter()
+            .map(|i| match i {
+                StarterItem::Scale { kind } => *kind,
+                other => panic!("expected scale, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            scales,
+            vec![
+                StarterScale::Major,
+                StarterScale::NaturalMinor,
+                StarterScale::MajorPentatonic,
+                StarterScale::MinorPentatonic,
+                StarterScale::Blues,
+                StarterScale::Dorian,
+                StarterScale::Mixolydian,
+            ]
+        );
+        assert_eq!(
+            items[13],
+            StarterItem::Enclosure {
+                style: StarterEnclosure::OneDownOneUp,
+            }
+        );
+        assert_eq!(
+            items[14],
+            StarterItem::Enclosure {
+                style: StarterEnclosure::OneUpOneDown,
+            }
         );
     }
 
