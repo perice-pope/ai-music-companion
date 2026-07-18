@@ -194,6 +194,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
         key_signature,
         tempo_bpm,
         measures,
+        grand_staff: false,
     })
 }
 

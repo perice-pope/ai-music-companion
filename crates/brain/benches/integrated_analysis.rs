@@ -67,6 +67,7 @@ fn create_scale_score() -> ScoreModel {
         time_signature: TimeSignature::default(),
         key_signature: KeySignature::default(),
         tempo_bpm: 120.0,
+        grand_staff: false,
         measures: vec![Measure { number: 1, notes }],
     }
 }

@@ -235,6 +235,7 @@ fn phrase_summary_carries_score_position_when_follower_is_set() {
         time_signature: TimeSignature::default(),
         key_signature: KeySignature::default(),
         tempo_bpm: 120.0,
+        grand_staff: false,
         measures: vec![
             Measure {
                 number: 1,

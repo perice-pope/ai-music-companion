@@ -678,6 +678,7 @@ mod tests {
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
             measures: vec![Measure { number: 1, notes }],
+            grand_staff: false,
         }
     }
 
@@ -714,6 +715,7 @@ mod tests {
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
             measures: vec![],
+            grand_staff: false,
         };
 
         let err = ScoreFollower::new(score).unwrap_err();
@@ -729,6 +731,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 0.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![ScoreNote {
@@ -879,6 +882,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: (0..4).map(note).collect(),
@@ -915,6 +919,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![Measure {
                 number: 1,
                 notes: vec![
@@ -969,6 +974,7 @@ mod tests {
             time_signature: TimeSignature::default(),
             key_signature: KeySignature::default(),
             tempo_bpm: 120.0,
+            grand_staff: false,
             measures: vec![
                 Measure {
                     number: 1,

@@ -4,6 +4,7 @@ import trumpetXml from "../test-fixtures/emitted-band-trumpet.musicxml?raw";
 import bassXml from "../test-fixtures/emitted-band-bass.musicxml?raw";
 import scaleXml from "../test-fixtures/emitted-scale-score.musicxml?raw";
 import eighthRunXml from "../test-fixtures/emitted-eighth-run.musicxml?raw";
+import grandStaffXml from "../test-fixtures/emitted-piano-grand-staff.musicxml?raw";
 
 /**
  * #356 — the emitted-notation ⇄ OSMD contract, tested against the REAL
@@ -131,5 +132,38 @@ describe("emitted MusicXML through the real OSMD parser (#356)", () => {
     expect(quarters).toBe(1);
     const sizes = [...beams].map((b) => b.Notes.length).sort();
     expect(sizes).toEqual([2, 4]);
+  });
+
+  it("parses the piano grand staff: two staves, every note kept (#417-3)", async () => {
+    // The #417-3 render contract: a keyboard drill's XML must give OSMD one
+    // instrument with TWO staves (treble + bass), keep all notes including
+    // the straddling chord and the cross-middle-C run, and survive measure 2
+    // where the left hand is silent (an empty bass staff must not blank the
+    // measure — the #356 failure mode).
+    const osmd = new OpenSheetMusicDisplay(document.createElement("div"), {
+      autoResize: false,
+      backend: "svg",
+    });
+    await osmd.load(grandStaffXml);
+    const sheet = osmd.Sheet;
+    expect(sheet.Instruments).toHaveLength(1);
+    expect(sheet.Instruments[0].Staves).toHaveLength(2);
+    expect(sheet.Instruments[0].Name).toBe("Piano");
+    const perMeasure = sheet.SourceMeasures.map((measure) => {
+      let sounding = 0;
+      for (const container of measure.VerticalSourceStaffEntryContainers) {
+        for (const staffEntry of container.StaffEntries) {
+          if (!staffEntry) continue;
+          for (const voiceEntry of staffEntry.VoiceEntries) {
+            sounding += voiceEntry.Notes.filter(
+              (note) => !note.isRest(),
+            ).length;
+          }
+        }
+      }
+      return sounding;
+    });
+    // m1: 3-note chord + 4 eighths; m2: 3 treble notes, silent left hand.
+    expect(perMeasure).toEqual([7, 3]);
   });
 });
