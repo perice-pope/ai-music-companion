@@ -52,8 +52,11 @@ behavior. Direction is the last resting bank entry short of My Patterns.
 - tonic 128 over the wire → % 12 fold (defensive; the store never sends
   it, but the wire shouldn't panic).
 - Key confidence exactly at the threshold → included (>=).
-- Direction chosen, then all items removed → preview clears; direction
-  chip stays (it's a setting, not an item).
+- Direction chosen, then all items removed ONE BY ONE → preview clears;
+  direction chip stays (it's a setting, not an item). The store-level
+  clearOpener() API resets the WHOLE builder including direction (review
+  round-3 note: if a Clear button ever wires to it, that is the
+  deliberate semantic — reset, not clear-items).
 
 ## 7. Test plan
 | AC | Test |
