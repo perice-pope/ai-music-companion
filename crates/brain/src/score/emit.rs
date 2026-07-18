@@ -1406,15 +1406,21 @@ mod tests {
                     number: 1,
                     notes: vec![note(48, 3.0, 0.0), rest(1.0, 3.0)],
                 },
+                // A WHOLE measure of rest between the phrases — the carry
+                // must pass through untouched (round-2 review suggestion).
                 Measure {
                     number: 2,
+                    notes: vec![rest(4.0, 0.0)],
+                },
+                Measure {
+                    number: 3,
                     notes: vec![rest(1.0, 0.0), note(50, 3.0, 1.0)],
                 },
             ],
         };
         let xml = score_model_to_musicxml(&model);
-        // C3, breath, | breath, D3 — every staff is the left hand's.
-        assert_eq!(staff_seq(&xml), vec![2, 2, 2, 2]);
+        // C3, breath, | whole rest, | breath, D3 — all in the left hand.
+        assert_eq!(staff_seq(&xml), vec![2, 2, 2, 2, 2]);
     }
 
     /// #417-3 review N1: the XSD child order inside <note> is a semantic
