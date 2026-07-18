@@ -1,11 +1,10 @@
 import { useState } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 
-/** How long a reveal lingers before fading on its own (ms). */
 
 
 /**
- * A key change only dismisses a card when the NEW reading is at least this
+ * A key change only DIMS a card when the NEW reading is at least this
  * confident — early-session detection wanders, and a wobble is not a
  * contradiction. Matches the "I hear" header's assert threshold (the point
  * where it drops the "maybe" hedge), so an asserted header can never sit
@@ -14,8 +13,9 @@ import { usePracticeStore } from "../stores/practiceStore";
 const DISMISS_MIN_CONFIDENCE = 0.55;
 
 /**
- * A single real-world music "reveal" with an auto-dismiss timer. Slides in from
- * the right and fades after {@link REVEAL_LINGER_MS}, or on explicit dismiss.
+ * A single real-world music "reveal". Slides in from the right and STAYS
+ * (#417 rule 0) until explicitly dismissed or replaced by a newer reveal;
+ * a confidently-contradicted card dims in place via `stale`.
  * Mirrors the coaching `TipCard` so the two share a calm, consistent voice.
  */
 function RevealCardItem({

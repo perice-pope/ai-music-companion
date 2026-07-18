@@ -200,9 +200,13 @@ describe("PitchDisplay — static surface (#417)", () => {
     render(<PitchDisplay />);
     expect(screen.getByTestId("pitch-display").dataset.surface).toBe("live");
 
-    // The note ends (piano decay): silent events keep arriving.
+    // The note ends (piano decay): silent events keep arriving — with a
+    // DIFFERENT confidence, which the held reading must NOT track.
     act(() => {
-      useAudioStore.setState({ latestEvent: event(1.5), currentNote: null });
+      useAudioStore.setState({
+        latestEvent: { ...event(1.5), confidence: 0.1 },
+        currentNote: null,
+      });
     });
     const held = screen.getByTestId("pitch-display");
     expect(held.dataset.surface).toBe("held");
@@ -211,6 +215,8 @@ describe("PitchDisplay — static surface (#417)", () => {
     screen.getByText("440 Hz");
     screen.getByTestId("pitch-meter-indicator");
     expect(held.className).toContain("opacity-50");
+    // Confidence is frozen with the reading (95%), not the silent event's 10%.
+    screen.getByText("confidence: 95%");
     // Critically: no "Listening..." swap-out.
     expect(screen.queryByText("Listening...")).toBeNull();
   });

@@ -107,7 +107,7 @@ export default function PitchDisplay() {
   const idle = !live && silentSecs > HOLD_SECS;
   const surface = live ? "live" : idle ? "idle" : "held";
 
-  const { name, octave } = { name: held.name, octave: held.octave };
+  const { name, octave } = held;
   const frequency_hz = held.frequencyHz;
   const cents = held.cents;
   const meterOffset = clamp(cents, -50, 50);
@@ -116,8 +116,12 @@ export default function PitchDisplay() {
 
   return (
     <div
-      className={`flex flex-col items-center gap-4 transition-opacity duration-500 ${
-        live ? "opacity-100" : idle ? "opacity-30" : "opacity-50"
+      className={`flex flex-col items-center gap-4 transition-opacity ${
+        live
+          ? "duration-150 opacity-100" // snap awake
+          : idle
+            ? "duration-700 opacity-30" // settle gently
+            : "duration-700 opacity-50"
       }`}
       data-testid="pitch-display"
       data-surface={surface}
