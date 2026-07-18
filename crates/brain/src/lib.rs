@@ -25,6 +25,7 @@ pub mod learner;
 pub mod mirror;
 pub mod perception;
 pub mod phrase;
+pub mod piece_match;
 pub mod score;
 pub mod scoring;
 pub mod session;
