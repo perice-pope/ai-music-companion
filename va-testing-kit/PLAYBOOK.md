@@ -67,6 +67,11 @@ skip the full five-run plan below unless the manager asks for it. One report at 
 template as always.
 
 **PART A — Jazz ears re-check (Piano, at a real piano, ~15 min).**
+KNOWN LIMITATION this build: playing a LOW root in your left hand under a
+right-hand chord (e.g. low C + C-E-G above) may label slowly or drop out —
+that exact voicing is a committed test target we're actively fixing. Test
+the chords as written below (both hands mid-keyboard); note LH+RH voicing
+behavior if you try it, but it's a known, not a new finding.
 The chord brain was retuned this week against exactly what you caught (decorated labels, slow
 G7, invented chords). Fresh session on Piano, then your same four checks — plus what changed:
 
