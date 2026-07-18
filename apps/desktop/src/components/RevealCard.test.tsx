@@ -26,7 +26,13 @@ function perceptionWithKey(tonic: number, mode: string) {
     tempo_bpm: null,
     swing_ratio: null,
     locked: false,
-    key: { tonic, mode, name: `${tonic} ${mode}`, confidence: 0.9, alternative: null },
+    key: {
+      tonic,
+      mode,
+      name: `${tonic} ${mode}`,
+      confidence: 0.9,
+      alternative: null,
+    },
   };
 }
 
@@ -76,6 +82,21 @@ describe("RevealCard", () => {
     expect(screen.getByText("A cool, jazzy minor.")).toBeInTheDocument();
   });
 
+  // #417-2a: the card is a key/mode catalog, and next to live playing a bare
+  // title reads as song identification ("I played Für Elise and it said
+  // Moonlight Sonata"). The framing line makes the catalog nature explicit
+  // on every card. Fails if the line is dropped — which would reopen the
+  // founder's wrong-Beethoven misread until item 5 ships real piece ID.
+  it("frames the connection as other-music-in-this-sound, never song ID", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+    });
+    render(<RevealCard />);
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
+  });
+
   // AC7 (render contract): with multiple in the queue only the latest renders.
   it("shows only the most recent reveal, never stacking", () => {
     usePracticeStore.setState({
@@ -98,14 +119,18 @@ describe("RevealCard", () => {
   it("a newer reveal replaces the older one — the old never resurfaces", () => {
     render(<RevealCard />);
     act(() => {
-      usePracticeStore.getState().pushReveal(reveal("Santana — Oye Como Va"), 0);
+      usePracticeStore
+        .getState()
+        .pushReveal(reveal("Santana — Oye Como Va"), 0);
     });
     expect(screen.getByText("Santana — Oye Como Va")).toBeInTheDocument();
 
     // r2 supersedes r1 partway through r1's linger window.
     act(() => {
       vi.advanceTimersByTime(4000);
-      usePracticeStore.getState().pushReveal(reveal('Miles Davis — "So What"'), 1);
+      usePracticeStore
+        .getState()
+        .pushReveal(reveal('Miles Davis — "So What"'), 1);
     });
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.queryByText("Santana — Oye Como Va")).not.toBeInTheDocument();
@@ -146,7 +171,9 @@ describe("RevealCard", () => {
     expect(screen.getByTestId("reveal-r1").className).toContain("opacity-100");
 
     act(() => {
-      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
+      usePracticeStore.setState({
+        perception: perceptionWithKey(5, "phrygian"),
+      });
     });
     // Still present, still in the queue — but visibly stale.
     expect(usePracticeStore.getState().revealQueue).toHaveLength(1);
@@ -168,7 +195,9 @@ describe("RevealCard", () => {
     });
     render(<RevealCard />);
     act(() => {
-      usePracticeStore.setState({ perception: perceptionWithKey(5, "phrygian") });
+      usePracticeStore.setState({
+        perception: perceptionWithKey(5, "phrygian"),
+      });
     });
     expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
     act(() => {
@@ -213,7 +242,9 @@ describe("RevealCard", () => {
     });
     render(<RevealCard />);
     act(() => {
-      usePracticeStore.setState({ perception: perceptionWithKey(7, "phrygian") });
+      usePracticeStore.setState({
+        perception: perceptionWithKey(7, "phrygian"),
+      });
     });
     expect(screen.getByTestId("reveal-r1").className).toContain("opacity-40");
   });
@@ -288,7 +319,12 @@ describe("RevealCard", () => {
     // Player pauses → key goes null → don't punish silence.
     act(() => {
       usePracticeStore.setState({
-        perception: { tempo_bpm: null, swing_ratio: null, locked: false, key: null },
+        perception: {
+          tempo_bpm: null,
+          swing_ratio: null,
+          locked: false,
+          key: null,
+        },
       });
     });
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
