@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 
-
-
 /**
  * A key change only DIMS a card when the NEW reading is at least this
  * confident — early-session detection wanders, and a wobble is not a
@@ -65,10 +63,23 @@ function RevealCardItem({
             <p className="text-xs font-semibold uppercase tracking-wider text-amber-300/80">
               In the wild · {concept}
             </p>
+            {/* #417-2a: the card is a KEY/MODE catalog, and next to live
+                playing a bare title reads as song identification — worse
+                than nothing when it's the wrong Beethoven. This line makes
+                the framing unmistakable; it must never be removed without
+                solving item 5 (real piece ID) first. */}
+            <p
+              className="text-[11px] italic text-amber-300/60"
+              data-testid={`reveal-framing-${id}`}
+            >
+              other music that lives in this sound
+            </p>
             <p className="mt-1 text-sm font-semibold leading-relaxed text-amber-100">
               {connection}
             </p>
-            <p className="mt-1 text-sm leading-relaxed text-amber-200/90">{why}</p>
+            <p className="mt-1 text-sm leading-relaxed text-amber-200/90">
+              {why}
+            </p>
           </div>
 
           <button
@@ -115,11 +126,11 @@ export default function RevealCard() {
   // dims; a null or shaky key reading changes nothing.
   const stale = Boolean(
     current &&
-      liveTonic !== null &&
-      liveMode !== null &&
-      liveKeyConfident &&
-      (liveTonic !== current.reveal.tonic ||
-        liveMode.toLowerCase() !== current.reveal.mode),
+    liveTonic !== null &&
+    liveMode !== null &&
+    liveKeyConfident &&
+    (liveTonic !== current.reveal.tonic ||
+      liveMode.toLowerCase() !== current.reveal.mode),
   );
 
   if (!current) {
