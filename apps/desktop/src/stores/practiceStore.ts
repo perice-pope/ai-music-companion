@@ -18,6 +18,7 @@ import type {
   ScoreLibraryEntry,
   ScorePosition,
   LoadedScore,
+  StarterItem,
 } from "../types/brain";
 import type { ChartEntry } from "../types/brain";
 import { useAudioStore } from "./audioStore";
@@ -267,6 +268,12 @@ export interface PracticeState {
   // Free-play exploration (#255) ------------------------------------------
   /** The variation on the free-play surface, or null when just listening. */
   explore: ExploreDto | null;
+  /** #419 S1 — the Openers panel's items being composed. */
+  openerItems: StarterItem[];
+  /** Live preview of the composed opener (pure — no session state). */
+  openerPreview: ExploreDto | null;
+  /** Calm refusal from the opener compiler, shown in the panel. */
+  openerNotice: string | null;
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -462,6 +469,12 @@ export interface PracticeState {
    * ending the session (the in-practice half of the RV bridge; the recap
    * half is `exploreMeasure`, which parks a pending handoff instead). */
   exploreMeasureLive: (measureNumber: number) => Promise<void>;
+  addOpenerItem: (item: StarterItem) => Promise<void>;
+  removeOpenerItem: (index: number) => Promise<void>;
+  clearOpener: () => void;
+  /** Internal: recompute the pure preview after any item change. */
+  _refreshOpenerPreview: (items: StarterItem[]) => Promise<void>;
+  beginOpener: () => Promise<void>;
   /** Pin the band to a specific key (correcting the auto-read). */
   setAccompanimentKey: (tonic: number, minor: boolean) => Promise<void>;
   /** Freeze the band on its current auto-detected key. */
@@ -650,6 +663,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   lessonSubmitting: false,
   lessonNotice: null,
   explore: null,
+  openerItems: [],
+  openerPreview: null,
+  openerNotice: null,
   exploreNotice: null,
   recap: null,
   recapError: null,
@@ -981,6 +997,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       lessonNotice: null,
       explore: null,
       exploreNotice: null,
+      // A half-built opener must not reappear in the NEXT session's panel.
+      openerItems: [],
+      openerPreview: null,
+      openerNotice: null,
     });
   },
 
@@ -1291,6 +1311,69 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     } catch (err) {
       // A calm refusal must not vaporize the recap (S5 review MUST-FIX 3).
       set({ bridgeNotice: String(err) });
+    }
+  },
+
+  addOpenerItem: async (item) => {
+    const items = [...get().openerItems, item];
+    set({ openerItems: items });
+    await get()._refreshOpenerPreview(items);
+  },
+
+  removeOpenerItem: async (index) => {
+    const items = get().openerItems.filter((_, i) => i !== index);
+    set({ openerItems: items });
+    await get()._refreshOpenerPreview(items);
+  },
+
+  clearOpener: () =>
+    set({ openerItems: [], openerPreview: null, openerNotice: null }),
+
+  /** Internal: recompute the pure preview after any item change. */
+  _refreshOpenerPreview: async (items: StarterItem[]) => {
+    if (items.length === 0) {
+      set({ openerPreview: null, openerNotice: null });
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("preview_opener", { items });
+      // Stale-response guard (review MF3): rapid taps race, and a late
+      // response must never paint music for items that changed under it —
+      // the items array identity is the sequence token (same pattern as
+      // ScoreDropZone's importSeq).
+      if (get().openerItems !== items) {
+        return;
+      }
+      set({ openerPreview: dto, openerNotice: null });
+    } catch (err) {
+      if (get().openerItems !== items) {
+        return;
+      }
+      set({ openerPreview: null, openerNotice: String(err) });
+    }
+  },
+
+  beginOpener: async () => {
+    if (get().status !== "listening") {
+      return;
+    }
+    const items = get().openerItems;
+    if (items.length === 0) {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("begin_opener", { items });
+      // The opener becomes the session's exploration — the same surface a
+      // lifted lick lands on — and the builder resets for next time.
+      set({
+        explore: dto,
+        exploreNotice: null,
+        openerItems: [],
+        openerPreview: null,
+        openerNotice: null,
+      });
+    } catch (err) {
+      set({ openerNotice: String(err) });
     }
   },
 

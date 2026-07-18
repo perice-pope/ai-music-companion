@@ -3012,6 +3012,76 @@ pub fn explore_measure_impl(
     Ok(dto)
 }
 
+/// #419 S1 — Session Starters: compile the Openers panel's items into one
+/// composite cell and run it through the SAME explore engine as a lifted
+/// lick. `commit: false` is the live preview (no state, no exercise log);
+/// `commit: true` is Begin. The seed derives deterministically from the
+/// items so the preview IS the exercise — what you saw is what you play.
+pub fn opener_impl(
+    state: &AppState,
+    items: &[brain::starter::StarterItem],
+    commit: bool,
+) -> Result<ExploreDto, String> {
+    let cell = brain::starter::composite_cell(items, brain::coach::LIFT_MAX_NOTES)
+        .map_err(|e| e.to_string())?;
+    // Deterministic per-recipe seed (session-local determinism only — the
+    // hash need not be stable across releases, just between the preview
+    // and the Begin that follows it).
+    let seed = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        cell.hash(&mut h);
+        h.finish()
+    };
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    // Openers speak in abstract degrees, so the row starts from C and
+    // travels the 12 keys from there (S1 simplification, noted in #419).
+    let (explore, seq) = brain::coach::start_explore_cell(cell, 0, &model, seed);
+    let dto = explore_dto(&explore, &seq, &model);
+    if commit {
+        {
+            let store = state.session_store.lock_or_recover();
+            log_exercise_best_effort(
+                &store,
+                ExerciseOutcome {
+                    source: "opener",
+                    label: &dto.label,
+                    spec: &explore.spec,
+                    seed: explore.seed,
+                    difficulty: explore.difficulty,
+                    tonic: explore.tonic,
+                    accuracy: None,
+                },
+            );
+        }
+        *state.active_explore.lock_or_recover() = Some(explore);
+    }
+    Ok(dto)
+}
+
+/// #419 S1: live preview of the opener being built — pure, no session state.
+#[tauri::command]
+pub fn preview_opener(
+    state: State<'_, AppState>,
+    items: Vec<brain::starter::StarterItem>,
+) -> Result<ExploreDto, String> {
+    opener_impl(&state, &items, false)
+}
+
+/// #419 S1: Begin — the built opener becomes the session's exploration.
+#[tauri::command]
+pub fn begin_opener(
+    state: State<'_, AppState>,
+    items: Vec<brain::starter::StarterItem>,
+) -> Result<ExploreDto, String> {
+    opener_impl(&state, &items, true)
+}
+
 /// #337 S5: row one measure of a stored score through 12 keys.
 #[tauri::command]
 pub fn explore_measure(
@@ -7124,6 +7194,61 @@ mod tests {
             2,
             "a different connection is a new unlock"
         );
+    }
+
+    /// #419 S1: preview is PURE — no active exploration, no exercise log.
+    /// Begin commits both. Fails if preview grows side effects (a preview
+    /// that hijacks the session on every keystroke) or Begin loses them.
+    #[test]
+    fn opener_preview_is_pure_and_begin_commits() {
+        let state = AppState::with_mocks();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+
+        let preview = opener_impl(&state, &items, false).expect("preview compiles");
+        assert!(state.active_explore.lock_or_recover().is_none());
+        // Review MF4: preview fires on EVERY tap and must not touch the
+        // exercise log either — S3's My Patterns reads that log, and a
+        // regression would flood it with half-built recipes.
+        assert!(
+            state
+                .session_store
+                .lock_or_recover()
+                .list_exercise_log()
+                .unwrap()
+                .is_empty(),
+            "a pure preview must not write the exercise log"
+        );
+
+        let begun = opener_impl(&state, &items, true).expect("begin compiles");
+        assert!(state.active_explore.lock_or_recover().is_some());
+        let log = state
+            .session_store
+            .lock_or_recover()
+            .list_exercise_log()
+            .unwrap();
+        let sources: Vec<&str> = log.iter().map(|e| e.source.as_str()).collect();
+        assert_eq!(sources, vec!["opener"], "Begin logs exactly one opener row");
+        // Deterministic seed: the preview IS the exercise.
+        assert_eq!(preview.label, begun.label);
+        assert_eq!(preview.music_xml, begun.music_xml);
+    }
+
+    /// The player-facing refusals surface verbatim through the command.
+    #[test]
+    fn opener_refuses_calmly_on_empty_and_bad_degrees() {
+        let state = AppState::with_mocks();
+        let err = opener_impl(&state, &[], false).unwrap_err();
+        assert!(err.contains("add a note or two"), "got: {err}");
+        let err = opener_impl(
+            &state,
+            &[brain::starter::StarterItem::NoteSequence { degrees: vec![9] }],
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("1 to 8"), "got: {err}");
+        assert!(state.active_explore.lock_or_recover().is_none());
     }
 
     /// #253 S2 M2 (command wiring): `AppState::enrich_reveal` actually delegates

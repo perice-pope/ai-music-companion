@@ -753,3 +753,8 @@ export interface LoadedScore {
   entry: ScoreLibraryEntry;
   music_xml: string;
 }
+
+/** #419 S1 — one Openers item. Mirrors `brain::starter::StarterItem`. */
+export type StarterItem =
+  | { type: "notes"; offsets: number[] }
+  | { type: "note_sequence"; degrees: number[] };

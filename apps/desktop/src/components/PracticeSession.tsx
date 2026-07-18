@@ -13,6 +13,7 @@ import RevealCard from "./RevealCard";
 import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
+import OpenersPanel from "./OpenersPanel";
 import ChordLane from "./ChordLane";
 import LiftProgressionButton from "./LiftProgressionButton";
 import ScoreView from "./ScoreView";
@@ -309,6 +310,9 @@ export default function PracticeSession() {
           <div className="flex flex-col items-center gap-6">
             {listenToRoom ? <ChordLane /> : <PitchDisplay />}
             {listenToRoom ? null : <LiftLickButton />}
+            {/* #419 S1: Openers — the invitation to start with something
+                in your hands instead of a blank room. */}
+            {listenToRoom ? null : <OpenersPanel />}
             {/* #349 T3c: the progression lift lives beside the lick lift
                 (free play) AND under the jam lane — anywhere chords were
                 heard, the sequence is one tap from a 12-key row. */}
