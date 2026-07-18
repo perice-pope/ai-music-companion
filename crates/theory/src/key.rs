@@ -179,6 +179,17 @@ pub fn correlation_for(profile: &PitchClassProfile, tonic: u8, mode: Mode) -> f3
 /// profile (tonic hammered, b5 the emphasized fifth) wins by ≥ ~0.25.
 pub const LOCRIAN_CLEAR_MARGIN: f32 = 0.15;
 
+/// A Locrian key's two relative readings: the major a semitone up (same
+/// pitch-class set) and that major's relative minor. The candidates a
+/// demoted Locrian yields to — shared by [`estimate_key`] and the tracker's
+/// incumbent re-check so the two can't drift.
+pub(crate) fn locrian_relatives(tonic: u8) -> [(u8, Mode); 2] {
+    [
+        ((tonic + 1) % 12, Mode::Ionian),
+        ((tonic + 10) % 12, Mode::Aeolian),
+    ]
+}
+
 /// Estimate the best-fit key/mode over the whole profile.
 ///
 /// Returns `None` only for an empty profile. For a flat/atonal profile it
@@ -219,9 +230,7 @@ pub fn estimate_key(profile: &PitchClassProfile) -> Option<KeyEstimate> {
         margin: (best_r - second_r).max(0.0),
     };
     if est.mode == Mode::Locrian {
-        let rel_major = ((est.tonic + 1) % 12, Mode::Ionian);
-        let rel_minor = ((est.tonic + 10) % 12, Mode::Aeolian);
-        let ((alt_tonic, alt_mode), alt_r) = [rel_major, rel_minor]
+        let ((alt_tonic, alt_mode), alt_r) = locrian_relatives(est.tonic)
             .into_iter()
             .map(|(t, m)| ((t, m), pearson(&obs, &template(t, m))))
             .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -322,6 +331,9 @@ mod tests {
             (10, Mode::Ionian, "Bb major"),
             (10, Mode::Aeolian, "Bb minor"),
             (3, Mode::Mixolydian, "Eb Mixolydian"),
+            // The positive wrap: F#+Lydian is raw +7 fifths, which must
+            // resolve to Gb Lydian (5 flats), not a 7-sharp spelling.
+            (6, Mode::Lydian, "Gb Lydian"),
         ] {
             let est = estimate_key(&scale_profile(tonic, mode)).unwrap();
             assert_eq!(est.name(), want, "tonic {tonic} {mode:?}");
@@ -375,6 +387,38 @@ mod tests {
             "confidence {} must equal the named key's correlation {shown_r}",
             est.confidence
         );
+        // The demoted Locrian still out-correlates the named key, so the
+        // honest separation-from-runner-up is zero — a demoted estimate must
+        // never advertise the Locrian fit's margin as its own.
+        assert_eq!(est.margin, 0.0);
+    }
+
+    /// The demotion's relative-MINOR arm: an A-minor tune leaning on B (the
+    /// same white-key set) raw-reads B Locrian, and the stronger relative is
+    /// A minor, not C major. Fails if the demotion only considers the
+    /// relative major — that mutation names "C major" at less than half the
+    /// honest confidence.
+    #[test]
+    fn locrian_demotes_to_the_relative_minor_when_it_is_stronger() {
+        let p = profile(&[
+            (9, 3.0), // A, the real tonic
+            (11, 4.0),
+            (4, 2.0), // E, A's fifth
+            (0, 1.0),
+            (2, 1.0),
+            (5, 1.0),
+            (7, 1.0),
+        ]);
+        assert!(
+            correlation_for(&p, 11, Mode::Locrian) > correlation_for(&p, 9, Mode::Aeolian),
+            "profile no longer makes Locrian the raw winner"
+        );
+        assert!(
+            correlation_for(&p, 9, Mode::Aeolian) > correlation_for(&p, 0, Mode::Ionian),
+            "profile no longer favors the relative minor over the major"
+        );
+        let est = estimate_key(&p).unwrap();
+        assert_eq!(est.name(), "A minor", "got {}", est.name());
     }
 
     /// A genuine Locrian profile (tonic hammered, b5 the emphasized fifth)

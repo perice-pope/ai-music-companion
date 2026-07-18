@@ -18,6 +18,17 @@ describe("keyName", () => {
     expect(keyName(key(10, "ionian"))).toBe("Bb major");
     expect(keyName(key(10, "aeolian"))).toBe("Bb minor");
     expect(keyName(key(3, "mixolydian"))).toBe("Eb Mixolydian");
+    // The positive wrap: F#+Lydian is raw +7 fifths → Gb Lydian (5 flats).
+    expect(keyName(key(6, "lydian"))).toBe("Gb Lydian");
+  });
+
+  it("matches the backend spelling for every remaining mode offset", () => {
+    // One pair per mode not covered above, pinned to the values
+    // theory::key_fifths produces — a drifted MODE_FIFTHS_OFFSET entry
+    // fails here even though ionian/aeolian tests still pass.
+    expect(keyName(key(1, "dorian"))).toBe("C# Dorian");
+    expect(keyName(key(11, "phrygian"))).toBe("B Phrygian");
+    expect(keyName(key(10, "locrian"))).toBe("A# Locrian");
   });
 
   it("keeps sharp-conventional keys sharp via the enharmonic wrap", () => {
