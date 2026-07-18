@@ -79,7 +79,7 @@ owns the device lifecycle with a zero-alloc render thread.
 | 2 | commands mock-Tauri: start/stop event payloads |
 | 3 | commands: clamp table test |
 | 4 | commands: the DETERMINISTIC half — pocket start empties the band slot + emits its stopped status before any device work (mock runtime); full audible exclusivity is the ignored audible test + manual verify (the boundary the band's tests drew) |
-| 5 | brain tests: pocket_alloc_test (mirror accompaniment_alloc_test) |
+| 5 | ears tests: pocket_alloc_test (mirror accompaniment_alloc_test) |
 | 6 | PocketControl.test: wire shape, pulse node identity across state |
 | 7 | PocketControl.test: disabled off-session |
 | 8 | commands: end_practice_session stops pocket (status event) |
