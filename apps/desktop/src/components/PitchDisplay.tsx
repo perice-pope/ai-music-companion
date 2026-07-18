@@ -14,6 +14,26 @@ function clamp(value: number, min: number, max: number): number {
  */
 const CENTS_SMOOTHING_ALPHA = 0.25;
 
+/**
+ * #417 rule 0 — surfaces hold their last state; they dim, they never
+ * vanish. After a note ends, the meter HOLDS the last reading dimmed for
+ * this much AUDIO time (from the event clock — deterministic, no wall
+ * clock), then settles to a calm idle that keeps the exact same layout.
+ * At a piano every note decays; unmounting on decay strobed the screen.
+ */
+const HOLD_SECS = 3.0;
+
+/** What the last sounding note looked like, frozen for the held state. */
+interface HeldReading {
+  name: string;
+  octave: number;
+  frequencyHz: number;
+  cents: number;
+  confidence: number;
+  /** Audio-clock time of the last voiced event. */
+  atSecs: number;
+}
+
 export default function PitchDisplay() {
   const { currentNote, latestEvent, isListening } = useAudioStore();
   const rawCents = currentNote?.cents_deviation ?? null;
@@ -38,6 +58,22 @@ export default function PitchDisplay() {
   }
   const smoothedCents = smoothedRef.current;
 
+  // The frozen last reading that carries the held state (#417 rule 0).
+  const heldRef = useRef<HeldReading | null>(null);
+  if (isListening && currentNote && latestEvent) {
+    heldRef.current = {
+      name: currentNote.name,
+      octave: currentNote.octave,
+      frequencyHz: currentNote.frequency_hz,
+      cents: smoothedCents ?? currentNote.cents_deviation,
+      confidence: latestEvent.confidence,
+      atSecs: latestEvent.timestamp_secs,
+    };
+  }
+  if (!isListening) {
+    heldRef.current = null; // a new session never inherits a stale needle
+  }
+
   if (!isListening) {
     return (
       <div
@@ -49,7 +85,10 @@ export default function PitchDisplay() {
     );
   }
 
-  if (!currentNote || !latestEvent) {
+  const held = heldRef.current;
+  // Warm-up: nothing has sounded yet this session — the one moment the
+  // skeleton has no reading to hold. Same container, calm copy.
+  if (!held) {
     return (
       <div
         className="flex flex-col items-center gap-2"
@@ -60,18 +99,32 @@ export default function PitchDisplay() {
     );
   }
 
-  const { name, octave, frequency_hz } = currentNote;
-  // Show the smoothed value; fall back to the raw reading defensively (the ref
-  // is always seeded above whenever we reach this point).
-  const cents = smoothedCents ?? currentNote.cents_deviation;
+  // Live when a note is sounding; otherwise HELD (dimmed, frozen values)
+  // until the hold expires on the audio clock, then IDLE — identical
+  // layout throughout: nothing mounts or unmounts with the signal.
+  const live = Boolean(currentNote);
+  const silentSecs = latestEvent ? latestEvent.timestamp_secs - held.atSecs : 0.0;
+  const idle = !live && silentSecs > HOLD_SECS;
+  const surface = live ? "live" : idle ? "idle" : "held";
+
+  const { name, octave } = held;
+  const frequency_hz = held.frequencyHz;
+  const cents = held.cents;
   const meterOffset = clamp(cents, -50, 50);
   // Convert -50..+50 cents to 0..100% for the meter position
   const meterPercent = ((meterOffset + 50) / 100) * 100;
 
   return (
     <div
-      className="flex flex-col items-center gap-4"
+      className={`flex flex-col items-center gap-4 transition-opacity ${
+        live
+          ? "duration-150 opacity-100" // snap awake
+          : idle
+            ? "duration-700 opacity-30" // settle gently
+            : "duration-700 opacity-50"
+      }`}
       data-testid="pitch-display"
+      data-surface={surface}
       role="status"
       aria-live="polite"
       aria-atomic="true"
@@ -109,9 +162,9 @@ export default function PitchDisplay() {
         <span>sharp</span>
       </div>
 
-      {/* Confidence */}
+      {/* Confidence (frozen with the reading while held/idle) */}
       <p className="text-xs text-gray-600">
-        confidence: {(latestEvent.confidence * 100).toFixed(0)}%
+        confidence: {(held.confidence * 100).toFixed(0)}%
       </p>
     </div>
   );

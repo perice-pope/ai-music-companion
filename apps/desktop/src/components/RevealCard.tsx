@@ -1,17 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 
-/** How long a reveal lingers before fading on its own (ms). */
-const REVEAL_LINGER_MS = 12000;
+
 
 /**
- * Minimum time a reveal stays readable even when the live key confidently
- * moves off it (#277: cards were vanishing before they could be read).
- */
-const MIN_READABLE_MS = 4000;
-
-/**
- * A key change only dismisses a card when the NEW reading is at least this
+ * A key change only DIMS a card when the NEW reading is at least this
  * confident — early-session detection wanders, and a wobble is not a
  * contradiction. Matches the "I hear" header's assert threshold (the point
  * where it drops the "maybe" hedge), so an asserted header can never sit
@@ -20,8 +13,9 @@ const MIN_READABLE_MS = 4000;
 const DISMISS_MIN_CONFIDENCE = 0.55;
 
 /**
- * A single real-world music "reveal" with an auto-dismiss timer. Slides in from
- * the right and fades after {@link REVEAL_LINGER_MS}, or on explicit dismiss.
+ * A single real-world music "reveal". Slides in from the right and STAYS
+ * (#417 rule 0) until explicitly dismissed or replaced by a newer reveal;
+ * a confidently-contradicted card dims in place via `stale`.
  * Mirrors the coaching `TipCard` so the two share a calm, consistent voice.
  */
 function RevealCardItem({
@@ -29,24 +23,22 @@ function RevealCardItem({
   concept,
   connection,
   why,
+  stale,
   onDismiss,
 }: {
   id: string;
   concept: string;
   connection: string;
   why: string;
+  /** #417 rule 0: a confidently-contradicted card DIMS, it never vanishes. */
+  stale: boolean;
   onDismiss: (id: string) => void;
 }) {
   const [isDismissing, setIsDismissing] = useState(false);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsDismissing(true);
-      setTimeout(() => onDismiss(id), 300); // wait for fade-out
-    }, REVEAL_LINGER_MS);
-
-    return () => clearTimeout(timer);
-  }, [id, onDismiss]);
+  // #417: no auto-dismiss timer. The card stays until the player dismisses
+  // it or a better reveal REPLACES it — "it stays until it has something
+  // better to say."
 
   const handleDismiss = () => {
     setIsDismissing(true);
@@ -58,7 +50,13 @@ function RevealCardItem({
       data-testid={`reveal-${id}`}
       className={`
         transform transition-all duration-300 ease-out
-        ${isDismissing ? "translate-x-full opacity-0" : "translate-x-0 opacity-100"}
+        ${
+          isDismissing
+            ? "translate-x-full opacity-0"
+            : stale
+              ? "translate-x-0 opacity-40"
+              : "translate-x-0 opacity-100"
+        }
       `}
     >
       <div className="rounded-lg border border-amber-700 bg-amber-900/40 p-4 shadow-lg">
@@ -110,33 +108,19 @@ export default function RevealCard() {
   const current =
     revealQueue.length > 0 ? revealQueue[revealQueue.length - 1] : null;
 
-  // Never let a lingering card contradict the live "I hear" header (#266) —
-  // but never make it unreadable either (#277: early-session key detection
-  // wanders, and dismissing on every wobble made cards vanish before they
-  // could be read). So a card is dismissed for a key change only when the
-  // contradicting reading is CONFIDENT, and never before it has been on
-  // screen for a minimum readable dwell. A null/shaky key never dismisses.
-  useEffect(() => {
-    if (!current || liveTonic === null || liveMode === null) return;
-    if (!liveKeyConfident) return; // a wobble is not a contradiction
-    const movedOff =
-      liveTonic !== current.reveal.tonic ||
-      liveMode.toLowerCase() !== current.reveal.mode;
-    if (!movedOff) return;
-
-    const age = Date.now() - current.receivedAt;
-    if (age >= MIN_READABLE_MS) {
-      dismissReveal(current.id);
-      return;
-    }
-    // Confident contradiction while the card is still young: let it finish its
-    // readable dwell, then dismiss.
-    const timer = setTimeout(
-      () => dismissReveal(current.id),
-      MIN_READABLE_MS - age,
-    );
-    return () => clearTimeout(timer);
-  }, [current, liveTonic, liveMode, liveKeyConfident, dismissReveal]);
+  // #417 rule 0 rewrite of the #266/#277 balance: a lingering card that
+  // contradicts the live "I hear" header DIMS instead of vanishing — the
+  // staleness is honest, the screen stays calm, and the card still leaves
+  // the moment a better reveal replaces it. Only a CONFIDENT contradiction
+  // dims; a null or shaky key reading changes nothing.
+  const stale = Boolean(
+    current &&
+      liveTonic !== null &&
+      liveMode !== null &&
+      liveKeyConfident &&
+      (liveTonic !== current.reveal.tonic ||
+        liveMode.toLowerCase() !== current.reveal.mode),
+  );
 
   if (!current) {
     return (
@@ -161,6 +145,7 @@ export default function RevealCard() {
         concept={current.reveal.concept}
         connection={current.reveal.connection}
         why={current.reveal.why}
+        stale={stale}
         onDismiss={dismissReveal}
       />
       {/* #255: the reveal becomes actionable — one tap turns the named sound
