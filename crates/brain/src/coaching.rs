@@ -845,6 +845,15 @@ All text should be written as a teacher would speak — warm, specific, and acti
                 input.instrument,
             ),
             Some(s) => format!("- Intonation: {}\n", describe_intonation(s)),
+            // Even without the aggregate, the phrase-stat numbers above can
+            // read as intonation — keep the instruction so the model never
+            // coaches a pianist's pitch.
+            None if input.fixed_pitch => format!(
+                "- NOTE: {} is fixed-pitch, so the player cannot alter intonation; never \
+                 critique the player's intonation, and never suggest tuning drills (drones, \
+                 tuner work)\n",
+                input.instrument,
+            ),
             None => String::new(),
         };
 
@@ -3423,6 +3432,24 @@ mod tests {
         assert!(
             prompt.contains("- Intonation:") && !prompt.contains("fixed-pitch"),
             "continuous-pitch prompt keeps the plain intonation line, got:\n{prompt}"
+        );
+
+        // Too few notes for the intonation aggregate — the prompt still hands
+        // the model phrase-stat numbers, so the instruction must survive the
+        // aggregate's absence.
+        let mut thin = sample_phrase();
+        thin.pitch_stats.pitches = vec![440.0; 4];
+        let mut piano = recap_input_with(vec![thin], None);
+        piano.instrument = "Piano".to_owned();
+        piano.fixed_pitch = true;
+        let prompt = CoachingEngine::build_recap_user_prompt(&piano);
+        assert!(
+            !prompt.contains("- Intonation:"),
+            "no aggregate line without enough notes, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("never critique the player's intonation"),
+            "the fixed-pitch instruction must not ride on the aggregate, got:\n{prompt}"
         );
     }
 
