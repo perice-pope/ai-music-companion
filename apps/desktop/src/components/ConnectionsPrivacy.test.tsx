@@ -1,8 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import ConnectionsPrivacy from "./ConnectionsPrivacy";
 import { usePracticeStore } from "../stores/practiceStore";
 import { useConnectionsStore } from "../stores/connectionsStore";
+import { useUpdateStore } from "../stores/updateStore";
+
+// #58 MF4: the manual check button talks to the updater plugin — mocked.
+const mockUpdateCheck = vi.fn();
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: () => mockUpdateCheck(),
+}));
 
 // practiceStore pulls in @tauri-apps/api/core (invoke); stub it so the store
 // imports cleanly under jsdom. The panel itself never calls invoke.
@@ -70,13 +83,12 @@ describe("ConnectionsPrivacy", () => {
       expect(sw.checked).toBe(false);
     }
 
-    // The app-updates disclosure is an INFO row, not a toggle: it must not
-    // introduce a switch (the egress lives in the Tauri updater plugin, gated
-    // by the native consent dialog, not by a Face-layer flag). So the switch
-    // count stays at the three real opt-in toggles — adding a non-functional
-    // switch would be a dark pattern.
-    expect(screen.queryByRole("switch", { name: /App updates/i })).toBeNull();
-    expect(switches.length).toBe(3);
+    // The app-updates disclosure stays an INFO row (no switch of its own —
+    // a non-functional switch would be a dark pattern); #58 added a fourth
+    // REAL opt-in above it: automatic update checks. Count is pinned so a
+    // networked toggle can't appear without landing in this test.
+    expect(screen.queryByRole("switch", { name: /^App updates/i })).toBeNull();
+    expect(switches.length).toBe(4);
 
     // Named, so a regression that flips one on is caught by feature.
     expect(
@@ -97,6 +109,14 @@ describe("ConnectionsPrivacy", () => {
         }) as HTMLInputElement
       ).checked,
     ).toBe(false);
+    // #58: automatic update checks — the shipped promise is off-by-default.
+    expect(
+      (
+        screen.getByRole("switch", {
+          name: /Check for updates automatically/i,
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
   });
 
   it("the connections store opts every networked feature out by default", () => {
@@ -105,6 +125,7 @@ describe("ConnectionsPrivacy", () => {
     const s = useConnectionsStore.getState();
     expect(s.cloudSyncEnabled).toBe(false);
     expect(s.teacherSharingEnabled).toBe(false);
+    expect(useConnectionsStore.getState().autoUpdateCheckEnabled).toBe(false);
   });
 
   it("renders the disclosure copy: what is sent, to whom, and the offline reassurance", () => {
@@ -140,7 +161,9 @@ describe("ConnectionsPrivacy", () => {
     // What is sent, to whom, and when — in plain language.
     expect(within(row).getByText(/contacts GitHub/i)).toBeTruthy();
     expect(
-      within(row).getByText(/never checks on startup and works fully offline/i),
+      within(row).getByText(
+        /Unless automatic checks are on, the app never checks on startup/i,
+      ),
     ).toBeTruthy();
     // The "no personal data" promise, the question parents ask.
     expect(
@@ -179,5 +202,97 @@ describe("ConnectionsPrivacy", () => {
     expect(useConnectionsStore.getState().cloudSyncEnabled).toBe(false);
     // Withdrawing sync also withdraws the teacher-sharing feature it carries.
     expect(useConnectionsStore.getState().teacherSharingEnabled).toBe(false);
+  });
+
+  // #58 review MF4: the manual "Check for updates" the copy has always
+  // promised now exists — user-initiated, independent of the toggle, with
+  // a calm up-to-date answer. Fails if the button disappears or stops
+  // calling the plugin.
+  it("the manual check button works regardless of the auto-check toggle", async () => {
+    mockUpdateCheck.mockResolvedValue(null); // up to date
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    useConnectionsStore.setState({ autoUpdateCheckEnabled: false });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "latest version",
+      ),
+    );
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(1);
+  });
+
+  // #58 round-2 MF1(a): offline, the button must NOT fabricate
+  // "You're on the latest version" — it says it couldn't check.
+  it("the manual check answers honestly when the check fails", async () => {
+    mockUpdateCheck.mockRejectedValue(new Error("offline"));
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "Couldn't check",
+      ),
+    );
+    expect(
+      screen.getByTestId("check-updates-result").textContent,
+    ).not.toContain("latest version");
+  });
+
+  // #58 round-2 MF1(b): a pill dismissal quiets the AUTOMATIC surface only —
+  // an explicit manual check overrides it and re-surfaces the update.
+  it("a manual check overrides a dismissed version", async () => {
+    mockUpdateCheck.mockResolvedValue({
+      version: "9.9.9",
+      downloadAndInstall: vi.fn(),
+    });
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: "9.9.9",
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "Update found",
+      ),
+    );
+    expect(useUpdateStore.getState().phase).toBe("available");
+    expect(useUpdateStore.getState().availableVersion).toBe("9.9.9");
+  });
+
+  // #58 round-2 SF2: the button is disabled while a check is in flight.
+  it("the manual check button disables while checking", async () => {
+    let resolveCheck: (u: unknown) => void = () => {};
+    mockUpdateCheck.mockImplementation(
+      () => new Promise((res) => (resolveCheck = res)),
+    );
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-now")).toBeDisabled(),
+    );
+    await waitFor(() => {
+      resolveCheck(null);
+      expect(screen.getByTestId("check-updates-now")).not.toBeDisabled();
+    });
   });
 });

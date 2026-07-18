@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
+import UpdatePill from "./components/UpdatePill";
+import { useConnectionsStore } from "./stores/connectionsStore";
+import { useUpdateStore } from "./stores/updateStore";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
 import { usePracticeStore } from "./stores/practiceStore";
 import type { NoteVerdictKind } from "./stores/practiceStore";
@@ -50,6 +53,23 @@ function App() {
   );
   const setPerception = usePracticeStore((s) => s.setPerception);
   const [storageDegraded, setStorageDegraded] = useState(false);
+  const autoUpdateCheckEnabled = useConnectionsStore(
+    (s) => s.autoUpdateCheckEnabled,
+  );
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+
+  useEffect(() => {
+    // #58: the pill's heartbeat — STRICTLY opt-in. With the toggle off
+    // (the default) this effect does nothing at all: the shipped promise
+    // is "no update request on launch or in the background."
+    if (!autoUpdateCheckEnabled) {
+      return;
+    }
+    void checkForUpdate();
+    const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+    const interval = setInterval(() => void checkForUpdate(), FOUR_HOURS_MS);
+    return () => clearInterval(interval);
+  }, [autoUpdateCheckEnabled, checkForUpdate]);
 
   useEffect(() => {
     // One-shot capability check at mount. If on-disk persistence fell back to
@@ -202,6 +222,7 @@ function App() {
       <div className={storageDegraded ? "pt-12" : ""}>
         <PracticeShell />
       </div>
+      <UpdatePill />
     </>
   );
 }

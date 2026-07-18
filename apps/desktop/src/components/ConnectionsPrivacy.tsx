@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useConnectionsStore } from "../stores/connectionsStore";
+import { useUpdateStore } from "../stores/updateStore";
 import { usePracticeStore } from "../stores/practiceStore";
 import AppVersionBadge from "./AppVersionBadge";
 
@@ -89,6 +91,58 @@ interface InfoRowProps {
  * pill instead of a control, so it is not counted among the off-by-default
  * toggles.
  */
+/**
+ * #58 review MF4: the manual "Check for updates" the disclosure copy has
+ * always described — now it actually exists. User-initiated, independent
+ * of the automatic-check toggle; a found update surfaces the pill, an
+ * up-to-date answer says so calmly right here.
+ */
+function CheckForUpdatesButton() {
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+  const [state, setState] = useState<"idle" | "checking" | "done">("idle");
+  const [result, setResult] = useState<string | null>(null);
+
+  const onCheck = async () => {
+    setState("checking");
+    // manual: an explicit ask overrides a pill dismissal (round-2 MF1) —
+    // and the answer comes from what the check LEARNED, never inferred
+    // from phase (which lied when offline or dismissed).
+    const outcome = await checkForUpdate({ manual: true });
+    setResult(
+      outcome === "upToDate"
+        ? "You're on the latest version."
+        : outcome === "found"
+          ? "Update found — see the pill, bottom left."
+          : outcome === "busy"
+            ? "An update is already in progress — see the pill."
+            : "Couldn't check right now — you may be offline. Nothing was sent.",
+    );
+    setState("done");
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-3">
+      <button
+        type="button"
+        data-testid="check-updates-now"
+        onClick={() => void onCheck()}
+        disabled={state === "checking"}
+        className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+      >
+        {state === "checking" ? "Checking…" : "Check for updates"}
+      </button>
+      {state === "done" && result && (
+        <span
+          className="text-sm text-gray-400"
+          data-testid="check-updates-result"
+        >
+          {result}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function InfoRow({ testId, title, description, whenIdle }: InfoRowProps) {
   return (
     <div className="rounded-lg bg-gray-800 p-4" data-testid={testId}>
@@ -118,6 +172,12 @@ export default function ConnectionsPrivacy() {
 
   // Cloud sync + teacher sharing opt-in intent (off by default).
   const cloudSyncEnabled = useConnectionsStore((s) => s.cloudSyncEnabled);
+  const autoUpdateCheckEnabled = useConnectionsStore(
+    (s) => s.autoUpdateCheckEnabled,
+  );
+  const setAutoUpdateCheckEnabled = useConnectionsStore(
+    (s) => s.setAutoUpdateCheckEnabled,
+  );
   const setCloudSyncEnabled = useConnectionsStore((s) => s.setCloudSyncEnabled);
   const teacherSharingEnabled = useConnectionsStore(
     (s) => s.teacherSharingEnabled,
@@ -178,14 +238,24 @@ export default function ConnectionsPrivacy() {
             onChange={setTeacherSharingEnabled}
           />
 
+          <ToggleRow
+            id="toggle-auto-update-check"
+            title="Check for updates automatically"
+            description="Lets the app quietly ask GitHub for the latest version when it opens (and every few hours while running). If a newer signed build exists, a small pill appears bottom-left — nothing downloads until you click it. The check sends no audio, no practice history, no personal data — just a request for the latest version number."
+            whenOff="The app makes no update request on launch or in the background. A check only happens when you press the check button below yourself, and the app works fully offline forever."
+            enabled={autoUpdateCheckEnabled}
+            onChange={setAutoUpdateCheckEnabled}
+          />
+
           <InfoRow
             testId="info-app-updates"
             title="App updates"
-            description="Checking for updates contacts GitHub only when you ask. If an update is found, it asks you before downloading the new signed version. The app never checks on startup and works fully offline. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
+            description="Checking for updates contacts GitHub only when you ask — or automatically, if you turned that on above. If an update is found, the pill asks you before downloading the new signed version. Unless automatic checks are on, the app never checks on startup, and it works fully offline either way. It never sends your audio, your practice history, or any personal data — just a request for the latest version."
             whenIdle={
               "Nothing is sent. The app makes no update request on launch or in the background; a check only happens when you choose “Check for updates.” You can keep using the app without ever checking."
             }
           />
+          <CheckForUpdatesButton />
         </div>
 
         <p className="mt-6 text-sm text-gray-500">

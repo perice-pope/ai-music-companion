@@ -87,14 +87,19 @@ This is the complete enumeration. If a feature is not in this table, it does not
 | **Cloud sync (learner model)** | Practice-progress blob: reveal collection (concepts + artist names), per-key mastery stats, difficulty step. **No raw audio, no recordings.** Rides the taste-profile opt-in (progress data, one switch); push-only — local stays authoritative. | Supabase project | Yes | **OFF** (same opt-in as taste profile) | `apps/desktop/src/stores/syncStore.ts` (`syncLearnerModel`) |
 | **Account sign-in / auth** | Email + password (for account creation / login) | Supabase Auth | Yes | **OFF** (no account needed to practice) | `apps/desktop/src/stores/authStore.ts` |
 | **Teacher linking / dashboard** | Rides on cloud sync: the same synced recaps become visible to a linked teacher account. | Supabase (teacher-dashboard track) | Yes | **OFF** | builds on sync + auth |
-| **App auto-update** | A version-check request (current vs. latest), and — only after you confirm in the update dialog — the download of the new signed installer. **No audio, no practice history, no personal data; just the request for the latest version.** | The GitHub release host (`github.com/.../releases/.../latest.json` + the signed installer asset) | Yes — user-initiated, with a consent dialog before download | **No network at startup or in the background; a check happens only on explicit user action** | `tauri-plugin-updater` (config: `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater`; wiring: `apps/desktop/src-tauri/src/main.rs`). See note² |
+| **App auto-update** | A version-check request (current vs. latest), and — only after you confirm in the update dialog — the download of the new signed installer. **No audio, no practice history, no personal data; just the request for the latest version.** | The GitHub release host (`github.com/.../releases/.../latest.json` + the signed installer asset) | Yes — user-initiated (the in-app "Check for updates" button), and the download starts only when the update pill is clicked; #58 adds an OPT-IN "Check for updates automatically" toggle (off by default) that, once enabled, checks on launch + every 4 h and surfaces a pill — download still requires a click | **With the toggle off (default): no network at startup or in the background; a check happens only on explicit user action. With the toggle on: a version-check request only, at launch and every 4 h** | `tauri-plugin-updater` (config: `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater`; wiring: `apps/desktop/src-tauri/src/main.rs`). See note² |
 
 ¹ **AI coaching narration default — now OFF.** The on-device analysis (pitch, key, intonation, groove, tone) and the offline-fallback recap are always available with zero network. The LLM *narration* of that analysis is the networked part. The in-app coaching preference (`coachingEnabled`, `practiceStore`) now defaults **off**: on first run, narration is disabled and the coach is served entirely by the on-device fallback. Turning it on in **Connections & Privacy** mirrors the choice onto the Rust-core `NetworkPolicy` (the airplane switch) and persists it. This was deferred follow-up #1, now implemented.
 
 ² **App auto-update — networked, but introduced via a Tauri plugin.** The updater
 contacts the GitHub release host to compare the installed version against the
 latest release and, *only after you confirm in its dialog*, to download the new
-signed installer. It is wired **user-initiated only** (`plugins.updater.dialog:
+signed installer. Since #58 it is user-initiated OR opt-in-automatic: the
+"Check for updates automatically" toggle (`connectionsStore.autoUpdateCheckEnabled`,
+off by default, surfaced in `ConnectionsPrivacy`) gates a launch-time + 4-hourly
+version check that feeds the bottom-left update pill (`UpdatePill.tsx`); the
+download still happens only when the pill is clicked. Without the toggle it
+remains wired **user-initiated only** (`plugins.updater.dialog:
 true`), **never on startup**, and **never in the background** — so launching the
 app and practicing offline make no update request. The egress lives inside the
 `tauri-plugin-updater` dependency, not in first-party source, which is why the
