@@ -20,6 +20,19 @@ export type UpdatePhase =
   | "ready"
   | "error";
 
+/**
+ * What a check actually learned — so an EXPLICIT manual check can answer
+ * honestly (round-2 review MF1: deriving the answer from `phase` fabricated
+ * "you're on the latest version" when offline or when a dismissed update
+ * existed). The automatic heartbeat ignores this; the button speaks it.
+ */
+export type CheckOutcome =
+  | "found"
+  | "upToDate"
+  | "dismissed"
+  | "failed"
+  | "busy";
+
 const DISMISSED_KEY = "ai-music-companion:dismissed-update";
 
 function loadDismissed(): string | null {
@@ -48,10 +61,13 @@ export interface UpdateState {
   dismissedVersion: string | null;
 
   /**
-   * Ask the updater endpoint whether a newer signed build exists. Failures
-   * are SILENT — offline is normal, not an error surface (spec AC5/edge).
+   * Ask the updater endpoint whether a newer signed build exists. On the
+   * automatic path failures are SILENT — offline is normal, not an error
+   * surface (spec AC5/edge) — but the OUTCOME is returned so the manual
+   * button can answer honestly. `manual` makes an explicit ask override a
+   * pill dismissal (dismiss quiets the automatic surface, not questions).
    */
-  checkForUpdate: () => Promise<void>;
+  checkForUpdate: (opts?: { manual?: boolean }) => Promise<CheckOutcome>;
   /** Download + install the available update; pill dims while working. */
   installUpdate: () => Promise<void>;
   /** Hide the currently offered version (a newer one will re-surface). */
@@ -73,10 +89,10 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   notice: null,
   dismissedVersion: loadDismissed(),
 
-  checkForUpdate: async () => {
+  checkForUpdate: async (opts) => {
     // Never interrupt an in-flight download with a re-check.
     if (get().phase === "downloading" || get().phase === "ready") {
-      return;
+      return "busy";
     }
     try {
       const update = await check();
@@ -86,13 +102,13 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       // re-enabled the button mid-download and could fire a second,
       // concurrent install).
       if (get().phase === "downloading" || get().phase === "ready") {
-        return;
+        return "busy";
       }
       if (!update) {
-        return; // Up to date — stay idle, render nothing.
+        return "upToDate"; // Genuinely current — stay idle, render nothing.
       }
-      if (update.version === get().dismissedVersion) {
-        return; // The user said "not this one" — honor it.
+      if (!opts?.manual && update.version === get().dismissedVersion) {
+        return "dismissed"; // The user said "not this one" — honor it.
       }
       pendingUpdate = update;
       set({
@@ -100,8 +116,11 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         availableVersion: update.version,
         notice: null,
       });
+      return "found";
     } catch {
-      // Offline or endpoint unreachable — normal life, stay silent.
+      // Offline or endpoint unreachable — normal life for the heartbeat;
+      // the manual button turns this into an honest "couldn't check".
+      return "failed";
     }
   },
 

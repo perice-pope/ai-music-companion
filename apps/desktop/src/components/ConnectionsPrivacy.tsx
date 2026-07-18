@@ -99,12 +99,24 @@ interface InfoRowProps {
  */
 function CheckForUpdatesButton() {
   const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
-  const phase = useUpdateStore((s) => s.phase);
   const [state, setState] = useState<"idle" | "checking" | "done">("idle");
+  const [result, setResult] = useState<string | null>(null);
 
   const onCheck = async () => {
     setState("checking");
-    await checkForUpdate();
+    // manual: an explicit ask overrides a pill dismissal (round-2 MF1) —
+    // and the answer comes from what the check LEARNED, never inferred
+    // from phase (which lied when offline or dismissed).
+    const outcome = await checkForUpdate({ manual: true });
+    setResult(
+      outcome === "upToDate"
+        ? "You're on the latest version."
+        : outcome === "found"
+          ? "Update found — see the pill, bottom left."
+          : outcome === "busy"
+            ? "An update is already in progress — see the pill."
+            : "Couldn't check right now — you may be offline. Nothing was sent.",
+    );
     setState("done");
   };
 
@@ -119,14 +131,12 @@ function CheckForUpdatesButton() {
       >
         {state === "checking" ? "Checking…" : "Check for updates"}
       </button>
-      {state === "done" && (
+      {state === "done" && result && (
         <span
           className="text-sm text-gray-400"
           data-testid="check-updates-result"
         >
-          {phase === "idle"
-            ? "You're on the latest version."
-            : "Update found — see the pill, bottom left."}
+          {result}
         </span>
       )}
     </div>

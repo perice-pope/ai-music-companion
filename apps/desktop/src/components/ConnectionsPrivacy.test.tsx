@@ -226,4 +226,73 @@ describe("ConnectionsPrivacy", () => {
     );
     expect(mockUpdateCheck).toHaveBeenCalledTimes(1);
   });
+
+  // #58 round-2 MF1(a): offline, the button must NOT fabricate
+  // "You're on the latest version" — it says it couldn't check.
+  it("the manual check answers honestly when the check fails", async () => {
+    mockUpdateCheck.mockRejectedValue(new Error("offline"));
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "Couldn't check",
+      ),
+    );
+    expect(
+      screen.getByTestId("check-updates-result").textContent,
+    ).not.toContain("latest version");
+  });
+
+  // #58 round-2 MF1(b): a pill dismissal quiets the AUTOMATIC surface only —
+  // an explicit manual check overrides it and re-surfaces the update.
+  it("a manual check overrides a dismissed version", async () => {
+    mockUpdateCheck.mockResolvedValue({
+      version: "9.9.9",
+      downloadAndInstall: vi.fn(),
+    });
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: "9.9.9",
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-result").textContent).toContain(
+        "Update found",
+      ),
+    );
+    expect(useUpdateStore.getState().phase).toBe("available");
+    expect(useUpdateStore.getState().availableVersion).toBe("9.9.9");
+  });
+
+  // #58 round-2 SF2: the button is disabled while a check is in flight.
+  it("the manual check button disables while checking", async () => {
+    let resolveCheck: (u: unknown) => void = () => {};
+    mockUpdateCheck.mockImplementation(
+      () => new Promise((res) => (resolveCheck = res)),
+    );
+    useUpdateStore.setState({
+      phase: "idle",
+      availableVersion: null,
+      notice: null,
+      dismissedVersion: null,
+    });
+    render(<ConnectionsPrivacy />);
+    fireEvent.click(screen.getByTestId("check-updates-now"));
+    await waitFor(() =>
+      expect(screen.getByTestId("check-updates-now")).toBeDisabled(),
+    );
+    await waitFor(() => {
+      resolveCheck(null);
+      expect(screen.getByTestId("check-updates-now")).not.toBeDisabled();
+    });
+  });
 });
