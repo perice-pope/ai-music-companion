@@ -1,3 +1,9 @@
+## [2.28.11](https://github.com/perice-pope/ai-music-companion/compare/v2.28.10...v2.28.11) (2026-07-18)
+
+### Bug Fixes
+
+* **ears,theory,brain:** chord pipeline calibrated against real piano recordings ([#418](https://github.com/perice-pope/ai-music-companion/issues/418)) ([2e669af](https://github.com/perice-pope/ai-music-companion/commit/2e669afce7c17f4c6a45f5d5ee2a80df5943d5b3)), closes [#382](https://github.com/perice-pope/ai-music-companion/issues/382) [#415](https://github.com/perice-pope/ai-music-companion/issues/415) [#382](https://github.com/perice-pope/ai-music-companion/issues/382) [#1](https://github.com/perice-pope/ai-music-companion/issues/1) [#412](https://github.com/perice-pope/ai-music-companion/issues/412) [#58](https://github.com/perice-pope/ai-music-companion/issues/58)
+
 ## [2.28.10](https://github.com/perice-pope/ai-music-companion/compare/v2.28.9...v2.28.10) (2026-07-17)
 
 ### Bug Fixes
