@@ -274,6 +274,13 @@ export interface PracticeState {
   openerPreview: ExploreDto | null;
   /** Calm refusal from the opener compiler, shown in the panel. */
   openerNotice: string | null;
+  /** #419 S2b: the tonic pc the LAST preview captured (confident live
+   * key at refresh time; null = C). Begin sends this, never a fresh
+   * read — the preview IS the exercise. */
+  openerTonic: number | null;
+  /** #419 S2b: the recipe-level direction setting (a setting, not an
+   * item — it survives item edits, resets after Begin/session end). */
+  openerDirection: "forward" | "reversed" | "varied";
 
   // Recap -----------------------------------------------------------------
   recap: SessionRecap | null;
@@ -471,6 +478,7 @@ export interface PracticeState {
   exploreMeasureLive: (measureNumber: number) => Promise<void>;
   addOpenerItem: (item: StarterItem) => Promise<void>;
   removeOpenerItem: (index: number) => Promise<void>;
+  setOpenerDirection: (direction: "forward" | "reversed" | "varied") => void;
   clearOpener: () => void;
   /** Internal: recompute the pure preview after any item change. */
   _refreshOpenerPreview: (items: StarterItem[]) => Promise<void>;
@@ -666,6 +674,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   openerItems: [],
   openerPreview: null,
   openerNotice: null,
+  openerTonic: null,
+  openerDirection: "forward" as const,
   exploreNotice: null,
   recap: null,
   recapError: null,
@@ -1001,6 +1011,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       openerItems: [],
       openerPreview: null,
       openerNotice: null,
+      openerTonic: null,
+      openerDirection: "forward",
     });
   },
 
@@ -1329,14 +1341,31 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   clearOpener: () =>
     set({ openerItems: [], openerPreview: null, openerNotice: null }),
 
+  setOpenerDirection: (direction) => {
+    set({ openerDirection: direction });
+    // A direction change re-voices the preview immediately.
+    void get()._refreshOpenerPreview(get().openerItems);
+  },
+
   /** Internal: recompute the pure preview after any item change. */
   _refreshOpenerPreview: async (items: StarterItem[]) => {
     if (items.length === 0) {
       set({ openerPreview: null, openerNotice: null });
       return;
     }
+    // #419 S2b: read the live key ONCE per refresh — confident reads only
+    // (the same assert threshold the reveal card uses). The captured value
+    // is what Begin will send: the preview IS the exercise, even if the
+    // room's key drifts between preview and Begin.
+    const key = get().perception?.key;
+    const tonic = key && key.confidence >= 0.55 ? key.tonic : null;
+    set({ openerTonic: tonic });
     try {
-      const dto = await invoke<ExploreDto>("preview_opener", { items });
+      const dto = await invoke<ExploreDto>("preview_opener", {
+        items,
+        tonic,
+        direction: get().openerDirection,
+      });
       // Stale-response guard (review MF3): rapid taps race, and a late
       // response must never paint music for items that changed under it —
       // the items array identity is the sequence token (same pattern as
@@ -1362,7 +1391,12 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return;
     }
     try {
-      const dto = await invoke<ExploreDto>("begin_opener", { items });
+      const dto = await invoke<ExploreDto>("begin_opener", {
+        items,
+        // The tonic the last PREVIEW captured — never a fresh read.
+        tonic: get().openerTonic,
+        direction: get().openerDirection,
+      });
       // The opener becomes the session's exploration — the same surface a
       // lifted lick lands on — and the builder resets for next time.
       set({
@@ -1371,6 +1405,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         openerItems: [],
         openerPreview: null,
         openerNotice: null,
+        openerTonic: null,
+        openerDirection: "forward",
       });
     } catch (err) {
       set({ openerNotice: String(err) });
