@@ -157,4 +157,99 @@ describe("OpenersPanel (#419 S1)", () => {
       "add a note or two",
     );
   });
+
+  // ── #419 S2a: the item bank goes live ─────────────────────────────────
+
+  it("every bank row sends its SEMANTIC wire shape", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+
+    fireEvent.click(screen.getByTestId("opener-interval-5"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "interval", number: 5 }],
+      }),
+    );
+    fireEvent.click(screen.getByTestId("opener-chord-dominant_seventh"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "interval", number: 5 },
+          { type: "chord", kind: "dominant_seventh" },
+        ],
+      }),
+    );
+    fireEvent.click(screen.getByTestId("opener-scale-blues"));
+    fireEvent.click(screen.getByTestId("opener-enclosure-one_down_one_up"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "interval", number: 5 },
+          { type: "chord", kind: "dominant_seventh" },
+          { type: "scale", kind: "blues" },
+          { type: "enclosure", style: "one_down_one_up" },
+        ],
+      }),
+    );
+    // Chip labels read musically.
+    expect(screen.getByTestId("opener-chip-0").textContent).toContain("5th");
+    // Review MF4: ordinals are real music words — "3rd", never "3th".
+    fireEvent.click(screen.getByTestId("opener-interval-3"));
+    await waitFor(() => screen.getByTestId("opener-chip-4"));
+    expect(screen.getByTestId("opener-chip-4").textContent).toContain("3rd");
+    expect(screen.getByTestId("opener-chip-1").textContent).toContain("7");
+    expect(screen.getByTestId("opener-chip-2").textContent).toContain("blues");
+    expect(screen.getByTestId("opener-chip-3").textContent).toContain(
+      "enclose ↓↑",
+    );
+  });
+
+  it("the resting bank shrank to what actually rests", () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    screen.getByText("Pattern directions");
+    screen.getByText("My patterns");
+    // The four S2a rows are live sections now, not resting chips.
+    expect(screen.getAllByText("Intervals")).toHaveLength(1);
+    expect(screen.getAllByText("Chords")).toHaveLength(1);
+  });
+
+  it("custom entry parses spaces/dashes into ONE note_sequence item", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.change(screen.getByTestId("opener-custom-input"), {
+      target: { value: " 1-5, 3 2 " },
+    });
+    fireEvent.click(screen.getByTestId("opener-custom-add"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 5, 3, 2] }],
+      }),
+    );
+    // Input clears for the next one.
+    expect(
+      (screen.getByTestId("opener-custom-input") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("custom junk gets a calm client notice and NOTHING goes over the wire", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.change(screen.getByTestId("opener-custom-input"), {
+      target: { value: "do re mi" },
+    });
+    fireEvent.click(screen.getByTestId("opener-custom-add"));
+    await waitFor(() => screen.getByTestId("opener-custom-notice"));
+    expect(mockInvoke).not.toHaveBeenCalled();
+    // But out-of-range DEGREES do go over — the backend refuses by name.
+    fireEvent.change(screen.getByTestId("opener-custom-input"), {
+      target: { value: "9" },
+    });
+    fireEvent.click(screen.getByTestId("opener-custom-add"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [9] }],
+      }),
+    );
+  });
 });
