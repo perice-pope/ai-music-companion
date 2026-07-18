@@ -1,3 +1,9 @@
+## [2.28.12](https://github.com/perice-pope/ai-music-companion/compare/v2.28.11...v2.28.12) (2026-07-18)
+
+### Bug Fixes
+
+* **release:** enable Tauri updater artifacts — the missing half of the [#58](https://github.com/perice-pope/ai-music-companion/issues/58) pipeline ([#420](https://github.com/perice-pope/ai-music-companion/issues/420)) ([1ebb6b2](https://github.com/perice-pope/ai-music-companion/commit/1ebb6b2070b582a5fba48df610c7d99f7a5b3fa2))
+
 ## [2.28.11](https://github.com/perice-pope/ai-music-companion/compare/v2.28.10...v2.28.11) (2026-07-18)
 
 ### Bug Fixes
