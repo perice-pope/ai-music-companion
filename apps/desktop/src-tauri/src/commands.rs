@@ -676,6 +676,9 @@ pub struct AppState {
     /// entirely off-device via the lock-free control channel inside the driver —
     /// no network, no realtime-callback locking.
     accompaniment: Arc<std::sync::Mutex<Option<Accompaniment>>>,
+    /// #421 S1: The Pocket's click output — same one-owner audio-device
+    /// discipline as the band, serialized by the same cmd lock.
+    pocket: Arc<std::sync::Mutex<Option<ears::output_engine::AudioOutput>>>,
     /// Serializes the `start`/`stop` accompaniment commands (and session-end
     /// teardown) so two overlapping Tauri command tasks can't race the audio
     /// device handoff — without it, an interleaved start could drop-join an
@@ -814,6 +817,7 @@ impl AppState {
                 brain::chord_chart::ChartRecorder::new(),
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
+            pocket: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
@@ -850,6 +854,7 @@ impl AppState {
                 brain::chord_chart::ChartRecorder::new(),
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
+            pocket: Arc::new(std::sync::Mutex::new(None)),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
@@ -968,6 +973,15 @@ impl AppState {
         let taken = self.accompaniment.lock_or_recover().take();
         if let Some(accompaniment) = taken {
             accompaniment.output.stop();
+        }
+    }
+
+    /// #421 S1: stop The Pocket's click if it is playing. Idempotent, like
+    /// the band's teardown; both run at session end.
+    pub(crate) fn teardown_pocket(&self) {
+        let taken = self.pocket.lock_or_recover().take();
+        if let Some(output) = taken {
+            output.stop();
         }
     }
 
@@ -1645,6 +1659,18 @@ struct AccompanimentStatusPayload {
 }
 
 /// Tell the UI whether the follow-me band is playing. Non-fatal on error.
+#[derive(Clone, Serialize)]
+struct PocketStatusPayload {
+    playing: bool,
+    tempo_bpm: f64,
+}
+
+/// #421 S1: the Pocket's status event — the frontend chip and pulse
+/// follow this, exactly as the band follows accompaniment-status.
+fn emit_pocket_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool, tempo_bpm: f64) {
+    let _ = app.emit("pocket-status", PocketStatusPayload { playing, tempo_bpm });
+}
+
 fn emit_accompaniment_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool) {
     let _ = app.emit(
         "accompaniment-status",
@@ -2370,7 +2396,10 @@ pub async fn end_practice_session<R: Runtime>(
     {
         let _cmd = state.accompaniment_cmd_lock.lock().await;
         state.teardown_accompaniment();
+        // #421 S1: the click stops with the session, like the band.
+        state.teardown_pocket();
     }
+    emit_pocket_status(&app, false, 0.0);
     // The key override is session-scoped — reset it so the next session
     // auto-detects fresh.
     state.clear_key_override();
@@ -2400,6 +2429,9 @@ pub async fn start_accompaniment<R: Runtime>(
     // output device while the old one is still live, nor (b) drop-join an
     // `AudioOutput` while holding the std mutex the audio worker locks per frame.
     state.teardown_accompaniment();
+    // #421 S1: one audio-output owner — the band replaces the click.
+    state.teardown_pocket();
+    emit_pocket_status(&app, false, 0.0);
 
     // The receiver moves into the render-thread source; the sender lives in the
     // driver on the processing thread.
@@ -2436,6 +2468,66 @@ pub async fn stop_accompaniment<R: Runtime>(
     state.teardown_accompaniment();
     emit_accompaniment_status(&app, false);
     Ok(())
+}
+
+/// #421 S1: start The Pocket — the strict Anchor click with an optional
+/// one-bar count-in, at a clamped tempo. Replaces the band (one audio
+/// owner per device).
+#[tauri::command]
+pub async fn start_pocket<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    tempo_bpm: f64,
+    beats_per_bar: u8,
+    count_in: bool,
+) -> Result<(), String> {
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+    state.teardown_accompaniment();
+    state.teardown_pocket();
+    emit_accompaniment_status(&app, false);
+
+    let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
+    let output = ears::output_engine::AudioOutput::start(move |sample_rate| {
+        let config = ears::output::MetronomeConfig {
+            bpm: tempo,
+            time_signature: (beats, 4),
+            accent_first_beat: true,
+            volume: 0.8,
+        };
+        // The params are clamped into the validated range, so construction
+        // cannot fail.
+        ears::output::Metronome::new(config, sample_rate)
+            .expect("clamped pocket config is always valid")
+            .with_count_in(if count_in { 1 } else { 0 })
+    })
+    .map_err(|e| format!("could not start the click: {e}"))?;
+    *state.pocket.lock_or_recover() = Some(output);
+    emit_pocket_status(&app, true, tempo);
+    Ok(())
+}
+
+/// #421 S1: stop The Pocket. No-op if silent.
+#[tauri::command]
+pub async fn stop_pocket<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _cmd = state.accompaniment_cmd_lock.lock().await;
+    state.teardown_pocket();
+    emit_pocket_status(&app, false, 0.0);
+    Ok(())
+}
+
+/// #421 S1: the Pocket's parameter clamps — tempo 40..=220 (NaN → 40),
+/// beats 2..=7. One function so the played values and the reported value
+/// can never disagree.
+fn clamp_pocket_params(tempo_bpm: f64, beats_per_bar: u8) -> (f64, u8) {
+    let tempo = if tempo_bpm.is_nan() {
+        40.0
+    } else {
+        tempo_bpm.clamp(40.0, 220.0)
+    };
+    (tempo, beats_per_bar.clamp(2, 7))
 }
 
 /// Pin the band to a specific key — the user correcting the auto-read (e.g.
@@ -6487,6 +6579,135 @@ mod tests {
             serde_json::to_string(&AccompanimentStatusPayload { playing: false }).unwrap(),
             r#"{"playing":false}"#
         );
+    }
+
+    /// #421 S1 AC8 (review MF1): ending the session stops the click — the
+    /// command's teardown + emit run BEFORE any device work, so the mock
+    /// runtime exercises them. The command errs (no active session); the
+    /// pocket event and the emptied slot are the assertions.
+    #[tokio::test]
+    async fn ending_the_session_stops_the_pocket() {
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("pocket-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        // No active session → the command errs AFTER the teardown+emit.
+        let _ = end_practice_session(handle, state.clone()).await;
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("session end emits pocket-status");
+        assert!(payload.contains("\"playing\":false"), "got: {payload}");
+        assert!(state.pocket.lock_or_recover().is_none());
+    }
+
+    /// #421 S1 review MF2: the pocket-status wire shape — App.tsx reads
+    /// payload.tempo_bpm; a serde rename ships a silently-dead pulse.
+    #[test]
+    fn pocket_status_payload_serializes_verbatim() {
+        assert_eq!(
+            serde_json::to_string(&PocketStatusPayload {
+                playing: true,
+                tempo_bpm: 96.0,
+            })
+            .unwrap(),
+            r#"{"playing":true,"tempo_bpm":96.0}"#
+        );
+    }
+
+    /// #421 S1 review MF4(a): the deterministic HALF of exclusivity — a
+    /// pocket start silences the band's status and empties its slot BEFORE
+    /// any device work, so this asserts on mock state regardless of whether
+    /// the device open succeeds (it may, briefly, on a dev machine — the
+    /// paired stop tears it down). Full audible exclusivity: manual verify.
+    #[tokio::test]
+    async fn starting_the_pocket_reports_the_band_stopped_first() {
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("accompaniment-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let _ = start_pocket(handle.clone(), state.clone(), 96.0, 4, true).await;
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("pocket start reports the band stopped");
+        assert!(payload.contains("\"playing\":false"), "got: {payload}");
+        assert!(state.accompaniment.lock_or_recover().is_none());
+        // If a real device opened, close it so the test leaves silence.
+        let _ = stop_pocket(handle, state.clone()).await;
+        assert!(state.pocket.lock_or_recover().is_none());
+    }
+
+    /// #421 S1 AC3: the clamp table — played and reported values agree
+    /// because one function produces both.
+    #[test]
+    fn pocket_params_clamp_to_the_documented_ranges() {
+        assert_eq!(clamp_pocket_params(96.0, 4), (96.0, 4));
+        assert_eq!(clamp_pocket_params(20.0, 4), (40.0, 4));
+        assert_eq!(clamp_pocket_params(300.0, 4), (220.0, 4));
+        assert_eq!(clamp_pocket_params(f64::NAN, 4), (40.0, 4));
+        assert_eq!(clamp_pocket_params(90.0, 1), (90.0, 2));
+        assert_eq!(clamp_pocket_params(90.0, 9), (90.0, 7));
+    }
+
+    /// #421 S1: teardown is idempotent and safe on a silent state — it runs
+    /// from stop, from band start, and from session end.
+    #[test]
+    fn teardown_pocket_without_running_is_a_noop_and_idempotent() {
+        let s = AppState::with_mocks();
+        s.teardown_pocket();
+        s.teardown_pocket();
+    }
+
+    /// #421 S1 AC2 (stop half): stop_pocket reports playing:false through
+    /// the real command + mock runtime. (start needs a real output device —
+    /// covered by `plays_the_pocket_click_with_count_in` in ears'
+    /// output_engine_audible_test [ignored, manual] + the manual-verify
+    /// checklist, the same boundary the band's tests drew.)
+    #[tokio::test]
+    async fn stop_pocket_emits_status_playing_false() {
+        use std::sync::Mutex as StdMutex;
+        use tauri::test::mock_app;
+        use tauri::{Listener, Manager};
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let captured = Arc::new(StdMutex::new(None::<String>));
+        let sink = captured.clone();
+        app.listen("pocket-status", move |event| {
+            *sink.lock().unwrap() = Some(event.payload().to_string());
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        stop_pocket(handle, state)
+            .await
+            .expect("stop_pocket succeeds on a silent state");
+        let payload = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a pocket-status event should have been emitted");
+        assert!(payload.contains("\"playing\":false"), "got: {payload}");
     }
 
     #[tokio::test]

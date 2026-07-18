@@ -14,3 +14,17 @@
 img[id^="cursorImg"] {
   max-width: none;
 }
+
+/* #421 S1 — The Pocket's breathing pulse: a CONTINUOUS swell/dim at the
+   beat period (#417 rule 0: the pulse breathes, it never blinks). */
+@keyframes pocket-breathe {
+  0%,
+  100% {
+    transform: scale(0.75);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}

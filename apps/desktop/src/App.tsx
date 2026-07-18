@@ -51,6 +51,7 @@ function App() {
   const setAccompanimentPlaying = usePracticeStore(
     (s) => s.setAccompanimentPlaying,
   );
+  const setPocketStatus = usePracticeStore((s) => s.setPocketStatus);
   const setPerception = usePracticeStore((s) => s.setPerception);
   const [storageDegraded, setStorageDegraded] = useState(false);
   const autoUpdateCheckEnabled = useConnectionsStore(
@@ -185,6 +186,21 @@ function App() {
 
       try {
         unsubs.push(
+          // #421 S1: The Pocket's click status — backend authoritative
+          // (it stops the click at session end and on band start).
+          await listen<{ playing: boolean; tempo_bpm: number }>(
+            "pocket-status",
+            ({ payload }) => {
+              setPocketStatus(payload.playing, payload.tempo_bpm);
+            },
+          ),
+        );
+      } catch (err: unknown) {
+        console.error("Failed to subscribe to pocket-status:", err);
+      }
+
+      try {
+        unsubs.push(
           // Live "what the app hears" (~8 Hz): tempo / feel / key + confidence.
           await listen<PerceptionSnapshot>("perception", ({ payload }) => {
             setPerception(payload);
@@ -205,6 +221,7 @@ function App() {
     requestReveal,
     setCursorPosition,
     setAccompanimentPlaying,
+    setPocketStatus,
     setPerception,
   ]);
 

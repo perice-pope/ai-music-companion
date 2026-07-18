@@ -78,6 +78,16 @@ pub trait RenderSource: Send {
     fn render(&mut self, out: &mut [f32]);
 }
 
+/// #421 S1: a bare [`crate::output::Metronome`] is a render source — the
+/// Pocket's Anchor click needs no mixer, no band, no clock.
+impl RenderSource for crate::output::Metronome {
+    fn render(&mut self, out: &mut [f32]) {
+        for slot in out.iter_mut() {
+            *slot = self.next_sample();
+        }
+    }
+}
+
 /// An [`OutputMixer`] is a render source: each slot is one mixed sample.
 impl RenderSource for OutputMixer {
     fn render(&mut self, out: &mut [f32]) {

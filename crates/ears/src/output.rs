@@ -77,6 +77,10 @@ pub struct Metronome {
     /// Set to true the first time a beat fires. Used so `current_beat()` can
     /// report 0 before the first click rather than `measure_len - 1`.
     any_beat_fired: bool,
+    /// #421 S1: count-in beats still to play. While > 0, EVERY click uses
+    /// the accent voice (the classic "1-2-3-4!" call-off); afterwards the
+    /// normal accent-on-downbeat rule applies. Set via [`Self::with_count_in`].
+    count_in_beats_remaining: usize,
 }
 
 impl Metronome {
@@ -99,7 +103,18 @@ impl Metronome {
             click_cursor: samples_in_click,
             current_is_accent: false,
             any_beat_fired: false,
+            count_in_beats_remaining: 0,
         })
+    }
+
+    /// #421 S1: prepend `bars` count-in bars — every click in them is the
+    /// ACCENT voice, so the call-off is unmistakable. Builder-style so no
+    /// existing constructor changes.
+    #[must_use]
+    pub fn with_count_in(mut self, bars: u8) -> Self {
+        self.count_in_beats_remaining =
+            usize::from(bars) * usize::from(self.config.time_signature.0);
+        self
     }
 
     /// Number of samples between consecutive beats at the current BPM.
@@ -137,7 +152,12 @@ impl Metronome {
             // Fire a new click.
             self.click_cursor = 0;
             self.samples_until_next_beat = samples_per_beat(self.config.bpm, self.sample_rate);
-            self.current_is_accent = self.config.accent_first_beat && self.beat_index == 0;
+            self.current_is_accent = if self.count_in_beats_remaining > 0 {
+                self.count_in_beats_remaining -= 1;
+                true // every count-in click calls off in the accent voice
+            } else {
+                self.config.accent_first_beat && self.beat_index == 0
+            };
             self.beat_index = (self.beat_index + 1) % self.config.time_signature.0 as usize;
             self.any_beat_fired = true;
         }
@@ -880,5 +900,70 @@ mod tests {
             "error message missing range: {}",
             msg
         );
+    }
+
+    // ── #421 S1: count-in ───────────────────────────────────────────────
+
+    /// Walk one beat's worth of samples and report whether the click that
+    /// fired at its start was the accent voice (detected by frequency: the
+    /// accent is 1500 Hz, normal is 1000 Hz — compare early-sample phase).
+    fn fired_accent(m: &mut Metronome) -> bool {
+        let period = m.samples_per_beat();
+        // The click fires on the first sample of the beat. A sine goes
+        // negative after its half-period: 1500 Hz (accent) at 48 kHz →
+        // 16 samples; 1000 Hz (normal) → 24. The first negative sample
+        // index cleanly separates the two voices.
+        let mut first_negative = None;
+        for i in 0..period {
+            let s = m.next_sample();
+            if first_negative.is_none() && s < 0.0 {
+                first_negative = Some(i);
+            }
+        }
+        // Threshold derived from the voices themselves: midway between the
+        // two half-periods, so a legitimate retuning of either constant
+        // moves the boundary instead of silently breaking the detector.
+        let accent_half = (48_000.0 / ACCENT_FREQ_HZ / 2.0) as usize;
+        let normal_half = (48_000.0 / CLICK_FREQ_HZ / 2.0) as usize;
+        let threshold = (accent_half + normal_half) / 2;
+        first_negative.expect("click produced a negative half-cycle") < threshold
+    }
+
+    #[test]
+    fn count_in_bars_call_off_in_the_accent_voice() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000).unwrap().with_count_in(1);
+        // Bar 1 (count-in): all four clicks accent.
+        for beat in 0..4 {
+            assert!(fired_accent(&mut m), "count-in beat {beat} must accent");
+        }
+        // Bar 2 (live): only beat 1 accents.
+        assert!(fired_accent(&mut m), "live downbeat accents");
+        for beat in 1..4 {
+            assert!(
+                !fired_accent(&mut m),
+                "live beat {beat} must be the normal click"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_count_in_is_todays_behavior() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut plain = Metronome::new(config, 48_000).unwrap();
+        let mut with_zero = Metronome::new(config, 48_000).unwrap().with_count_in(0);
+        for _ in 0..48_000 {
+            assert_eq!(plain.next_sample(), with_zero.next_sample());
+        }
     }
 }
