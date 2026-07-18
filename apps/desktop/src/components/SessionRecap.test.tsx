@@ -171,6 +171,19 @@ describe("SessionRecap", () => {
       "leaning",
     );
 
+    // Drifted (#404): the key carried the session but the strip wandered
+    // off it by the close — a whole-session claim. "Toward the end" here
+    // would contradict the strip the player watched (the VA's "leaning
+    // F Phrygian" over a cycling E Locrian / F major close).
+    seedRecap(fullRecap({ fingerprint: { key, key_claim: "drifted" } }));
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-key").textContent).toContain(
+      "mostly G# major — wandering by the end",
+    );
+    expect(screen.getByTestId("recap-key").textContent).not.toContain(
+      "toward the end",
+    );
+
     // Legacy recap (persisted before key_claim existed) → flat form, so old
     // sessions don't retroactively hedge.
     seedRecap(fullRecap({ fingerprint: { key } }));
