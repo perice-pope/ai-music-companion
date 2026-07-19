@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useHistoryStore } from "../stores/historyStore";
 import { usePracticeStore } from "../stores/practiceStore";
 import SessionCard from "../components/SessionCard";
+import PastSessionDetail from "../components/PastSessionDetail";
 import PracticeStats from "../components/PracticeStats";
 import AccountPanel from "../components/AccountPanel";
 
@@ -14,13 +15,19 @@ export default function History() {
     loadHistory,
     loadStats,
     loadSessionDetail,
+    selectedSessionDetail,
+    clearSelectedSession,
   } = useHistoryStore();
   const goToConnections = usePracticeStore((s) => s.goToConnections);
+  const goToSelector = usePracticeStore((s) => s.goToSelector);
 
   useEffect(() => {
+    // Review SF3: re-entering History lands on the LIST — a detail left
+    // open last visit must not greet you as stale navigation state.
+    clearSelectedSession();
     loadHistory();
     loadStats();
-  }, [loadHistory, loadStats]);
+  }, [clearSelectedSession, loadHistory, loadStats]);
 
   if (isLoading && !stats) {
     return (
@@ -45,7 +52,16 @@ export default function History() {
   return (
     <main className="min-h-screen bg-gray-900 p-8">
       <div className="mx-auto max-w-4xl">
-        <h1 className="mb-8 text-4xl font-bold text-white">Practice History</h1>
+        {/* #445-8: History must not be a dead end — back to practice. */}
+        <button
+          type="button"
+          onClick={() => goToSelector()}
+          data-testid="history-back"
+          className="mb-4 text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+        >
+          ← Back to practice
+        </button>
+        <h1 className="mb-8 text-4xl font-bold text-white">My sessions</h1>
 
         {/* Cloud sync (optional sign-in) */}
         <section className="mb-12">
@@ -68,13 +84,30 @@ export default function History() {
           </section>
         )}
 
-        {/* Sessions List */}
+        {/* Sessions List — or the open past recap (#445-8: tapping a card
+            used to fetch the detail into state and render NOTHING). */}
         <section>
           <h2 className="mb-4 text-2xl font-semibold text-gray-200">
             Sessions
           </h2>
 
-          {sessions.length === 0 ? (
+          {/* Review MF2: a detail-fetch failure must be VISIBLE next to
+              the list — a store-only error is the dead-tap pattern this
+              page exists to kill. */}
+          {error && sessions.length > 0 && !selectedSessionDetail && (
+            <p
+              className="mb-3 rounded-md border border-amber-700 bg-amber-900/30 px-3 py-2 text-sm text-amber-200"
+              data-testid="history-error"
+            >
+              {error}
+            </p>
+          )}
+          {selectedSessionDetail ? (
+            <PastSessionDetail
+              session={selectedSessionDetail}
+              onBack={clearSelectedSession}
+            />
+          ) : sessions.length === 0 ? (
             <div className="rounded-lg bg-gray-800 p-8 text-center">
               <p className="text-gray-400">No sessions yet.</p>
               <p className="mt-2 text-sm text-gray-500">

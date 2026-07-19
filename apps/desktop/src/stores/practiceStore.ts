@@ -640,6 +640,8 @@ export interface PracticeState {
    */
   setPracticeMode: (mode: PracticeMode) => void;
   goToHistory: () => void;
+  /** Screen-only hop back to the selector (no session-state resets). */
+  goToSelector: () => void;
   /** Open the Connections & Privacy panel (networked-feature disclosure). */
   goToConnections: () => void;
 }
@@ -1919,6 +1921,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   goToHistory: () =>
     set({
       screen: "history",
+    }),
+
+  // #445-8 review SF4: leaving History changes the SCREEN and nothing
+  // else — returnToSelector's resets would silently discard a staged
+  // matched score (openMatchedScore stages AFTER its reset for a reason).
+  goToSelector: () =>
+    set({
+      screen: "selector",
     }),
 
   goToConnections: () =>
