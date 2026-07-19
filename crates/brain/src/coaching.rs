@@ -1323,8 +1323,9 @@ pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
     // 60s of noodling is still a quick touch, and quoting "10 minutes"
     // while judging 60s is two clocks in one sentence).
     let played_secs: f64 = input.phrases.iter().map(|p| p.duration_secs).sum();
-    let played_str = if played_secs < 90.0 {
-        format!("{} seconds", played_secs.round().max(1.0) as i64)
+    let played_str = if played_secs < 120.0 {
+        let s = played_secs.round().max(1.0) as i64;
+        format!("{s} second{}", if s == 1 { "" } else { "s" })
     } else {
         format!("{} minutes", (played_secs / 60.0).round() as i64)
     };
@@ -4365,6 +4366,13 @@ mod tests {
             "got: {}",
             recap.overall_assessment
         );
+        assert!(
+            recap
+                .overall_assessment
+                .contains("about 60 seconds of actual playing"),
+            "the copy speaks the played clock, not the wall clock: {}",
+            recap.overall_assessment
+        );
         assert!(recap.strengths.is_empty(), "no padding lists");
         assert!(recap.areas_to_improve.is_empty());
         assert_eq!(recap.next_session_suggestions.len(), 1);
@@ -4436,6 +4444,13 @@ mod tests {
         assert!(
             recap.overall_assessment.contains("landed in tune"),
             "the cleared intonation fact speaks: {}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap
+                .overall_assessment
+                .contains("Not enough playing for a full read"),
+            "a read fingerprint gets the non-contradicting line: {}",
             recap.overall_assessment
         );
         // And on a fixed-pitch instrument the same fact stays QUIET
