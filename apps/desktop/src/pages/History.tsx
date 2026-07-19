@@ -19,12 +19,15 @@ export default function History() {
     clearSelectedSession,
   } = useHistoryStore();
   const goToConnections = usePracticeStore((s) => s.goToConnections);
-  const returnToSelector = usePracticeStore((s) => s.returnToSelector);
+  const goToSelector = usePracticeStore((s) => s.goToSelector);
 
   useEffect(() => {
+    // Review SF3: re-entering History lands on the LIST — a detail left
+    // open last visit must not greet you as stale navigation state.
+    clearSelectedSession();
     loadHistory();
     loadStats();
-  }, [loadHistory, loadStats]);
+  }, [clearSelectedSession, loadHistory, loadStats]);
 
   if (isLoading && !stats) {
     return (
@@ -52,7 +55,7 @@ export default function History() {
         {/* #445-8: History must not be a dead end — back to practice. */}
         <button
           type="button"
-          onClick={() => returnToSelector()}
+          onClick={() => goToSelector()}
           data-testid="history-back"
           className="mb-4 text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
         >
@@ -88,6 +91,17 @@ export default function History() {
             Sessions
           </h2>
 
+          {/* Review MF2: a detail-fetch failure must be VISIBLE next to
+              the list — a store-only error is the dead-tap pattern this
+              page exists to kill. */}
+          {error && sessions.length > 0 && !selectedSessionDetail && (
+            <p
+              className="mb-3 rounded-md border border-amber-700 bg-amber-900/30 px-3 py-2 text-sm text-amber-200"
+              data-testid="history-error"
+            >
+              {error}
+            </p>
+          )}
           {selectedSessionDetail ? (
             <PastSessionDetail
               session={selectedSessionDetail}

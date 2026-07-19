@@ -4,12 +4,22 @@ import PracticeShell from "./PracticeShell";
 import { usePracticeStore } from "../stores/practiceStore";
 
 // Mock Tauri invoke so PracticeSession's child components don't error
-// on their own subscribe calls.
+// on their own subscribe calls. Routed BY COMMAND NAME (review MF1): a
+// blanket string once fed InstrumentSelector's list fetch, and
+// `instruments.find` blew up asynchronously in a LATER test.
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn().mockResolvedValue("mock-id"),
+  invoke: vi.fn((cmd: string) =>
+    Promise.resolve(cmd === "list_instruments" ? [] : "mock-id"),
+  ),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
+}));
+// The shell ROUTES; the History page has its own suite (History.test.tsx).
+// Mounting the real page under this file's blanket string-resolving invoke
+// mock crashes its render (review MF1: sessions.map on "mock-id").
+vi.mock("../pages/History", () => ({
+  default: () => <div data-testid="stub-history" />,
 }));
 
 function resetStore() {
@@ -47,6 +57,7 @@ describe("PracticeShell routing", () => {
     render(<PracticeShell />);
     fireEvent.click(screen.getByTestId("open-history"));
     expect(usePracticeStore.getState().screen).toBe("history");
+    screen.getByTestId("stub-history");
   });
 
   it("renders the session screen when screen=session", () => {

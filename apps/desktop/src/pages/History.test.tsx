@@ -78,7 +78,7 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   });
-  usePracticeStore.setState({ screen: "history" as never });
+  usePracticeStore.setState({ screen: "history" });
 });
 
 describe("History (#445-8 My Sessions)", () => {
@@ -137,16 +137,47 @@ describe("History (#445-8 My Sessions)", () => {
     );
   });
 
-  it("a detail fetch failure surfaces calmly; the list survives", async () => {
+  it("a detail fetch failure is VISIBLE next to the list", async () => {
     route({ get_session_detail: new Error("gone") });
     render(<History />);
     fireEvent.click(await screen.findByText(/Voice — 20m/));
+    // Review MF2: the user must SEE the failure — a store-only error is
+    // the dead-tap pattern this page exists to kill.
     await waitFor(() =>
-      expect(useHistoryStore.getState().error).toContain(
+      expect(screen.getByTestId("history-error").textContent).toContain(
         "Failed to load session",
       ),
     );
     expect(screen.queryByTestId("past-session-detail")).toBeNull();
     expect(screen.getByText(/Voice — 20m/)).toBeInTheDocument();
+  });
+
+  // Review SF3: a detail left open on a PREVIOUS visit must not greet
+  // the player as stale navigation state — re-entry lands on the list.
+  it("re-entering History lands on the list, not last visit's detail", async () => {
+    route();
+    useHistoryStore.setState({
+      selectedSessionId: "s-1",
+      selectedSessionDetail: DETAIL as never,
+    });
+    render(<History />);
+    expect(await screen.findByText(/Voice — 20m/)).toBeInTheDocument();
+    expect(screen.queryByTestId("past-session-detail")).toBeNull();
+  });
+
+  // Review SF4: leaving History must not fire returnToSelector's resets —
+  // a score staged by Open score survives the detour.
+  it("back to practice preserves a staged score", async () => {
+    route();
+    usePracticeStore.setState({
+      activeScore: { id: "id-1", title: "Für Elise" } as never,
+      activeScoreXml: "<score-partwise/>",
+    });
+    render(<History />);
+    fireEvent.click(await screen.findByTestId("history-back"));
+    const s = usePracticeStore.getState();
+    expect(s.screen).toBe("selector");
+    expect(s.activeScore).toMatchObject({ id: "id-1" });
+    expect(s.activeScoreXml).toBe("<score-partwise/>");
   });
 });
