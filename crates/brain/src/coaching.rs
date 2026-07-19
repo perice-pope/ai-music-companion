@@ -1297,6 +1297,13 @@ pub const THIN_SESSION_MIN_PLAYED_SECS: f64 = 20.0;
 /// recap. Zero phrases is NOT thin — the empty-state path (the copy the
 /// founder singled out as the voice reference) stays untouched.
 pub fn is_thin_session(input: &RecapInput) -> bool {
+    // Review MF2: a score session where the follower JUDGED notes carries
+    // measured accuracy with its own denominator — phrase count is the
+    // wrong gate for it. Judged notes exempt the session from the thin
+    // bar so the #337 S4 accuracy panel is never suppressed.
+    if !input.note_verdicts.is_empty() {
+        return false;
+    }
     let played: f64 = input.phrases.iter().map(|p| p.duration_secs).sum();
     !input.phrases.is_empty()
         && (input.phrases.len() < THIN_SESSION_MIN_PHRASES || played < THIN_SESSION_MIN_PLAYED_SECS)
@@ -1311,13 +1318,30 @@ pub fn is_thin_session(input: &RecapInput) -> bool {
 pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
     let fingerprint = build_fingerprint(&input.phrases);
     let phrase_count = input.phrases.len();
-    let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
+    // Review MF4: the copy speaks the SAME clock the bar judged — summed
+    // PLAYED seconds, never the wall clock (a 10-minute session holding
+    // 60s of noodling is still a quick touch, and quoting "10 minutes"
+    // while judging 60s is two clocks in one sentence).
+    let played_secs: f64 = input.phrases.iter().map(|p| p.duration_secs).sum();
+    let played_str = if played_secs < 90.0 {
+        format!("{} seconds", played_secs.round().max(1.0) as i64)
+    } else {
+        format!("{} minutes", (played_secs / 60.0).round() as i64)
+    };
     let mut overall = format!(
-        "A quick touch — {phrase_count} phrase{} in about {duration_mins} minute{} on {}.          That's not enough playing for me to read tone, key, or feel honestly,          so I'll keep this short.",
+        "A quick touch — {phrase_count} phrase{}, about {played_str} of actual playing, on {}.",
         if phrase_count == 1 { "" } else { "s" },
-        if duration_mins == 1 { "" } else { "s" },
         input.instrument,
     );
+    // Review MF4: never claim we couldn't read what the fingerprint DID
+    // read — the recap surface renders those rows right below this line.
+    if fingerprint.is_empty() {
+        overall.push_str(
+            " That's not enough for me to read tone, key, or feel honestly, so I'll keep this short.",
+        );
+    } else {
+        overall.push_str(" Not enough playing for a full read, so I'll keep this short.");
+    }
     if let Some(s) = &fingerprint.intonation {
         if !fixed_pitch_family(&input.instrument_family) && s.note_count >= 4 {
             overall.push_str(&format!(
@@ -1332,7 +1356,7 @@ pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
         strengths: Vec::new(),
         areas_to_improve: Vec::new(),
         next_session_suggestions: vec![
-            "Settle in for a few minutes of continuous playing — a handful of full              phrases and I'll have something real to say."
+            "Settle in for a few minutes of continuous playing — a handful of full phrases and I'll have something real to say."
                 .to_owned(),
         ],
         duration_secs: input.duration_secs,
@@ -4421,6 +4445,66 @@ mod tests {
         assert!(!grounded_offline_recap(&piano)
             .overall_assessment
             .contains("landed in tune"));
+    }
+
+    /// #445-6b review MF2: a score session where the follower JUDGED
+    /// notes is NEVER thin — measured accuracy has its own denominator,
+    /// and the #337 S4 panel must not vanish behind a phrase count.
+    #[test]
+    fn a_judged_score_session_is_never_thin() {
+        let mut input = recap_input_with(vec![phrase_lasting(5.0)], None);
+        input.score_title = Some("Für Elise".to_owned());
+        input.note_verdicts = vec![crate::follower::NoteVerdict {
+            measure_number: 1,
+            beat: 0.0,
+            verdict: crate::follower::Verdict::Hit,
+        }];
+        assert!(!is_thin_session(&input), "judged notes exempt the bar");
+        let recap = grounded_offline_recap(&input);
+        assert!(
+            recap
+                .overall_assessment
+                .starts_with("You practiced for about"),
+            "the full recap speaks: {}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap.score_summary.is_some(),
+            "the judged-note accuracy panel survives"
+        );
+    }
+
+    /// #445-6b review SF5: the FULL path's empty-fingerprint degradation
+    /// stayed covered when the quiet-session test moved to the thin
+    /// contract — a settled session (3×7s) that produced no readable
+    /// signal claims no numbers and still encourages.
+    #[test]
+    fn a_settled_but_silent_session_still_degrades_gracefully() {
+        let silent = || {
+            let mut p = phrase_lasting(7.0);
+            p.pitch_stats.pitches = Vec::new();
+            p.onsets_secs = Vec::new();
+            p
+        };
+        let input = recap_input_with(vec![silent(), silent(), silent()], None);
+        assert!(!is_thin_session(&input), "3×7s clears the bar");
+        let recap = grounded_offline_recap(&input);
+        assert!(recap
+            .overall_assessment
+            .starts_with("You practiced for about"));
+        assert!(
+            recap
+                .overall_assessment
+                .contains("didn't capture enough clear signal"),
+            "the honest no-signal line: {}",
+            recap.overall_assessment
+        );
+        assert!(recap.fingerprint.is_none(), "no fabricated fingerprint");
+        assert!(
+            !recap.strengths.is_empty(),
+            "default encouragement survives on the full path"
+        );
+        assert!(!recap.next_session_suggestions.is_empty());
     }
 
     #[test]
