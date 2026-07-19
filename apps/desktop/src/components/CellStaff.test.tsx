@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import CellStaff, { MEASURES_PER_PAGE } from "./CellStaff";
+import CellStaff, { MEASURES_PER_SYSTEM } from "./CellStaff";
 import { RV_LETTER_COLORS, RV_NON_ROOT_FILL } from "../lib/rvColors";
 import type { CellStaffViewDto, CellStaffNoteDto } from "../types/brain";
 
@@ -18,7 +18,10 @@ function note(overrides: Partial<CellStaffNoteDto>): CellStaffNoteDto {
   };
 }
 
-function view(notes: CellStaffNoteDto[], overrides?: Partial<CellStaffViewDto>): CellStaffViewDto {
+function view(
+  notes: CellStaffNoteDto[],
+  overrides?: Partial<CellStaffViewDto>,
+): CellStaffViewDto {
   const last = notes[notes.length - 1];
   return {
     fifths: 0,
@@ -93,27 +96,99 @@ describe("CellStaff (#292 slice 1)", () => {
     expect(screen.getAllByTestId("staff-signature")[0]).toHaveTextContent("♯");
   });
 
-  // #292 AC (founder): 2–4 measures at a time — an 8-measure cell pages, the
-  // second page shows only its own notes.
-  it("windows long cells with the pager", () => {
-    const notes = Array.from({ length: 8 }, (_, m) =>
-      note({ midi: 60 + m, step: m - 2, start_beat: m * 4 }),
+  // #445-5 AC3: long cells WRAP into systems of 4 — every note always on
+  // screen, no pager anywhere. 12 measures = exactly 3 printed lines.
+  it("wraps long cells into systems of four measures, no pager", () => {
+    const notes = Array.from({ length: 12 }, (_, m) =>
+      note({ midi: 60 + m, step: (m % 8) - 2, start_beat: m * 4 }),
     );
-    render(<CellStaff staff={view(notes, { total_beats: 32 })} />);
-    expect(screen.getAllByTestId("staff-dot")).toHaveLength(MEASURES_PER_PAGE);
-    const pager = screen.getByTestId("staff-pager");
-    expect(pager).toHaveTextContent("1 / 2");
-    fireEvent.click(screen.getByLabelText("Next measures"));
-    expect(pager).toHaveTextContent("2 / 2");
-    expect(screen.getAllByTestId("staff-dot")).toHaveLength(
-      8 - MEASURES_PER_PAGE,
+    render(<CellStaff staff={view(notes, { total_beats: 48 })} />);
+    expect(screen.getAllByTestId("staff-dot")).toHaveLength(12);
+    expect(screen.getAllByTestId(/^staff-system-/)).toHaveLength(
+      12 / MEASURES_PER_SYSTEM,
     );
+    expect(screen.queryByTestId("staff-pager")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Next measures")).not.toBeInTheDocument();
   });
 
-  // A short cell shows no pager at all — slim by default.
-  it("hides the pager within one window", () => {
+  // A short cell is one system — slim by default.
+  it("renders a short cell as a single system", () => {
     render(<CellStaff staff={view([note({})])} />);
+    expect(screen.getAllByTestId(/^staff-system-/)).toHaveLength(1);
     expect(screen.queryByTestId("staff-pager")).not.toBeInTheDocument();
+  });
+
+  // #445-5 AC4: each system is a full printed line — its own clef + key
+  // signature — and later systems sit LOWER (the translate stride).
+  it("each system carries its own key signature and stacks downward", () => {
+    const notes = Array.from({ length: 8 }, (_, m) =>
+      note({ midi: 60 + m, step: (m % 8) - 2, start_beat: m * 4 }),
+    );
+    render(<CellStaff staff={view(notes, { total_beats: 32, fifths: 3 })} />);
+    // 3 sharps × 2 systems.
+    expect(screen.getAllByTestId("staff-signature")).toHaveLength(6);
+    const s1 = screen.getByTestId("staff-system-1");
+    const m = /translate\(0, (\d+(?:\.\d+)?)\)/.exec(
+      s1.getAttribute("transform") ?? "",
+    );
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThan(0);
+  });
+
+  // #445-1 AC1: the first barline waits for the key signature — with six
+  // sharps every glyph ends strictly left of barline 0 (geometry, not a
+  // snapshot).
+  it("keeps the key signature fully left of the first barline", () => {
+    for (const fifths of [6, -6]) {
+      const { unmount } = render(
+        <CellStaff staff={view([note({})], { fifths })} />,
+      );
+      const barX = Number(
+        screen.getByTestId("staff-barline-0-0").getAttribute("x1"),
+      );
+      for (const glyph of screen.getAllByTestId("staff-signature")) {
+        // Glyph anchors at its x and extends ~8px right.
+        expect(Number(glyph.getAttribute("x")) + 8).toBeLessThan(barX);
+      }
+      unmount();
+    }
+  });
+
+  // #445-1 AC2: notes (and their accidentals) live INSIDE their measure —
+  // inset from both barlines in the first and last measure of each system.
+  it("insets note columns from the barlines in every measure", () => {
+    // Fill measures 0..7 (2 systems), first and last beat of each measure,
+    // every note carrying an accidental (the widest engraving).
+    const notes = Array.from({ length: 8 }, (_, m) => [
+      note({ midi: 61 + m, step: 0, start_beat: m * 4, accidental: 1 }),
+      note({ midi: 61 + m, step: 1, start_beat: m * 4 + 3, accidental: 1 }),
+    ]).flat();
+    render(<CellStaff staff={view(notes, { total_beats: 32 })} />);
+    for (let k = 0; k < 2; k++) {
+      for (const mInSys of [0, 3]) {
+        const left = Number(
+          screen.getByTestId(`staff-barline-${k}-${mInSys}`).getAttribute("x1"),
+        );
+        const right = Number(
+          screen
+            .getByTestId(`staff-barline-${k}-${mInSys + 1}`)
+            .getAttribute("x1"),
+        );
+        const globalM = k * 4 + mInSys;
+        const first = screen.getByTestId(
+          `staff-note-${61 + globalM}-${globalM * 4}`,
+        );
+        const last = screen.getByTestId(
+          `staff-note-${61 + globalM}-${globalM * 4 + 3}`,
+        );
+        const firstDot = first.querySelector('[data-testid="staff-dot"]')!;
+        const lastDot = last.querySelector('[data-testid="staff-dot"]')!;
+        // Accidental engraves down to x-19 (anchor x-11, glyph ~8 wide).
+        expect(Number(firstDot.getAttribute("cx")) - 19).toBeGreaterThan(left);
+        // Notehead rx = 5.5.
+        expect(Number(lastDot.getAttribute("cx")) + 5.5).toBeLessThan(right);
+      }
+    }
   });
 });
 
@@ -207,6 +282,35 @@ describe("CellStaff — editing (#292 slice 3)", () => {
     expect(onEdit).toHaveBeenCalledWith(0, { kind: "staff_steps", by: 2 });
   });
 
+  // #445-5 AC5: editing works on EVERY system — select + drag a note that
+  // lives on the third printed line and the right index still comes out.
+  it("select and drag work on a note in the last system", () => {
+    const onEdit = vi.fn();
+    const notes = Array.from({ length: 12 }, (_, m) =>
+      note({ midi: 60 + m, step: (m % 8) - 2, start_beat: m * 4 }),
+    );
+    render(
+      <CellStaff
+        staff={view(notes, { total_beats: 48 })}
+        onEditNote={onEdit}
+      />,
+    );
+    // Measure 11 → system 3 (index 2).
+    fireEvent.pointerDown(screen.getByTestId("staff-note-71-44"), {
+      clientY: 300,
+    });
+    fireEvent.pointerUp(window, { clientY: 300 });
+    expect(screen.getByTestId("staff-halo")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("edit-octave-up"));
+    expect(onEdit).toHaveBeenCalledWith(11, { kind: "octaves", by: 1 });
+    fireEvent.pointerDown(screen.getByTestId("staff-note-71-44"), {
+      clientY: 300,
+    });
+    fireEvent.pointerMove(window, { clientY: 290 });
+    fireEvent.pointerUp(window, { clientY: 290 });
+    expect(onEdit).toHaveBeenCalledWith(11, { kind: "staff_steps", by: 2 });
+  });
+
   // A drag that ends where it started edits nothing (tap = select only).
   it("a no-move release edits nothing", () => {
     const onEdit = vi.fn();
@@ -222,12 +326,22 @@ describe("CellStaff — editing (#292 slice 3)", () => {
   it("undo shows only with history", () => {
     const onUndo = vi.fn();
     const { unmount } = render(
-      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={false} />,
+      <CellStaff
+        staff={three()}
+        onEditNote={() => {}}
+        onUndo={onUndo}
+        canUndo={false}
+      />,
     );
     expect(screen.queryByTestId("edit-undo")).not.toBeInTheDocument();
     unmount();
     render(
-      <CellStaff staff={three()} onEditNote={() => {}} onUndo={onUndo} canUndo={true} />,
+      <CellStaff
+        staff={three()}
+        onEditNote={() => {}}
+        onUndo={onUndo}
+        canUndo={true}
+      />,
     );
     fireEvent.click(screen.getByTestId("edit-undo"));
     expect(onUndo).toHaveBeenCalled();
