@@ -47,6 +47,7 @@ function App() {
   const pushPhrase = usePracticeStore((s) => s.pushPhrase);
   const requestCoachingTip = usePracticeStore((s) => s.requestCoachingTip);
   const requestReveal = usePracticeStore((s) => s.requestReveal);
+  const requestPieceMatch = usePracticeStore((s) => s.requestPieceMatch);
   const setCursorPosition = usePracticeStore((s) => s.setCursorPosition);
   const setAccompanimentPlaying = usePracticeStore(
     (s) => s.setAccompanimentPlaying,
@@ -116,6 +117,9 @@ function App() {
             // fires no IPC at all. Fire-and-forget; the live session must never
             // block on (or break from) a coaching round-trip.
             void requestCoachingTip(payload);
+            // #214 S1b: ambient identification at phrase cadence — the
+            // backend answers through its honesty gates; None is normal.
+            void requestPieceMatch();
             // Ambient reveal loop: surface a real-world music connection for the
             // current key/mode (curated + offline). Self-gated to a live session
             // with a detected key; fire-and-forget, like coaching.
@@ -218,6 +222,7 @@ function App() {
     setEvent,
     pushPhrase,
     requestCoachingTip,
+    requestPieceMatch,
     requestReveal,
     setCursorPosition,
     setAccompanimentPlaying,

@@ -91,6 +91,7 @@ fn main() {
             ai_music_companion::commands::recognize_pdf_score,
             ai_music_companion::commands::list_scores,
             ai_music_companion::commands::get_score,
+            ai_music_companion::commands::check_piece_match,
             ai_music_companion::commands::delete_score,
         ])
         .run(tauri::generate_context!())

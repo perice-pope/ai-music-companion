@@ -1168,6 +1168,18 @@ pub const LIFT_MIN_RUN: usize = 5;
 /// in-range shape, never a refusal — the player can edit from there).
 /// `None` when fewer than [`LIFT_MIN_NOTES`] clear notes were heard.
 /// Returns the cell plus the first note's MIDI (the cell's home root).
+/// #214 S1b: the played MIDI note sequence from a phrase's pitch track —
+/// the identification query's raw material. Unlike the lift's merge,
+/// GAP-SEPARATED repeats are kept (a re-struck note across an unvoiced
+/// gap is a real 0-interval); legato/pedal repeats collapse into one
+/// run at this seam — the honest best from a pitch track alone.
+pub fn midi_track_from_pitch_track(pitches: &[f64], min_run: usize) -> Vec<u8> {
+    played_notes_from_pitch_track(pitches, min_run)
+        .into_iter()
+        .filter_map(|n| hz_to_midi(n.hz))
+        .collect()
+}
+
 pub fn lift_cell_from_pitch_track(pitches: &[f64], min_run: usize) -> Option<(Vec<i8>, u8)> {
     let collapsed = played_notes_from_pitch_track(pitches, min_run);
     // Merge re-articulated repeats (tuned on real data): a note re-struck at
@@ -2956,5 +2968,26 @@ mod tests {
         let (reshuffled, again) = apply_explore_delta(&state, &VariationDelta::ReshuffleRoots);
         assert!(reshuffled.spec.randomize_roots);
         assert_ne!(again, first, "a reshuffle must produce a fresh rep");
+    }
+
+    /// #214 S1b review MF6: gap-separated repeats survive (a real
+    /// 0-interval), unlike the lift's melodic merge.
+    #[test]
+    fn midi_track_keeps_gap_separated_repeats() {
+        let hz = |m: u8| 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+        // E4, gap, E4, gap, D#4 — the Für Elise opening's skeleton.
+        let mut pitches = Vec::new();
+        for m in [76u8, 76, 75] {
+            pitches.extend(std::iter::repeat_n(hz(m), 8));
+            pitches.extend(std::iter::repeat_n(0.0, 4)); // unvoiced gap
+        }
+        let track = midi_track_from_pitch_track(&pitches, 5);
+        assert_eq!(track, vec![76, 76, 75], "the repeat is real melody");
+        // The LIFT's contract differs on the same input: repeats merge.
+        let lifted = lift_cell_from_pitch_track(&pitches, 5);
+        assert!(
+            lifted.is_none() || lifted.unwrap().0.len() < 3,
+            "the lift merges repeats — the two seams are deliberately different"
+        );
     }
 }
