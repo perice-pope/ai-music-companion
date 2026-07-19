@@ -103,6 +103,7 @@ fn main() {
             ai_music_companion::commands::get_score,
             ai_music_companion::commands::check_piece_match,
             ai_music_companion::commands::my_patterns,
+            ai_music_companion::commands::practice_suggestions,
             ai_music_companion::commands::delete_score,
         ])
         .run(tauri::generate_context!())

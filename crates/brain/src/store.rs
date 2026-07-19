@@ -365,6 +365,18 @@ pub struct ExerciseLogEntry {
     pub accuracy: Option<f64>,
 }
 
+/// #453 S1: one exercise-log row WITH its write stamp — the history
+/// analyzer's input. `logged_at` is the stored RFC3339 TEXT, surfaced
+/// unparsed on purpose: the store wrote it, but a copied/edited/corrupt
+/// database may hold anything, so consumers parse defensively and skip
+/// garbage rather than trust the column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedExerciseLogEntry {
+    /// RFC3339 write stamp as stored — treat as unparsed input.
+    pub logged_at: String,
+    pub entry: ExerciseLogEntry,
+}
+
 /// #419 S4: one saved opener recipe row, as stored. `items_json` is
 /// opaque here — the starter vocabulary lives above the store.
 #[derive(Debug, Clone, PartialEq)]
@@ -917,6 +929,31 @@ impl SessionStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// #453 S1: the whole exercise log with write stamps, oldest → newest —
+    /// the history analyzer's input. Same rows as [`Self::list_exercise_log`]
+    /// plus `logged_at`.
+    pub fn list_exercise_log_timed(&self) -> Result<Vec<TimedExerciseLogEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT logged_at, source, label, spec_json, seed, difficulty, tonic, accuracy \
+             FROM exercise_log ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TimedExerciseLogEntry {
+                logged_at: row.get(0)?,
+                entry: ExerciseLogEntry {
+                    source: row.get(1)?,
+                    label: row.get(2)?,
+                    spec_json: row.get(3)?,
+                    seed: row.get::<_, i64>(4)? as u64,
+                    difficulty: row.get::<_, i64>(5)?.clamp(0, 255) as u8,
+                    tonic: row.get::<_, i64>(6)?.clamp(0, 255) as u8,
+                    accuracy: row.get(7)?,
+                },
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// #419 S4: keep a named opener recipe. Returns the new row id.
     pub fn save_recipe(
         &self,
@@ -1328,6 +1365,37 @@ mod tests {
         assert_eq!(back[0].accuracy, Some(0.85));
         assert_eq!(back[0].seed, u64::MAX);
         assert_eq!(back[1].accuracy, None);
+    }
+
+    /// #453 S1 AC6: the timed reader returns the SAME rows as the untimed
+    /// one plus an RFC3339-parseable write stamp — the history analyzer's
+    /// time axis. Fails if the timed SELECT drops/reorders columns or the
+    /// store starts writing stamps chrono can't read back.
+    #[test]
+    fn timed_exercise_log_carries_parseable_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SessionStore::open(&dir.path().join("t.db")).unwrap();
+        let e = ExerciseLogEntry {
+            source: "lesson".to_owned(),
+            label: "C Major · up-down".to_owned(),
+            spec_json: "{}".to_owned(),
+            seed: u64::MAX,
+            difficulty: 3,
+            tonic: 7,
+            accuracy: Some(0.85),
+        };
+        s.log_exercise(&e).unwrap();
+        let timed = s.list_exercise_log_timed().unwrap();
+        assert_eq!(timed.len(), 1);
+        assert_eq!(timed[0].entry, s.list_exercise_log().unwrap()[0]);
+        let stamp = chrono::DateTime::parse_from_rfc3339(&timed[0].logged_at)
+            .expect("store-written logged_at parses as RFC3339");
+        let age = chrono::Utc::now().signed_duration_since(stamp);
+        assert!(
+            age.num_seconds().abs() < 3600,
+            "stamp is the write time, not a constant: {}",
+            timed[0].logged_at
+        );
     }
 
     fn recap_with(instrument: &str, duration: f64, phrase_count: usize) -> SessionRecap {
