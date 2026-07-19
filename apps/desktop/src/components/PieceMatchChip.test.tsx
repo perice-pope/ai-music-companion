@@ -204,6 +204,10 @@ describe("PieceMatchChip (#214 S1b)", () => {
     usePracticeStore.setState({
       screen: "session" as never,
       status: "listening" as never,
+      // Round-2 mutant j: seed NON-defaults so the endSession-tail reset
+      // assertions below have teeth (defaults would pass vacuously).
+      dismissedPieceIds: ["id-x"],
+      pocketMode: "follow",
     });
     useAudioStore.setState({ isListening: true });
     mockInvoke.mockImplementation((cmd: string) => {
