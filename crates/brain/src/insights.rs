@@ -808,6 +808,22 @@ mod tests {
                 .all(|s| s.kind != SuggestionKind::Momentum)
         );
 
+        // Review MF1 (round 1): the same window pin with the polarity that
+        // actually kills the lifetime mutant — 8 ancient 0.2s then 12
+        // recent FLAT 0.7s. Over the window (all 0.7) the delta is 0 →
+        // silent; over the LIFETIME rows (`&grades[..]`) the halves read
+        // 0.30 → 0.70 and a false "climbed from 30% to 70%" fires. (The
+        // 20-day tonic-0 log again earns honest neglect — pin the absence
+        // of MOMENTUM.)
+        let mut plateau = vec![0.2; 8];
+        plateau.extend(vec![0.7; 12]);
+        assert!(
+            practice_suggestions(&cell_log(&plateau, 1), &no_mastery, now)
+                .iter()
+                .all(|s| s.kind != SuggestionKind::Momentum),
+            "ancient lows before a recent plateau must not fake a climb"
+        );
+
         // Ungraded rows never count toward K.
         let ungraded: Vec<TimedExerciseLogEntry> =
             (0..8).map(|i| timed(&cell_spec(), 0, None, i)).collect();
@@ -843,6 +859,43 @@ mod tests {
             .map(|i| timed("{not json", 0, Some(0.4 + 0.05 * i as f64), 7 - i))
             .collect();
         assert!(practice_suggestions(&junk, &BTreeMap::new(), now).is_empty());
+
+        // Review MF2 (round 1): MIXED garbage — corrupt stamps among
+        // well-formed rows must neither fabricate a claim nor suppress one.
+        //
+        // (a) ONE garbage-stamped flat row + 8 well-formed sharp rows 3
+        // days ago → EMPTY. A parse fallback to some ancient default (the
+        // epoch) would turn the corrupt row into a flat row "played long
+        // ago" and fabricate a 14-day absence the 3-day log never earned.
+        let mut one_bad_flat: Vec<TimedExerciseLogEntry> = vec![timed(&scale_spec(), 10, None, 20)];
+        one_bad_flat[0].logged_at = "not-a-timestamp".to_owned();
+        one_bad_flat.extend((0..8).map(|_| timed(&scale_spec(), 7, None, 3)));
+        assert!(
+            practice_suggestions(&one_bad_flat, &BTreeMap::new(), now).is_empty(),
+            "a corrupt stamp must not fabricate ancient absence"
+        );
+
+        // (b) The EARNED neglect (flat row 20 days ago + 8 recent sharp
+        // rows) with a garbage-stamped flat row mixed in → exactly the one
+        // suggestion. A parse fallback to `now` would read the corrupt row
+        // as "flat keys played today" and silence the honest claim.
+        let mut mixed: Vec<TimedExerciseLogEntry> = vec![timed(&scale_spec(), 10, None, 20)];
+        let mut bad_flat = timed(&scale_spec(), 10, None, 0);
+        bad_flat.logged_at = "not-a-timestamp".to_owned();
+        mixed.push(bad_flat);
+        mixed.extend((0..8).map(|_| timed(&scale_spec(), 7, None, 3)));
+        let out = practice_suggestions(&mixed, &BTreeMap::new(), now);
+        assert_eq!(
+            out.len(),
+            1,
+            "the earned neglect survives the corrupt row: {out:?}"
+        );
+        assert_eq!(out[0].kind, SuggestionKind::Neglect);
+        assert!(
+            out[0].text.contains("the flat keys") && out[0].text.contains("20 days"),
+            "still the same cited claim: {}",
+            out[0].text
+        );
     }
 
     /// AC5: identical inputs → identical output, order pinned Trend →
