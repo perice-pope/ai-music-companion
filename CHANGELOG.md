@@ -1,3 +1,9 @@
+## [2.40.3](https://github.com/perice-pope/ai-music-companion/compare/v2.40.2...v2.40.3) (2026-07-19)
+
+### Bug Fixes
+
+* cut the release carrying the [#445](https://github.com/perice-pope/ai-music-companion/issues/445) batch + S1 features ([#460](https://github.com/perice-pope/ai-music-companion/issues/460)) ([847e20f](https://github.com/perice-pope/ai-music-companion/commit/847e20f101c966e196c0df971edc94c59396c6d0)), closes [#449](https://github.com/perice-pope/ai-music-companion/issues/449) [#445-6b](https://github.com/perice-pope/ai-music-companion/issues/445-6b) [#449](https://github.com/perice-pope/ai-music-companion/issues/449) [453/#454](https://github.com/453/ai-music-companion/issues/454)
+
 ## [2.40.2](https://github.com/perice-pope/ai-music-companion/compare/v2.40.1...v2.40.2) (2026-07-19)
 
 ### Bug Fixes
