@@ -1,0 +1,44 @@
+[
+  {
+    "id": "keyboard-hanon-evenness",
+    "family": "Keyboard",
+    "topic": "Finger independence and evenness",
+    "source": {
+      "title": "The Virtuoso Pianist in 60 Exercises",
+      "author": "Charles-Louis Hanon",
+      "year": 1873,
+      "status": "pd",
+      "section": "Part 1, Exercises 1-20"
+    },
+    "guidance": "Uneven runs usually mean uneven fingers — the fourth and fifth doing less work than the rest, which is exactly the weakness Hanon wrote Part 1 to attack. Play the first exercises slowly, lifting each finger with the same precision and drawing the same volume from every note, so no finger hides inside the pattern. Evenness at a slow tempo is the whole exercise; speed without it just rehearses the lump.",
+    "triggers": ["uneven-eighths", "finger-unevenness"]
+  },
+  {
+    "id": "keyboard-czerny-velocity",
+    "family": "Keyboard",
+    "topic": "Earning speed (velocity studies)",
+    "source": {
+      "title": "The School of Velocity, Op. 299",
+      "author": "Carl Czerny",
+      "year": 1833,
+      "status": "pd",
+      "section": "Studies 1-10"
+    },
+    "guidance": "Czerny's School of Velocity is built on the rule that speed is earned, never grabbed: begin each study far below the target tempo with a strict metronome and perfect evenness, and raise the click one notch only when the current tempo feels effortless. If a passage falls apart when you push it, you skipped notches — drop back to the last tempo that was clean and climb again. The metronome is the honest witness here.",
+    "triggers": ["accuracy-collapse-at-tempo", "rushing-runs", "tempo-instability"]
+  },
+  {
+    "id": "keyboard-czerny-hands-separate",
+    "family": "Keyboard",
+    "topic": "Hands separately, then together in small sections",
+    "source": {
+      "title": "Practical Method for Beginners, Op. 599",
+      "author": "Carl Czerny",
+      "year": 1839,
+      "status": "pd",
+      "section": "Practice instructions and early studies"
+    },
+    "guidance": "Czerny's beginner method takes coordination apart before putting it together: practice each hand alone until it is genuinely secure — not merely survivable — then join the hands in small sections, a phrase or less at a time. When hands-together playing breaks down, the honest move is backward: return to separate hands on just the failing bars, rebuild each part, and rejoin them slowly. Coordination is assembled, not willed.",
+    "triggers": ["hands-together-breakdown"]
+  }
+]
