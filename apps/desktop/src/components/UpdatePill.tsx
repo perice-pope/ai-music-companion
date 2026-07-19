@@ -57,7 +57,10 @@ export default function UpdatePill() {
           <button
             type="button"
             data-testid="update-pill-dismiss"
-            onClick={dismiss}
+            onClick={() => {
+              setExpandedFor(null);
+              dismiss();
+            }}
             aria-label="Dismiss update"
             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-sky-300/70 hover:text-white"
           >
@@ -75,7 +78,10 @@ export default function UpdatePill() {
             <button
               type="button"
               data-testid="update-pill-dismiss"
-              onClick={dismiss}
+              onClick={() => {
+                setExpandedFor(null);
+                dismiss();
+              }}
               aria-label="Dismiss update"
               className="inline-flex h-6 w-6 items-center justify-center rounded-full text-sky-300/70 hover:text-white"
             >
@@ -139,7 +145,10 @@ export default function UpdatePill() {
           <button
             type="button"
             data-testid="update-pill-dismiss"
-            onClick={dismiss}
+            onClick={() => {
+              setExpandedFor(null);
+              dismiss();
+            }}
             aria-label="Dismiss update"
             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-sky-300/70 hover:text-white"
           >

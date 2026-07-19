@@ -2,12 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for the main window. Includes core:event so the frontend can subscribe to backend-emitted events (audio-event, session-status, etc.), and updater:default so a user-initiated update check can run (no network on startup; see docs/release.md).",
-  "windows": [
-    "main"
-  ],
-  "permissions": [
-    "core:default",
-    "updater:default",
-    "process:allow-restart"
-  ]
+  "windows": ["main"],
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
 }
