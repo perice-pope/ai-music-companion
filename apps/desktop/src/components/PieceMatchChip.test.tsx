@@ -94,4 +94,19 @@ describe("PieceMatchChip (#214 S1b)", () => {
     await act(() => usePracticeStore.getState().requestPieceMatch());
     expect(screen.queryByTestId("piece-match-chip")).toBeNull();
   });
+
+  it("the score you have OPEN never echoes as a match — MF3", async () => {
+    usePracticeStore.setState({
+      activeScore: { id: "id-open" } as never,
+    });
+    mockInvoke.mockResolvedValueOnce({
+      score_id: "id-open",
+      title: "The Open Score",
+      coherent_hits: 9,
+    });
+    render(<PieceMatchChip />);
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.queryByTestId("piece-match-chip")).toBeNull();
+    usePracticeStore.setState({ activeScore: null });
+  });
 });

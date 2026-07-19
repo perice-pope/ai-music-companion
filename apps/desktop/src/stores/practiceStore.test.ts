@@ -123,6 +123,9 @@ describe("practiceStore — state machine", () => {
       openerTonic: 9,
       openerDirection: "reversed",
       openerPreviewedDirection: "reversed",
+      // #214 S1b MF5: matches and dismissals are session-scoped too.
+      pieceMatch: { scoreId: "id-1", title: "Für Elise" },
+      dismissedPieceIds: ["id-2"],
     });
 
     await useStore.getState().endSession();
@@ -136,6 +139,8 @@ describe("practiceStore — state machine", () => {
     expect(s.openerTonic).toBeNull();
     expect(s.openerDirection).toBe("forward");
     expect(s.openerPreviewedDirection).toBe("forward");
+    expect(s.pieceMatch).toBeNull();
+    expect(s.dismissedPieceIds).toHaveLength(0);
   });
 
   // #341: tapping a measure MID-PRACTICE swaps to the exploration WITHOUT

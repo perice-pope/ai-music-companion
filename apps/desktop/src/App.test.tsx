@@ -302,4 +302,26 @@ describe("App", () => {
     expect(mockUpdateCheck).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+
+  // #214 S1b review MF7d: each phrase triggers ambient identification.
+  it("a detected phrase asks the backend for a piece match", async () => {
+    let phraseHandler: ((e: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        if (event === "phrase-detected") {
+          phraseHandler = cb;
+        }
+        return () => {};
+      },
+    );
+    render(<App />);
+    await vi.waitFor(() => expect(phraseHandler).toBeDefined());
+    mockInvoke.mockResolvedValue(null);
+    phraseHandler?.({
+      payload: { note_count: 4, pitch_stats: { pitches: [] } },
+    });
+    await vi.waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("check_piece_match"),
+    );
+  });
 });

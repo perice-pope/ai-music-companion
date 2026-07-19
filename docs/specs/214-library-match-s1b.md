@@ -15,8 +15,9 @@ coaching tips use; a confirmed match surfaces as the calm session chip —
   after every import path (MusicXML method, MIDI method, command-level
   import); `unindex_score()` on delete.
 - `check_piece_match` command: reads the backend's own phrase buffer
-  (last 3 phrases → `midi_track_from_pitch_track`, repeats KEPT — a
-  repeated note is a real 0-interval), queries S1a's gates, returns
+  (last 3 phrases → `midi_track_from_pitch_track`, GAP-SEPARATED repeats kept — a re-struck
+  note is a real 0-interval; legato/pedal repeats collapse (the honest
+  best from a pitch track alone)), queries S1a's gates, returns
   `Option<PieceMatchDto{score_id, title, coherent_hits}>`. None is the
   common answer and never an error. Invoked by the frontend's existing
   phrase-detected handler (the requestCoachingTip pattern) — ambient
@@ -29,6 +30,11 @@ coaching tips use; a confirmed match surfaces as the calm session chip —
   is deliberately stricter until it lands — module TODO records the
   top-k seam); "Open score at your measure" + reveal integration ride
   #214 S2 (queued as epic E4).
+
+- Cost bound: the startup rebuild parses each stored score in ~5-8 ms
+  (release) on the main thread — bounded to LIBRARY scale (dozens).
+  S4's ~500-work corpus requires the arch doc's persisted index + lazy
+  rebuild; recorded there as open question 3.
 
 ## 3. ACs (all tested)
 1. An imported score is identifiable in the same session; a deleted one

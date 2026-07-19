@@ -339,6 +339,7 @@ export default function PracticeSession() {
           </div>
           <div className="flex flex-col gap-4">
             <CoachingTipPanel />
+            <PieceMatchChip />
             <RevealCard />
           </div>
         </div>

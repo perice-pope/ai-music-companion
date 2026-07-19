@@ -1091,6 +1091,46 @@ impl AppState {
         matcher.titles.insert(key, (id_str, entry.title.clone()));
     }
 
+    /// #214 S1b: the one store-write + index seam the raw-import command
+    /// delegates to (review MF7b — a hook the command can drop silently
+    /// isn't a hook; this method is directly testable).
+    pub(crate) fn import_raw_score(
+        &self,
+        title: String,
+        composer: Option<String>,
+        source_filename: String,
+        music_xml: String,
+        part_index: usize,
+        duration_measures: usize,
+    ) -> Result<ScoreLibraryEntry, String> {
+        let entry = self
+            .score_store
+            .lock_or_recover()
+            .import(
+                title,
+                composer,
+                source_filename,
+                music_xml,
+                part_index,
+                duration_measures,
+            )
+            .map_err(|e| e.to_string())?;
+        self.index_entry(&entry);
+        Ok(entry)
+    }
+
+    /// #214 S1b: delete + unindex as ONE seam (review MF7c).
+    pub(crate) fn delete_score_by_id(&self, id: &str) -> Result<(), String> {
+        let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
+        self.score_store
+            .lock_or_recover()
+            .delete(score_id)
+            .map_err(|e| e.to_string())?;
+        // A deleted score is silent immediately.
+        self.unindex_score(id);
+        Ok(())
+    }
+
     /// #214 S1b: forget a deleted score.
     pub(crate) fn unindex_score(&self, id_str: &str) {
         let key = piece_key(id_str);
@@ -1167,10 +1207,7 @@ impl AppState {
                 duration_measures,
             )
             .map_err(|e| e.to_string())
-            .map(|entry| {
-                self.index_entry(&entry);
-                entry
-            })
+            .inspect(|entry| self.index_entry(entry))
     }
 
     /// Import a MusicXML file into the score library.
@@ -1215,10 +1252,7 @@ impl AppState {
                 duration_measures,
             )
             .map_err(|e| e.to_string())
-            .map(|entry| {
-                self.index_entry(&entry);
-                entry
-            })
+            .inspect(|entry| self.index_entry(entry))
     }
 
     /// Import an audio recording into the score library.
@@ -4002,20 +4036,14 @@ pub fn import_score(
     part_index: usize,
     duration_measures: usize,
 ) -> Result<ScoreLibraryEntryDto, String> {
-    let score_store = state.score_store.lock_or_recover();
-    let entry = score_store
-        .import(
-            title,
-            composer,
-            source_filename,
-            music_xml,
-            part_index,
-            duration_measures,
-        )
-        .map_err(|e| e.to_string())?;
-    // #214 S1b: a new score is identifiable in the same session.
-    drop(score_store);
-    state.index_entry(&entry);
+    let entry = state.import_raw_score(
+        title,
+        composer,
+        source_filename,
+        music_xml,
+        part_index,
+        duration_measures,
+    )?;
     Ok(entry.into())
 }
 
@@ -4439,13 +4467,7 @@ pub fn check_piece_match(state: State<'_, AppState>) -> Option<PieceMatchDto> {
 pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
     // See `get_score`: turbofish pins the parse target without naming the
     // non-direct-dependency `uuid::Error` type.
-    let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
-    let score_store = state.score_store.lock_or_recover();
-    score_store.delete(score_id).map_err(|e| e.to_string())?;
-    drop(score_store);
-    // #214 S1b: a deleted score is silent immediately.
-    state.unindex_score(&id);
-    Ok(())
+    state.delete_score_by_id(&id)
 }
 
 // ===========================================================================
@@ -7823,16 +7845,52 @@ mod tests {
         );
         assert_eq!(check_piece_match_impl(&s), None, "noodling stays silent");
 
-        // Deletion silences immediately (the same seam delete_score calls).
+        // Deletion silences immediately — through the ONE seam the
+        // delete_score command delegates to (review MF7c).
         seed_phrases(&s, &melody[2..16]);
         assert!(check_piece_match_impl(&s).is_some());
-        s.score_store
-            .lock()
-            .unwrap()
-            .delete(entry.id)
+        s.delete_score_by_id(&entry.id.to_string())
             .expect("delete succeeds");
-        s.unindex_score(&entry.id.to_string());
         assert_eq!(check_piece_match_impl(&s), None, "deleted → silent");
+
+        // MIDI-path hook (review MF7b): the C-D-E-F test MIDI is too
+        // short to identify, but its import must INDEX — prove the hook
+        // ran by rebuilding-from-scratch equivalence: the entry appears
+        // in the matcher's title map.
+        let midi_entry = s
+            .import_midi("hook.mid".to_string(), build_test_midi(Some("Hook")))
+            .expect("midi import succeeds");
+        assert!(
+            s.piece_matcher
+                .lock()
+                .unwrap()
+                .titles
+                .values()
+                .any(|(id, _)| *id == midi_entry.id.to_string()),
+            "the MIDI import path indexes (hook present)"
+        );
+
+        // Raw-import seam (the command delegates here): identifiable too.
+        let entry2 = s
+            .import_raw_score(
+                "Second Tune".into(),
+                None,
+                "t2.musicxml".into(),
+                brain::score::emit::score_model_to_musicxml(&model),
+                0,
+                4,
+            )
+            .expect("raw import succeeds");
+        seed_phrases(&s, &melody[2..16]);
+        // The first copy was deleted above, so the raw-import seam's copy
+        // is the sole owner — identifiable, proving the command's
+        // delegate path indexes. (Duplicate-ambiguity itself is S1a's
+        // margin test; the wiring needn't re-prove it.)
+        let m2 = check_piece_match_impl(&s).expect("raw-import path identifies");
+        assert_eq!(m2.title, "Second Tune");
+        assert_eq!(m2.score_id, entry2.id.to_string());
+        s.delete_score_by_id(&entry2.id.to_string()).unwrap();
+        assert_eq!(check_piece_match_impl(&s), None, "second delete → silent");
 
         // A corrupt entry never breaks indexing (startup-calm path).
         let bogus = ScoreLibraryEntry {
@@ -7841,6 +7899,78 @@ mod tests {
         };
         s.index_entry(&bogus); // must not panic
         assert_eq!(check_piece_match_impl(&s), None);
+    }
+
+    /// #214 S1b review MF7a: the STARTUP rebuild — a store that already
+    /// holds scores (seeded around the hooks) identifies only after
+    /// rebuild_piece_index() runs, pinning the constructor's call.
+    #[test]
+    fn startup_rebuild_indexes_a_preexisting_library() {
+        let s = AppState::with_mocks();
+        let melody: [u8; 16] = [
+            64, 62, 60, 65, 64, 67, 65, 69, 71, 72, 69, 67, 71, 74, 72, 76,
+        ];
+        let mut measures = Vec::new();
+        for (mi, chunk) in melody.chunks(4).enumerate() {
+            measures.push(brain::score::Measure {
+                number: mi + 1,
+                notes: chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &midi)| brain::score::ScoreNote {
+                        pitch_hz: 440.0,
+                        midi_number: midi,
+                        duration_beats: 1.0,
+                        start_beat: i as f64,
+                        dynamic: None,
+                        is_rest: false,
+                    })
+                    .collect(),
+            });
+        }
+        let model = brain::score::ScoreModel {
+            title: "Preexisting".into(),
+            composer: None,
+            instrument: None,
+            time_signature: brain::score::TimeSignature::default(),
+            key_signature: brain::score::KeySignature::default(),
+            tempo_bpm: 100.0,
+            measures,
+            grand_staff: false,
+        };
+        // Seed the STORE directly — around the import hooks, like a
+        // library that predates this launch.
+        s.score_store
+            .lock()
+            .unwrap()
+            .import(
+                "Preexisting".into(),
+                None,
+                "pre.musicxml".into(),
+                brain::score::emit::score_model_to_musicxml(&model),
+                0,
+                4,
+            )
+            .expect("seed import");
+        let mut phrase = sample_phrase();
+        phrase.pitch_stats.pitches = melody[2..16]
+            .iter()
+            .flat_map(|&m| {
+                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                std::iter::repeat_n(hz, 6)
+            })
+            .collect();
+        s.phrase_buffer.lock().unwrap().push(phrase);
+        assert_eq!(
+            check_piece_match_impl(&s),
+            None,
+            "not indexed until the startup rebuild runs"
+        );
+        s.rebuild_piece_index();
+        assert!(
+            check_piece_match_impl(&s).is_some(),
+            "the rebuild makes a preexisting library identifiable"
+        );
     }
 
     /// #419 S1: preview is PURE — no active exploration, no exercise log.

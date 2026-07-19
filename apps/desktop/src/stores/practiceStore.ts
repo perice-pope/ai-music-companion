@@ -1097,6 +1097,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       if (get().dismissedPieceIds.includes(dto.score_id)) {
         return; // The player said "not this one" — stay quiet.
       }
+      if (get().activeScore?.id === dto.score_id) {
+        // Score-mode echo (review MF3): "sounds like the piece you have
+        // OPEN" is permanent redundant noise, not identification.
+        return;
+      }
       // Replace in place; never clear on a miss.
       set({ pieceMatch: { scoreId: dto.score_id, title: dto.title } });
     } catch {
