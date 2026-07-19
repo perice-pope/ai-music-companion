@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "ai-music-companion"
-version = "2.40.1"
+version = "2.40.2"
 dependencies = [
  "async-trait",
  "brain",

@@ -1,3 +1,9 @@
+## [2.40.2](https://github.com/perice-pope/ai-music-companion/compare/v2.40.1...v2.40.2) (2026-07-19)
+
+### Bug Fixes
+
+* **brain,face:** reveal cards attribute by mode, never the heard key ([#388](https://github.com/perice-pope/ai-music-companion/issues/388)) ([#444](https://github.com/perice-pope/ai-music-companion/issues/444)) ([f04f151](https://github.com/perice-pope/ai-music-companion/commit/f04f1516689904fb0d29a1c1703e104e0f46f50d)), closes [#214](https://github.com/perice-pope/ai-music-companion/issues/214)
+
 ## [2.40.1](https://github.com/perice-pope/ai-music-companion/compare/v2.40.0...v2.40.1) (2026-07-19)
 
 ### Bug Fixes
