@@ -18,7 +18,8 @@ import { colorForPitchClass, RV_NON_ROOT_FILL } from "../lib/rvColors";
  * CellStaff (#292 slice 1): the RV dot staff. Stemless noteheads colored by
  * pitch class on five lines — pure geometry over a backend-computed view
  * (steps, spelling, accidentals all arrive from Rust; this file contains no
- * music theory). Shows a 4-measure window with a minimal pager.
+ * music theory). Renders SYSTEMS of 4 measures per line, stacked — like a
+ * printed page, never a pager (#445-5: "people don't scroll through music").
  */
 
 /** Vertical gap between staff lines (px in the SVG's own units). */
@@ -27,11 +28,27 @@ const LINE_GAP = 10;
 const STEP = LINE_GAP / 2;
 /** y of the bottom staff line (step 0); higher steps go UP (smaller y). */
 const BOTTOM_Y = 5 * LINE_GAP;
-/** Measures per page — the founder's "2 or 4 at a time". */
-export const MEASURES_PER_PAGE = 4;
+/** Measures per system (one printed line). */
+export const MEASURES_PER_SYSTEM = 4;
 
 const WIDTH = 640;
-const LEFT_PAD = 56; // room for clef + key signature
+/** Where key-signature glyphs start (right of the clef). */
+const CLEF_ZONE = 38;
+/** Horizontal advance per key-signature glyph. */
+const KEYSIG_STEP = 8;
+/** Breathing room between the last signature glyph and the first barline —
+ * the barline never starts until the signature has fully ended (#445-1). */
+const KEYSIG_GAP = 12;
+/** Note-column insets from a measure's barlines. The LEFT inset also covers
+ * the accidental engraved against the column (text ends at x-11, glyph body
+ * ~8px wide), so an accidental can't touch the barline either. */
+const NOTE_INSET_L = 22;
+/** The RIGHT inset also covers a stacked second's head shift (+9) and its
+ * ledger-line overhang (+9 from the shifted head) — review N1: the intent
+ * is notes live INSIDE their measure, shifted heads included. */
+const NOTE_INSET_R = 24;
+/** Vertical gap between stacked systems. */
+const SYSTEM_GAP = LINE_GAP;
 const RIGHT_PAD = 12;
 const HEIGHT = BOTTOM_Y + 4 * LINE_GAP; // headroom for ledger lines both ways
 /** Default vertical extent; grows when notes ride ledger lines beyond it so
@@ -154,7 +171,9 @@ function Dot({
         cy={y}
         rx={5.5}
         ry={4.2}
-        fill={note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL}
+        fill={
+          note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL
+        }
         fillOpacity={ghostSteps === 0 ? 1 : 0.7}
         data-testid="staff-dot"
       />
@@ -202,7 +221,6 @@ export default function CellStaff({
   onUndo?: () => void;
   canUndo?: boolean;
 }) {
-  const [page, setPage] = useState(0);
   const [showRhythms, setShowRhythms] = useState(
     defaultShowRhythms ?? readRhythmPref(),
   );
@@ -284,24 +302,34 @@ export default function CellStaff({
     1,
     Math.ceil(staff.total_beats / beatsPerMeasure),
   );
-  const pages = Math.ceil(totalMeasures / MEASURES_PER_PAGE);
-  const current = Math.min(page, pages - 1);
-  const windowStart = current * MEASURES_PER_PAGE * beatsPerMeasure;
-  const windowMeasures = Math.min(
-    MEASURES_PER_PAGE,
-    totalMeasures - current * MEASURES_PER_PAGE,
-  );
-  const windowBeats = windowMeasures * beatsPerMeasure;
-  const innerWidth = WIDTH - LEFT_PAD - RIGHT_PAD;
-  const xFor = (beat: number) =>
-    LEFT_PAD + 14 + ((beat - windowStart) / windowBeats) * (innerWidth - 20);
-
-  const visible = staff.notes
-    .map((n, index) => ({ n, index }))
-    .filter(
-      ({ n }) =>
-        n.start_beat >= windowStart && n.start_beat < windowStart + windowBeats,
+  const systems = Math.ceil(totalMeasures / MEASURES_PER_SYSTEM);
+  // #445-1: the first barline waits for the key signature — the left pad
+  // grows with the signature instead of letting glyphs spill past it.
+  const sigCount = Math.min(Math.abs(staff.fifths), 7);
+  const leftPad = CLEF_ZONE + sigCount * KEYSIG_STEP + KEYSIG_GAP;
+  const innerWidth = WIDTH - leftPad - RIGHT_PAD;
+  /** Constant measure width — a partial final system ends mid-line, like a
+   * printed final system, instead of stretching to a different scale. */
+  const measureWidth = innerWidth / MEASURES_PER_SYSTEM;
+  const barX = (measureInSystem: number) =>
+    leftPad + measureInSystem * measureWidth;
+  /** #445-1: ONE grid. Notes are placed inside their own measure's span
+   * (barline + inset .. next barline - inset) — no second scale to drift
+   * against the barlines. */
+  const xFor = (beat: number) => {
+    const measure = Math.floor(beat / beatsPerMeasure);
+    const beatIn = beat - measure * beatsPerMeasure;
+    const span = measureWidth - NOTE_INSET_L - NOTE_INSET_R;
+    return (
+      barX(measure % MEASURES_PER_SYSTEM) +
+      NOTE_INSET_L +
+      (beatIn / beatsPerMeasure) * span
     );
+  };
+  const systemOf = (beat: number) =>
+    Math.floor(beat / beatsPerMeasure / MEASURES_PER_SYSTEM);
+
+  const visible = staff.notes.map((n, index) => ({ n, index }));
   // #349 T2a: notes sharing a beat draw as a vertical stack for free (same
   // x). The one engraving rule stacks need: when two simultaneous notes
   // collide — adjacent steps (a second) or the SAME step with different
@@ -319,7 +347,9 @@ export default function CellStaff({
     )
       ? 9
       : 0;
-  const [vbMinY, vbHeight] = viewBoxFor(visible.map(({ n }) => n.step));
+  const [vbMinY, bandHeight] = viewBoxFor(visible.map(({ n }) => n.step));
+  const systemStride = bandHeight + SYSTEM_GAP;
+  const vbHeight = systems * bandHeight + (systems - 1) * SYSTEM_GAP;
   vbHeightRef.current = vbHeight;
   const sigSteps =
     staff.fifths > 0
@@ -336,71 +366,88 @@ export default function CellStaff({
         role="img"
         aria-label="Cell staff"
       >
-        {[0, 2, 4, 6, 8].map((s) => (
-          <line
-            key={s}
-            x1={8}
-            x2={WIDTH - 8}
-            y1={yFor(s)}
-            y2={yFor(s)}
-            stroke="#6B7280"
-            strokeWidth={1}
-          />
-        ))}
-        {/* Treble clef */}
-        <text
-          x={10}
-          y={yFor(4)}
-          dominantBaseline="central"
-          fontSize={52}
-          className="fill-gray-400 select-none"
-        >
-          𝄞
-        </text>
-        {/* Key signature */}
-        {sigSteps.map((s, i) => (
-          <text
-            key={`${s}-${i}`}
-            x={38 + i * 8}
-            y={yFor(s)}
-            dominantBaseline="central"
-            fontSize={14}
-            className="fill-gray-300"
-            data-testid="staff-signature"
-          >
-            {sigGlyph}
-          </text>
-        ))}
-        {/* Barlines */}
-        {Array.from({ length: windowMeasures + 1 }, (_, i) => {
-          const x =
-            LEFT_PAD +
-            (i * (innerWidth - 6)) / windowMeasures +
-            (i === 0 ? 0 : 6);
+        {Array.from({ length: systems }, (_, k) => {
+          const measuresInSystem = Math.min(
+            MEASURES_PER_SYSTEM,
+            totalMeasures - k * MEASURES_PER_SYSTEM,
+          );
+          const isLastSystem = k === systems - 1;
           return (
-            <line
-              key={i}
-              x1={x}
-              x2={x}
-              y1={yFor(8)}
-              y2={yFor(0)}
-              stroke="#4B5563"
-              strokeWidth={i === windowMeasures && current === pages - 1 ? 3 : 1}
-            />
+            // Every system is a full printed line: staff, clef, key
+            // signature, its own barlines — translated down by its stride.
+            <g
+              key={k}
+              transform={`translate(0, ${k * systemStride})`}
+              data-testid={`staff-system-${k}`}
+            >
+              {[0, 2, 4, 6, 8].map((s) => (
+                <line
+                  key={s}
+                  x1={8}
+                  x2={WIDTH - 8}
+                  y1={yFor(s)}
+                  y2={yFor(s)}
+                  stroke="#6B7280"
+                  strokeWidth={1}
+                />
+              ))}
+              {/* Treble clef */}
+              <text
+                x={10}
+                y={yFor(4)}
+                dominantBaseline="central"
+                fontSize={52}
+                className="fill-gray-400 select-none"
+              >
+                𝄞
+              </text>
+              {/* Key signature */}
+              {sigSteps.map((s, i) => (
+                <text
+                  key={`${s}-${i}`}
+                  x={CLEF_ZONE + i * KEYSIG_STEP}
+                  y={yFor(s)}
+                  dominantBaseline="central"
+                  fontSize={14}
+                  className="fill-gray-300"
+                  data-testid="staff-signature"
+                >
+                  {sigGlyph}
+                </text>
+              ))}
+              {/* Barlines — one shared grid; notes live INSIDE it. */}
+              {Array.from({ length: measuresInSystem + 1 }, (_, i) => {
+                const x = barX(i);
+                return (
+                  <line
+                    key={i}
+                    x1={x}
+                    x2={x}
+                    y1={yFor(8)}
+                    y2={yFor(0)}
+                    stroke="#4B5563"
+                    data-testid={`staff-barline-${k}-${i}`}
+                    strokeWidth={isLastSystem && i === measuresInSystem ? 3 : 1}
+                  />
+                );
+              })}
+              {visible
+                .filter(({ n }) => systemOf(n.start_beat) === k)
+                .map(({ n, index }) => (
+                  <Dot
+                    key={`${n.midi}-${n.start_beat}`}
+                    note={n}
+                    x={xFor(n.start_beat)}
+                    headOffset={secondOffset(n)}
+                    showRhythms={showRhythms}
+                    selected={selected === index}
+                    ghostSteps={drag.current?.index === index ? ghostSteps : 0}
+                    onPointerDown={onEditNote ? beginDrag(index) : undefined}
+                  />
+                ))}
+            </g>
           );
         })}
-        {visible.map(({ n, index }) => (
-          <Dot
-            key={`${n.midi}-${n.start_beat}`}
-            note={n}
-            x={xFor(n.start_beat)}
-            headOffset={secondOffset(n)}
-            showRhythms={showRhythms}
-            selected={selected === index}
-            ghostSteps={drag.current?.index === index ? ghostSteps : 0}
-            onPointerDown={onEditNote ? beginDrag(index) : undefined}
-          />
-        ))}
       </svg>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
@@ -476,40 +523,6 @@ export default function CellStaff({
           ♪ rhythms
         </button>
       </div>
-      {pages > 1 && (
-        <div
-          className="flex items-center justify-center gap-3 text-xs text-gray-400"
-          data-testid="staff-pager"
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setPage(Math.max(0, current - 1));
-              setSelected(null);
-            }}
-            disabled={current === 0}
-            className="rounded px-2 py-0.5 hover:bg-gray-700 disabled:opacity-30"
-            aria-label="Previous measures"
-          >
-            ‹
-          </button>
-          <span>
-            {current + 1} / {pages}
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              setPage(Math.min(pages - 1, current + 1));
-              setSelected(null);
-            }}
-            disabled={current === pages - 1}
-            className="rounded px-2 py-0.5 hover:bg-gray-700 disabled:opacity-30"
-            aria-label="Next measures"
-          >
-            ›
-          </button>
-        </div>
-      )}
     </div>
   );
 }
