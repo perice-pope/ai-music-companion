@@ -108,9 +108,16 @@ const C_MAJOR_SCALE_HZ: [f64; 8] = [
 /// Each note is preceded by one window of silence so the onset edge-detector
 /// fires a fresh onset per note (unvoiced → voiced transition), and each note
 /// is held for several windows so enough voiced frames accumulate to clear the
-/// downstream intonation gate. `repeats` lets us pad the note count up over the
-/// fingerprint gates without inventing data.
-fn run_scale_through_pipeline(repeats: usize) -> (Vec<AudioEvent>, Vec<PhraseSummary>) {
+/// downstream intonation gate. `repeats_per_phrase` lets us pad the note count
+/// up over the fingerprint gates without inventing data, and `phrase_count`
+/// groups the repeats with real >300 ms silent gaps in between so the
+/// aggregator forms that many phrases (#445-6b: enough real phrases and
+/// summed seconds to clear the thin-session bar where a test needs the FULL
+/// recap path).
+fn run_scale_through_pipeline(
+    phrase_count: usize,
+    repeats_per_phrase: usize,
+) -> (Vec<AudioEvent>, Vec<PhraseSummary>) {
     let mut detector = PitchDetector::new(PitchConfig::default()).expect("valid pitch config");
     let window = detector.window_size();
 
@@ -126,20 +133,28 @@ fn run_scale_through_pipeline(repeats: usize) -> (Vec<AudioEvent>, Vec<PhraseSum
     let mut events = Vec::new();
     let silence = vec![0.0f32; window];
 
-    for _ in 0..repeats {
-        for &freq in &C_MAJOR_SCALE_HZ {
-            // One silence window → forces an unvoiced→voiced onset on the note.
-            let sil_event = detector.detect(&silence);
-            aggregator.push(&sil_event);
-            events.push(sil_event);
+    for _ in 0..phrase_count {
+        for _ in 0..repeats_per_phrase {
+            for &freq in &C_MAJOR_SCALE_HZ {
+                // One silence window → forces an unvoiced→voiced onset on the note.
+                let sil_event = detector.detect(&silence);
+                aggregator.push(&sil_event);
+                events.push(sil_event);
 
-            // Three voiced windows of the note.
-            let note = sine(freq, window);
-            for _ in 0..3 {
-                let ev = detector.detect(&note);
-                aggregator.push(&ev);
-                events.push(ev);
+                // Three voiced windows of the note.
+                let note = sine(freq, window);
+                for _ in 0..3 {
+                    let ev = detector.detect(&note);
+                    aggregator.push(&ev);
+                    events.push(ev);
+                }
             }
+        }
+        // A real >300 ms silent gap closes the group into its own phrase.
+        for _ in 0..12 {
+            let ev = detector.detect(&silence);
+            aggregator.push(&ev);
+            events.push(ev);
         }
     }
     aggregator.flush();
@@ -285,7 +300,9 @@ fn record_session(phrases: &[PhraseSummary], instrument: &str) -> CompletedSessi
 #[tokio::test]
 async fn musical_fixture_produces_offline_recap_with_fingerprint_and_idioms() {
     // --- Ears: synthetic scale → real detection → AudioEvents ---
-    let (events, phrases) = run_scale_through_pipeline(2);
+    // #445-6b: three gapped phrase groups, each long enough that the summed
+    // played time clears the thin-session bar — this test pins the FULL recap.
+    let (events, phrases) = run_scale_through_pipeline(3, 8);
 
     // The detected pitches must correspond to the fixture (within tolerance).
     // Pull the first voiced detection of each note and compare to the target.
@@ -318,7 +335,11 @@ async fn musical_fixture_produces_offline_recap_with_fingerprint_and_idioms() {
     );
 
     // --- Brain: phrase aggregation grouped the scale into a phrase with key ---
-    assert_eq!(phrases.len(), 1, "the contiguous scale forms one phrase");
+    assert_eq!(
+        phrases.len(),
+        3,
+        "the gapped scale groups form three phrases (#445-6b: a full-recap session)"
+    );
     let phrase = &phrases[0];
     assert!(
         phrase.note_count >= 12,
@@ -590,7 +611,7 @@ fn offline_idiom_path_never_touches_network() {
     // make it here.
 
     // ears → phrase, fully offline, over the musical fixture.
-    let (_events, phrases) = run_scale_through_pipeline(2);
+    let (_events, phrases) = run_scale_through_pipeline(1, 2);
     assert_eq!(phrases.len(), 1, "scale aggregates to one phrase, offline");
 
     // Real, offline idiom analysis over a musical fixture — no network, no panic.

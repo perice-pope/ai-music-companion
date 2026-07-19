@@ -652,6 +652,13 @@ impl RecapGenerator for CoachingEngine {
             return Ok(Self::fallback_recap(input));
         }
 
+        // #445-6b: a thin session never reaches the model — the LLM must
+        // not inflate twenty seconds of noodling into an essay. Same bar,
+        // same short form as the offline path (one choke point per path).
+        if is_thin_session(input) {
+            return Ok(thin_session_recap(input));
+        }
+
         // Cross-genre connections are only in play when a taste profile exists
         // AND the session produced enough measured signal to ground one — both
         // the prompt's grounding instructions and the response parsing key off
@@ -1279,7 +1286,102 @@ pub(crate) fn fixed_pitch_family(family: &str) -> bool {
     matches!(family, "Keyboard" | "Percussion")
 }
 
+/// #445-6b: the evidence bar for a FULL recap. Below it the session was a
+/// quick touch, and the recap must say LESS, plainly — silence > lies
+/// applies to word count too: a paragraph of coaching over twenty seconds
+/// of noodling reads as fabrication even when every clause is gated.
+pub const THIN_SESSION_MIN_PHRASES: usize = 3;
+pub const THIN_SESSION_MIN_PLAYED_SECS: f64 = 20.0;
+
+/// A session that produced SOME phrases but not enough to earn the full
+/// recap. Zero phrases is NOT thin — the empty-state path (the copy the
+/// founder singled out as the voice reference) stays untouched.
+pub fn is_thin_session(input: &RecapInput) -> bool {
+    // Review MF2: a score session where the follower JUDGED notes carries
+    // measured accuracy with its own denominator — phrase count is the
+    // wrong gate for it. Judged notes exempt the session from the thin
+    // bar so the #337 S4 accuracy panel is never suppressed.
+    if !input.note_verdicts.is_empty() {
+        return false;
+    }
+    let played: f64 = input.phrases.iter().map(|p| p.duration_secs).sum();
+    !input.phrases.is_empty()
+        && (input.phrases.len() < THIN_SESSION_MIN_PHRASES || played < THIN_SESSION_MIN_PLAYED_SECS)
+}
+
+/// #445-6b: the honest short form — technical, warm, no filler (voice
+/// reference: the can't-hear-you copy, #445 pt 7). Names exactly what
+/// happened, says plainly there isn't enough to read, offers ONE next
+/// step. A fingerprint dimension that genuinely cleared its gate still
+/// surfaces its single strongest fact — measured truth is never
+/// suppressed, only padding is.
+pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
+    let fingerprint = build_fingerprint(&input.phrases);
+    let phrase_count = input.phrases.len();
+    // Review MF4: the copy speaks the SAME clock the bar judged — summed
+    // PLAYED seconds, never the wall clock (a 10-minute session holding
+    // 60s of noodling is still a quick touch, and quoting "10 minutes"
+    // while judging 60s is two clocks in one sentence).
+    let played_secs: f64 = input.phrases.iter().map(|p| p.duration_secs).sum();
+    let played_str = if played_secs < 120.0 {
+        let s = played_secs.round().max(1.0) as i64;
+        format!("{s} second{}", if s == 1 { "" } else { "s" })
+    } else {
+        format!("{} minutes", (played_secs / 60.0).round() as i64)
+    };
+    let mut overall = format!(
+        "A quick touch — {phrase_count} phrase{}, about {played_str} of actual playing, on {}.",
+        if phrase_count == 1 { "" } else { "s" },
+        input.instrument,
+    );
+    // Review MF4: never claim we couldn't read what the fingerprint DID
+    // read — the recap surface renders those rows right below this line.
+    if fingerprint.is_empty() {
+        overall.push_str(
+            " That's not enough for me to read tone, key, or feel honestly, so I'll keep this short.",
+        );
+    } else {
+        overall.push_str(" Not enough playing for a full read, so I'll keep this short.");
+    }
+    if let Some(s) = &fingerprint.intonation {
+        if !fixed_pitch_family(&input.instrument_family) && s.note_count >= 4 {
+            overall.push_str(&format!(
+                " One thing I did catch: {:.0}% of the {} notes I heard landed in tune.",
+                s.in_tune_ratio * 100.0,
+                s.note_count,
+            ));
+        }
+    }
+    SessionRecap {
+        overall_assessment: overall,
+        strengths: Vec::new(),
+        areas_to_improve: Vec::new(),
+        next_session_suggestions: vec![
+            "Settle in for a few minutes of continuous playing — a handful of full phrases and I'll have something real to say."
+                .to_owned(),
+        ],
+        duration_secs: input.duration_secs,
+        phrase_count,
+        instrument: input.instrument.clone(),
+        fingerprint: if fingerprint.is_empty() {
+            None
+        } else {
+            Some(fingerprint)
+        },
+        // A thin session earns no flavour line, no idiom notes, no
+        // cross-genre connection — those are full-recap privileges.
+        flavour: None,
+        idiom_notes: Vec::new(),
+        connections: Vec::new(),
+        score_summary: None,
+    }
+}
+
 pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
+    // #445-6b: a quick touch earns the short form, not the full essay.
+    if is_thin_session(input) {
+        return thin_session_recap(input);
+    }
     let fixed_pitch = fixed_pitch_family(&input.instrument_family);
     let fingerprint = build_fingerprint(&input.phrases);
     let flavour = theory_flavour(&fingerprint);
@@ -2764,11 +2866,17 @@ mod tests {
                 confidence,
                 margin: 0.2,
             });
+            // #445-6b: each tracked phrase carries enough played time that
+            // every session below clears the thin-session bar.
+            p.duration_secs = 7.0;
             p
         };
 
         // Stable session: G# major throughout → asserted, flat copy.
-        let stable = recap_input_with(vec![tracked(8, 0.8), tracked(8, 0.8)], None);
+        let stable = recap_input_with(
+            vec![tracked(8, 0.8), tracked(8, 0.8), tracked(8, 0.8)],
+            None,
+        );
         let recap = grounded_offline_recap(&stable);
         let fp = recap.fingerprint.as_ref().expect("key was measured");
         assert_eq!(fp.key_claim, Some(KeyClaimStrength::Asserted));
@@ -3327,12 +3435,17 @@ mod tests {
     fn fallback_recap_carries_idiom_notes() {
         // The offline matches stand alone — they survive an LLM failure into the
         // fallback recap so the grounded "reminds me of" note still shows.
+        // #445-6b: three settled phrases clear the thin-session bar — the
+        // thin recap deliberately drops idiom notes, and this test pins the
+        // FULL fallback.
+        let mut p = sample_phrase();
+        p.duration_secs = 7.0;
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
             instrument_family: String::new(),
             duration_secs: 120.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase()],
+            phrases: vec![p; 3],
             tips: Vec::new(),
             score_title: None,
             note_verdicts: Vec::new(),
@@ -3363,6 +3476,20 @@ mod tests {
     async fn parse_recap_surfaces_connections_only_when_gate_open() {
         // The model returned a grounded connection. With a profile + signal,
         // the parsed recap carries it; with no profile, it's dropped.
+        // #445-6b: three settled groundable phrases (7s each, onsets kept
+        // monotone) clear the thin-session bar so the engine actually calls
+        // the model.
+        let settled = || {
+            (0..3)
+                .map(|i| {
+                    let mut p = groundable_phrase();
+                    p.phrase_index = i;
+                    p.duration_secs = 7.0;
+                    p.onsets_secs = p.onsets_secs.iter().map(|t| t + i as f64 * 4.0).collect();
+                    p
+                })
+                .collect::<Vec<_>>()
+        };
         let recap_content = serde_json::json!({
             "overall_assessment": "Lovely, grounded session.",
             "strengths": ["Steady time"],
@@ -3389,10 +3516,7 @@ mod tests {
 
         // Gate open: profile + groundable signal.
         let with = engine_with
-            .generate_recap(&recap_input_with(
-                vec![groundable_phrase()],
-                Some(sample_taste_profile()),
-            ))
+            .generate_recap(&recap_input_with(settled(), Some(sample_taste_profile())))
             .await
             .unwrap();
         assert_eq!(
@@ -3414,7 +3538,7 @@ mod tests {
             Box::new(MockHttpClient::succeeding(&response)),
         );
         let without = engine_without
-            .generate_recap(&recap_input_with(vec![groundable_phrase()], None))
+            .generate_recap(&recap_input_with(settled(), None))
             .await
             .unwrap();
         assert!(
@@ -4218,6 +4342,186 @@ mod tests {
     // returned. The mock client panics if hit, so a policy leak fails loudly.
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // #445-6b — the thin-session recap: words scale to evidence
+    // -----------------------------------------------------------------------
+
+    /// A phrase with a chosen played duration (clear pitch so the
+    /// fingerprint CAN gate in when the test wants it to).
+    fn phrase_lasting(secs: f64) -> PhraseSummary {
+        let mut p = groundable_phrase();
+        p.duration_secs = secs;
+        p
+    }
+
+    /// AC1: two phrases — however long — earn the short form: brief
+    /// assessment, NO strengths/areas padding, exactly one suggestion.
+    #[test]
+    fn a_two_phrase_session_gets_the_short_form() {
+        let input = recap_input_with(vec![phrase_lasting(30.0), phrase_lasting(30.0)], None);
+        assert!(is_thin_session(&input));
+        let recap = grounded_offline_recap(&input);
+        assert!(
+            recap.overall_assessment.starts_with("A quick touch"),
+            "got: {}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap
+                .overall_assessment
+                .contains("about 60 seconds of actual playing"),
+            "the copy speaks the played clock, not the wall clock: {}",
+            recap.overall_assessment
+        );
+        assert!(recap.strengths.is_empty(), "no padding lists");
+        assert!(recap.areas_to_improve.is_empty());
+        assert_eq!(recap.next_session_suggestions.len(), 1);
+        assert_eq!(recap.phrase_count, 2);
+        assert!(recap.flavour.is_none() && recap.connections.is_empty());
+    }
+
+    /// AC2: many tiny phrases under 20s of playing are thin; three
+    /// phrases at ≥20s cross the bar and keep the FULL recap (boundary).
+    #[test]
+    fn the_thin_bar_is_count_and_played_seconds() {
+        let confetti = recap_input_with(vec![phrase_lasting(2.0); 6], None);
+        assert!(is_thin_session(&confetti), "12s of confetti is thin");
+        assert!(grounded_offline_recap(&confetti)
+            .overall_assessment
+            .starts_with("A quick touch"));
+
+        let settled = recap_input_with(vec![phrase_lasting(7.0); 3], None);
+        assert!(!is_thin_session(&settled), "3 phrases × 7s clears the bar");
+        assert!(
+            grounded_offline_recap(&settled)
+                .overall_assessment
+                .starts_with("You practiced for about"),
+            "at the bar the full recap speaks"
+        );
+    }
+
+    /// AC3: ZERO phrases is not thin — the empty-state path (the voice
+    /// the founder praised) is byte-identical to before this change.
+    #[test]
+    fn an_empty_session_keeps_the_empty_state_path() {
+        let input = recap_input_with(Vec::new(), None);
+        assert!(!is_thin_session(&input));
+        let recap = grounded_offline_recap(&input);
+        assert!(
+            recap
+                .overall_assessment
+                .starts_with("You practiced for about"),
+            "the 0-phrase recap still opens with the session frame"
+        );
+    }
+
+    /// AC4: the ONLINE engine never lets the model inflate a thin
+    /// session — the panicking client proves no HTTP happens.
+    #[tokio::test]
+    async fn a_thin_session_never_reaches_the_model() {
+        let engine = online_engine(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(PanickingHttpClient),
+        );
+        let input = recap_input_with(vec![phrase_lasting(30.0)], None);
+        let recap = engine.generate_recap(&input).await.unwrap();
+        assert!(recap.overall_assessment.starts_with("A quick touch"));
+        assert_eq!(recap.next_session_suggestions.len(), 1);
+    }
+
+    /// AC5: a measured fact that cleared its gate rides along even in
+    /// the short form — only padding is suppressed, never truth.
+    #[test]
+    fn a_thin_session_still_states_a_cleared_fact() {
+        // One long, clearly-pitched phrase: thin by count, but the
+        // intonation gate has 16 in-tune pitches to read.
+        let input = recap_input_with(vec![phrase_lasting(30.0)], None);
+        let recap = grounded_offline_recap(&input);
+        assert!(
+            recap.overall_assessment.contains("landed in tune"),
+            "the cleared intonation fact speaks: {}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap
+                .overall_assessment
+                .contains("Not enough playing for a full read"),
+            "a read fingerprint gets the non-contradicting line: {}",
+            recap.overall_assessment
+        );
+        // And on a fixed-pitch instrument the same fact stays QUIET
+        // (#389: that measures the instrument, not the player).
+        let mut piano = recap_input_with(vec![phrase_lasting(30.0)], None);
+        piano.instrument_family = "Keyboard".to_owned();
+        assert!(!grounded_offline_recap(&piano)
+            .overall_assessment
+            .contains("landed in tune"));
+    }
+
+    /// #445-6b review MF2: a score session where the follower JUDGED
+    /// notes is NEVER thin — measured accuracy has its own denominator,
+    /// and the #337 S4 panel must not vanish behind a phrase count.
+    #[test]
+    fn a_judged_score_session_is_never_thin() {
+        let mut input = recap_input_with(vec![phrase_lasting(5.0)], None);
+        input.score_title = Some("Für Elise".to_owned());
+        input.note_verdicts = vec![crate::follower::NoteVerdict {
+            measure_number: 1,
+            beat: 0.0,
+            verdict: crate::follower::Verdict::Hit,
+        }];
+        assert!(!is_thin_session(&input), "judged notes exempt the bar");
+        let recap = grounded_offline_recap(&input);
+        assert!(
+            recap
+                .overall_assessment
+                .starts_with("You practiced for about"),
+            "the full recap speaks: {}",
+            recap.overall_assessment
+        );
+        assert!(
+            recap.score_summary.is_some(),
+            "the judged-note accuracy panel survives"
+        );
+    }
+
+    /// #445-6b review SF5: the FULL path's empty-fingerprint degradation
+    /// stayed covered when the quiet-session test moved to the thin
+    /// contract — a settled session (3×7s) that produced no readable
+    /// signal claims no numbers and still encourages.
+    #[test]
+    fn a_settled_but_silent_session_still_degrades_gracefully() {
+        let silent = || {
+            let mut p = phrase_lasting(7.0);
+            p.pitch_stats.pitches = Vec::new();
+            p.onsets_secs = Vec::new();
+            p
+        };
+        let input = recap_input_with(vec![silent(), silent(), silent()], None);
+        assert!(!is_thin_session(&input), "3×7s clears the bar");
+        let recap = grounded_offline_recap(&input);
+        assert!(recap
+            .overall_assessment
+            .starts_with("You practiced for about"));
+        assert!(
+            recap
+                .overall_assessment
+                .contains("didn't capture enough clear signal"),
+            "the honest no-signal line: {}",
+            recap.overall_assessment
+        );
+        assert!(recap.fingerprint.is_none(), "no fabricated fingerprint");
+        assert!(
+            !recap.strengths.is_empty(),
+            "default encouragement survives on the full path"
+        );
+        assert!(!recap.next_session_suggestions.is_empty());
+    }
+
     #[test]
     fn engine_defaults_to_offline() {
         // Offline by default — the internet is never required. A freshly
@@ -4390,12 +4694,16 @@ mod tests {
             Box::new(mock),
         );
 
+        // #445-6b: three settled phrases clear the thin-session bar so the
+        // mocked response actually reaches the parser.
+        let mut p = sample_phrase();
+        p.duration_secs = 7.0;
         let input = RecapInput {
             instrument: "trumpet".to_owned(),
             instrument_family: String::new(),
             duration_secs: 1800.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase()],
+            phrases: vec![p; 3],
             tips: vec![],
             score_title: None,
             note_verdicts: Vec::new(),
@@ -4407,7 +4715,7 @@ mod tests {
 
         assert_eq!(recap.instrument, "trumpet");
         assert_eq!(recap.duration_secs, 1800.0);
-        assert_eq!(recap.phrase_count, 1);
+        assert_eq!(recap.phrase_count, 3);
         assert_eq!(recap.strengths.len(), 2);
         assert_eq!(recap.areas_to_improve.len(), 2);
         assert_eq!(recap.next_session_suggestions.len(), 2);
@@ -4443,12 +4751,16 @@ mod tests {
             Box::new(mock),
         );
 
+        // #445-6b: 7s per phrase clears the thin-session bar (3 × 1.5s did
+        // not), so the mocked response reaches the parser.
+        let mut p = sample_phrase();
+        p.duration_secs = 7.0;
         let input = RecapInput {
             instrument: "violin".to_owned(),
             instrument_family: String::new(),
             duration_secs: 2400.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase(); 3],
+            phrases: vec![p; 3],
             tips: vec![],
             score_title: None,
             note_verdicts: Vec::new(),
@@ -4477,12 +4789,16 @@ mod tests {
             Box::new(mock),
         );
 
+        // #445-6b: 7s per phrase clears the thin-session bar so the failure
+        // path exercises the FULL fallback recap (thin has empty strengths).
+        let mut p = sample_phrase();
+        p.duration_secs = 7.0;
         let input = RecapInput {
             instrument: "voice".to_owned(),
             instrument_family: String::new(),
             duration_secs: 1500.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase(); 5],
+            phrases: vec![p; 5],
             tips: vec![],
             score_title: None,
             note_verdicts: Vec::new(),
@@ -4568,6 +4884,32 @@ mod tests {
         }
     }
 
+    /// #445-6b: three copies of the phrase (7 s each, onsets shifted by
+    /// `phrase_shift_secs` per copy so the pulse stays monotone and even) —
+    /// the same fingerprint content as one phrase, but enough phrases and
+    /// summed seconds to clear the thin-session bar and exercise the FULL
+    /// recap path.
+    fn settled_phrases(
+        pitches: Vec<f64>,
+        onsets_secs: Vec<f64>,
+        phrase_shift_secs: f64,
+    ) -> Vec<PhraseSummary> {
+        (0..3)
+            .map(|i| {
+                let mut p = phrase_from(
+                    pitches.clone(),
+                    onsets_secs
+                        .iter()
+                        .map(|t| t + i as f64 * phrase_shift_secs)
+                        .collect(),
+                );
+                p.phrase_index = i;
+                p.duration_secs = 7.0;
+                p
+            })
+            .collect()
+    }
+
     /// Core regression: two sessions with different intonation/groove/key
     /// fingerprints must produce *different* recap prose. This is what proves
     /// the offline recap is no longer canned.
@@ -4575,18 +4917,19 @@ mod tests {
     fn grounded_offline_recap_differs_across_distinct_fingerprints() {
         // Session A: C-major content, dead-on 440-region tuning, slow steady
         // pulse (~120 BPM).
-        let a = offline_input(vec![phrase_from(
+        let a = offline_input(settled_phrases(
             vec![
                 261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
                 440.00, 261.63,
             ],
             vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        )]);
+            4.0,
+        ));
 
         // Session B: D-major content, audibly sharp tuning, faster pulse
         // (~150 BPM). Different key, different intonation, different groove.
         let sharp = |hz: f64| hz * 2f64.powf(30.0 / 1200.0); // +30 cents
-        let b = offline_input(vec![phrase_from(
+        let b = offline_input(settled_phrases(
             vec![
                 sharp(293.66),
                 sharp(329.63),
@@ -4602,7 +4945,8 @@ mod tests {
                 sharp(440.00),
             ],
             vec![0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8],
-        )]);
+            3.2,
+        ));
 
         let recap_a = grounded_offline_recap(&a);
         let recap_b = grounded_offline_recap(&b);
@@ -4841,6 +5185,9 @@ mod tests {
 
     /// A quiet/empty session (no clear pitch, no onsets) must degrade
     /// gracefully: no fingerprint, and no fabricated numeric claims.
+    /// #445-6b: a single near-silent phrase is by design a THIN session now,
+    /// so the graceful degradation is the thin recap — short assessment, no
+    /// strengths/areas padding, exactly one suggestion.
     #[test]
     fn grounded_offline_recap_quiet_session_degrades_gracefully() {
         // Empty pitch + no onsets → no dimension clears its gate.
@@ -4864,10 +5211,16 @@ mod tests {
             !prose.contains("cents") && !prose.contains("BPM") && !prose.contains('%'),
             "a quiet session must not fabricate numeric claims, got: {prose}"
         );
-        // Still honest and non-empty.
-        assert!(!recap.overall_assessment.is_empty());
-        assert!(!recap.strengths.is_empty());
-        assert!(!recap.next_session_suggestions.is_empty());
+        // Still honest — and, per the #445-6b thin contract, short: a plain
+        // "quick touch" assessment, no padded lists, exactly one suggestion.
+        assert!(
+            recap.overall_assessment.starts_with("A quick touch"),
+            "a thin quiet session opens by naming the quick touch: {}",
+            recap.overall_assessment
+        );
+        assert!(recap.strengths.is_empty());
+        assert!(recap.areas_to_improve.is_empty());
+        assert_eq!(recap.next_session_suggestions.len(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -4879,7 +5232,9 @@ mod tests {
     /// trigger every intonation phrase bank.
     fn detuned_session_input(instrument: &str, family: &str) -> RecapInput {
         let flat = 2f64.powf(-20.0 / 1200.0);
-        let mut input = offline_input(vec![phrase_from(
+        // #445-6b: three settled phrases clear the thin-session bar — the
+        // family-vocabulary tests pin FULL-recap copy.
+        let mut input = offline_input(settled_phrases(
             vec![
                 261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
                 440.00, 261.63,
@@ -4888,7 +5243,8 @@ mod tests {
             .map(|f| f * flat)
             .collect(),
             vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        )]);
+            4.0,
+        ));
         input.instrument = instrument.to_owned();
         input.instrument_family = family.to_owned();
         input
@@ -4962,14 +5318,17 @@ mod tests {
     /// so the opener fires).
     #[test]
     fn opener_suggestion_speaks_the_familys_language() {
+        // #445-6b: settled_phrases clears the thin-session bar — this test
+        // pins FULL-recap opener copy.
         let in_tune = || {
-            offline_input(vec![phrase_from(
+            offline_input(settled_phrases(
                 vec![
                     261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
                     440.00, 261.63,
                 ],
                 vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
-            )])
+                4.0,
+            ))
         };
         let mut piano = in_tune();
         piano.instrument = "Piano".to_owned();

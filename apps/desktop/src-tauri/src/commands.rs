@@ -6251,13 +6251,15 @@ mod tests {
             .await
             .expect("start should succeed");
         {
+            // #445-6b: three settled phrases clear the thin bar — this
+            // test pins FULL-recap family vocabulary through the real
+            // end-session path.
             let mut guard = s.active_session.lock().await;
-            guard
-                .as_mut()
-                .unwrap()
-                .recorder
-                .record_phrase(sample_phrase())
-                .unwrap();
+            for _ in 0..3 {
+                let mut p = sample_phrase();
+                p.duration_secs = 7.0;
+                guard.as_mut().unwrap().recorder.record_phrase(p).unwrap();
+            }
         }
         let recap = end_practice_session_impl(&s).await.unwrap();
         assert_eq!(recap.instrument, "Piano");
@@ -8913,7 +8915,15 @@ mod tests {
             instrument_family: instrument_family_for(&s, instrument),
             duration_secs: 300.0,
             practice_mode: PracticeMode::default(),
-            phrases: vec![sample_phrase()],
+            // #445-6b: settled phrases — this pins the FULL recap's
+            // family vocabulary, not the thin short form.
+            phrases: (0..3)
+                .map(|_| {
+                    let mut p = sample_phrase();
+                    p.duration_secs = 7.0;
+                    p
+                })
+                .collect(),
             tips: Vec::new(),
             score_title: None,
             note_verdicts: Vec::new(),
