@@ -1,3 +1,9 @@
+## [2.39.0](https://github.com/perice-pope/ai-music-companion/compare/v2.38.0...v2.39.0) (2026-07-19)
+
+### Features
+
+* the update window — Restart now + release notes ([#58](https://github.com/perice-pope/ai-music-companion/issues/58) E1) ([#438](https://github.com/perice-pope/ai-music-companion/issues/438)) ([1686939](https://github.com/perice-pope/ai-music-companion/commit/16869399711e904e93e7b5b3a1c108f46f8a1012))
+
 ## [2.38.0](https://github.com/perice-pope/ai-music-companion/compare/v2.37.0...v2.38.0) (2026-07-19)
 
 ### Features
