@@ -1,3 +1,9 @@
+## [2.38.0](https://github.com/perice-pope/ai-music-companion/compare/v2.37.0...v2.38.0) (2026-07-19)
+
+### Features
+
+* library-match wiring + the session chip ([#214](https://github.com/perice-pope/ai-music-companion/issues/214) S1b) ([#437](https://github.com/perice-pope/ai-music-companion/issues/437)) ([6be172e](https://github.com/perice-pope/ai-music-companion/commit/6be172e81d1758ffe9c4c00376133f51f7adb3b2))
+
 ## [2.37.0](https://github.com/perice-pope/ai-music-companion/compare/v2.36.0...v2.37.0) (2026-07-19)
 
 ### Features
