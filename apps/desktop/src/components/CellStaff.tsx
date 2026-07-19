@@ -43,7 +43,10 @@ const KEYSIG_GAP = 12;
  * the accidental engraved against the column (text ends at x-11, glyph body
  * ~8px wide), so an accidental can't touch the barline either. */
 const NOTE_INSET_L = 22;
-const NOTE_INSET_R = 12;
+/** The RIGHT inset also covers a stacked second's head shift (+9) and its
+ * ledger-line overhang (+9 from the shifted head) — review N1: the intent
+ * is notes live INSIDE their measure, shifted heads included. */
+const NOTE_INSET_R = 24;
 /** Vertical gap between stacked systems. */
 const SYSTEM_GAP = LINE_GAP;
 const RIGHT_PAD = 12;
