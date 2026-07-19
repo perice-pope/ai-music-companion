@@ -1148,22 +1148,13 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     if (!match) {
       return false;
     }
+    let loaded: LoadedScore;
     try {
       // Load BEFORE leaving the session — a failure must not yank the
       // player to the selector for nothing.
-      const loaded = await invoke<LoadedScore>("get_score", {
+      loaded = await invoke<LoadedScore>("get_score", {
         id: match.scoreId,
       });
-      get().returnToSelector();
-      // Set AFTER returnToSelector (which clears activeScore) so the
-      // staged score survives — the pendingExplore handoff pattern.
-      set({
-        activeScore: loaded.entry,
-        activeScoreXml: loaded.music_xml,
-        cursorPosition: null,
-        pieceMatch: null,
-      });
-      return true;
     } catch {
       // Deleted mid-session, unreadable, whatever — stay put and stop
       // offering a door that doesn't open.
@@ -1173,6 +1164,44 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       }));
       return false;
     }
+    // S2 review MF1: this chip lives on LIVE session screens, and
+    // returnToSelector alone would strand the backend session (hot mic
+    // on the selector, AlreadyActive soft-lock on the next start). End
+    // the session for real first — the recap persists backend-side
+    // either way; the player chose the score over the recap screen.
+    if (get().status === "listening") {
+      set({ status: "ending" });
+      useAudioStore.getState().setListening(false);
+      try {
+        await invoke("end_practice_session");
+      } catch {
+        // endSession's own precedent: "never fail loudly on a recap" —
+        // the pipeline teardown precedes the command; still exit.
+      }
+    }
+    get().returnToSelector();
+    // Set AFTER returnToSelector (which clears activeScore) so the
+    // staged score survives — the pendingExplore handoff pattern. The
+    // extra resets mirror endSession's tail (session-scoped state that
+    // returnToSelector doesn't own): openers, dismissals, the pocket.
+    set({
+      activeScore: loaded.entry,
+      activeScoreXml: loaded.music_xml,
+      cursorPosition: null,
+      pieceMatch: null,
+      dismissedPieceIds: [],
+      openerItems: [],
+      openerPreview: null,
+      openerNotice: null,
+      openerTonic: null,
+      openerDirection: "forward",
+      openerPreviewedDirection: "forward",
+      pocketMode: "anchor",
+      pocketFrozenBpm: null,
+      _pocketLastSentBpm: null,
+    });
+    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
+    return true;
   },
 
   pocketMode: "anchor",

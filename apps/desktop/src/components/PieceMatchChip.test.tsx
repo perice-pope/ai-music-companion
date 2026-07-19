@@ -19,17 +19,22 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import PieceMatchChip from "./PieceMatchChip";
 import { usePracticeStore } from "../stores/practiceStore";
+import { useAudioStore } from "../stores/audioStore";
 
 beforeEach(() => {
   mockInvoke.mockReset();
   usePracticeStore.setState({
     pieceMatch: null,
     dismissedPieceIds: [],
-    // S2 tests stage the matched score — keep tests isolated from the
-    // previous one's staging (a leaked activeScore trips the echo guard).
+    // S2 tests stage the matched score and flip session status — keep
+    // tests isolated (a leaked activeScore trips the echo guard; a
+    // leaked status flips the teardown path).
     activeScore: null,
     activeScoreXml: null,
+    screen: "selector" as never,
+    status: "idle" as never,
   });
+  useAudioStore.setState({ isListening: false });
 });
 
 describe("PieceMatchChip (#214 S1b)", () => {
@@ -189,5 +194,116 @@ describe("PieceMatchChip (#214 S1b)", () => {
     fireEvent.click(screen.getByTestId("piece-match-notice-dismiss"));
     expect(screen.queryByTestId("piece-match-notice")).toBeNull();
     expect(screen.queryByTestId("piece-match-chip")).toBeNull();
+  });
+
+  // #214 S2 review MF1: the chip lives on LIVE session screens — Open
+  // score mid-session must END the backend session (mic pipeline, band,
+  // recorder), or the selector inherits a hot mic and the next start
+  // soft-locks on AlreadyActive. Fails if returnToSelector goes alone.
+  it("Open score mid-session ends the backend session first", async () => {
+    usePracticeStore.setState({
+      screen: "session" as never,
+      status: "listening" as never,
+    });
+    useAudioStore.setState({ isListening: true });
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "check_piece_match") {
+        return Promise.resolve({
+          score_id: "id-1",
+          title: "Für Elise",
+          coherent_hits: 9,
+        });
+      }
+      if (cmd === "get_score") {
+        return Promise.resolve({
+          entry: { id: "id-1", title: "Für Elise" },
+          music_xml: "<score-partwise/>",
+        });
+      }
+      if (cmd === "end_practice_session") {
+        return Promise.resolve({});
+      }
+      return Promise.resolve(null);
+    });
+    render(<PieceMatchChip />);
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    fireEvent.click(screen.getByTestId("piece-match-open"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().screen).toBe("selector"),
+    );
+    const calls = mockInvoke.mock.calls.map((c) => c[0]);
+    expect(calls).toContain("end_practice_session");
+    const s = usePracticeStore.getState();
+    expect(s.status).toBe("idle");
+    expect(useAudioStore.getState().isListening).toBe(false);
+    expect(s.activeScore).toMatchObject({ id: "id-1" });
+    // Session-scoped state resets like a real session end.
+    expect(s.dismissedPieceIds).toEqual([]);
+    expect(s.pocketMode).toBe("anchor");
+  });
+
+  // The idle-path counterpart: no live session, no end call — the tap
+  // must not fire teardown at a backend with nothing to tear down.
+  it("Open score outside a live session skips the session end", async () => {
+    usePracticeStore.setState({
+      screen: "session" as never,
+      status: "idle" as never,
+    });
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "check_piece_match") {
+        return Promise.resolve({
+          score_id: "id-1",
+          title: "Für Elise",
+          coherent_hits: 9,
+        });
+      }
+      if (cmd === "get_score") {
+        return Promise.resolve({
+          entry: { id: "id-1", title: "Für Elise" },
+          music_xml: "<score-partwise/>",
+        });
+      }
+      return Promise.resolve(null);
+    });
+    render(<PieceMatchChip />);
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    fireEvent.click(screen.getByTestId("piece-match-open"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().screen).toBe("selector"),
+    );
+    expect(mockInvoke.mock.calls.map((c) => c[0])).not.toContain(
+      "end_practice_session",
+    );
+  });
+
+  // S2 review note 3: a fresh match must outrank a lingering failure
+  // notice — the surface never suppresses live identification.
+  it("a new match replaces a lingering notice", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "check_piece_match") {
+        return Promise.resolve({
+          score_id: "id-2",
+          title: "Gymnopédie No. 1",
+          coherent_hits: 8,
+        });
+      }
+      if (cmd === "get_score") {
+        return Promise.reject("score not found");
+      }
+      return Promise.resolve(null);
+    });
+    usePracticeStore.setState({
+      pieceMatch: { scoreId: "id-1", title: "Für Elise" },
+    });
+    render(<PieceMatchChip />);
+    fireEvent.click(screen.getByTestId("piece-match-open"));
+    await waitFor(() =>
+      expect(screen.getByTestId("piece-match-notice")).toBeInTheDocument(),
+    );
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.queryByTestId("piece-match-notice")).toBeNull();
+    expect(screen.getByTestId("piece-match-title").textContent).toContain(
+      "Gymnopédie",
+    );
   });
 });

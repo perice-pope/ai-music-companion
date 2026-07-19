@@ -18,30 +18,31 @@ export default function PieceMatchChip() {
   const [notice, setNotice] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
 
-  if (notice) {
-    return (
-      <div
-        data-testid="piece-match-notice"
-        className="flex items-center gap-2 rounded-full border border-indigo-800 bg-indigo-950/40 py-1 pl-3 pr-1.5 text-sm text-indigo-200/80"
-        role="status"
-      >
-        <span>{notice}</span>
-        <button
-          type="button"
-          data-testid="piece-match-notice-dismiss"
-          onClick={() => setNotice(null)}
-          aria-label="Dismiss notice"
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-indigo-300/70 hover:text-white"
-        >
-          ×
-        </button>
-      </div>
-    );
-  }
-
   if (!match) {
+    if (notice) {
+      return (
+        <div
+          data-testid="piece-match-notice"
+          className="flex items-center gap-2 rounded-full border border-indigo-800 bg-indigo-950/40 py-1 pl-3 pr-1.5 text-sm text-indigo-200/80"
+          role="status"
+        >
+          <span>{notice}</span>
+          <button
+            type="button"
+            data-testid="piece-match-notice-dismiss"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss notice"
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-indigo-300/70 hover:text-white"
+          >
+            ×
+          </button>
+        </div>
+      );
+    }
     return null;
   }
+  // A live match outranks a lingering notice (S2 review note 3 — the
+  // surface must never suppress fresh identification).
 
   const handleOpen = async () => {
     setOpening(true);

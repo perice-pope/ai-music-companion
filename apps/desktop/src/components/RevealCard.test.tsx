@@ -119,19 +119,43 @@ describe("RevealCard", () => {
 
   // #214 S2: the framing retires ONLY while the match is live — cleared
   // or dismissed, the 2a hedge returns verbatim. Fails if identification
-  // leaves a permanent hole in the catalog voice.
+  // leaves a permanent hole in the catalog voice. (Distinct title from
+  // the other S2 test, so a hardcoded header can't pass both.)
   it("the framing returns verbatim when the match clears", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
-      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+      pieceMatch: { scoreId: "id-9", title: "Preexisting Prelude" },
     });
     render(<RevealCard />);
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Preexisting Prelude",
+    );
     expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
     act(() => usePracticeStore.getState().dismissPieceMatch());
     expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
       "other music that lives in this sound",
     );
     expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
+  });
+
+  // #214 S2 review MF2: "You're playing —" is an ASSERTION riding a
+  // rule-0 sticky match. When the live key confidently contradicts the
+  // card (the same signal that dims it), the assertion must step back
+  // down to the hedged framing — a dimmed card asserting a title would
+  // be the wrong-Beethoven misread wearing a confident voice.
+  it("a confident key contradiction demotes the assertion to the hedge", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+      // The reveal is G Dorian (tonic 7); a confident D major reading
+      // contradicts it — the card dims AND the assertion retires.
+      perception: perceptionWithKey(2, "major") as never,
+    });
+    render(<RevealCard />);
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
   });
 
   // AC7 (render contract): with multiple in the queue only the latest renders.

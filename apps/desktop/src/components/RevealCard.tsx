@@ -186,7 +186,11 @@ export default function RevealCard() {
         connection={current.reveal.connection}
         why={current.reveal.why}
         stale={stale}
-        matchTitle={matchTitle}
+        // S2 review MF2: "You're playing —" is an ASSERTION, and the match
+        // is rule-0 sticky (a miss never clears it). When the live key
+        // confidently contradicts the card, the assertion steps back down
+        // to the hedged framing — same contradiction signal, same honesty.
+        matchTitle={stale ? null : matchTitle}
         onDismiss={dismissReveal}
       />
       {/* #255: the reveal becomes actionable — one tap turns the named sound
