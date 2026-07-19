@@ -8,7 +8,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use ears::output::{Metronome, MetronomeConfig};
-use ears::output_engine::RenderSource;
+use ears::output_engine::{pocket_tempo_channel, RenderSource, TempoFedMetronome};
+use ringbuf::traits::Producer;
 
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -53,21 +54,28 @@ fn pocket_click_render_does_not_allocate() {
         accent_first_beat: true,
         volume: 0.8,
     };
-    let mut metronome = Metronome::new(config, 48_000)
+    let metronome = Metronome::new(config, 48_000)
         .expect("valid config")
         .with_count_in(1);
+    // #421 S2: the CHANNEL-FED source is the real render path now —
+    // the alloc law must hold through tempo pops too.
+    let (mut tx, rx) = pocket_tempo_channel(16);
+    let mut source = TempoFedMetronome::new(metronome, rx);
 
     // Buffer allocated OUTSIDE the measured window; warm one block.
     let mut buf = vec![0.0f32; 512];
-    metronome.render(&mut buf);
+    source.render(&mut buf);
 
     COUNTING.with(|c| c.set(true));
     // Past the count-in→live transition (1 bar at 96 BPM = 120 000
     // samples) and well into live clicking: 300 blocks ≈ 153 600 samples
     // measure the count-in accents, the transition branch, AND the
     // steady live pattern (review MF5 — the old window never left bar 1).
-    for _ in 0..300 {
-        metronome.render(&mut buf);
+    for i in 0..300 {
+        if i % 50 == 0 {
+            let _ = tx.try_push(96.0 + i as f64 / 10.0); // live re-timing
+        }
+        source.render(&mut buf);
     }
     COUNTING.with(|c| c.set(false));
 

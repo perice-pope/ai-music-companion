@@ -88,6 +88,51 @@ impl RenderSource for crate::output::Metronome {
     }
 }
 
+/// #421 S2: the LISTENING Pocket — a Metronome fed live tempo updates
+/// over a lock-free SPSC channel (Follow/Handoff). The render side only
+/// `try_pop`s and calls the phase-preserving `update_config` — no locks,
+/// no allocation, the grid shifts smoothly instead of popping.
+pub struct TempoFedMetronome {
+    metronome: crate::output::Metronome,
+    tempo_rx: HeapCons<f64>,
+}
+
+impl TempoFedMetronome {
+    pub fn new(metronome: crate::output::Metronome, tempo_rx: HeapCons<f64>) -> Self {
+        Self {
+            metronome,
+            tempo_rx,
+        }
+    }
+}
+
+impl RenderSource for TempoFedMetronome {
+    fn render(&mut self, out: &mut [f32]) {
+        // Drain to the LATEST tempo (stale intermediate values carry no
+        // information); apply once per block.
+        let mut latest = None;
+        while let Some(t) = self.tempo_rx.try_pop() {
+            latest = Some(t);
+        }
+        if let Some(bpm) = latest {
+            let mut config = self.metronome.config();
+            config.bpm = bpm;
+            // The control side clamps into the validated range, so this
+            // cannot fail; a hypothetical error keeps the old tempo.
+            let _ = self.metronome.update_config(config);
+        }
+        for slot in out.iter_mut() {
+            *slot = self.metronome.next_sample();
+        }
+    }
+}
+
+/// #421 S2: build the Pocket's tempo channel (control side keeps the
+/// producer, the render source takes the consumer).
+pub fn pocket_tempo_channel(capacity: usize) -> (HeapProd<f64>, HeapCons<f64>) {
+    HeapRb::<f64>::new(capacity.max(2)).split()
+}
+
 /// An [`OutputMixer`] is a render source: each slot is one mixed sample.
 impl RenderSource for OutputMixer {
     fn render(&mut self, out: &mut [f32]) {
@@ -723,5 +768,37 @@ mod tests {
             out[..frames].iter().all(|s| (*s - 1.0).abs() < 1e-6),
             "out-of-range source was not clamped to 1.0 before the ring"
         );
+    }
+}
+
+#[cfg(test)]
+mod pocket_tests {
+    use super::*;
+    use crate::output::{Metronome, MetronomeConfig};
+    use ringbuf::traits::Producer as _;
+
+    /// #421 S2: a pushed tempo re-times the click via the phase-
+    /// preserving path — the LAST pushed value wins, and without a push
+    /// the grid is untouched.
+    #[test]
+    fn pushed_tempo_retimes_the_click() {
+        let config = MetronomeConfig {
+            bpm: 60.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let m = Metronome::new(config, 48_000).unwrap();
+        let (mut tx, rx) = pocket_tempo_channel(8);
+        let mut source = TempoFedMetronome::new(m, rx);
+        let mut buf = vec![0.0f32; 64];
+        source.render(&mut buf);
+        assert_eq!(source.metronome.samples_per_beat(), 48_000); // 60 BPM
+        tx.try_push(90.0).unwrap();
+        tx.try_push(120.0).unwrap(); // the latest wins
+        source.render(&mut buf);
+        assert_eq!(source.metronome.samples_per_beat(), 24_000); // 120 BPM
+        source.render(&mut buf);
+        assert_eq!(source.metronome.samples_per_beat(), 24_000); // no push → untouched
     }
 }

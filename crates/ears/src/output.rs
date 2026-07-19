@@ -117,6 +117,12 @@ impl Metronome {
         self
     }
 
+    /// The current configuration (#421 S2: Follow re-times the click by
+    /// cloning this, changing bpm, and calling update_config).
+    pub fn config(&self) -> MetronomeConfig {
+        self.config
+    }
+
     /// Number of samples between consecutive beats at the current BPM.
     ///
     /// Useful for the test suite and for UI widgets that want to display a

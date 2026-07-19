@@ -29,8 +29,24 @@ beforeEach(() => {
     pocketPlaying: false,
     pocketTempo: 90,
     pocketCountIn: true,
+    pocketMode: "anchor",
+    pocketFrozenBpm: null,
+    _pocketLastSentBpm: null,
+    _pocketLastSentAt: 0,
+    _pocketFollowStartedAt: 0,
+    perception: null,
   });
 });
+
+const perceptionWithTempo = (bpm: number | null) =>
+  ({
+    tempo_bpm: bpm,
+    swing_ratio: null,
+    locked: bpm !== null,
+    key: null,
+    chord: null,
+    hearing_polyphony: false,
+  }) as never;
 
 describe("PocketControl (#421 S1)", () => {
   it("start sends the semantic settings — tempo, meter, count-in", async () => {
@@ -98,5 +114,92 @@ describe("PocketControl (#421 S1)", () => {
     fireEvent.change(input, { target: { value: "500" } });
     fireEvent.blur(input, { target: { value: "500" } });
     expect(usePracticeStore.getState().pocketTempo).toBe(220);
+  });
+
+  // ── #421 S2: Follow / Handoff ─────────────────────────────────────────
+
+  it("mode chips are exclusive, anchor default, disabled off-session", () => {
+    render(<PocketControl />);
+    expect(
+      screen.getByTestId("pocket-mode-anchor").getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByTestId("pocket-mode-follow"));
+    expect(
+      screen.getByTestId("pocket-mode-follow").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("pocket-mode-anchor").getAttribute("aria-pressed"),
+    ).toBe("false");
+    act(() => usePracticeStore.setState({ status: "idle" }));
+    expect(screen.getByTestId("pocket-mode-handoff")).toBeDisabled();
+  });
+
+  it("follow sends confident, changed, throttled readings only", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    usePracticeStore.setState({ pocketPlaying: true, pocketMode: "follow" });
+    const send = (bpm: number | null) =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(bpm));
+    send(96);
+    expect(mockInvoke).toHaveBeenCalledWith("set_pocket_tempo", {
+      tempoBpm: 96,
+    });
+    // Within the throttle window: nothing, even on a big change.
+    send(120);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // Past the throttle but under the 2-BPM delta: nothing.
+    vi.setSystemTime(101_500);
+    send(97);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // Past both gates: sends.
+    send(104);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    // Unconfident/absent tempo: nothing. Out-of-range: nothing.
+    vi.setSystemTime(103_000);
+    send(null);
+    send(500);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    // Anchor mode: the stream stops (AC5 mid-play switch).
+    usePracticeStore.getState().setPocketMode("anchor");
+    vi.setSystemTime(105_000);
+    send(150);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("handoff follows, then freezes and the drift line reads honestly", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(200_000);
+    render(<PocketControl />);
+    act(() => {
+      usePracticeStore.setState({ pocketPlaying: true });
+      usePracticeStore.getState().setPocketMode("handoff");
+    });
+    const send = (bpm: number) =>
+      act(() =>
+        usePracticeStore.getState().setPerception(perceptionWithTempo(bpm)),
+      );
+    send(96); // follows during the window
+    expect(mockInvoke).toHaveBeenCalledWith("set_pocket_tempo", {
+      tempoBpm: 96,
+    });
+    // The window closes: the next reading freezes instead of sending.
+    vi.setSystemTime(209_000);
+    send(98);
+    expect(usePracticeStore.getState().pocketFrozenBpm).toBe(96);
+    const drift = screen.getByTestId("pocket-drift");
+    expect(drift.textContent).toContain("holding your 96");
+    // Live drifts ahead: the line updates IN PLACE (rule 0 identity).
+    send(101);
+    expect(screen.getByTestId("pocket-drift")).toBe(drift);
+    expect(drift.textContent).toContain("+5 BPM ahead");
+    // Back in the pocket.
+    send(97);
+    expect(drift.textContent).toContain("in the pocket");
+    // Frozen: no further set_pocket_tempo sends.
+    expect(
+      mockInvoke.mock.calls.filter(([c]) => c === "set_pocket_tempo").length,
+    ).toBe(1);
+    vi.useRealTimers();
   });
 });

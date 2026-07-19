@@ -39,6 +39,7 @@ dependencies = [
  "dirs 5.0.1",
  "ears",
  "omr",
+ "ringbuf",
  "serde",
  "serde_json",
  "tauri",

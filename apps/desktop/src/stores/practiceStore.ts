@@ -231,6 +231,13 @@ export interface RecognizedPdf {
  */
 export const KEY_ASSERT_CONFIDENCE = 0.55;
 
+/** #421 S2: handoff follows for this long, then freezes. */
+export const HANDOFF_FOLLOW_MS = 8_000;
+/** #421 S2: follow sends at most once per this window… */
+const FOLLOW_THROTTLE_MS = 1_000;
+/** …and only when the reading moved at least this much. */
+const FOLLOW_MIN_DELTA_BPM = 2;
+
 const POCKET_TEMPO_KEY = "ai-music-companion:pocket-tempo";
 
 /** #421 S1: the click tempo survives restarts (spec §4). Default 90. */
@@ -504,6 +511,17 @@ export interface PracticeState {
   dismissedPieceIds: string[];
   requestPieceMatch: () => Promise<void>;
   dismissPieceMatch: () => void;
+
+  /** #421 S2: the click's personality — anchor holds, follow locks to
+   * YOUR pulse, handoff follows then freezes ("now hold it"). */
+  pocketMode: "anchor" | "follow" | "handoff";
+  setPocketMode: (mode: "anchor" | "follow" | "handoff") => void;
+  /** #421 S2: handoff's frozen tempo once the follow window closes. */
+  pocketFrozenBpm: number | null;
+  /** Internal follow-policy state (throttle + delta gate). */
+  _pocketLastSentBpm: number | null;
+  _pocketLastSentAt: number;
+  _pocketFollowStartedAt: number;
 
   /** #421 S1: The Pocket — strict Anchor click state. */
   pocketPlaying: boolean;
@@ -1075,6 +1093,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // #214 S1b: matches and dismissals are session-scoped.
       pieceMatch: null,
       dismissedPieceIds: [],
+      // #421 S2: the click personality resets with the session.
+      pocketMode: "anchor",
+      pocketFrozenBpm: null,
+      _pocketLastSentBpm: null,
     });
     // Round-3 review MF1: session end also invalidates in-flight opener
     // refreshes (separate set — this one derives from current state).
@@ -1116,6 +1138,22 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         ? [...s.dismissedPieceIds, s.pieceMatch.scoreId]
         : s.dismissedPieceIds,
     })),
+
+  pocketMode: "anchor",
+  pocketFrozenBpm: null,
+  _pocketLastSentBpm: null,
+  _pocketLastSentAt: 0,
+  _pocketFollowStartedAt: 0,
+
+  setPocketMode: (mode) =>
+    set({
+      pocketMode: mode,
+      // A fresh personality starts a fresh follow window; anchor sends
+      // nothing (AC5: switching mid-play stops the stream).
+      pocketFrozenBpm: null,
+      _pocketLastSentBpm: null,
+      _pocketFollowStartedAt: Date.now(),
+    }),
 
   pocketPlaying: false,
   pocketTempo: loadPocketTempo(),
@@ -1164,8 +1202,44 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
 
-  setPerception: (perception) =>
-    set((s) => {
+  setPerception: (perception) => {
+    // #421 S2: the follow policy — orchestration here, measurement in
+    // perception, the seam in set_pocket_tempo. Confident, changed
+    // (>=2 BPM), throttled (>=1 s) readings only; handoff freezes after
+    // its window and the drift line reads frozen-vs-live.
+    const s0 = get();
+    const tempo = perception?.tempo_bpm ?? null;
+    if (
+      s0.pocketPlaying &&
+      s0.pocketMode !== "anchor" &&
+      tempo !== null &&
+      tempo >= 40 &&
+      tempo <= 220
+    ) {
+      const now = Date.now();
+      if (
+        s0.pocketMode === "handoff" &&
+        s0.pocketFrozenBpm === null &&
+        now - s0._pocketFollowStartedAt >= HANDOFF_FOLLOW_MS
+      ) {
+        // The handoff moment: "I've got your N. Now hold it."
+        set({ pocketFrozenBpm: s0._pocketLastSentBpm ?? s0.pocketTempo });
+      } else if (
+        (s0.pocketMode === "follow" ||
+          (s0.pocketMode === "handoff" && s0.pocketFrozenBpm === null)) &&
+        now - s0._pocketLastSentAt >= FOLLOW_THROTTLE_MS &&
+        (s0._pocketLastSentBpm === null ||
+          Math.abs(tempo - s0._pocketLastSentBpm) >= FOLLOW_MIN_DELTA_BPM)
+      ) {
+        void invoke("set_pocket_tempo", { tempoBpm: tempo });
+        set({
+          _pocketLastSentBpm: tempo,
+          _pocketLastSentAt: now,
+          pocketTempo: tempo,
+        });
+      }
+    }
+    return set((s) => {
       if (!s.listenToRoom || !perception) {
         return { perception };
       }
@@ -1175,7 +1249,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         chordLane: next.lane,
         laneRinging: next.ringing,
       };
-    }),
+    });
+  },
 
   setListenToRoom: (on) =>
     set((s) =>
