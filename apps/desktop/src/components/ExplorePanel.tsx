@@ -85,15 +85,24 @@ export default function ExplorePanel() {
           {notice}
         </p>
       )}
-      {/* The mutation chips — tapping one is the whole conversation. */}
+      {/* The mutation chips — tapping one is the whole conversation.
+          #445-4: the row is STABLE — five chips, fixed identity; a chip
+          that can't act right now dims in place instead of vanishing. */}
       <div className="flex flex-wrap gap-2" data-testid="explore-chips">
         {explore.chips.map((chip) => (
           <button
             key={chip.label}
             type="button"
             onClick={() => void applyChip(chip.delta)}
-            data-testid={`chip-${chip.delta.kind}`}
-            className="rounded-full bg-indigo-600/90 px-4 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+            disabled={chip.enabled === false}
+            data-testid={`chip-${chip.delta.kind}${
+              chip.delta.kind === "bump_difficulty"
+                ? chip.delta.by > 0
+                  ? "-up"
+                  : "-down"
+                : ""
+            }`}
+            className="rounded-full bg-indigo-600/90 px-4 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-indigo-600/90"
           >
             {chip.label}
           </button>

@@ -195,8 +195,11 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    even on a steady, clearly-pitched passage, note that.)
 6. **🎲 Practice this sound (NEW)** — "When a reveal card is up, tap **'Practice this sound'** under
    it. A slim staff of **colored dots (no stems!)** should appear right in free play, with a row of
-   **colored note cells** showing the keys in order, and up to three buttons like **'New keys 🎲'**,
-   **'Make it spicy'**, **'Different scale'**. Tap each one: does the music visibly change to match?
+   **colored note cells** showing the keys in order, and a row of **five buttons**: **'Shuffle 🎲'**,
+   **'Add keys'**, **'Simpler'**, **'Try a pattern 🎲'**, **'Different scale'**. Some may be dimmed —
+   that's correct (a dimmed button means it can't do anything right now, like Shuffle with too few
+   keys). Tap each LIVE one: does the music visibly change to match? The five buttons should NEVER
+   change names or swap places between taps — if one does, screenshot it.
    Does **'Back to listening'** return you to normal free play?"
 7. **Edit the notes (NEW)** — "While exploring: **tap any dot** — a gold ring appears with little
    buttons (8va ↑/↓, ♯, ♭, ✕). **Drag a dot up or down** — it should snap to lines and spaces, and
@@ -349,7 +352,7 @@ Open the samples folder for her so she can drag a file:
    whole progression through the keys feel like the RV idea leveled up?" **Detail to watch:**
    the header should name YOUR chords in order with arrows (like 'your progression · Dm7 → G7 →
    Cmaj7') and the spelling should stay consistent even after tapping the little variation chips
-   ('Make it spicy' etc.) — if any chord name suddenly changes its sharp/flat spelling after a
+   ('Add keys' etc.) — if any chord name suddenly changes its sharp/flat spelling after a
    chip tap, screenshot before/after.
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the

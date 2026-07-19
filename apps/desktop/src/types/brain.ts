@@ -192,6 +192,8 @@ export type VariationDelta =
 export interface ChipSpec {
   label: string;
   delta: VariationDelta;
+  /** #445-4: the stable row — false means dimmed-in-place, never hidden. */
+  enabled: boolean;
 }
 
 /** One dot on the staff. Mirrors `brain::score::cellstaff::CellStaffNote`. */
