@@ -85,6 +85,20 @@ interface MyPattern {
   last_tonic: number;
 }
 
+/** #419 S4: a saved recipe row. Mirrors `commands::RecipeDto`. */
+interface SavedRecipe {
+  id: number;
+  name: string;
+  items: StarterItem[];
+  direction: "forward" | "reversed" | "varied";
+}
+
+/** #419 S4: yesterday's opener. Mirrors `commands::LastOpenerDto`. */
+interface LastOpener {
+  label: string;
+  tonic: number;
+}
+
 const CHORD_LABELS: Record<StarterChordKind, string> = {
   major_triad: "maj",
   minor_triad: "min",
@@ -157,8 +171,14 @@ export default function OpenersPanel() {
   const beginOpener = usePracticeStore((s) => s.beginOpener);
   const openerDirection = usePracticeStore((s) => s.openerDirection);
   const setOpenerDirection = usePracticeStore((s) => s.setOpenerDirection);
+  const applyOpenerRecipe = usePracticeStore((s) => s.applyOpenerRecipe);
+  const beginOpenerRecall = usePracticeStore((s) => s.beginOpenerRecall);
   const [open, setOpen] = useState(false);
   const [myPatterns, setMyPatterns] = useState<MyPattern[]>([]);
+  const [recipes, setRecipes] = useState<SavedRecipe[]>([]);
+  const [lastOpener, setLastOpener] = useState<LastOpener | null>(null);
+  const [recipeName, setRecipeName] = useState("");
+  const [recipeNotice, setRecipeNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -185,6 +205,62 @@ export default function OpenersPanel() {
       cancelled = true;
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // #419 S4: recall surfaces load with the panel — same calm rules as
+    // My Patterns (failures and malformed answers read as honest empty).
+    let cancelled = false;
+    void invoke<SavedRecipe[]>("list_opener_recipes")
+      .then((rows) => {
+        if (!cancelled) {
+          setRecipes(Array.isArray(rows) ? rows : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRecipes([]);
+        }
+      });
+    void invoke<LastOpener | null>("recall_last_opener")
+      .then((last) => {
+        if (!cancelled) {
+          setLastOpener(last && typeof last.label === "string" ? last : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLastOpener(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const saveRecipe = () => {
+    void invoke<SavedRecipe>("save_opener_recipe", {
+      name: recipeName,
+      items: openerItems,
+      direction: openerDirection,
+    })
+      .then((r) => {
+        setRecipeName("");
+        setRecipeNotice(null);
+        setRecipes((prev) => [r, ...prev]);
+      })
+      .catch((e) => setRecipeNotice(String(e)));
+  };
+
+  const forgetRecipe = (id: number) => {
+    void invoke("delete_opener_recipe", { id })
+      .then(() => setRecipes((prev) => prev.filter((r) => r.id !== id)))
+      .catch(() => {
+        // The row being gone IS the requested state — nothing to say.
+      });
+  };
   const [customSeq, setCustomSeq] = useState("");
   const [customNotice, setCustomNotice] = useState<string | null>(null);
 
@@ -417,6 +493,96 @@ export default function OpenersPanel() {
             </button>
           ))}
         </div>
+      )}
+
+      {/* #419 S4: recall — yesterday's opener and the recipes you kept. */}
+      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+        Recipes
+      </p>
+      {lastOpener ? (
+        <button
+          type="button"
+          data-testid="opener-yesterday"
+          onClick={() => void beginOpenerRecall()}
+          className="mt-1 rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+          title="replay it exactly — same notes, same journey"
+        >
+          ⟲ yesterday: {lastOpener.label}
+        </button>
+      ) : (
+        <p
+          className="mt-1 text-xs text-teal-700"
+          data-testid="opener-yesterday-empty"
+        >
+          begin an opener and it&apos;ll be waiting here tomorrow
+        </p>
+      )}
+      {recipes.length === 0 ? (
+        <p
+          className="mt-1 text-xs text-teal-700"
+          data-testid="opener-recipes-empty"
+        >
+          name and save a builder you like — it&apos;ll live here
+        </p>
+      ) : (
+        <div
+          className="mt-1 flex flex-wrap gap-1.5"
+          data-testid="opener-recipes"
+        >
+          {recipes.map((r) => (
+            <span
+              key={r.id}
+              className="inline-flex items-center gap-1 rounded-md bg-teal-800/60 pr-1"
+            >
+              <button
+                type="button"
+                data-testid={`opener-recipe-${r.id}`}
+                onClick={() => void applyOpenerRecipe(r.items, r.direction)}
+                className="px-2.5 py-1 text-sm text-teal-100 hover:text-white"
+                title={`${r.items.length} item${r.items.length === 1 ? "" : "s"}, ${r.direction}`}
+              >
+                {r.name}
+              </button>
+              <button
+                type="button"
+                data-testid={`opener-recipe-delete-${r.id}`}
+                onClick={() => forgetRecipe(r.id)}
+                aria-label={`Forget ${r.name}`}
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs text-teal-400/70 hover:text-white"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {openerItems.length > 0 && (
+        <div className="mt-2 flex gap-1.5">
+          <input
+            data-testid="opener-recipe-name"
+            value={recipeName}
+            onChange={(e) => setRecipeName(e.target.value)}
+            placeholder="name this recipe"
+            className="w-40 rounded-md border border-teal-800 bg-teal-950/60 px-2 py-1 text-sm text-teal-100 placeholder:text-teal-700"
+          />
+          <button
+            type="button"
+            data-testid="opener-recipe-save"
+            onClick={saveRecipe}
+            disabled={recipeName.trim().length === 0}
+            className="rounded-md bg-teal-700/70 px-2.5 py-1 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      )}
+      {recipeNotice && (
+        <p
+          className="mt-1 text-xs text-amber-300"
+          data-testid="opener-recipe-notice"
+        >
+          {recipeNotice}
+        </p>
       )}
 
       {/* What's been added. */}

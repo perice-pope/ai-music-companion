@@ -561,6 +561,16 @@ export interface PracticeState {
   /** Internal: recompute the pure preview after any item change. */
   _refreshOpenerPreview: (items: StarterItem[]) => Promise<void>;
   beginOpener: () => Promise<void>;
+  /** #419 S4: repopulate the builder from a saved recipe — items and
+   * direction land together, then the EXISTING preview path re-voices
+   * (no generation logic lives frontend-side). */
+  applyOpenerRecipe: (
+    items: StarterItem[],
+    direction: "forward" | "reversed" | "varied",
+  ) => Promise<void>;
+  /** #419 S4: replay yesterday's opener EXACTLY — the backend reads the
+   * stored seed/cell/tonic/direction from the exercise log. */
+  beginOpenerRecall: () => Promise<void>;
   /** Pin the band to a specific key (correcting the auto-read). */
   setAccompanimentKey: (tonic: number, minor: boolean) => Promise<void>;
   /** Freeze the band on its current auto-detected key. */
@@ -1717,6 +1727,35 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         openerDirection: "forward",
         openerPreviewedDirection: "forward",
         // Round-3 review MF1: Begin's reset kills in-flight refreshes.
+        _openerRefreshSeq: s._openerRefreshSeq + 1,
+      }));
+    } catch (err) {
+      set({ openerNotice: String(err) });
+    }
+  },
+
+  applyOpenerRecipe: async (items, direction) => {
+    set({ openerItems: items, openerDirection: direction });
+    await get()._refreshOpenerPreview(items);
+  },
+
+  beginOpenerRecall: async () => {
+    if (get().status !== "listening") {
+      return;
+    }
+    try {
+      const dto = await invoke<ExploreDto>("begin_opener_recall");
+      // Same landing as beginOpener: the recalled opener becomes the
+      // session's exploration and the builder resets.
+      set((s) => ({
+        explore: dto,
+        exploreNotice: null,
+        openerItems: [],
+        openerPreview: null,
+        openerNotice: null,
+        openerTonic: null,
+        openerDirection: "forward",
+        openerPreviewedDirection: "forward",
         _openerRefreshSeq: s._openerRefreshSeq + 1,
       }));
     } catch (err) {
