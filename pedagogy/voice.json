@@ -1,0 +1,58 @@
+[
+  {
+    "id": "voice-garcia-onset-breath",
+    "family": "Voice",
+    "topic": "Breath management and clean onset",
+    "source": {
+      "title": "A Complete Treatise on the Art of Singing",
+      "author": "Manuel Garcia",
+      "year": 1847,
+      "status": "pd",
+      "section": "On the emission of the voice"
+    },
+    "guidance": "Garcia — the first great scientist of the voice — has the singer take breath slowly and quietly, then begin the tone cleanly and exactly on pitch: no breathy leak before the note, no slam, and no sliding up into it. Practice single sustained vowels at a comfortable volume, giving all your attention to the first instant of each note; the onset sets the quality of everything that follows it.",
+    "triggers": ["breathy-onset", "attack-clarity", "scooped-onsets"]
+  },
+  {
+    "id": "voice-marchesi-registers",
+    "family": "Voice",
+    "topic": "Blending registers across the break",
+    "source": {
+      "title": "Theoretical and Practical Vocal Method",
+      "author": "Mathilde Marchesi",
+      "year": 1903,
+      "status": "pd",
+      "section": "On the registers of the voice"
+    },
+    "guidance": "Marchesi's method treats the register break as something to be crossed gently and often, never forced: chest voice is not pushed upward past its comfortable limit, and exercises that cross the passaggio are sung softly, letting the voice turn over early rather than late. If your top notes strain or the break announces itself, sing slow scales through that area quietly, thinking of thinning the sound before the break arrives instead of muscling through it.",
+    "triggers": ["register-break", "strain-at-top", "tone-inconsistency"]
+  },
+  {
+    "id": "voice-lamperti-appoggio",
+    "family": "Voice",
+    "topic": "Supported sustains (appoggio)",
+    "source": {
+      "title": "Vocal Wisdom: Maxims of Giovanni Battista Lamperti",
+      "author": "Giovanni Battista Lamperti (transcribed by William Earl Brown)",
+      "year": 1931,
+      "status": "paraphrase-only",
+      "section": "Maxims on breath and support"
+    },
+    "guidance": "There is a whole tradition on this collected in Vocal Wisdom, the book of Lamperti's teaching: the tone rides on a steady, springy column of breath — appoggio — with the inhale muscles staying gently engaged while you sing, so the sound does not collapse as the phrase spends its air. If your pitch sags on sustained notes or phrase endings cave in, practice medium-length notes and make the last second as supported as the first. The breath maxims in your own copy are the place to go.",
+    "triggers": ["pitch-sag-sustain", "phrase-end-collapse", "air-support-fade"]
+  },
+  {
+    "id": "voice-concone-legato",
+    "family": "Voice",
+    "topic": "Legato line in vocalises",
+    "source": {
+      "title": "Fifty Lessons for the Voice, Op. 9",
+      "author": "Giuseppe Concone",
+      "year": 1845,
+      "status": "pd",
+      "section": "Opening lessons"
+    },
+    "guidance": "Concone's Fifty Lessons are the classic legato gym: sing them on a single pure vowel, connecting every note into one seamless line — no little h re-attacks between notes, no bump at the barline, the breath flowing evenly through the whole phrase. If your lines come out as separate beads instead of a thread, take an early Concone lesson far under tempo and refuse to let the vowel stop between pitches.",
+    "triggers": ["note-separation-in-legato", "uneven-line", "breathy-onset"]
+  }
+]

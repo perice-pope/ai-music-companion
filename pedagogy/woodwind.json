@@ -1,0 +1,44 @@
+[
+  {
+    "id": "woodwind-klose-articulation",
+    "family": "Woodwind",
+    "topic": "Light tip-of-tongue articulation",
+    "source": {
+      "title": "Celebrated Method for the Clarinet",
+      "author": "Hyacinthe Klose",
+      "year": 1844,
+      "status": "pd",
+      "section": "On articulation"
+    },
+    "guidance": "Klose's method has the tongue touch lightly at the tip of the reed — as in pronouncing tu — while the air keeps flowing without interruption; a heavy tongue chokes the reed and blurs the start of every note. If repeated notes smear together or articulation feels thick, slow the passage down and make the tongue stroke smaller while the blow stays constant, so each note speaks cleanly out of an unbroken air stream.",
+    "triggers": ["repeated-note-smear", "attack-clarity", "articulation-heavy"]
+  },
+  {
+    "id": "woodwind-taffanel-gaubert-daily",
+    "family": "Woodwind",
+    "topic": "Finger evenness (daily exercises)",
+    "source": {
+      "title": "Methode complete de flute (17 Daily Exercises)",
+      "author": "Paul Taffanel and Philippe Gaubert",
+      "year": 1923,
+      "status": "pd",
+      "section": "Exercices journaliers — EJ1 and EJ2"
+    },
+    "guidance": "The Taffanel and Gaubert daily exercises run every scale pattern through every key for one reason: evenness. Play them slowly with a metronome, fingers staying close to the keys, no key slap, every note identical in length and volume — the fast-sounding player is really the even player. If your eighth notes are lumpy or runs get ahead of the beat, EJ1 and EJ2 at a patient tempo are the standing prescription.",
+    "triggers": ["uneven-eighths", "finger-unevenness", "rushing-runs"]
+  },
+  {
+    "id": "woodwind-moyse-sonorite",
+    "family": "Woodwind",
+    "topic": "Carrying your best tone across the range",
+    "source": {
+      "title": "De la Sonorite: Art et Technique",
+      "author": "Marcel Moyse",
+      "year": 1934,
+      "status": "paraphrase-only",
+      "section": "Opening tone studies (fullness of tone)"
+    },
+    "guidance": "There are famous studies on this in Moyse's De la Sonorite — he has you take the one note where your sound is most beautiful and carry its color to the neighboring note a half step away, then the next, moving one small step at a time until the whole range inherits the beauty of that single good note. Long, patient tones with the ear leading every move. If your tone changes character across registers or sags on sustains, work the opening studies from your own copy.",
+    "triggers": ["tone-inconsistency", "pitch-sag-sustain", "register-shift-breaks"]
+  }
+]

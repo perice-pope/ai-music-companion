@@ -1,0 +1,58 @@
+[
+  {
+    "id": "strings-suzuki-tonalization",
+    "family": "Strings",
+    "topic": "Tone before everything (tonalization)",
+    "source": {
+      "title": "Suzuki Violin School",
+      "author": "Shinichi Suzuki",
+      "year": 1978,
+      "status": "paraphrase-only",
+      "section": "Tonalization pages (each volume)"
+    },
+    "guidance": "The Suzuki books open nearly every practice with tonalization — the idea that you practice your tone itself, daily, the way a singer vocalizes. Play single long notes and listen for the ring: a beautiful, resonant sound on one note, then the same beauty on the next. If your tone is scratchy or changes quality from note to note, slow down and give the bow's weight, speed, and contact point your whole attention on just a few notes. The tonalization pages in your own Suzuki volume are built for this.",
+    "triggers": ["scratchy-tone", "tone-inconsistency", "bow-control-uneven"]
+  },
+  {
+    "id": "strings-suzuki-listening",
+    "family": "Strings",
+    "topic": "Listening before playing",
+    "source": {
+      "title": "Suzuki Violin School",
+      "author": "Shinichi Suzuki",
+      "year": 1978,
+      "status": "paraphrase-only",
+      "section": "Practice guidance — daily listening"
+    },
+    "guidance": "Suzuki's whole approach rests on listening: hear the reference recording of your piece every day, so the ear knows exactly where each pitch lives before the fingers go searching for it. When intonation drifts, the fix is usually more listening, not more drilling — sing the phrase away from the instrument, then play it and match what you sang. The ear leads; the hand follows.",
+    "triggers": ["pitch-drift", "intonation-inconsistent", "interval-accuracy"]
+  },
+  {
+    "id": "strings-suzuki-small-steps-review",
+    "family": "Strings",
+    "topic": "Small steps and constant review",
+    "source": {
+      "title": "Suzuki Violin School",
+      "author": "Shinichi Suzuki",
+      "year": 1978,
+      "status": "paraphrase-only",
+      "section": "Practice guidance — review pieces"
+    },
+    "guidance": "A core Suzuki principle: ability grows by repeating what you can already do beautifully, in very small steps — old pieces are never dropped, because review is where technique actually matures. If a passage collapses when you push the tempo, shrink the step: a smaller chunk, a slower tempo, more repetitions of the version you can play well. Then return to pieces you have already mastered and let the new skill settle inside them.",
+    "triggers": ["accuracy-collapse-at-tempo", "new-material-overreach", "rushing-runs"]
+  },
+  {
+    "id": "strings-suzuki-stop-prepare",
+    "family": "Strings",
+    "topic": "Stop and prepare (bow and left-hand control)",
+    "source": {
+      "title": "Suzuki Violin School",
+      "author": "Shinichi Suzuki",
+      "year": 1978,
+      "status": "paraphrase-only",
+      "section": "Early volumes — bowing preparation exercises"
+    },
+    "guidance": "Suzuki teachers drill a stop-and-prepare habit: stop the bow, silently set the next finger and the next string level, and only then sound the note. It turns crossings and shifts into deliberate acts instead of lucky ones. If your string crossings are noisy or your shifts scoop into the note, insert a silent preparation before each one at a slow tempo, then gradually shrink the silence until it disappears into the phrase.",
+    "triggers": ["string-crossing-noise", "shift-scoop", "transition-noise"]
+  }
+]

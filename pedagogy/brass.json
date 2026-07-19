@@ -1,0 +1,115 @@
+[
+  {
+    "id": "brass-arban-attack-tu",
+    "family": "Brass",
+    "topic": "Clean attacks (tone production)",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "First Studies — attack and tone production"
+    },
+    "guidance": "Arban builds everything on the attack: the tongue releases the note the way you would pronounce the syllable tu — it does not hammer the note, it lets the air go. If attacks are cracking or smearing, go back to single sustained notes at a comfortable dynamic: breathe, set the lips, release cleanly with tu, and keep the sound firm from the very first instant. His First Studies exist to make that release automatic before speed enters the picture.",
+    "triggers": ["cracked-attacks", "attack-clarity", "soft-attack-smear"]
+  },
+  {
+    "id": "brass-arban-mouthpiece-placement",
+    "family": "Brass",
+    "topic": "Embouchure and mouthpiece placement",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "Introduction — of the mouthpiece"
+    },
+    "guidance": "Arban is precise about where the mouthpiece sits, and a drifting placement shows up as a tone that changes character from day to day or fades over a session. His prescription puts most of the mouthpiece on the lower lip so the upper lip stays free to vibrate. If your tone is inconsistent, check the setup in a mirror before changing anything about your blowing.",
+    "quote": "The mouthpiece should be placed in the middle of the lips, two-thirds on the lower lip, and one-third on the upper lip.",
+    "triggers": ["tone-inconsistency", "endurance-fade", "cracked-attacks"]
+  },
+  {
+    "id": "brass-arban-interval-bottom-note",
+    "family": "Brass",
+    "topic": "Ascending interval leaps",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "Interval studies"
+    },
+    "guidance": "There are studies on exactly this in Arban's — the interval studies. The advice that works: focus on attacking the bottom note well and keeping the air going through the leap. The top note is carried by the air you already committed, not by a new effort at the lips. Take each leap slowly, slurred first and then tongued, and do not let the body tighten as the interval widens — the blow stays the same size while the notes move apart.",
+    "triggers": ["ascending-leap-attacks", "cracked-attacks", "interval-accuracy"]
+  },
+  {
+    "id": "brass-arban-slur-lip-flexibility",
+    "family": "Brass",
+    "topic": "Slurs and lip flexibility",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "Studies on the slur"
+    },
+    "guidance": "Arban's slur studies ask for the air to stay continuous while only the note changes: move between partials with air speed and the vowel inside the mouth — think ah opening to ee as you rise — never by pinching the lips or adding pressure. Practice the slur studies slowly and evenly, listening for a seamless connection with no bump or gap between the notes. When a slur smears, the air stopped or the vowel never changed.",
+    "triggers": ["smeared-slurs", "slur-cleanliness", "register-shift-breaks"]
+  },
+  {
+    "id": "brass-arban-scales-evenness",
+    "family": "Brass",
+    "topic": "Evenness in scale and passage work",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "Scale studies (major and minor scales)"
+    },
+    "guidance": "Arban's scale studies are an evenness project, not a speed project. Set the metronome well under tempo and give every note equal length and equal weight — especially the notes your fingers want to hurry past. Speed is only permitted once a passage is perfectly even at the slower click; then raise it one notch at a time. If your eighth notes come out uneven or runs rush ahead of the beat, this is the study to return to.",
+    "triggers": ["uneven-eighths", "rushing-runs", "finger-tongue-sync"]
+  },
+  {
+    "id": "brass-arban-single-tonguing",
+    "family": "Brass",
+    "topic": "Repeated-note clarity (single tonguing)",
+    "source": {
+      "title": "Complete Conservatory Method for Trumpet",
+      "author": "Jean-Baptiste Arban",
+      "year": 1864,
+      "status": "pd",
+      "section": "Tonguing studies"
+    },
+    "guidance": "In Arban's tonguing studies the air behaves like a steady stream that the tongue lightly interrupts — the tongue articulates, the air sustains. If repeated notes blur together or articulated passages drag the tempo down, slow the study until every tu speaks cleanly at exactly the same volume, keeping the blow constant behind the tongue. A heavy tongue is the usual culprit: make the stroke smaller, not stronger.",
+    "triggers": ["repeated-note-smear", "attack-clarity", "tempo-drag-on-articulation"]
+  },
+  {
+    "id": "brass-schlossberg-long-tones",
+    "family": "Brass",
+    "topic": "Long tones and pitch stability",
+    "source": {
+      "title": "Daily Drills and Technical Studies",
+      "author": "Max Schlossberg",
+      "year": 1937,
+      "status": "paraphrase-only",
+      "section": "Long-tone drills (opening section)"
+    },
+    "guidance": "There are drills for exactly this in Schlossberg's Daily Drills — he builds everything on long tones: start the note softly, let it grow, and keep the pitch absolutely level while the volume changes. If your sustained notes sag or wobble, that is the drill to live with for a week: one note at a time, ears on the pitch, air doing the work. Work from your own copy — the long-tone drills at the front of the book.",
+    "triggers": ["pitch-sag-sustain", "unsteady-long-tones", "tone-wobble"]
+  },
+  {
+    "id": "brass-schlossberg-interval-drills",
+    "family": "Brass",
+    "topic": "Register changes and interval drills",
+    "source": {
+      "title": "Daily Drills and Technical Studies",
+      "author": "Max Schlossberg",
+      "year": 1937,
+      "status": "paraphrase-only",
+      "section": "Interval and chromatic drills"
+    },
+    "guidance": "Schlossberg's interval drills treat register changes as an air problem, not a lip problem — the blow stays steady and unhurried while the notes move, and the drills are approached slurred before they are ever tongued. If your sound breaks when the line crosses registers, play his interval drills slowly from your own copy, keeping the same relaxed blow on the top note that you had on the bottom one.",
+    "triggers": ["register-shift-breaks", "ascending-leap-attacks", "air-support-fade"]
+  }
+]
