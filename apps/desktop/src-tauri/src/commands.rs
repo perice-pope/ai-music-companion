@@ -7903,7 +7903,7 @@ mod tests {
 
     /// #214 S1b review MF7a: the STARTUP rebuild — a store that already
     /// holds scores (seeded around the hooks) identifies only after
-    /// rebuild_piece_index() runs, pinning the constructor's call.
+    /// rebuild_piece_index() runs (the rebuild BEHAVIOR pin; the new()-tail call site rides S2 with a shared constructor tail).
     #[test]
     fn startup_rebuild_indexes_a_preexisting_library() {
         let s = AppState::with_mocks();
