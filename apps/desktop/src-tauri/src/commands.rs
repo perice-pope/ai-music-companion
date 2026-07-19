@@ -829,14 +829,28 @@ impl AppState {
             active_lesson: std::sync::Mutex::new(None),
             active_explore: Arc::new(std::sync::Mutex::new(None)),
         };
-        // #214 S1b: the identification index over the library, built once
-        // at startup (each entry parses in ms; a bad file is skipped).
-        state.rebuild_piece_index();
-        state
+        state.indexed()
+    }
+
+    /// #214 S2: the shared constructor tail. EVERY `AppState` constructor
+    /// must end here so the startup identification index can't silently
+    /// fall out of one construction path (each entry parses in ms; a bad
+    /// file is skipped).
+    fn indexed(self) -> Self {
+        self.rebuild_piece_index();
+        self
     }
 
     /// Wire entirely with mocks and in-memory store. Used by tests.
     pub fn with_mocks() -> Self {
+        Self::with_mocks_on(ScoreStore::in_memory().expect("in-memory store must succeed"))
+    }
+
+    /// Like `with_mocks`, but over a caller-provided score store — lets
+    /// tests seed a library BEFORE construction and prove the shared
+    /// constructor tail (`indexed`) makes it identifiable with no manual
+    /// rebuild (#214 S2 pin).
+    pub fn with_mocks_on(score_store: ScoreStore) -> Self {
         Self {
             active_session: Mutex::new(None),
             coaching_service: Arc::new(MockCoachingService::new()),
@@ -844,9 +858,7 @@ impl AppState {
             session_store: std::sync::Mutex::new(
                 SessionStore::in_memory().expect("in-memory store must succeed"),
             ),
-            score_store: std::sync::Mutex::new(
-                ScoreStore::in_memory().expect("in-memory store must succeed"),
-            ),
+            score_store: std::sync::Mutex::new(score_store),
             piece_matcher: std::sync::Mutex::new(PieceMatcher::default()),
             coaching_available: false,
             // In-memory by design here — that's the test default, not a
@@ -871,6 +883,7 @@ impl AppState {
             active_lesson: std::sync::Mutex::new(None),
             active_explore: Arc::new(std::sync::Mutex::new(None)),
         }
+        .indexed()
     }
 
     /// Test-only: flip the PDF-OMR beta gate on without touching the
@@ -8036,12 +8049,8 @@ mod tests {
         assert_eq!(check_piece_match_impl(&s), None);
     }
 
-    /// #214 S1b review MF7a: the STARTUP rebuild — a store that already
-    /// holds scores (seeded around the hooks) identifies only after
-    /// rebuild_piece_index() runs (the rebuild BEHAVIOR pin; the new()-tail call site rides S2 with a shared constructor tail).
-    #[test]
-    fn startup_rebuild_indexes_a_preexisting_library() {
-        let s = AppState::with_mocks();
+    /// The 16-note melody + model both startup-index tests share.
+    fn preexisting_melody_and_model() -> ([u8; 16], brain::score::ScoreModel) {
         let melody: [u8; 16] = [
             64, 62, 60, 65, 64, 67, 65, 69, 71, 72, 69, 67, 71, 74, 72, 76,
         ];
@@ -8073,6 +8082,32 @@ mod tests {
             measures,
             grand_staff: false,
         };
+        (melody, model)
+    }
+
+    /// Push a phrase whose pitch trail follows `melody[2..]` — enough
+    /// coherent n-grams for identification.
+    fn seed_preexisting_phrase(s: &AppState, melody: &[u8]) {
+        let mut phrase = sample_phrase();
+        phrase.pitch_stats.pitches = melody[2..16]
+            .iter()
+            .flat_map(|&m| {
+                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                std::iter::repeat_n(hz, 6)
+            })
+            .collect();
+        s.phrase_buffer.lock().unwrap().push(phrase);
+    }
+
+    /// #214 S1b review MF7a: the STARTUP rebuild — a store that already
+    /// holds scores (seeded around the hooks) identifies only after
+    /// rebuild_piece_index() runs (the rebuild BEHAVIOR pin; the
+    /// constructor-tail CALL SITE is pinned separately by
+    /// `constructor_tail_indexes_a_preexisting_library`).
+    #[test]
+    fn startup_rebuild_indexes_a_preexisting_library() {
+        let s = AppState::with_mocks();
+        let (melody, model) = preexisting_melody_and_model();
         // Seed the STORE directly — around the import hooks, like a
         // library that predates this launch.
         s.score_store
@@ -8087,15 +8122,7 @@ mod tests {
                 4,
             )
             .expect("seed import");
-        let mut phrase = sample_phrase();
-        phrase.pitch_stats.pitches = melody[2..16]
-            .iter()
-            .flat_map(|&m| {
-                let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
-                std::iter::repeat_n(hz, 6)
-            })
-            .collect();
-        s.phrase_buffer.lock().unwrap().push(phrase);
+        seed_preexisting_phrase(&s, &melody);
         assert_eq!(
             check_piece_match_impl(&s),
             None,
@@ -8106,6 +8133,31 @@ mod tests {
             check_piece_match_impl(&s).is_some(),
             "the rebuild makes a preexisting library identifiable"
         );
+    }
+
+    /// #214 S2: the CONSTRUCTOR-TAIL pin — a library seeded BEFORE
+    /// construction is identifiable with no manual rebuild call, because
+    /// every constructor ends in the shared `indexed()` tail. Kills the
+    /// mutant that drops `rebuild_piece_index` from a construction path.
+    #[test]
+    fn constructor_tail_indexes_a_preexisting_library() {
+        let (melody, model) = preexisting_melody_and_model();
+        let store = ScoreStore::in_memory().expect("in-memory store");
+        store
+            .import(
+                "Preexisting".into(),
+                None,
+                "pre.musicxml".into(),
+                brain::score::emit::score_model_to_musicxml(&model),
+                0,
+                4,
+            )
+            .expect("seed import");
+        let s = AppState::with_mocks_on(store);
+        seed_preexisting_phrase(&s, &melody);
+        let m = check_piece_match_impl(&s)
+            .expect("construction alone made the seeded library identifiable");
+        assert_eq!(m.title, "Preexisting");
     }
 
     /// #419 S3: My Patterns derives from the exercise log — dedup by

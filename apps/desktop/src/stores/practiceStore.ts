@@ -511,6 +511,10 @@ export interface PracticeState {
   dismissedPieceIds: string[];
   requestPieceMatch: () => Promise<void>;
   dismissPieceMatch: () => void;
+  /** #214 S2: one tap from "you're playing X" to the score itself —
+   * stages the matched score and lands on the selector. Resolves false
+   * (staying put, quieting that id) if the score can't load. */
+  openMatchedScore: () => Promise<boolean>;
 
   /** #421 S2: the click's personality — anchor holds, follow locks to
    * YOUR pulse, handoff follows then freezes ("now hold it"). */
@@ -1138,6 +1142,38 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         ? [...s.dismissedPieceIds, s.pieceMatch.scoreId]
         : s.dismissedPieceIds,
     })),
+
+  openMatchedScore: async () => {
+    const match = get().pieceMatch;
+    if (!match) {
+      return false;
+    }
+    try {
+      // Load BEFORE leaving the session — a failure must not yank the
+      // player to the selector for nothing.
+      const loaded = await invoke<LoadedScore>("get_score", {
+        id: match.scoreId,
+      });
+      get().returnToSelector();
+      // Set AFTER returnToSelector (which clears activeScore) so the
+      // staged score survives — the pendingExplore handoff pattern.
+      set({
+        activeScore: loaded.entry,
+        activeScoreXml: loaded.music_xml,
+        cursorPosition: null,
+        pieceMatch: null,
+      });
+      return true;
+    } catch {
+      // Deleted mid-session, unreadable, whatever — stay put and stop
+      // offering a door that doesn't open.
+      set((s) => ({
+        pieceMatch: null,
+        dismissedPieceIds: [...s.dismissedPieceIds, match.scoreId],
+      }));
+      return false;
+    }
+  },
 
   pocketMode: "anchor",
   pocketFrozenBpm: null,

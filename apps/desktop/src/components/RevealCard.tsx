@@ -25,6 +25,7 @@ function RevealCardItem({
   connection,
   why,
   stale,
+  matchTitle,
   onDismiss,
 }: {
   id: string;
@@ -33,6 +34,8 @@ function RevealCardItem({
   why: string;
   /** #417 rule 0: a confidently-contradicted card DIMS, it never vanishes. */
   stale: boolean;
+  /** #214 S2: the confirmed library match, when identification has one. */
+  matchTitle: string | null;
   onDismiss: (id: string) => void;
 }) {
   const [isDismissing, setIsDismissing] = useState(false);
@@ -66,17 +69,36 @@ function RevealCardItem({
             <p className="text-xs font-semibold uppercase tracking-wider text-amber-300/80">
               In the wild · {concept}
             </p>
-            {/* #417-2a: the card is a KEY/MODE catalog, and next to live
-                playing a bare title reads as song identification — worse
-                than nothing when it's the wrong Beethoven. This line makes
-                the framing unmistakable; it must never be removed without
-                solving item 5 (real piece ID) first. */}
-            <p
-              className="text-[11px] italic text-amber-300/60"
-              data-testid={`reveal-framing-${id}`}
-            >
-              other music that lives in this sound
-            </p>
+            {/* #417-2a → #214 S2: the card is a KEY/MODE catalog, and next
+                to live playing a bare title reads as song identification —
+                worse than nothing when it's the wrong Beethoven. The framing
+                line makes that unmistakable, and it retires ONLY while real
+                identification (#214) has a confirmed match to say instead —
+                then the card can finally assert, and the catalog reframes
+                as company the piece keeps in this key. */}
+            {matchTitle !== null ? (
+              <>
+                <p
+                  className="text-[13px] font-semibold text-amber-100"
+                  data-testid={`reveal-identified-${id}`}
+                >
+                  You&apos;re playing — {matchTitle}
+                </p>
+                <p
+                  className="text-[11px] italic text-amber-300/60"
+                  data-testid={`reveal-catalog-reframe-${id}`}
+                >
+                  also lives in this key:
+                </p>
+              </>
+            ) : (
+              <p
+                className="text-[11px] italic text-amber-300/60"
+                data-testid={`reveal-framing-${id}`}
+              >
+                other music that lives in this sound
+              </p>
+            )}
             <p className="mt-1 text-sm font-semibold leading-relaxed text-amber-100">
               {connection}
             </p>
@@ -108,6 +130,10 @@ function RevealCardItem({
 export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
+  // #214 S2: a confirmed library match upgrades the card's voice from
+  // catalog to identification. Clears with the match (store rule 0 keeps
+  // the MATCH sticky; this only mirrors it).
+  const matchTitle = usePracticeStore((s) => s.pieceMatch?.title ?? null);
   const collectionCount = usePracticeStore((s) => s.collectionCount);
   const startExplore = usePracticeStore((s) => s.startExplore);
   // Subscribe to the live key's primitives (not the object), so this only
@@ -160,6 +186,7 @@ export default function RevealCard() {
         connection={current.reveal.connection}
         why={current.reveal.why}
         stale={stale}
+        matchTitle={matchTitle}
         onDismiss={dismissReveal}
       />
       {/* #255: the reveal becomes actionable — one tap turns the named sound

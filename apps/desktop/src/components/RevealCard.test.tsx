@@ -53,6 +53,7 @@ describe("RevealCard", () => {
       revealQueue: [],
       perception: null,
       collectionCount: null,
+      pieceMatch: null,
     });
   });
 
@@ -95,6 +96,42 @@ describe("RevealCard", () => {
     expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
       "other music that lives in this sound",
     );
+  });
+
+  // #214 S2: with a confirmed library match live, the card finally EARNS
+  // identification — "You're playing — {title}" — the 2a framing retires
+  // on this card only, and the catalog reframes as company the piece
+  // keeps in this key. Fails if the hedge survives next to a real ID.
+  it("a confirmed match upgrades the card: identified, framing retired", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+    });
+    render(<RevealCard />);
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Für Elise",
+    );
+    expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
+    expect(screen.getByTestId("reveal-catalog-reframe-r1").textContent).toBe(
+      "also lives in this key:",
+    );
+  });
+
+  // #214 S2: the framing retires ONLY while the match is live — cleared
+  // or dismissed, the 2a hedge returns verbatim. Fails if identification
+  // leaves a permanent hole in the catalog voice.
+  it("the framing returns verbatim when the match clears", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+    });
+    render(<RevealCard />);
+    expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
+    act(() => usePracticeStore.getState().dismissPieceMatch());
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
   });
 
   // AC7 (render contract): with multiple in the queue only the latest renders.
