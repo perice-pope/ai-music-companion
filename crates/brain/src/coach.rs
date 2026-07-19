@@ -1552,9 +1552,6 @@ pub fn edit_explore_note(
     Ok((next, seq))
 }
 
-/// Undo the most recent step — edit OR chip — restoring the exact rep the
-/// player saw (spec, seed, and difficulty together). Calm error when there is
-/// nothing to undo.
 /// #419 S4: rebuild an exploration from a STORED spec — the exact-replay
 /// path. The spec is the full resolved artifact (roots, rhythm, cell,
 /// direction), so NOTHING is re-derived from today's learner model — a
@@ -1580,6 +1577,9 @@ pub fn resume_explore_spec(
     )
 }
 
+/// Undo the most recent step — edit OR chip — restoring the exact rep the
+/// player saw (spec, seed, and difficulty together). Calm error when there is
+/// nothing to undo.
 pub fn undo_explore_edit(
     state: &ExploreState,
 ) -> Result<(ExploreState, GeneratedSequence), String> {

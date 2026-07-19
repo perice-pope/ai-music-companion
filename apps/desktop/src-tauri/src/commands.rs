@@ -8786,9 +8786,6 @@ mod tests {
         assert_eq!(last.seed, stored_seed);
     }
 
-    /// #419 S4 AC5: a Reversed opener comes back Reversed — recall honors
-    /// the stored direction. A Forward-pinning mutant changes the row
-    /// order and dies on the XML comparison.
     /// #419 S4 review MF2: recall is exact ACROSS learner-model drift —
     /// the stored spec replays wholesale, so a difficulty that moved
     /// since the row was logged retunes nothing (tempo, root count). The
@@ -8819,6 +8816,9 @@ mod tests {
         );
     }
 
+    /// #419 S4 AC5: a Reversed opener comes back Reversed — recall honors
+    /// the stored direction. A Forward-pinning mutant changes the row
+    /// order and dies on the XML comparison.
     #[test]
     fn reversed_opener_recalls_reversed() {
         let s = AppState::with_mocks();
