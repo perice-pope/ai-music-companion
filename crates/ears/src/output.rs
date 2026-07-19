@@ -12,6 +12,11 @@
 
 use std::f64::consts::PI;
 
+use ringbuf::traits::Producer;
+use ringbuf::HeapProd;
+
+use crate::output_engine::ClickFire;
+
 /// Errors produced by output construction and configuration updates.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum OutputError {
@@ -53,6 +58,28 @@ const ACCENT_FREQ_HZ: f64 = 1500.0;
 /// Exponential decay rate for the click envelope.
 const CLICK_DECAY: f64 = 50.0;
 
+/// #445: the render-side half of the click-fire report. A wrapper so
+/// `Metronome` keeps `derive(Debug, Clone)`: an SPSC producer is neither
+/// cloneable nor debuggable, so a CLONE of a metronome deliberately drops
+/// the reporting channel (there can only ever be one producer) and Debug
+/// prints just its presence.
+#[derive(Default)]
+struct ClickFireTx(Option<HeapProd<ClickFire>>);
+
+impl std::fmt::Debug for ClickFireTx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ClickFireTx")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+impl Clone for ClickFireTx {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
 /// A tempo click generator.
 ///
 /// Emits a short decaying sine "tick" at each beat. `next_sample` is hot-path
@@ -81,6 +108,15 @@ pub struct Metronome {
     /// the accent voice (the classic "1-2-3-4!" call-off); afterwards the
     /// normal accent-on-downbeat rule applies. Set via [`Self::with_count_in`].
     count_in_beats_remaining: usize,
+    /// #445: total samples emitted since construction — the click-fire
+    /// timeline. Incremented on EVERY `next_sample` call and NEVER reset
+    /// (not by `update_config`, not by the count-in→live transition), so
+    /// reported fire indices stay monotonic for the life of the instance.
+    samples_emitted: u64,
+    /// #445: optional click-fire reporter. `try_push` is lock-free and
+    /// alloc-free (pre-allocated HeapRb), so reporting is render-safe; a
+    /// full ring drops the report rather than blocking.
+    fire_tx: ClickFireTx,
 }
 
 impl Metronome {
@@ -104,6 +140,8 @@ impl Metronome {
             current_is_accent: false,
             any_beat_fired: false,
             count_in_beats_remaining: 0,
+            samples_emitted: 0,
+            fire_tx: ClickFireTx(None),
         })
     }
 
@@ -114,6 +152,18 @@ impl Metronome {
     pub fn with_count_in(mut self, bars: u8) -> Self {
         self.count_in_beats_remaining =
             usize::from(bars) * usize::from(self.config.time_signature.0);
+        self
+    }
+
+    /// #445: report every click fire over `tx` — sample index + accent —
+    /// the instant it starts, from the render path (lock-free `try_push`,
+    /// no allocation). Builder-style, like [`Self::with_count_in`], so no
+    /// existing constructor changes. Covers BOTH the bare-`Metronome`
+    /// anchor path and `TempoFedMetronome` (which wraps this same
+    /// metronome and calls the same `next_sample`).
+    #[must_use]
+    pub fn with_fire_channel(mut self, tx: HeapProd<ClickFire>) -> Self {
+        self.fire_tx = ClickFireTx(Some(tx));
         self
     }
 
@@ -166,6 +216,15 @@ impl Metronome {
             };
             self.beat_index = (self.beat_index + 1) % self.config.time_signature.0 as usize;
             self.any_beat_fired = true;
+            // #445: report the fire the moment the click starts. try_push
+            // is lock-free and alloc-free — render-safe; a full ring just
+            // drops the report (the gate ages clicks out anyway).
+            if let Some(tx) = self.fire_tx.0.as_mut() {
+                let _ = tx.try_push(ClickFire {
+                    sample_index: self.samples_emitted,
+                    is_accent: self.current_is_accent,
+                });
+            }
         }
 
         let sample = if self.click_cursor < self.samples_in_click {
@@ -187,6 +246,9 @@ impl Metronome {
         // we still decrement to advance one sample.
         self.click_cursor = self.click_cursor.saturating_add(1);
         self.samples_until_next_beat = self.samples_until_next_beat.saturating_sub(1);
+        // #445: advance the fire timeline — branchless integer work only,
+        // so the per-sample hot path stays alloc- and float-free here.
+        self.samples_emitted += 1;
         sample
     }
 
@@ -956,6 +1018,108 @@ mod tests {
                 "live beat {beat} must be the normal click"
             );
         }
+    }
+
+    // ── #445: click-fire reporting ──────────────────────────────────────
+
+    /// #445 AC1 (anchor path): a metronome with a fire channel reports
+    /// every click at its exact sample index, with the accent flag. A
+    /// wrong index (off-by-a-block, reset counter) or a missing/extra
+    /// fire fails this.
+    #[test]
+    fn fire_channel_reports_click_sample_indices_and_accents() {
+        use crate::output_engine::click_fire_channel;
+        use ringbuf::traits::Consumer;
+
+        let (tx, mut rx) = click_fire_channel(16);
+        // 120 BPM at 48 kHz → a click every 24 000 samples.
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_fire_channel(tx);
+        // 96 001 samples cover fires at 0, 24 000, 48 000, 72 000, 96 000.
+        for _ in 0..96_001 {
+            let _ = m.next_sample();
+        }
+        let fires: Vec<_> = std::iter::from_fn(|| rx.try_pop()).collect();
+        let indices: Vec<u64> = fires.iter().map(|f| f.sample_index).collect();
+        assert_eq!(indices, vec![0, 24_000, 48_000, 72_000, 96_000]);
+        let accents: Vec<bool> = fires.iter().map(|f| f.is_accent).collect();
+        // 4/4 with accent_first_beat: downbeats of bar 1 and bar 2 accent.
+        assert_eq!(accents, vec![true, false, false, false, true]);
+    }
+
+    /// #445 AC2: the fire timeline is monotonic across the count-in→live
+    /// transition AND across `update_config` — neither may reset
+    /// `samples_emitted`, or the gate's wall-time conversion would jump.
+    #[test]
+    fn fire_timeline_survives_count_in_and_update_config() {
+        use crate::output_engine::click_fire_channel;
+        use ringbuf::traits::Consumer;
+
+        let (tx, mut rx) = click_fire_channel(32);
+        // 60 BPM at 48 kHz → one click per 48 000 samples; one count-in
+        // bar of 2/4 = 2 accent clicks before the live pattern.
+        let config = MetronomeConfig {
+            bpm: 60.0,
+            time_signature: (2, 4),
+            accent_first_beat: false,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_count_in(1)
+            .with_fire_channel(tx);
+        // Through the count-in (2 beats) and one live beat: fires at
+        // 0, 48 000, 96 000.
+        for _ in 0..96_001 {
+            let _ = m.next_sample();
+        }
+        // Retime to 120 BPM mid-flight. The click just fired at 96 000, so
+        // (almost) a full 48 000-sample period remains; the phase-
+        // preserving update rescales it to (almost) a full 24 000-sample
+        // period → next fires at 120 000 and 144 000. A reset
+        // `samples_emitted` would report ~24 000/48 000 here instead.
+        let mut cfg = m.config();
+        cfg.bpm = 120.0;
+        m.update_config(cfg).unwrap();
+        for _ in 0..50_000 {
+            let _ = m.next_sample();
+        }
+        let fires: Vec<_> = std::iter::from_fn(|| rx.try_pop()).collect();
+        let indices: Vec<u64> = fires.iter().map(|f| f.sample_index).collect();
+        assert_eq!(indices, vec![0, 48_000, 96_000, 120_000, 144_000]);
+        // Count-in clicks (both beats) accent; live 2/4 with
+        // accent_first_beat=false never accents.
+        let accents: Vec<bool> = fires.iter().map(|f| f.is_accent).collect();
+        assert_eq!(accents, vec![true, true, false, false, false]);
+    }
+
+    /// #445: a CLONE deliberately drops the fire channel (an SPSC
+    /// producer can't be shared) — the original keeps reporting.
+    #[test]
+    fn cloned_metronome_does_not_inherit_the_fire_channel() {
+        use crate::output_engine::click_fire_channel;
+        use ringbuf::traits::Consumer;
+
+        let (tx, mut rx) = click_fire_channel(8);
+        let mut m = Metronome::new(metro(120.0), 48_000)
+            .unwrap()
+            .with_fire_channel(tx);
+        let mut clone = m.clone();
+        let _ = clone.next_sample(); // clone fires its click — silently
+        assert!(rx.try_pop().is_none(), "a clone must not report fires");
+        let _ = m.next_sample();
+        assert_eq!(
+            rx.try_pop().map(|f| f.sample_index),
+            Some(0),
+            "the original still reports"
+        );
     }
 
     #[test]

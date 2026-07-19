@@ -3,13 +3,20 @@
 //! callback as the band, so the same no-alloc law applies. Per-thread
 //! counting via a const-initialised thread-local, the pattern proven on
 //! the accompaniment alloc test.
+//!
+//! #445 AC5 extends the pin: the metronome now carries a click-fire
+//! channel (`with_fire_channel`) whose `try_push` runs inside the render
+//! path — the measured window must stay at zero allocations WITH the
+//! channel attached and actually firing.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use ears::output::{Metronome, MetronomeConfig};
-use ears::output_engine::{pocket_tempo_channel, RenderSource, TempoFedMetronome};
-use ringbuf::traits::Producer;
+use ears::output_engine::{
+    click_fire_channel, pocket_tempo_channel, RenderSource, TempoFedMetronome,
+};
+use ringbuf::traits::{Consumer, Producer};
 
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -54,9 +61,13 @@ fn pocket_click_render_does_not_allocate() {
         accent_first_beat: true,
         volume: 0.8,
     };
+    // #445: the fire channel rides the render path too — attach it so
+    // the measured window covers `try_push` on every click fire.
+    let (fire_tx, mut fire_rx) = click_fire_channel(64);
     let metronome = Metronome::new(config, 48_000)
         .expect("valid config")
-        .with_count_in(1);
+        .with_count_in(1)
+        .with_fire_channel(fire_tx);
     // #421 S2: the CHANNEL-FED source is the real render path now —
     // the alloc law must hold through tempo pops too.
     let (mut tx, rx) = pocket_tempo_channel(16);
@@ -81,4 +92,12 @@ fn pocket_click_render_does_not_allocate() {
 
     let allocs = ALLOC_COUNT.with(|c| c.get());
     assert_eq!(allocs, 0, "the click render must never touch the heap");
+
+    // #445: the zero-alloc window above must have been reporting fires —
+    // a silently detached channel would make the assertion vacuous.
+    let fires = std::iter::from_fn(|| fire_rx.try_pop()).count();
+    assert!(
+        fires > 0,
+        "the fire channel must report clicks during the measured window"
+    );
 }

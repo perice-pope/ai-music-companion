@@ -25,13 +25,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use brain::follower::{NoteVerdict, ScoreFollower, ScorePosition};
 use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
 use ears::capture::{AudioCapture, CaptureConfig, CaptureError};
+use ears::output_engine::ClickFire;
 use ears::pitch::{PitchConfig, PitchDetector, PitchError};
 use ears::AudioEvent;
+use ringbuf::traits::Consumer;
+use ringbuf::HeapCons;
 
 /// User-facing errors from pipeline start / reconfigure.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +49,79 @@ pub enum PipelineError {
     Pitch(#[from] PitchError),
     #[error("pipeline is already stopped")]
     AlreadyStopped,
+}
+
+// ---------------------------------------------------------------------------
+// #445: time-gated click rejection
+// ---------------------------------------------------------------------------
+
+/// #445: the Pocket's click, as the audio worker sees it. Installed by
+/// `start_pocket`, cleared by `teardown_pocket`, shared via
+/// [`SharedClickGate`] on `AppState`. The worker drains `fires` each
+/// window (PROCESSING thread — the `Mutex` lock is fine here, NEVER in a
+/// render/capture callback) and converts each fire's sample index to wall
+/// time so mic onsets that merely agree with our own click can be ignored.
+pub struct ClickGate {
+    /// Consumer half of `ears::output_engine::click_fire_channel` — the
+    /// render-side metronome pushes, we pop.
+    pub fires: HeapCons<ClickFire>,
+    /// Wall-clock instant of the metronome's sample 0 (recorded when the
+    /// Pocket's output started).
+    pub epoch: Instant,
+    /// The OUTPUT device's sample rate — the unit `ClickFire::sample_index`
+    /// is counted in. (The input side has its own, possibly different, rate.)
+    pub output_sample_rate: u32,
+}
+
+/// The shared slot the command layer installs the gate into and the audio
+/// worker reads it from. `None` whenever no click is playing — the gate
+/// fails OPEN (nothing is suppressed).
+pub type SharedClickGate = Arc<Mutex<Option<ClickGate>>>;
+
+/// #445: gate window before a click, in ms. Covers detector-window
+/// quantization jitter (an onset is timestamped at its analysis window's
+/// start, which can land just ahead of the click's wall time).
+pub(crate) const CLICK_GATE_PRE_MS: f64 = 15.0;
+/// #445: gate window after a click, in ms. The click itself is 30 ms
+/// (`CLICK_DURATION_MS`) plus its exponential decay tail, plus
+/// device/acoustic latency slop between "rendered" and "heard by the mic".
+pub(crate) const CLICK_GATE_POST_MS: f64 = 90.0;
+/// Max fires drained per detect window — bounds the per-window work. At
+/// the Pocket's 220 BPM ceiling clicks arrive < 4/s while windows tick
+/// ~40-50/s, so this is never the limiter in practice.
+const CLICK_GATE_MAX_DRAIN: usize = 32;
+/// Recent click wall-times retained (fixed-size ring, no allocation in
+/// the loop). The gate window is ~105 ms wide and clicks are ≥ ~270 ms
+/// apart, so only the nearest click can ever match; 8 is generous.
+const RECENT_CLICKS: usize = 8;
+
+/// #445: the pure gate check. `true` when the onset's wall time falls
+/// within `[click − CLICK_GATE_PRE_MS, click + CLICK_GATE_POST_MS]` of any
+/// recent click (both edges inclusive).
+///
+/// Honesty property: this can only SUPPRESS an onset that AGREES with the
+/// click — a player right on the beat needs no tempo correction anyway —
+/// and it PASSES disagreement, which is exactly what Follow mode needs to
+/// hear. It never invents onsets, and pitch is deliberately untouched
+/// (this slice scopes to tempo confusion; see the spec).
+fn onset_gated(event_wall_secs: f64, recent_clicks: &[f64]) -> bool {
+    let pre = CLICK_GATE_PRE_MS / 1000.0;
+    let post = CLICK_GATE_POST_MS / 1000.0;
+    recent_clicks.iter().any(|&click| {
+        let delta = event_wall_secs - click;
+        (-pre..=post).contains(&delta)
+    })
+}
+
+/// Signed seconds from `b` to `a` (`a − b`), since `Instant` subtraction
+/// alone can't go negative. The click epoch and the worker's session epoch
+/// are recorded independently, in either order.
+fn instant_offset_secs(a: Instant, b: Instant) -> f64 {
+    if a >= b {
+        (a - b).as_secs_f64()
+    } else {
+        -((b - a).as_secs_f64())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +303,17 @@ impl AudioPipeline {
     where
         F: FnMut(AudioEvent, Option<[f32; 12]>) + Send + 'static,
     {
-        Self::start_with_follower(profile, None, None, None, emit, |_| {}, |_| {}, |_| {})
+        Self::start_with_follower(
+            profile,
+            None,
+            None,
+            None,
+            None,
+            emit,
+            |_| {},
+            |_| {},
+            |_| {},
+        )
     }
 
     /// Like [`AudioPipeline::start`], but also runs phrase aggregation on
@@ -244,12 +330,17 @@ impl AudioPipeline {
     /// audio for **offline, end-of-session** idiom analysis. It is filled on
     /// the worker thread (allocation there is fine), never in the realtime
     /// callback, and read by the recap path after the session ends.
+    ///
+    /// `click_gate` (#445), when supplied, is the shared slot the Pocket
+    /// installs its [`ClickGate`] into; the worker strips onset flags that
+    /// coincide with the app's own click. `None`/empty slot → nothing gated.
     #[allow(clippy::too_many_arguments)]
     pub fn start_with_follower<F, P, S, V>(
         profile: DetectorProfile,
         follower: Option<ScoreFollower>,
         idiom_buffer: Option<SharedIdiomBuffer>,
         poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
+        click_gate: Option<SharedClickGate>,
         emit: F,
         emit_phrase: P,
         emit_position: S,
@@ -274,6 +365,7 @@ impl AudioPipeline {
                     follower,
                     idiom_buffer,
                     poly,
+                    click_gate,
                     profile_rx,
                     shutdown_worker,
                     startup_tx,
@@ -338,6 +430,7 @@ fn run_worker<F, P, S, V>(
     follower: Option<ScoreFollower>,
     idiom_buffer: Option<SharedIdiomBuffer>,
     poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
+    click_gate: Option<SharedClickGate>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
@@ -365,6 +458,7 @@ fn run_worker<F, P, S, V>(
         follower,
         idiom_buffer,
         poly,
+        click_gate,
         profile_rx,
         shutdown,
         startup_tx,
@@ -387,6 +481,7 @@ fn worker_loop<C, F, P, S, V>(
     follower: Option<ScoreFollower>,
     idiom_buffer: Option<SharedIdiomBuffer>,
     poly: Option<std::sync::Arc<transcribe::PolyRunner>>,
+    click_gate: Option<SharedClickGate>,
     profile_rx: Receiver<DetectorProfile>,
     shutdown: Arc<AtomicBool>,
     startup_tx: Sender<Result<(), PipelineError>>,
@@ -430,6 +525,17 @@ fn worker_loop<C, F, P, S, V>(
     let mut last_position_emit_secs: Option<f64> = None;
     let sample_rate = capture.sample_rate();
     let channels = capture.channels();
+
+    // #445: the worker's wall-clock epoch — the instant event time 0 was
+    // (approximately) captured. Click fires are converted into the same
+    // frame (`instant_offset_secs(pocket_epoch, session_epoch) + index/rate`)
+    // so onsets and clicks compare on one axis; the few-ms recording slop
+    // is far inside the gate's 105 ms window.
+    let session_epoch = Instant::now();
+    // Recent click wall-times, a fixed ring — NO allocation in the loop.
+    // NEG_INFINITY sentinels can never match a finite onset time.
+    let mut recent_clicks = [f64::NEG_INFINITY; RECENT_CLICKS];
+    let mut recent_click_idx: usize = 0;
 
     // --- Build initial detector. Same bail-early contract. ---
     let mut detector = match PitchDetector::new(initial_profile.into_pitch_config(sample_rate)) {
@@ -531,7 +637,33 @@ fn worker_loop<C, F, P, S, V>(
             &mono[..window]
         };
 
-        let event = detector.detect(mono_slice);
+        let mut event = detector.detect(mono_slice);
+        // #445: time-gated click rejection. Drain this window's click
+        // fires (bounded; drained every window so the SPSC ring never
+        // backs up into staleness) into the recent ring, then strip the
+        // onset flag if it merely agrees with our own click. The lock is
+        // on the PROCESSING thread — fine here, never in a render
+        // callback; a poisoned lock fails OPEN (onsets pass untouched).
+        // This runs BEFORE emit/aggregator/perception so every consumer
+        // sees one consistent story. Pitch is deliberately untouched.
+        if let Some(gate_slot) = &click_gate {
+            if let Ok(mut slot) = gate_slot.lock() {
+                if let Some(gate) = slot.as_mut() {
+                    for _ in 0..CLICK_GATE_MAX_DRAIN {
+                        let Some(fire) = gate.fires.try_pop() else {
+                            break;
+                        };
+                        recent_clicks[recent_click_idx] =
+                            instant_offset_secs(gate.epoch, session_epoch)
+                                + fire.sample_index as f64 / f64::from(gate.output_sample_rate);
+                        recent_click_idx = (recent_click_idx + 1) % RECENT_CLICKS;
+                    }
+                }
+            }
+            if event.is_onset && onset_gated(event.timestamp_secs, &recent_clicks) {
+                event.is_onset = false;
+            }
+        }
         // Live pitch goes out first so the meter stays responsive, then
         // the aggregator folds the event into the current phrase. The chroma
         // reading attached here was computed at the END of the *previous*
@@ -910,6 +1042,8 @@ mod tests {
     #[derive(Default)]
     struct EmitLog {
         events: Cell<usize>,
+        /// Timestamps of emitted events that carried `is_onset` (#445).
+        onsets: RefCell<Vec<f64>>,
         /// (events seen when this position left the loop, the position).
         positions: RefCell<Vec<(usize, ScorePosition)>>,
         verdicts: Cell<usize>,
@@ -917,7 +1051,11 @@ mod tests {
     }
 
     /// Run the real worker loop over `samples` and record what it emits.
-    fn drive_loop(samples: Vec<f32>, follower: Option<ScoreFollower>) -> Rc<EmitLog> {
+    fn drive_loop(
+        samples: Vec<f32>,
+        follower: Option<ScoreFollower>,
+        click_gate: Option<SharedClickGate>,
+    ) -> Rc<EmitLog> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let capture = ScriptedCapture {
             samples,
@@ -941,10 +1079,16 @@ mod tests {
             follower,
             None,
             None,
+            click_gate,
             profile_rx,
             shutdown,
             startup_tx,
-            move |_event, _chroma| ev.events.set(ev.events.get() + 1),
+            move |event, _chroma| {
+                ev.events.set(ev.events.get() + 1);
+                if event.is_onset {
+                    ev.onsets.borrow_mut().push(event.timestamp_secs);
+                }
+            },
             move |_phrase| phr.phrases.set(phr.phrases.get() + 1),
             move |p| pos.positions.borrow_mut().push((pos.events.get(), p)),
             move |_verdict| ver.verdicts.set(ver.verdicts.get() + 1),
@@ -969,7 +1113,7 @@ mod tests {
         let samples = vec![0.0_f32; window * n_windows];
         let duration_secs = (window * n_windows) as f64 / f64::from(TEST_SAMPLE_RATE);
 
-        let log = drive_loop(samples, Some(scale_follower()));
+        let log = drive_loop(samples, Some(scale_follower()), None);
 
         let positions = log.positions.borrow();
         assert_eq!(log.events.get(), n_windows, "every window becomes an event");
@@ -1015,7 +1159,7 @@ mod tests {
     #[test]
     fn played_scale_advances_positions_and_verdicts_together() {
         let window = detector_window();
-        let log = drive_loop(played_scale(window), Some(scale_follower()));
+        let log = drive_loop(played_scale(window), Some(scale_follower()), None);
 
         let positions = log.positions.borrow();
         assert!(
@@ -1042,7 +1186,7 @@ mod tests {
     #[test]
     fn free_play_emits_no_positions_or_verdicts() {
         let window = detector_window();
-        let log = drive_loop(played_scale(window), None);
+        let log = drive_loop(played_scale(window), None, None);
 
         assert!(log.events.get() > 0, "audio events must still flow");
         assert!(
@@ -1062,6 +1206,118 @@ mod tests {
             log.phrases.get(),
             1,
             "the end-of-session flush must deliver the trailing phrase"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // #445: time-gated click rejection
+    // -----------------------------------------------------------------
+
+    /// #445 AC3: the pure gate window, boundaries pinned INCLUSIVE on
+    /// both edges. A window that drifted (wrong sign, ms/seconds mixup,
+    /// exclusive bounds) fails here.
+    #[test]
+    fn onset_gated_window_boundaries_are_pinned() {
+        let clicks = [10.0];
+        // Inside: the click instant itself, mid-window either side.
+        assert!(onset_gated(10.0, &clicks));
+        assert!(onset_gated(9.99, &clicks));
+        assert!(onset_gated(10.05, &clicks));
+        // Exact boundaries are gated (inclusive). A click at 0.0 keeps the
+        // event−click delta exactly representable, so this pins the
+        // comparison operators rather than f64 rounding noise.
+        assert!(onset_gated(-CLICK_GATE_PRE_MS / 1000.0, &[0.0]));
+        assert!(onset_gated(CLICK_GATE_POST_MS / 1000.0, &[0.0]));
+        // Just outside either edge passes.
+        assert!(!onset_gated(-CLICK_GATE_PRE_MS / 1000.0 - 0.001, &[0.0]));
+        assert!(!onset_gated(CLICK_GATE_POST_MS / 1000.0 + 0.001, &[0.0]));
+        // Far away passes; empty click list passes; the NEG_INFINITY
+        // ring sentinels can never match.
+        assert!(!onset_gated(9.5, &clicks));
+        assert!(!onset_gated(10.2, &clicks));
+        assert!(!onset_gated(10.0, &[]));
+        assert!(!onset_gated(10.0, &[f64::NEG_INFINITY]));
+        // Any recent click may match, not just the newest.
+        assert!(onset_gated(10.0, &[3.0, 10.01, f64::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn instant_offset_is_signed_both_ways() {
+        let a = Instant::now();
+        let b = a + Duration::from_millis(250);
+        assert!((instant_offset_secs(b, a) - 0.25).abs() < 1e-9);
+        assert!((instant_offset_secs(a, b) + 0.25).abs() < 1e-9);
+        assert_eq!(instant_offset_secs(a, a), 0.0);
+    }
+
+    /// #445 AC4: the REAL worker loop, scripted PCM. Run 1 (no gate)
+    /// finds where the detector hears onsets; run 2 installs a gate whose
+    /// clicks land exactly there → every one is stripped; run 3 shifts
+    /// the clicks 0.5 s away → every onset survives (the gate passes
+    /// DISAGREEMENT — the thing Follow mode must hear). Event counts stay
+    /// identical throughout: the gate drops flags, never events.
+    #[test]
+    fn click_coincident_onsets_are_gated_and_off_beat_onsets_pass() {
+        use ears::output_engine::click_fire_channel;
+        use ringbuf::traits::Producer;
+
+        let window = detector_window();
+        // Silence, then a loud sine: a clean silence→sound attack the
+        // SuperFlux onset detector flags.
+        let mut samples = vec![0.0_f32; window * 10];
+        samples.extend(ears::pitch::generate_sine(
+            440.0,
+            TEST_SAMPLE_RATE,
+            window * 10,
+        ));
+
+        // Run 1: no gate — collect the detector's onset timestamps.
+        let baseline = drive_loop(samples.clone(), None, None);
+        let onsets = baseline.onsets.borrow().clone();
+        assert!(
+            !onsets.is_empty(),
+            "the silence→sine attack must register at least one onset"
+        );
+
+        // The metronome's output clock: any rate works — the gate only
+        // uses sample_index / rate. The gate's epoch and the loop's
+        // session_epoch are recorded µs apart, far inside the window.
+        const OUTPUT_RATE: u32 = 48_000;
+        let gate_at = |offset_secs: f64| {
+            let (mut tx, rx) = click_fire_channel(64);
+            for &t in &onsets {
+                tx.try_push(ClickFire {
+                    sample_index: ((t + offset_secs) * f64::from(OUTPUT_RATE)) as u64,
+                    is_accent: false,
+                })
+                .expect("fire fits the ring");
+            }
+            Arc::new(Mutex::new(Some(ClickGate {
+                fires: rx,
+                epoch: Instant::now(),
+                output_sample_rate: OUTPUT_RATE,
+            })))
+        };
+
+        // Run 2: clicks exactly on the onsets → all gated, no event lost.
+        let gated = drive_loop(samples.clone(), None, Some(gate_at(0.0)));
+        assert_eq!(
+            gated.events.get(),
+            baseline.events.get(),
+            "the gate must never drop events, only onset flags"
+        );
+        assert!(
+            gated.onsets.borrow().is_empty(),
+            "onsets agreeing with our own click must be stripped, got {:?}",
+            gated.onsets.borrow()
+        );
+
+        // Run 3: clicks 0.5 s off the onsets → disagreement passes.
+        let passed = drive_loop(samples, None, Some(gate_at(0.5)));
+        assert_eq!(
+            *passed.onsets.borrow(),
+            onsets,
+            "onsets that DISAGREE with the click must pass untouched"
         );
     }
 }
