@@ -4427,8 +4427,77 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
     })
 }
 
-/// Delete a score from the library.
+/// #419 S3: one of "your patterns" — a cell your hands actually played,
+/// ready to drop back into the Openers builder as a Notes item.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MyPatternDto {
+    pub label: String,
+    pub offsets: Vec<i8>,
+    pub times_practiced: usize,
+    pub last_tonic: u8,
+}
+
+const MY_PATTERNS_CAP: usize = 6;
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
+];
+
+/// #419 S3: derive "My patterns" from the exercise log — rows carry the
+/// full VariationSpec as replayable JSON, and any row whose spec has a
+/// CELL is a pattern the player's hands actually produced. Dedup by
+/// cell (identical offsets = one pattern practiced N times), most
+/// recent first, capped. Store failures and unparseable rows are
+/// skipped calmly — this list never errors the panel.
+pub fn my_patterns_impl(state: &AppState) -> Vec<MyPatternDto> {
+    let rows = match state.session_store.lock_or_recover().list_exercise_log() {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "exercise log unreadable; My patterns empty");
+            return Vec::new();
+        }
+    };
+    // Most recent first; the log lists oldest-first.
+    let mut patterns: Vec<MyPatternDto> = Vec::new();
+    for row in rows.iter().rev() {
+        let Ok(spec) = serde_json::from_str::<brain::coach::VariationSpec>(&row.spec_json) else {
+            continue; // Old or foreign spec shape — skip calmly.
+        };
+        let Some(cell) = spec.cell.filter(|c| c.len() >= 2) else {
+            continue; // Catalog drills aren't "your" patterns.
+        };
+        if let Some(existing) = patterns.iter_mut().find(|p| p.offsets == cell) {
+            existing.times_practiced += 1;
+            continue;
+        }
+        patterns.push(MyPatternDto {
+            label: String::new(), // finalized below, once counts settle
+            offsets: cell,
+            times_practiced: 1,
+            last_tonic: row.tonic % 12,
+        });
+    }
+    patterns.truncate(MY_PATTERNS_CAP);
+    for p in &mut patterns {
+        let times = if p.times_practiced == 1 {
+            "once".to_owned()
+        } else {
+            format!("{}×", p.times_practiced)
+        };
+        p.label = format!(
+            "your {}-note cell · {times}, last in {}",
+            p.offsets.len(),
+            NOTE_NAMES[usize::from(p.last_tonic)]
+        );
+    }
+    patterns
+}
+
+/// #419 S3: the My Patterns query for the Openers panel.
 #[tauri::command]
+pub fn my_patterns(state: State<'_, AppState>) -> Vec<MyPatternDto> {
+    my_patterns_impl(&state)
+}
+
 /// #214 S1b: ambient identification — called by the frontend on each
 /// phrase (the same cadence as coaching tips), reads the backend's own
 /// phrase buffer, and answers through S1a's honesty gates. None is the
@@ -7971,6 +8040,73 @@ mod tests {
             check_piece_match_impl(&s).is_some(),
             "the rebuild makes a preexisting library identifiable"
         );
+    }
+
+    /// #419 S3: My Patterns derives from the exercise log — dedup by
+    /// cell with counts, most-recent-first, capped, garbage skipped,
+    /// store failure → empty (never errors the panel).
+    #[test]
+    fn my_patterns_dedup_count_cap_and_skip_garbage() {
+        let s = AppState::with_mocks();
+        let log = |cell: Option<Vec<i8>>, tonic: u8| {
+            // Specs built the way the app builds them — through the real
+            // explore constructors (VariationSpec has no Default).
+            let model = brain::learner::LearnerModel::default();
+            let spec = match cell {
+                Some(c) => {
+                    let (state, _) = brain::coach::start_explore_cell(
+                        c,
+                        tonic,
+                        &model,
+                        1,
+                        brain::coach::DirectionMode::Forward,
+                    );
+                    state.spec
+                }
+                None => {
+                    let (state, _) = brain::coach::start_explore(tonic, "major", &model, 1);
+                    state.spec
+                }
+            };
+            let store = s.session_store.lock_or_recover();
+            log_exercise_best_effort(
+                &store,
+                ExerciseOutcome {
+                    source: "opener",
+                    label: "t",
+                    spec: &spec,
+                    seed: 1,
+                    difficulty: 0,
+                    tonic,
+                    accuracy: None,
+                },
+            );
+        };
+        // Empty log → empty list, calm.
+        assert!(my_patterns_impl(&s).is_empty());
+
+        log(Some(vec![0, 4, 7]), 0); // pattern A in C
+        log(None, 0); // catalog drill — not "yours"
+        log(Some(vec![0, 4, 7]), 9); // pattern A again, in A
+        log(Some(vec![0, 2, 4, 5]), 2); // pattern B in D
+        let patterns = my_patterns_impl(&s);
+        assert_eq!(patterns.len(), 2);
+        // Most recent first: B (the last distinct arrival order reversed).
+        assert_eq!(patterns[0].offsets, vec![0, 2, 4, 5]);
+        assert_eq!(patterns[0].times_practiced, 1);
+        assert_eq!(patterns[1].offsets, vec![0, 4, 7]);
+        assert_eq!(patterns[1].times_practiced, 2);
+        assert!(
+            patterns[1].label.contains("2×") && patterns[1].label.contains("A"),
+            "label carries count and last key: {}",
+            patterns[1].label
+        );
+
+        // Cap at 6 distinct patterns.
+        for i in 0..8i8 {
+            log(Some(vec![0, i + 1]), 0);
+        }
+        assert_eq!(my_patterns_impl(&s).len(), 6);
     }
 
     /// #419 S1: preview is PURE — no active exploration, no exercise log.

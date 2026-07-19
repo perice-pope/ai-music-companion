@@ -32,7 +32,10 @@ const PREVIEW_DTO = {
 
 beforeEach(() => {
   mockInvoke.mockReset();
-  mockInvoke.mockResolvedValue(PREVIEW_DTO);
+  // my_patterns resolves to a LIST; every other command previews.
+  mockInvoke.mockImplementation((cmd: string) =>
+    Promise.resolve(cmd === "my_patterns" ? [] : PREVIEW_DTO),
+  );
   usePracticeStore.setState({
     openerItems: [],
     openerPreview: null,
@@ -516,6 +519,48 @@ describe("OpenersPanel (#419 S1)", () => {
     expect(usePracticeStore.getState().openerTonic).toBeNull();
     expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
       "forward",
+    );
+  });
+
+  // ── #419 S3: My patterns ──────────────────────────────────────────────
+
+  it("your patterns surface as chips and add through the Notes wire", async () => {
+    mockInvoke.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === "my_patterns"
+          ? [
+              {
+                label: "your 5-note cell · 3×, last in A",
+                offsets: [0, 4, 2, 7, 4],
+                times_practiced: 3,
+                last_tonic: 9,
+              },
+            ]
+          : PREVIEW_DTO,
+      ),
+    );
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-my-pattern-0"));
+    expect(screen.getByTestId("opener-my-pattern-0").textContent).toContain(
+      "3×, last in A",
+    );
+    fireEvent.click(screen.getByTestId("opener-my-pattern-0"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0, 4, 2, 7, 4] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("an empty practice history reads honestly, never hides", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("my-patterns-empty"));
+    expect(screen.getByTestId("my-patterns-empty").textContent).toContain(
+      "your patterns appear here",
     );
   });
 });
