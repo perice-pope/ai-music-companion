@@ -2837,12 +2837,8 @@ pub struct ExploreDto {
 }
 
 /// Assemble the ExploreDto every explore command returns.
-fn explore_dto(
-    explore: &ExploreState,
-    seq: &brain::coach::GeneratedSequence,
-    model: &brain::learner::LearnerModel,
-) -> ExploreDto {
-    let chips = brain::coach::suggest_chips(explore, model);
+fn explore_dto(explore: &ExploreState, seq: &brain::coach::GeneratedSequence) -> ExploreDto {
+    let chips = brain::coach::suggest_chips(explore);
     // ONE key derivation for everything the player sees or edits —
     // explore_key follows the figure's family (scale, else the jam
     // chord, #349 T4a review M4-r2: a heard Cm7 must engrave Eb/Bb
@@ -2992,7 +2988,7 @@ pub fn start_explore_variation_impl(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let (explore, seq) = start_explore(tonic, mode, &model, seed);
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3031,18 +3027,12 @@ pub fn apply_variation_delta_impl(
     state: &AppState,
     delta: VariationDelta,
 ) -> Result<ExploreDto, String> {
-    let model = state
-        .session_store
-        .lock_or_recover()
-        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let (next, seq) = apply_explore_delta(current, &delta);
-    let dto = explore_dto(&next, &seq, &model);
+    let dto = explore_dto(&next, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3194,7 +3184,7 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
         seed,
         brain::coach::DirectionMode::Forward,
     );
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3289,7 +3279,7 @@ pub fn explore_measure_impl(
         seed,
         brain::coach::DirectionMode::Forward,
     );
-    let dto = explore_dto(&explore, &seq, &learner);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3355,7 +3345,7 @@ pub fn opener_impl(
     // Openers speak in abstract degrees, so the row starts from C and
     // travels the 12 keys from there (S1 simplification, noted in #419).
     let (explore, seq) = brain::coach::start_explore_cell(cell, tonic, &model, seed, direction);
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     if commit {
         {
             let store = state.session_store.lock_or_recover();
@@ -3521,19 +3511,13 @@ pub fn recall_last_opener_impl(state: &AppState) -> Option<LastOpenerDto> {
 pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> {
     let (row, spec) = last_opener_row(state)
         .ok_or_else(|| "no opener to recall yet — begin one first".to_string())?;
-    let model = state
-        .session_store
-        .lock_or_recover()
-        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
     // Review MF2: replay the STORED spec wholesale — roots, rhythm, and
     // all. Rebuilding through start_explore_cell would let today's
     // learner difficulty retune yesterday's opener (tempo, root count)
     // under a chip that promises "exactly".
     let (explore, seq) =
         brain::coach::resume_explore_spec(spec, row.tonic % 12, row.difficulty, row.seed);
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3627,7 +3611,7 @@ pub fn explore_chord_impl(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let (explore, seq) = brain::coach::start_explore_chord(root_pc % 12, quality, &model, seed);
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3690,7 +3674,7 @@ pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDt
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     let (explore, seq) = brain::coach::start_explore_progression(&chords, &model, seed);
-    let dto = explore_dto(&explore, &seq, &model);
+    let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
         log_exercise_best_effort(
@@ -3745,19 +3729,13 @@ pub fn edit_explore_note_impl(
     index: usize,
     edit: brain::coach::NoteEdit,
 ) -> Result<ExploreDto, String> {
-    let model = state
-        .session_store
-        .lock_or_recover()
-        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let key = explore_key(current);
     let (next, seq) = brain::coach::edit_explore_note(current, index, &edit, &key)?;
-    let dto = explore_dto(&next, &seq, &model);
+    let dto = explore_dto(&next, &seq);
     *guard = Some(next);
     Ok(dto)
 }
@@ -3773,18 +3751,12 @@ pub fn edit_explore_note(
 
 /// Undo the most recent explore edit — restores the exact prior rep.
 pub fn undo_explore_edit_impl(state: &AppState) -> Result<ExploreDto, String> {
-    let model = state
-        .session_store
-        .lock_or_recover()
-        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
     let (next, seq) = brain::coach::undo_explore_edit(current)?;
-    let dto = explore_dto(&next, &seq, &model);
+    let dto = explore_dto(&next, &seq);
     *guard = Some(next);
     Ok(dto)
 }
@@ -5979,12 +5951,12 @@ mod tests {
         let dto = start_explore_variation_impl(&s, 7, "Dorian", 42).unwrap();
         assert!(dto.label.contains("Dorian"), "got {}", dto.label);
         assert!(dto.music_xml.contains("<score-partwise"));
-        assert!(!dto.chips.is_empty() && dto.chips.len() <= 3);
+        assert_eq!(dto.chips.len(), 5, "the stable five (#445-4)");
         assert!(!dto.root_pitch_classes.is_empty());
 
         let next = apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
         assert_ne!(next.music_xml, dto.music_xml, "a delta produces a new rep");
-        assert!(next.chips.len() <= 3);
+        assert_eq!(next.chips.len(), 5);
 
         // #292 slice 3: chips and edits are both undo-able steps; an edit
         // bakes the cell and undo restores the exact prior rep.
@@ -8732,7 +8704,7 @@ mod tests {
             stored_seed,
             brain::coach::DirectionMode::RandomPerRoot,
         );
-        let original_xml = explore_dto(&original, &original_seq, &model).music_xml;
+        let original_xml = explore_dto(&original, &original_seq).music_xml;
         // The seed opener_impl would hash today — and proof the pin has
         // teeth: that seed produces a DIFFERENT spec than the stored one.
         let rehash = {
@@ -8750,7 +8722,7 @@ mod tests {
             brain::coach::DirectionMode::RandomPerRoot,
         );
         assert_ne!(
-            explore_dto(&rehashed, &rehashed_seq, &model).music_xml,
+            explore_dto(&rehashed, &rehashed_seq).music_xml,
             original_xml,
             "the two seeds must differ visibly or this pin is vacuous"
         );

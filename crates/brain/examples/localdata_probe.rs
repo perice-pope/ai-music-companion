@@ -99,7 +99,7 @@ fn main() {
                     7,
                     brain::coach::DirectionMode::Forward,
                 );
-                let chips = suggest_chips(&state, &model);
+                let chips = suggest_chips(&state);
                 assert!(!chips.is_empty() && chips.len() <= 3);
                 let key = brain::coach::key_signature_for(state.tonic, "major");
                 let staff = cell_staff_view(&seq, key);

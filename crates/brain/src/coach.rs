@@ -857,6 +857,15 @@ pub enum VariationDelta {
 pub struct ChipSpec {
     pub label: String,
     pub delta: VariationDelta,
+    /// #445-4: the row is STABLE — a chip that can't act right now stays
+    /// put, dims, and says so, instead of vanishing or trading slots
+    /// (rule 0 applies to controls too).
+    #[serde(default = "chip_enabled_default")]
+    pub enabled: bool,
+}
+
+fn chip_enabled_default() -> bool {
+    true
 }
 
 /// The in-flight exploration: the spec that produced the current rep plus the
@@ -939,63 +948,45 @@ pub fn start_explore(
     )
 }
 
-/// Struggling threshold for offering `[Simpler]` instead of `[Spicy]`.
-const STRUGGLING_EWMA: f32 = 0.6;
-
-/// The ≤3 chips for the current exploration — pure and stable-ordered:
-/// 1. `[New keys 🎲]` whenever there is more than one root to shuffle;
-/// 2. `[Simpler]` when the learner is struggling on this key (or at the top of
-///    the ladder), otherwise `[Make it spicy]` — never a raise at MAX, never a
-///    lower at 0;
-/// 3. `[Different scale]` always;
-/// 4. `[Reverse it]` fills the row only when fewer than 3 chips gathered.
-pub fn suggest_chips(state: &ExploreState, model: &LearnerModel) -> Vec<ChipSpec> {
-    let mut chips = Vec::new();
-    if state.spec.roots.len() > 1 {
-        chips.push(ChipSpec {
-            label: "New keys 🎲".to_owned(),
+/// #445-4: the FIVE stable chips — fixed identity, fixed order, for any
+/// seed/difficulty/root-count. A chip that can't act right now DISABLES in
+/// place (rule 0 for controls) instead of vanishing, morphing, or trading
+/// slots — the old row flipped slot 3 by seed parity and swapped the
+/// difficulty slot, so repeat taps landed on different actions (#445-3).
+///
+/// - `Shuffle` disables at ≤2 roots: the generator pins the FIRST root
+///   (RV: start where you are), so a two-root shuffle is a hard no-op —
+///   the works-once bug, surfaced honestly instead of offered as a dud.
+/// - `Add keys` (BumpDifficulty +1 — named for what the founder actually
+///   sees it do) disables at MAX; `Simpler` disables at 0.
+pub fn suggest_chips(state: &ExploreState) -> Vec<ChipSpec> {
+    vec![
+        ChipSpec {
+            label: "Shuffle 🎲".to_owned(),
             delta: VariationDelta::ReshuffleRoots,
-        });
-    }
-    // Struggling = ANY practiced mode on THIS tonic below the bar (mastery
-    // keys are "tonic:mode"; judging by an unrelated key's struggle would
-    // gate [Simpler] arbitrarily).
-    let tonic_prefix = format!("{}:", state.tonic % 12);
-    let struggling = model.key_mastery.iter().any(|(k, m)| {
-        k.starts_with(&tonic_prefix) && m.attempts > 0 && m.accuracy_ewma < STRUGGLING_EWMA
-    });
-    if (struggling || state.difficulty >= MAX_DIFFICULTY) && state.difficulty > 0 {
-        chips.push(ChipSpec {
+            enabled: state.spec.roots.len() > 2,
+        },
+        ChipSpec {
+            label: "Add keys".to_owned(),
+            delta: VariationDelta::BumpDifficulty { by: 1 },
+            enabled: state.difficulty < MAX_DIFFICULTY,
+        },
+        ChipSpec {
             label: "Simpler".to_owned(),
             delta: VariationDelta::BumpDifficulty { by: -1 },
-        });
-    } else if state.difficulty < MAX_DIFFICULTY {
-        chips.push(ChipSpec {
-            label: "Make it spicy".to_owned(),
-            delta: VariationDelta::BumpDifficulty { by: 1 },
-        });
-    }
-    // Slot 3 alternates by seed parity (the seed advances every rep), so both
-    // the scale palette and the pattern database stay reachable in <=3 chips.
-    if state.seed.is_multiple_of(2) {
-        chips.push(ChipSpec {
-            label: "Different scale".to_owned(),
-            delta: VariationDelta::DifferentScale,
-        });
-    } else {
-        chips.push(ChipSpec {
+            enabled: state.difficulty > 0,
+        },
+        ChipSpec {
             label: "Try a pattern 🎲".to_owned(),
             delta: VariationDelta::TryPattern,
-        });
-    }
-    if chips.len() < 3 {
-        chips.push(ChipSpec {
-            label: "Reverse it".to_owned(),
-            delta: VariationDelta::ToggleDirection,
-        });
-    }
-    chips.truncate(3);
-    chips
+            enabled: true,
+        },
+        ChipSpec {
+            label: "Different scale".to_owned(),
+            delta: VariationDelta::DifferentScale,
+            enabled: true,
+        },
+    ]
 }
 
 /// RV's pattern database (#289): classic 4-note degree patterns, named,
@@ -2548,26 +2539,24 @@ mod tests {
     // #289 — the pattern database
     // -----------------------------------------------------------------------
 
-    /// #289: the pattern chip is reachable (slot 3 alternates by seed parity
-    /// with the scale chip), and applying it pulls a database pattern that
-    /// ties to the active scale — never the one already playing.
+    /// #289 → #445-4: BOTH the pattern and scale chips are always on offer
+    /// (the old seed-parity alternation is dead — the flip mutant), and
+    /// applying the pattern chip pulls a database pattern that ties to the
+    /// active scale — never the one already playing.
     #[test]
     fn pattern_chip_alternates_and_applies_from_the_database() {
         let model = LearnerModel::default();
         let (mut state, _) = start_explore(0, "major", &model, 2); // even seed
         let labels = |st: &ExploreState| -> Vec<String> {
-            suggest_chips(st, &model)
-                .iter()
-                .map(|c| c.label.clone())
-                .collect()
+            suggest_chips(st).iter().map(|c| c.label.clone()).collect()
         };
-        assert!(labels(&state).iter().any(|l| l.contains("Different scale")));
-        state.seed = 3; // odd
-        assert!(
-            labels(&state).iter().any(|l| l.contains("Try a pattern")),
-            "odd seeds offer the pattern chip: {:?}",
-            labels(&state)
-        );
+        // #445-4: both reachable at EVERY seed parity — no flipping slot.
+        for seed in [2, 3] {
+            state.seed = seed;
+            let l = labels(&state);
+            assert!(l.iter().any(|x| x.contains("Different scale")), "{l:?}");
+            assert!(l.iter().any(|x| x.contains("Try a pattern")), "{l:?}");
+        }
 
         let (with_pat, seq) = apply_explore_delta(&state, &VariationDelta::TryPattern);
         let degrees = with_pat.spec.degrees.clone().expect("a pattern landed");
@@ -2635,25 +2624,24 @@ mod tests {
             "got {} roots",
             seq.root_order.len()
         );
-        // And the reshuffle chip is on offer (roots > 1).
-        assert!(suggest_chips(&state, &model)
+        // And the Shuffle chip is live (>2 roots — enough to actually move).
+        assert!(suggest_chips(&state)
             .iter()
-            .any(|c| c.delta == VariationDelta::ReshuffleRoots));
+            .any(|c| c.delta == VariationDelta::ReshuffleRoots && c.enabled));
     }
 
-    /// Mutation M1: a one-root row must NOT offer [New keys] — the chip would
-    /// do nothing.
+    /// Mutation M1 → #445-4: Shuffle on a one-root row is DISABLED IN
+    /// PLACE — still present (stable row), but it can't fire a no-op.
     #[test]
     fn one_root_rows_offer_no_reshuffle_chip() {
         let model = LearnerModel::default(); // difficulty 0 → 1 root
         let (state, seq) = start_explore(0, "major", &model, 2);
         assert_eq!(seq.root_order.len(), 1, "difficulty 0 is a one-root row");
-        assert!(
-            !suggest_chips(&state, &model)
-                .iter()
-                .any(|c| c.delta == VariationDelta::ReshuffleRoots),
-            "no reshuffle chip on a single root"
-        );
+        let shuffle = suggest_chips(&state)
+            .into_iter()
+            .find(|c| c.delta == VariationDelta::ReshuffleRoots)
+            .expect("the chip stays in the row (stable identity)");
+        assert!(!shuffle.enabled, "a single root has nothing to shuffle");
     }
 
     // -----------------------------------------------------------------------
@@ -2891,62 +2879,58 @@ mod tests {
     // #255 — free-play exploration
     // -----------------------------------------------------------------------
 
-    /// #255: chips are ≤3, stable-ordered, and carry concrete deltas; the
-    /// difficulty chip is gated — spicy below MAX, simpler at MAX or when
-    /// struggling, nothing below 0. Fails if the gating rules regress.
+    /// #445-4 AC1+AC2: the FIVE stable chips — same labels, same order,
+    /// for any seed/difficulty — with gates expressed as disabled flags.
+    /// Fails if a chip vanishes, morphs, or trades slots (the old row did
+    /// all three).
     #[test]
-    fn suggest_chips_gates_by_difficulty_and_struggle() {
-        let model = LearnerModel::default(); // difficulty 0, no mastery
-        let (state, _) = start_explore(7, "dorian", &model, 1);
-        let chips = suggest_chips(&state, &model);
-        assert!(chips.len() <= 3);
-        assert!(
-            chips.iter().any(|c| c.label.contains("spicy")),
-            "fresh learner below MAX gets a spicy chip: {chips:?}"
-        );
-        assert!(
-            !chips
-                .iter()
-                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }),
-            "difficulty 0 must not offer Simpler"
-        );
+    fn suggest_chips_is_the_stable_five_with_honest_gates() {
+        const THE_FIVE: [&str; 5] = [
+            "Shuffle 🎲",
+            "Add keys",
+            "Simpler",
+            "Try a pattern 🎲",
+            "Different scale",
+        ];
+        let labels =
+            |chips: &[ChipSpec]| -> Vec<String> { chips.iter().map(|c| c.label.clone()).collect() };
+        let enabled_of = |chips: &[ChipSpec], label: &str| -> bool {
+            chips.iter().find(|c| c.label == label).unwrap().enabled
+        };
 
-        // At the top of the ladder: never a raise, offer simpler instead.
+        // Fresh learner (difficulty 0, one root), both seed parities: same
+        // five, same order — the parity-flip mutant dies here.
+        let model = LearnerModel::default();
+        for seed in [2, 3] {
+            let (state, _) = start_explore(7, "dorian", &model, seed);
+            let chips = suggest_chips(&state);
+            assert_eq!(labels(&chips), THE_FIVE.to_vec(), "seed {seed}");
+            assert!(!enabled_of(&chips, "Simpler"), "difficulty 0: no lower");
+            assert!(enabled_of(&chips, "Add keys"));
+            assert!(
+                !enabled_of(&chips, "Shuffle 🎲"),
+                "one root: nothing to shuffle"
+            );
+            assert!(enabled_of(&chips, "Try a pattern 🎲"));
+            assert!(enabled_of(&chips, "Different scale"));
+        }
+
+        // Top of the ladder: same five, Add keys disabled, Simpler live.
         let mut top = crate::learner::apply_difficulty(&model, MAX_DIFFICULTY, 1);
         top.difficulty = MAX_DIFFICULTY;
         let (state_top, _) = start_explore(7, "dorian", &top, 1);
-        let chips_top = suggest_chips(&state_top, &top);
-        assert!(
-            !chips_top
-                .iter()
-                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: 1 }),
-            "MAX difficulty must not offer a raise: {chips_top:?}"
-        );
-        assert!(chips_top
-            .iter()
-            .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }));
+        let chips_top = suggest_chips(&state_top);
+        assert_eq!(labels(&chips_top), THE_FIVE.to_vec());
+        assert!(!enabled_of(&chips_top, "Add keys"), "MAX: no raise");
+        assert!(enabled_of(&chips_top, "Simpler"));
 
-        // Struggling on the key → Simpler replaces Spicy (needs difficulty > 0).
-        let mut struggling = crate::learner::apply_difficulty(&model, 3, 1);
-        for t in 0..3 {
-            struggling = crate::learner::apply_drill_result(
-                &struggling,
-                &crate::learner::DrillResult {
-                    tonic: 7,
-                    mode: "major".to_owned(),
-                    accuracy: 0.2,
-                },
-                t,
-            );
-        }
-        let (state_s, _) = start_explore(7, "dorian", &struggling, 1);
-        let chips_s = suggest_chips(&state_s, &struggling);
-        assert!(
-            chips_s
-                .iter()
-                .any(|c| c.delta == VariationDelta::BumpDifficulty { by: -1 }),
-            "a struggling learner gets Simpler: {chips_s:?}"
-        );
+        // The generator's own no-op boundary: exactly 2 roots (first is
+        // pinned) still can't shuffle; 3 can — the works-once bug's pin.
+        let (mut two, _) = start_explore(0, "major", &model, 5);
+        two.spec.roots = vec![60, 62];
+        assert!(!enabled_of(&suggest_chips(&two), "Shuffle 🎲"));
+        two.spec.roots = vec![60, 62, 64];
+        assert!(enabled_of(&suggest_chips(&two), "Shuffle 🎲"));
     }
 
     /// #255: start_explore seeds the variation from the LIVE key — a Dorian
