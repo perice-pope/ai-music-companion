@@ -78,8 +78,10 @@ describe("RevealCard", () => {
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
-    // Assert the concept shows; don't pin the decorative "In the wild ·" prefix.
-    expect(screen.getByText(/Dorian/)).toBeInTheDocument();
+    // #388 AC2: the headline claims the MODE and nothing else — pinned
+    // exactly, so a frontend change re-deriving a note name into it
+    // ("In the wild · G# Dorian") fails here even with the backend clean.
+    expect(screen.getByText("In the wild · Dorian")).toBeInTheDocument();
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.getByText("A cool, jazzy minor.")).toBeInTheDocument();
   });

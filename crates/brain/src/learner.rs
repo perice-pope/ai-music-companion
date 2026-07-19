@@ -38,7 +38,10 @@ pub const OWNED_MIN_ATTEMPTS: u32 = 3;
 /// One unlocked reveal: a musical concept tied to a real-world connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Collected {
-    /// The musical concept, e.g. `"G Dorian"`.
+    /// The musical concept, e.g. `"Dorian"` (mode-level since #388; blobs
+    /// written before that may still hold key-stamped legacy values like
+    /// `"G Dorian"` — [`apply_reveal`] folds those onto the mode on its next
+    /// transition).
     pub concept: String,
     /// The grounded real-world connection, e.g. `"Miles Davis — \"So What\""`.
     pub connection: String,
@@ -214,12 +217,40 @@ pub fn apply_difficulty(model: &LearnerModel, difficulty: u8, now_epoch_secs: i6
     next
 }
 
+/// #388 legacy repair: pre-#388 reveals stored key-stamped concepts
+/// (`"G Dorian"`) that fabricated a key claim the curated catalog never made.
+/// Fold such a concept onto its mode-level form (`"Dorian"`) when — and only
+/// when — it is `<sharp-side note> <curated mode display>`; anything else
+/// passes through untouched. The note check uses the exact spelling set the
+/// old `reveal_for` emitted, so no other concept shape can be mangled.
+fn normalize_concept(concept: &str) -> String {
+    const LEGACY_NOTES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let trimmed = concept.trim();
+    if let Some((note, rest)) = trimmed.split_once(' ') {
+        if LEGACY_NOTES.contains(&note) {
+            if let Some((display, _)) = crate::connections::curated_for(&rest.trim().to_lowercase())
+            {
+                return display.to_owned();
+            }
+        }
+    }
+    trimmed.to_owned()
+}
+
 /// Pure transition: fold one surfaced reveal into the model (#253 S3).
 ///
 /// A **novel** `(concept, connection)` adds exactly one entry (`count = 1`,
 /// `first_seen` = `now`); a **repeat** leaves the collection size unchanged and
 /// only bumps that entry's `count` (its `first_seen` is preserved).
 /// Deterministic: same inputs → same output.
+///
+/// #388: concepts are mode-level. Both the incoming concept and any legacy
+/// key-stamped entries already in the blob are folded through
+/// [`normalize_concept`] first (merging counts, keeping the earliest
+/// `first_seen`), so a post-#388 re-unlock dedups against its pre-#388 entry
+/// instead of double-counting, and the fabricated key claim leaves the blob.
 pub fn apply_reveal(
     model: &LearnerModel,
     concept: &str,
@@ -227,12 +258,25 @@ pub fn apply_reveal(
     now_epoch_secs: i64,
 ) -> LearnerModel {
     let mut next = model.clone();
-    let key = collection_key(concept, connection);
+    let legacy = std::mem::take(&mut next.collection);
+    for (_, mut entry) in legacy {
+        entry.concept = normalize_concept(&entry.concept);
+        let key = collection_key(&entry.concept, &entry.connection);
+        next.collection
+            .entry(key)
+            .and_modify(|c| {
+                c.count = c.count.saturating_add(entry.count);
+                c.first_seen_epoch_secs = c.first_seen_epoch_secs.min(entry.first_seen_epoch_secs);
+            })
+            .or_insert(entry);
+    }
+    let concept = normalize_concept(concept);
+    let key = collection_key(&concept, connection);
     next.collection
         .entry(key)
         .and_modify(|c| c.count = c.count.saturating_add(1))
         .or_insert_with(|| Collected {
-            concept: concept.trim().to_owned(),
+            concept,
             connection: connection.trim().to_owned(),
             first_seen_epoch_secs: now_epoch_secs,
             count: 1,
@@ -284,6 +328,81 @@ mod tests {
         let m1 = apply_reveal(&m0, "G Dorian", "Miles Davis — \"So What\"", 1);
         let m2 = apply_reveal(&m1, "G Dorian", "Santana — \"Oye Como Va\"", 2);
         assert_eq!(m2.collection_size(), 2);
+    }
+
+    /// A pre-#388 blob with a key-stamped concept, as stored on disk.
+    fn legacy_blob() -> LearnerModel {
+        serde_json::from_str(
+            r#"{
+                "version": 1,
+                "collection": {
+                    "G Dorian\u001FMiles Davis — \"So What\"": {
+                        "concept": "G Dorian",
+                        "connection": "Miles Davis — \"So What\"",
+                        "first_seen_epoch_secs": 100,
+                        "count": 3
+                    },
+                    "A Dorian\u001FMiles Davis — \"So What\"": {
+                        "concept": "A Dorian",
+                        "connection": "Miles Davis — \"So What\"",
+                        "first_seen_epoch_secs": 50,
+                        "count": 1
+                    }
+                },
+                "updated_at_epoch_secs": 100
+            }"#,
+        )
+        .expect("legacy blob parses")
+    }
+
+    /// #388 (review MF2): a post-#388 mode-level reveal dedups against its
+    /// pre-#388 key-stamped entry instead of double-counting — the legacy
+    /// entries fold onto the mode (merging counts, keeping the earliest
+    /// first_seen) and the incoming reveal is a repeat. Fails if a migrated
+    /// DB's "N in your collection" bumps on re-unlocking an old reveal, or if
+    /// the fabricated key claim ("G Dorian") survives in the blob.
+    #[test]
+    fn legacy_key_stamped_entries_merge_with_mode_level_repeat() {
+        let m1 = apply_reveal(&legacy_blob(), "Dorian", "Miles Davis — \"So What\"", 200);
+        assert_eq!(
+            m1.collection_size(),
+            1,
+            "legacy G/A Dorian + the new Dorian are ONE unlock"
+        );
+        let entry = m1.collection.values().next().unwrap();
+        assert_eq!(entry.concept, "Dorian", "the key claim leaves the blob");
+        assert_eq!(entry.count, 5, "3 + 1 legacy counts + the new repeat");
+        assert_eq!(
+            entry.first_seen_epoch_secs, 50,
+            "earliest legacy first_seen wins"
+        );
+    }
+
+    /// #388: a legacy-shaped concept whose remainder is NOT a curated mode
+    /// passes through normalization untouched — only the exact
+    /// `<note> <curated mode>` shape the old reveal path produced is folded.
+    /// Fails if normalization mangles concepts it can't prove are legacy.
+    #[test]
+    fn unknown_concept_shapes_survive_normalization_unchanged() {
+        let m0 = LearnerModel::default();
+        let m1 = apply_reveal(&m0, "G Mystery Sound", "Somebody", 1);
+        let m2 = apply_reveal(&m1, "Dorian", "Miles Davis — \"So What\"", 2);
+        assert_eq!(m2.collection_size(), 2);
+        assert!(
+            m2.collection
+                .values()
+                .any(|c| c.concept == "G Mystery Sound"),
+            "non-mode concept must not be rewritten"
+        );
+    }
+
+    /// #388: an old caller still passing a key-stamped concept can't
+    /// reintroduce the fabrication — the input itself is normalized on write.
+    #[test]
+    fn key_stamped_input_is_stored_mode_level() {
+        let m1 = apply_reveal(&LearnerModel::default(), "G# Major", "Beethoven", 1);
+        let entry = m1.collection.values().next().unwrap();
+        assert_eq!(entry.concept, "Major");
     }
 
     /// Deterministic: identical inputs produce identical models.
@@ -345,10 +464,10 @@ mod tests {
         // Top-level unknown fields preserved.
         assert_eq!(out["sound_profile"]["mode_lean"], "minor");
         assert_eq!(out["streak"]["count"], 7);
-        // Per-entry unknown fields preserved too — including through the
-        // count-bump path of an existing entry.
+        // Per-entry unknown fields preserved too — including through #388's
+        // legacy-concept normalization, which re-keys "C Major" → "Major".
         assert_eq!(
-            out["collection"]["C Major\u{1f}Beethoven"]["mastery_note"],
+            out["collection"]["Major\u{1f}Beethoven"]["mastery_note"],
             "from-v2"
         );
         // Per-Mastery unknown fields preserved through apply_drill_result.

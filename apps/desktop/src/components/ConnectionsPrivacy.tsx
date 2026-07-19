@@ -213,7 +213,7 @@ export default function ConnectionsPrivacy() {
           <ToggleRow
             id="toggle-ai-coaching"
             title="AI coaching narration"
-            description="Lets the coach phrase its feedback with an AI writer. It sends your performance numbers — instrument, durations, pitch, tone, intonation and timing figures — to the AI provider. It also lets the ‘in the wild’ music reveals reword their one-line explanation (sending only the detected key/scale and the fixed artist/piece, never a new one). It never sends your audio recording."
+            description="Lets the coach phrase its feedback with an AI writer. It sends your performance numbers — instrument, durations, pitch, tone, intonation and timing figures — to the AI provider. It also lets the ‘in the wild’ music reveals reword their one-line explanation (sending only the detected scale/mode sound and the fixed artist/piece, never a new one). It never sends your audio recording."
             whenOff="Your coach still works, using fully on-device feedback. Tips, recaps, and the music reveals read a little more general, but every word is based only on what was measured here, with nothing sent anywhere."
             enabled={coachingEnabled}
             onChange={setCoachingEnabled}
