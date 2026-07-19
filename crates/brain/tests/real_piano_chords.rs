@@ -92,6 +92,7 @@ fn settled_label_with_deadline(
     let mut tracker = PerceptionTracker::new();
     let mut now = 0.0f64;
     let mut first_label: Option<(String, f64)> = None;
+    let mut last_seen = 0.0f64;
     for (i, w) in audio.chunks(1024).enumerate() {
         ex.feed(w);
         now += w.len() as f64 / f64::from(SR);
@@ -106,9 +107,13 @@ fn settled_label_with_deadline(
             let label = tracker.snapshot(now).chord.map(|c| c.label);
             match (&first_label, &label) {
                 (Some((seen, _)), Some(l)) => {
-                    assert_eq!(l, seen, "label churned mid-take (was {seen:?}, now {l:?})")
+                    assert_eq!(l, seen, "label churned mid-take (was {seen:?}, now {l:?})");
+                    last_seen = now;
                 }
-                (None, Some(l)) => first_label = Some((l.clone(), now)),
+                (None, Some(l)) => {
+                    first_label = Some((l.clone(), now));
+                    last_seen = now;
+                }
                 _ => {}
             }
         }
@@ -127,9 +132,27 @@ fn settled_label_with_deadline(
     // comparing this against the final snapshot below.
     match ret {
         LabelReturn::AtTakeEnd => tracker.snapshot(now).chord.map(|c| c.label),
-        LabelReturn::HeldDuringTake => first_label.map(|(l, _)| l),
+        LabelReturn::HeldDuringTake => {
+            // Round-2 review MF1: "held" must MEAN held — a one-snapshot
+            // flash of the right label is a regression this return would
+            // otherwise hide.
+            if let Some((label, first_at)) = first_label {
+                assert!(
+                    last_seen - first_at >= MIN_HELD_SECS,
+                    "label {label:?} showed at {first_at:.2}s but only held \
+                     {:.2}s — a flash is not a reading",
+                    last_seen - first_at
+                );
+                Some(label)
+            } else {
+                None
+            }
+        }
     }
 }
+
+/// HeldDuringTake's bar: the label must persist at least this long.
+const MIN_HELD_SECS: f64 = 1.0;
 
 /// See the use above (review r5 MF2).
 const FIRST_LABEL_DEADLINE_SECS: f64 = 1.0;
@@ -209,26 +232,36 @@ fn real_single_e3_never_invents_a_wrong_root() {
 /// the triad tones, exactly where the harmonic-subtraction rows land —
 /// this pins the bleed weights against eating genuinely played upper
 /// tones. Root-position (bass = root): plain "C", fast.
-/// #382 fold-calibration round (see examples/trace_382.rs, the committed
-/// diagnostic): the promised sweep ran — hybrid max+β·rest folds
-/// (β ∈ 0.3..0.6: G7 churns G7→G as decaying extensions lose sum
-/// evidence), bounded subtraction (residual floors 0.25..0.45: single-E3
-/// and C/E regress), and a per-bin onset cue (C/E regresses) — and NONE
-/// move the first label off ~2.3s, because the trace shows the cause is
-/// the FIXTURE, not the fold: this mix sums two independent ff samples
-/// of C (C3 + C4), so whitened E sits at ~8% of C from 0.9–1.7s. The
-/// tracker's silence there is the product's own rule (silence > lies);
-/// it labels C the moment evidence returns and never churns. So this
-/// pins the honest contract for THIS mix — correct label, held, within
-/// the evidence-supported deadline. The sub-second bar transfers to the
-/// VA's real recordings (one hand, one soundboard — no doubled-sample
-/// artifact), which supersede these fixtures on arrival.
+/// #382 fold-calibration round (diagnostic: examples/trace_382.rs). The
+/// promised sweep ran — hybrid max+β·rest folds (β 0.3–0.6: G7 churns
+/// G7→G), bounded subtraction (floors 0.25–0.45: solo-E3 and C/E
+/// regress), a per-bin onset cue (C/E regresses) — and none moved the
+/// first label off ~2.1s. The trace shows why, stated carefully
+/// (round-2 review MF2): the fixture LIKELY EXAGGERATES a
+/// VOICING-INTRINSIC effect. Root doubling is what this voicing IS —
+/// two real hammers put energy in C, and C's own partials land exactly
+/// on the chord tones (3rd partial = G, 5th = E), so subtraction eats
+/// them in proportion to root energy on any instrument. The c-over-e
+/// control (also two mixed samples of one pitch class) passes the 1.0s
+/// bar, proving the mechanism is root-partial COINCIDENCE, not sample
+/// mixing per se; but the independent solo-ff peak-normalized samples
+/// here show unphysical signatures (C rising for 1.8s, E dip-and-
+/// recover) that plausibly exaggerate the magnitude.
+///
+/// What this test PINS: the correct label, held ≥1s (a flash is not a
+/// reading), first shown within 2.25s (one snapshot over the measured
+/// 2.14s) — regression on the exact axis she reported. What stays OPEN
+/// on #382: the 1.0s bar itself — her real recordings (one hand, one
+/// soundboard) will set the true bar and supersede this pin. Known and
+/// disclosed: today's take has an INTERIOR label dropout (silence
+/// 3.5–4.3s mid-sustain, then C again) — a candidate VA-visible flicker
+/// of its own, noted on #382, distinct from first-label latency.
 #[test]
 fn real_c_major_over_bass_c_says_c() {
     let label = settled_label_with_deadline(
         &load_wav("c-major-over-c3"),
         Some(48),
-        2.5,
+        2.25,
         LabelReturn::HeldDuringTake,
     );
     assert_eq!(label.as_deref(), Some("C"), "LH-root + RH-triad C major");
