@@ -448,6 +448,16 @@ impl AccompanimentSender {
 /// Consumer side of the control channel — moved into the render-thread source.
 pub struct AccompanimentReceiver(HeapCons<AccompanimentControl>);
 
+impl AccompanimentReceiver {
+    /// Pop the next pending control message, if any. Lock-free. This is the
+    /// command-side test seam (#445 pt 9 review MF1): the app pins that its
+    /// clamped band tempos arrive on the channel exactly as played, the same
+    /// way the Pocket's `pushed_tempos_arrive_clamped` drains a bare channel.
+    pub fn try_pop(&mut self) -> Option<AccompanimentControl> {
+        self.0.try_pop()
+    }
+}
+
 /// Create a lock-free SPSC control channel buffering up to `capacity` messages.
 pub fn accompaniment_control_channel(
     capacity: usize,

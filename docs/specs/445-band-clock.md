@@ -26,10 +26,21 @@ band: click and band can never disagree about tempo.
 Because the band REPLACES the click, "lock to the metronome" cannot
 mean listening to a running click (there is none). The band must carry
 the same effective clock the click would:
-- `start_accompaniment` gains `tempo_bpm` (the frontend passes the
-  Pocket's set tempo), clamped by the SAME `clamp_pocket_params`, and
-  installed as a **tempo override** on the synth through the existing
-  SPSC control channel (`AccompanimentControl::SetTempo`).
+- `start_accompaniment` gains `tempo_bpm: Option<f64>` (the frontend
+  passes the Pocket's set tempo), clamped by the SAME
+  `clamp_pocket_params`, and installed as a **tempo override** on the
+  synth through the existing SPSC control channel
+  (`AccompanimentControl::SetTempo`). The clamp+forward lives in ONE
+  seam (`set_clamped_band_tempo`, review MF1 — the band's
+  `push_clamped_tempo`) under both the start-time install and
+  `set_band_tempo`, pinned by a channel-drain test.
+- **The two-clock rule (review MF2).** Solo practice: the Pocket's
+  clock carries — override installed, band plays immediately. Room
+  mode ("listen to the room"): the room's live players ARE the clock —
+  `tempo_bpm: null`, NO override installed, the band keeps the legacy
+  listen-and-join path (silent until the live clock locks onto the
+  room's pulse, aligned to its phase), and the follow policy never
+  streams `set_band_tempo` at it.
 - With an override the band **plays immediately** at that tempo —
   anchor semantics. (A band that still waited for the player's lock
   would leave them with no clock at all, since starting it silences
@@ -45,8 +56,8 @@ the same effective clock the click would:
   stream. Handoff: follows, then freezes and the stream stops. A
   fresh band start resets the follow life (the click's MF4
   discipline).
-- Without an override (no UI path, but the type allows it) the synth
-  behaves exactly as before: silent until the player's clock locks.
+- Without an override (room mode, or any caller passing `None`) the
+  synth behaves exactly as before: silent until the live clock locks.
 
 ## 4. ACs
 1. A tempo override makes the band play immediately at that tempo with
@@ -68,6 +79,12 @@ the same effective clock the click would:
 6. No regression: without an override the synth stays silent until the
    live clock locks (existing tests), and the render/control path
    stays allocation-free including `SetTempo` drains.
+7. Clamp seam (review MF1): 250 → 220, 20 → 40, NaN → 40 arrive ON THE
+   CHANNEL through the band's clamp seam — dropping the clamp is a
+   killed mutant, not a survivable one.
+8. Room mode (review MF2): `start_accompaniment(None)` pushes no
+   `SetTempo`; the frontend sends `tempoBpm: null` when `listenToRoom`
+   is active and never streams `set_band_tempo` while it is.
 
 ## 5. Test map
 | AC | Test |
@@ -78,3 +95,10 @@ the same effective clock the click would:
 | 4 | store: band follow gates test, anchor-silent test, handoff-freeze test |
 | 5 | store: carrier-exclusivity test, fresh-band-follow-life test, start payload test |
 | 6 | brain: existing silent-until-lock suite (unchanged); alloc test extended with `SetTempo` pushes |
+| 7 | commands: `band_tempos_arrive_clamped_at_the_channel` |
+| 8 | commands: `install_band_clock_room_mode_installs_no_override`; store: "room mode starts the band with no override and streams nothing to it" |
+
+## 6. Follow-up polish (deferred, disclosed)
+- The band has no handoff **drift line** ("holding your N / +X BPM
+  ahead") like PocketControl's — the freeze itself works for the band
+  carrier; the honest drift readout is UI polish for a later slice.

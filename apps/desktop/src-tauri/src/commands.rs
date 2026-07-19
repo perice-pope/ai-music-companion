@@ -2555,18 +2555,23 @@ pub async fn end_practice_session<R: Runtime>(
 /// engine, build the synth on the render thread, and install the driver the
 /// audio worker feeds. Fully offline — no network.
 ///
-/// #445 pt 9: the band carries the Pocket's clock. `tempo_bpm` (the
+/// #445 pt 9: the band carries a clock. `Some(tempo_bpm)` (solo mode — the
 /// frontend passes the Pocket's set tempo) is clamped by the SAME
 /// `clamp_pocket_params` the click uses and installed as the band's tempo,
 /// so it plays immediately — starting the band silences the click (one
 /// audio owner), so the band must be the clock the player locks to.
 /// Follow/Handoff retimes then arrive via `set_band_tempo`, exactly as the
 /// click's arrive via `set_pocket_tempo`.
+///
+/// Review MF2: `None` (room mode — "listen to the room") installs NO
+/// override: the room's live players ARE the clock, so the band keeps the
+/// legacy listen-and-join path — silent until the live clock locks onto
+/// the room's pulse, aligned to its phase.
 #[tauri::command]
 pub async fn start_accompaniment<R: Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
-    tempo_bpm: f64,
+    tempo_bpm: Option<f64>,
 ) -> Result<(), String> {
     // Serialize start/stop/teardown so two overlapping commands can't race the
     // device handoff (Tauri runs each command as its own task).
@@ -2593,10 +2598,10 @@ pub async fn start_accompaniment<R: Runtime>(
         output,
         driver: AccompanimentDriver::new(sender),
     };
-    // #445 pt 9: install the Pocket's set tempo as the band's clock — the
-    // same clamp as the click, so the two carriers can never disagree.
-    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
-    accompaniment.driver.set_tempo(tempo);
+    // #445 pt 9: install the Pocket's set tempo as the band's clock (solo
+    // mode) — the same clamp as the click, so the two carriers can never
+    // disagree. Room mode (None) installs nothing: the room is the clock.
+    install_band_clock(&mut accompaniment.driver, tempo_bpm);
     // Carry over a key the user pinned earlier this session so the band starts
     // in it rather than re-running auto-detection.
     if let Some((tonic, minor)) = state.current_key_override() {
@@ -2694,10 +2699,30 @@ pub fn set_pocket_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<()
 #[tauri::command]
 pub fn set_band_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
     if let Some(band) = state.accompaniment.lock_or_recover().as_mut() {
-        let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
-        band.driver.set_tempo(tempo);
+        set_clamped_band_tempo(&mut band.driver, tempo_bpm);
     }
     Ok(())
+}
+
+/// #445 pt 9 review MF1: the band's clamp+forward seam, testable with a
+/// bare driver/channel pair — the mirror of `push_clamped_tempo` below.
+/// This is what protects the 220..300 window on the band side: without it
+/// a raw reading would be APPLIED verbatim by the synth. One function
+/// under both `set_band_tempo` and the start-time install, so the band's
+/// played values can never disagree with the click's.
+fn set_clamped_band_tempo(driver: &mut AccompanimentDriver, tempo_bpm: f64) {
+    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
+    driver.set_tempo(tempo);
+}
+
+/// #445 pt 9 review MF2: the band's start-time clock install. `Some` =
+/// solo mode — the Pocket's set tempo carries (clamped). `None` = room
+/// mode — the room's players are the clock, so nothing is installed and
+/// the band keeps the legacy listen-and-join path.
+fn install_band_clock(driver: &mut AccompanimentDriver, tempo_bpm: Option<f64>) {
+    if let Some(bpm) = tempo_bpm {
+        set_clamped_band_tempo(driver, bpm);
+    }
 }
 
 /// #421 S2 review MF5: the clamp+push seam, testable with a bare
@@ -7154,9 +7179,7 @@ mod tests {
 
     /// #445 pt 9 AC2: a silent band makes set_band_tempo a calm no-op —
     /// the mirror of set_pocket_tempo's manners (the follow policy may
-    /// outlive the band). The clamp + forward seam itself is pinned in
-    /// brain (`set_tempo_reaches_synth_through_channel`) and by the shared
-    /// clamp table below.
+    /// outlive the band).
     #[tokio::test]
     async fn set_band_tempo_is_a_noop_when_silent() {
         use tauri::test::mock_app;
@@ -7165,6 +7188,44 @@ mod tests {
         app.manage(AppState::with_mocks());
         let state = app.state::<AppState>();
         set_band_tempo(state, 96.0).expect("silent no-op");
+    }
+
+    /// #445 pt 9 review MF1: the band's clamp seam — a 250 BPM push
+    /// arrives on the control channel as 220 (and 20 → 40, NaN → 40),
+    /// exactly like `pushed_tempos_arrive_clamped` pins the click's. A
+    /// mutant that drops `clamp_pocket_params` from the band path dies
+    /// here: the synth would otherwise APPLY the raw value verbatim.
+    #[test]
+    fn band_tempos_arrive_clamped_at_the_channel() {
+        use brain::accompaniment::AccompanimentControl;
+        let (sender, mut rx) = accompaniment_control_channel(8);
+        let mut driver = AccompanimentDriver::new(sender);
+        set_clamped_band_tempo(&mut driver, 250.0);
+        set_clamped_band_tempo(&mut driver, 20.0);
+        set_clamped_band_tempo(&mut driver, f64::NAN);
+        assert_eq!(rx.try_pop(), Some(AccompanimentControl::SetTempo(220.0)));
+        assert_eq!(rx.try_pop(), Some(AccompanimentControl::SetTempo(40.0)));
+        assert_eq!(rx.try_pop(), Some(AccompanimentControl::SetTempo(40.0)));
+        assert_eq!(rx.try_pop(), None);
+    }
+
+    /// #445 pt 9 review MF2: the start-time install honours the two-clock
+    /// rule — Some (solo) pushes the clamped Pocket tempo, None (room
+    /// mode) pushes NOTHING, leaving the band on the legacy listen-and-
+    /// join path where the room's players are the clock.
+    #[test]
+    fn install_band_clock_room_mode_installs_no_override() {
+        use brain::accompaniment::AccompanimentControl;
+        let (sender, mut rx) = accompaniment_control_channel(8);
+        let mut driver = AccompanimentDriver::new(sender);
+        install_band_clock(&mut driver, None);
+        assert_eq!(rx.try_pop(), None, "room mode must not install a clock");
+        install_band_clock(&mut driver, Some(300.0));
+        assert_eq!(
+            rx.try_pop(),
+            Some(AccompanimentControl::SetTempo(220.0)),
+            "solo mode installs the CLAMPED set tempo"
+        );
     }
 
     /// #421 S1 AC3: the clamp table — played and reported values agree

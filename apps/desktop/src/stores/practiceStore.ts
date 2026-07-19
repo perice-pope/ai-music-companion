@@ -499,10 +499,13 @@ export interface PracticeState {
   /**
    * Start the follow-me accompaniment ("Play with me"). Fires
    * `start_accompaniment` with the Pocket's set tempo — the band carries
-   * the same clock the click would (#445 pt 9) and plays immediately.
-   * Authoritative playing state arrives via the `accompaniment-status`
-   * event, so this doesn't set `accompanimentPlaying` optimistically — it
-   * surfaces an error if the command fails.
+   * the same clock the click would (#445 pt 9) and plays immediately. In
+   * room mode ("listen to the room") it sends null instead: the room's
+   * live players ARE the clock, so the band keeps the legacy
+   * listen-and-join path. Authoritative playing state arrives via the
+   * `accompaniment-status` event, so this doesn't set
+   * `accompanimentPlaying` optimistically — it surfaces an error if the
+   * command fails.
    */
   /** #214 S1b: the current library match, sticky per rule 0 (replaced
    * in place by a newer match, dimming handled by the chip, dismissal
@@ -1283,7 +1286,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // event drive the chip. Errors are surfaced to the caller (the toggle shows
     // them); the live session must never break because the band failed to start.
     // #445 pt 9: the band carries the Pocket's clock — pass its set tempo.
-    await invoke("start_accompaniment", { tempoBpm: get().pocketTempo });
+    // Review MF2: in room mode the ROOM is the clock — no override; the
+    // band listens and joins the room's pulse in phase (legacy path).
+    await invoke("start_accompaniment", {
+      tempoBpm: get().listenToRoom ? null : get().pocketTempo,
+    });
   },
 
   stopAccompaniment: async () => {
@@ -1313,12 +1320,14 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // #445 pt 9: ONE policy, TWO carriers — the click when the Pocket
     // plays, the band when Play With Me does (mutually exclusive audio
     // owners backend-side; the pocket wins if state ever claims both).
-    // Whatever the click would do, the band does.
+    // Whatever the click would do, the band does. Review MF2: in room
+    // mode the room outranks the pocket clock — the band listens to the
+    // room's players and must never be streamed at.
     const s0 = get();
     const tempo = perception?.tempo_bpm ?? null;
     const carrierCmd = s0.pocketPlaying
       ? "set_pocket_tempo"
-      : s0.accompanimentPlaying
+      : s0.accompanimentPlaying && !s0.listenToRoom
         ? "set_band_tempo"
         : null;
     if (

@@ -1238,6 +1238,34 @@ describe("practiceStore — the band carries the Pocket clock (#445 pt 9)", () =
     vi.useRealTimers();
   });
 
+  it("room mode starts the band with no override and streams nothing to it", async () => {
+    // #445 pt 9 review MF2: in "listen to the room" the room's live
+    // players ARE the clock — the band must keep the legacy
+    // listen-and-join path (null override) and the follow policy must
+    // never stream set_band_tempo at it.
+    vi.useFakeTimers();
+    vi.setSystemTime(600_000);
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValue(undefined);
+    useStore.setState({ listenToRoom: true });
+    await useStore.getState().startAccompaniment();
+    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment", {
+      tempoBpm: null,
+    });
+    useStore.setState({
+      accompanimentPlaying: true,
+      pocketPlaying: false,
+      pocketMode: "follow",
+      _pocketFollowStartedAt: 600_000,
+    });
+    useStore.getState().setPerception(perceptionWithTempo(96));
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "set_band_tempo",
+      expect.anything(),
+    );
+    vi.useRealTimers();
+  });
+
   it("the pocket outranks the band if state ever claims both are playing", async () => {
     // Backend-side they are mutually exclusive; if frontend state ever
     // desyncs, the click (the audible metronome) owns the stream.
