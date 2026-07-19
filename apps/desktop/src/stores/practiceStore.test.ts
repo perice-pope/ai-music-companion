@@ -953,11 +953,16 @@ describe("practiceStore — follow-me accompaniment", () => {
     localStorageMock.clear();
   });
 
-  it("startAccompaniment fires the start_accompaniment command", async () => {
+  it("startAccompaniment carries the Pocket's set tempo (#445 pt 9)", async () => {
     const useStore = await freshStore();
+    useStore.getState().setPocketTempo(104);
     mockInvoke.mockResolvedValueOnce(undefined);
     await useStore.getState().startAccompaniment();
-    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment");
+    // The band replaces the click, so it must BE the clock — it starts at
+    // the exact tempo the click would have played.
+    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment", {
+      tempoBpm: 104,
+    });
   });
 
   it("startAccompaniment does not optimistically flip playing (event is authoritative)", async () => {
@@ -1112,5 +1117,147 @@ describe("practiceStore — follow-me accompaniment", () => {
     mockInvoke.mockResolvedValueOnce(recap);
     await useStore.getState().endSession();
     expect(useStore.getState().keyPinned).toBe(false);
+  });
+});
+
+describe("practiceStore — the band carries the Pocket clock (#445 pt 9)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  // The same shape PocketControl.test.tsx uses for the click's gates.
+  const perceptionWithTempo = (bpm: number | null, locked = bpm !== null) =>
+    ({
+      tempo_bpm: bpm,
+      swing_ratio: null,
+      locked,
+      key: null,
+      chord: null,
+      hearing_polyphony: false,
+    }) as never;
+
+  it("follow mode streams set_band_tempo under the click's exact gates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const useStore = await freshStore();
+    useStore.setState({
+      accompanimentPlaying: true,
+      pocketPlaying: false,
+      pocketMode: "follow",
+      _pocketFollowStartedAt: 100_000,
+    });
+    const send = (bpm: number | null, locked?: boolean) =>
+      useStore.getState().setPerception(perceptionWithTempo(bpm, locked));
+    send(96);
+    expect(mockInvoke).toHaveBeenCalledWith("set_band_tempo", {
+      tempoBpm: 96,
+    });
+    // Within the throttle window: nothing, even on a big change.
+    send(120);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // Past the throttle but under the 2-BPM delta: nothing.
+    vi.setSystemTime(101_500);
+    send(97);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // Past both gates: sends.
+    send(104);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    // Absent, out-of-range, or UNLOCKED readings: never chased.
+    vi.setSystemTime(103_000);
+    send(null);
+    send(500);
+    send(150, false);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    // One clock, one carrier: the band's stream never touches the click's
+    // command.
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "set_pocket_tempo",
+      expect.anything(),
+    );
+    vi.useRealTimers();
+  });
+
+  it("anchor mode streams nothing to the band", async () => {
+    const useStore = await freshStore();
+    useStore.setState({
+      accompanimentPlaying: true,
+      pocketPlaying: false,
+      pocketMode: "anchor",
+    });
+    useStore.getState().setPerception(perceptionWithTempo(96));
+    // Anchor = the set BPM installed at band start; no retime stream.
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("handoff follows the band, then freezes and the stream stops", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(200_000);
+    const useStore = await freshStore();
+    useStore.setState({ accompanimentPlaying: true, pocketPlaying: false });
+    useStore.getState().setPocketMode("handoff"); // window anchors here
+    const send = (bpm: number) =>
+      useStore.getState().setPerception(perceptionWithTempo(bpm));
+    send(96); // follows during the window
+    expect(mockInvoke).toHaveBeenCalledWith("set_band_tempo", {
+      tempoBpm: 96,
+    });
+    // The window closes: the next reading freezes instead of sending.
+    vi.setSystemTime(209_000);
+    send(98);
+    expect(useStore.getState().pocketFrozenBpm).toBe(96);
+    // Frozen: no further set_band_tempo sends.
+    send(101);
+    expect(
+      mockInvoke.mock.calls.filter(([c]) => c === "set_band_tempo").length,
+    ).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it("a fresh band start begins a fresh follow life — no stale freeze or delta", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(400_000);
+    const useStore = await freshStore();
+    // Stale state from an earlier carrier's handoff life.
+    useStore.setState({
+      accompanimentPlaying: false,
+      pocketMode: "handoff",
+      pocketFrozenBpm: 96,
+      _pocketLastSentBpm: 96,
+      _pocketFollowStartedAt: 0,
+    });
+    useStore.getState().setAccompanimentPlaying(true);
+    expect(useStore.getState().pocketFrozenBpm).toBeNull();
+    expect(useStore.getState()._pocketLastSentBpm).toBeNull();
+    // The follow window anchors at the band's real start: within it,
+    // handoff FOLLOWS (stale anchor would have frozen instantly).
+    useStore.getState().setPerception(perceptionWithTempo(97));
+    expect(mockInvoke).toHaveBeenCalledWith("set_band_tempo", {
+      tempoBpm: 97,
+    });
+    vi.useRealTimers();
+  });
+
+  it("the pocket outranks the band if state ever claims both are playing", async () => {
+    // Backend-side they are mutually exclusive; if frontend state ever
+    // desyncs, the click (the audible metronome) owns the stream.
+    vi.useFakeTimers();
+    vi.setSystemTime(500_000);
+    const useStore = await freshStore();
+    useStore.setState({
+      pocketPlaying: true,
+      accompanimentPlaying: true,
+      pocketMode: "follow",
+      _pocketFollowStartedAt: 500_000,
+    });
+    useStore.getState().setPerception(perceptionWithTempo(96));
+    expect(mockInvoke).toHaveBeenCalledWith("set_pocket_tempo", {
+      tempoBpm: 96,
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "set_band_tempo",
+      expect.anything(),
+    );
+    vi.useRealTimers();
   });
 });

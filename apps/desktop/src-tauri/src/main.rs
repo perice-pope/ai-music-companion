@@ -54,6 +54,7 @@ fn main() {
             ai_music_companion::commands::start_pocket,
             ai_music_companion::commands::stop_pocket,
             ai_music_companion::commands::set_pocket_tempo,
+            ai_music_companion::commands::set_band_tempo,
             ai_music_companion::commands::stop_accompaniment,
             ai_music_companion::commands::set_accompaniment_key,
             ai_music_companion::commands::clear_accompaniment_key,

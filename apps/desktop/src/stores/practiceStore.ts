@@ -498,10 +498,11 @@ export interface PracticeState {
   pushTip: (tip: CoachingTip, phraseIndex: number) => void;
   /**
    * Start the follow-me accompaniment ("Play with me"). Fires
-   * `start_accompaniment`; the band stays silent until it locks onto the
-   * player's pulse. Authoritative playing state arrives via the
-   * `accompaniment-status` event, so this doesn't set `accompanimentPlaying`
-   * optimistically — it surfaces an error if the command fails.
+   * `start_accompaniment` with the Pocket's set tempo — the band carries
+   * the same clock the click would (#445 pt 9) and plays immediately.
+   * Authoritative playing state arrives via the `accompaniment-status`
+   * event, so this doesn't set `accompanimentPlaying` optimistically — it
+   * surfaces an error if the command fails.
    */
   /** #214 S1b: the current library match, sticky per rule 0 (replaced
    * in place by a newer match, dimming handled by the chip, dismissal
@@ -1281,24 +1282,47 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // don't optimistically flip it here — just fire the command and let the
     // event drive the chip. Errors are surfaced to the caller (the toggle shows
     // them); the live session must never break because the band failed to start.
-    await invoke("start_accompaniment");
+    // #445 pt 9: the band carries the Pocket's clock — pass its set tempo.
+    await invoke("start_accompaniment", { tempoBpm: get().pocketTempo });
   },
 
   stopAccompaniment: async () => {
     await invoke("stop_accompaniment");
   },
 
-  setAccompanimentPlaying: (playing) => set({ accompanimentPlaying: playing }),
+  setAccompanimentPlaying: (playing) =>
+    set((s) => ({
+      accompanimentPlaying: playing,
+      // #445 pt 9: a FRESH band starts a fresh follow life — the same MF4
+      // discipline as the click. The handoff window anchors at the band's
+      // real start, and stale frozen/last-sent state can't gate or lie.
+      ...(playing && !s.accompanimentPlaying
+        ? {
+            pocketFrozenBpm: null,
+            _pocketLastSentBpm: null,
+            _pocketFollowStartedAt: Date.now(),
+          }
+        : {}),
+    })),
 
   setPerception: (perception) => {
     // #421 S2: the follow policy — orchestration here, measurement in
     // perception, the seam in set_pocket_tempo. Confident, changed
     // (>=2 BPM), throttled (>=1 s) readings only; handoff freezes after
     // its window and the drift line reads frozen-vs-live.
+    // #445 pt 9: ONE policy, TWO carriers — the click when the Pocket
+    // plays, the band when Play With Me does (mutually exclusive audio
+    // owners backend-side; the pocket wins if state ever claims both).
+    // Whatever the click would do, the band does.
     const s0 = get();
     const tempo = perception?.tempo_bpm ?? null;
+    const carrierCmd = s0.pocketPlaying
+      ? "set_pocket_tempo"
+      : s0.accompanimentPlaying
+        ? "set_band_tempo"
+        : null;
     if (
-      s0.pocketPlaying &&
+      carrierCmd !== null &&
       s0.pocketMode !== "anchor" &&
       tempo !== null &&
       // Review MF2: LOCKED means confident — an unconfident estimate
@@ -1323,7 +1347,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         (s0._pocketLastSentBpm === null ||
           Math.abs(tempo - s0._pocketLastSentBpm) >= FOLLOW_MIN_DELTA_BPM)
       ) {
-        void invoke("set_pocket_tempo", { tempoBpm: tempo });
+        void invoke(carrierCmd, { tempoBpm: tempo });
         set({
           _pocketLastSentBpm: tempo,
           _pocketLastSentAt: now,

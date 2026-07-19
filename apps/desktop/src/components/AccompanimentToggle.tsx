@@ -4,11 +4,12 @@ import { usePracticeStore } from "../stores/practiceStore";
 /**
  * "Play with me" — toggles the follow-me backing band on/off during a session.
  *
- * The band follows the player: it stays silent until the live clock locks onto
- * their pulse, then plays drums + bass + pad in the detected key and tempo. The
- * `playing` state is authoritative from the backend's `accompaniment-status`
- * event (the band can stop on its own at session end), so this button reflects
- * that store value rather than optimistic local state.
+ * #445 pt 9: the band carries the Pocket's clock — it starts playing drums +
+ * bass + pad immediately at the set tempo (it replaces the click, so it must
+ * BE the clock), retiming with the same follow/handoff policy the click uses,
+ * in the detected key. The `playing` state is authoritative from the backend's
+ * `accompaniment-status` event (the band can stop on its own at session end),
+ * so this button reflects that store value rather than optimistic local state.
  *
  * Only enabled while a session is live (`status === "listening"`) — there's no
  * pulse to follow otherwise.

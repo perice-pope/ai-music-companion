@@ -2553,13 +2553,20 @@ pub async fn end_practice_session<R: Runtime>(
 
 /// Start the follow-me accompaniment ("Play with me"): open the audio output
 /// engine, build the synth on the render thread, and install the driver the
-/// audio worker feeds. The band stays silent until the live clock locks onto
-/// the player's pulse, so it's safe to call before or during play. Fully
-/// offline — no network.
+/// audio worker feeds. Fully offline — no network.
+///
+/// #445 pt 9: the band carries the Pocket's clock. `tempo_bpm` (the
+/// frontend passes the Pocket's set tempo) is clamped by the SAME
+/// `clamp_pocket_params` the click uses and installed as the band's tempo,
+/// so it plays immediately — starting the band silences the click (one
+/// audio owner), so the band must be the clock the player locks to.
+/// Follow/Handoff retimes then arrive via `set_band_tempo`, exactly as the
+/// click's arrive via `set_pocket_tempo`.
 #[tauri::command]
 pub async fn start_accompaniment<R: Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
+    tempo_bpm: f64,
 ) -> Result<(), String> {
     // Serialize start/stop/teardown so two overlapping commands can't race the
     // device handoff (Tauri runs each command as its own task).
@@ -2586,6 +2593,10 @@ pub async fn start_accompaniment<R: Runtime>(
         output,
         driver: AccompanimentDriver::new(sender),
     };
+    // #445 pt 9: install the Pocket's set tempo as the band's clock — the
+    // same clamp as the click, so the two carriers can never disagree.
+    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
+    accompaniment.driver.set_tempo(tempo);
     // Carry over a key the user pinned earlier this session so the band starts
     // in it rather than re-running auto-detection.
     if let Some((tonic, minor)) = state.current_key_override() {
@@ -2671,6 +2682,20 @@ pub async fn stop_pocket<R: Runtime>(
 pub fn set_pocket_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
     if let Some(pocket) = state.pocket.lock_or_recover().as_mut() {
         push_clamped_tempo(&mut pocket.tempo_tx, tempo_bpm);
+    }
+    Ok(())
+}
+
+/// #445 pt 9: re-time the playing band to the Pocket's effective clock —
+/// the band's `set_pocket_tempo`. Clamped by the SAME function, a silent
+/// band is a calm no-op, and the follow policy stays in the frontend; this
+/// seam just moves a number onto the render thread over the existing SPSC
+/// control channel (phase-preserving on the synth side).
+#[tauri::command]
+pub fn set_band_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
+    if let Some(band) = state.accompaniment.lock_or_recover().as_mut() {
+        let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
+        band.driver.set_tempo(tempo);
     }
     Ok(())
 }
@@ -7125,6 +7150,21 @@ mod tests {
         app.manage(AppState::with_mocks());
         let state = app.state::<AppState>();
         set_pocket_tempo(state, 96.0).expect("silent no-op");
+    }
+
+    /// #445 pt 9 AC2: a silent band makes set_band_tempo a calm no-op —
+    /// the mirror of set_pocket_tempo's manners (the follow policy may
+    /// outlive the band). The clamp + forward seam itself is pinned in
+    /// brain (`set_tempo_reaches_synth_through_channel`) and by the shared
+    /// clamp table below.
+    #[tokio::test]
+    async fn set_band_tempo_is_a_noop_when_silent() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+        set_band_tempo(state, 96.0).expect("silent no-op");
     }
 
     /// #421 S1 AC3: the clamp table — played and reported values agree

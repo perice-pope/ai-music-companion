@@ -32,8 +32,13 @@ describe("AccompanimentToggle", () => {
 
     fireEvent.click(btn);
 
+    // #445 pt 9: the band carries the Pocket's clock — the start payload is
+    // the set tempo (the exact number is the store's contract, pinned in
+    // practiceStore.test.ts).
     await vi.waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment"),
+      expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment", {
+        tempoBpm: expect.any(Number),
+      }),
     );
     expect(mockInvoke).not.toHaveBeenCalledWith("stop_accompaniment");
   });
@@ -96,6 +101,8 @@ describe("AccompanimentToggle", () => {
     await vi.waitFor(() => expect(btn).not.toBeDisabled());
 
     expect(mockInvoke).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment");
+    expect(mockInvoke).toHaveBeenCalledWith("start_accompaniment", {
+      tempoBpm: expect.any(Number),
+    });
   });
 });
