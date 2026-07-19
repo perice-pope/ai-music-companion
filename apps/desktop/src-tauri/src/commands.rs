@@ -4803,6 +4803,66 @@ pub fn my_patterns(state: State<'_, AppState>) -> Vec<MyPatternDto> {
     my_patterns_impl(&state)
 }
 
+/// #453 S1: one evidence-cited practice suggestion over the wire. `kind` is
+/// the lowercase rule name ("trend" | "neglect" | "momentum"); `text` embeds
+/// its numbers; `evidence` is the compact citation.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PracticeSuggestionDto {
+    pub kind: String,
+    pub text: String,
+    pub evidence: String,
+}
+
+impl From<brain::insights::PracticeSuggestion> for PracticeSuggestionDto {
+    fn from(s: brain::insights::PracticeSuggestion) -> Self {
+        let kind = match s.kind {
+            brain::insights::SuggestionKind::Trend => "trend",
+            brain::insights::SuggestionKind::Neglect => "neglect",
+            brain::insights::SuggestionKind::Momentum => "momentum",
+        };
+        PracticeSuggestionDto {
+            kind: kind.to_owned(),
+            text: s.text,
+            evidence: s.evidence,
+        }
+    }
+}
+
+/// #453 S1: the history analyzer over the local store — timed exercise log +
+/// `key_mastery` EWMAs through `brain::insights::practice_suggestions`, with
+/// `now` injected here (the analyzer stays pure). The my_patterns
+/// discipline: store failures are skipped calmly with a warn — an empty list
+/// is the honest answer, this never errors a surface. Silence > lies: no
+/// history above the evidence bars means an EMPTY vec, not filler.
+pub fn practice_suggestions_impl(state: &AppState) -> Vec<PracticeSuggestionDto> {
+    let store = state.session_store.lock_or_recover();
+    let log = match store.list_exercise_log_timed() {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "exercise log unreadable; no suggestions");
+            return Vec::new();
+        }
+    };
+    let model = match store.get_learner_model(LOCAL_TASTE_PROFILE_USER_ID) {
+        Ok(model) => model.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "learner model unreadable; trends skipped");
+            brain::learner::LearnerModel::default()
+        }
+    };
+    brain::insights::practice_suggestions(&log, &model.key_mastery, Utc::now())
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// #453 S1: the practice-suggestions query (S2 recap + S3 coaching box
+/// consume this; no frontend in this slice).
+#[tauri::command]
+pub fn practice_suggestions(state: State<'_, AppState>) -> Vec<PracticeSuggestionDto> {
+    practice_suggestions_impl(&state)
+}
+
 /// #214 S1b: ambient identification — called by the frontend on each
 /// phrase (the same cadence as coaching tips), reads the backend's own
 /// phrase buffer, and answers through S1a's honesty gates. None is the
@@ -8613,6 +8673,84 @@ mod tests {
             log(Some(vec![0, i + 1]), 0);
         }
         assert_eq!(my_patterns_impl(&s).len(), 6);
+    }
+
+    /// #453 S1 AC7: the command cites or stays silent. Empty state → empty
+    /// list (silence > lies, never an error); a seeded momentum history +
+    /// below-bar mastery surface exactly the earned kinds as lowercase DTOs
+    /// whose text AND evidence carry numbers. A same-day log earns no
+    /// neglect. Fails if the wire shape drifts, the store wiring breaks, or
+    /// the command starts inventing filler.
+    #[test]
+    fn practice_suggestions_command_cites_or_stays_silent() {
+        let s = AppState::with_mocks();
+        assert!(
+            practice_suggestions_impl(&s).is_empty(),
+            "no history, no claims"
+        );
+
+        // Momentum: 8 graded rows of one cell, older half 0.5, newer 0.8
+        // (all stamped now by the store — newest is recent, log spans 0
+        // days, so neglect must NOT fire).
+        let model = brain::learner::LearnerModel::default();
+        let (explore, _) = brain::coach::start_explore_cell(
+            vec![0, 4, 7],
+            0,
+            &model,
+            1,
+            brain::coach::DirectionMode::Forward,
+        );
+        {
+            let store = s.session_store.lock_or_recover();
+            for accuracy in [0.5, 0.5, 0.5, 0.5, 0.8, 0.8, 0.8, 0.8] {
+                log_exercise_best_effort(
+                    &store,
+                    ExerciseOutcome {
+                        source: "explore",
+                        label: "t",
+                        spec: &explore.spec,
+                        seed: 1,
+                        difficulty: 0,
+                        tonic: 0,
+                        accuracy: Some(accuracy),
+                    },
+                );
+            }
+            // Trend: Eb major below every bar (6 attempts, EWMA 0.50, now).
+            let mut learner = brain::learner::LearnerModel::default();
+            learner.key_mastery.insert(
+                "3:major".to_owned(),
+                brain::learner::Mastery {
+                    attempts: 6,
+                    accuracy_ewma: 0.5,
+                    owned: false,
+                    last_epoch_secs: Utc::now().timestamp(),
+                    extra: Default::default(),
+                },
+            );
+            store
+                .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &learner)
+                .expect("learner model upserts");
+        }
+        let out = practice_suggestions_impl(&s);
+        let kinds: Vec<&str> = out.iter().map(|d| d.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["trend", "momentum"],
+            "exactly the earned kinds, in analyzer order: {out:?}"
+        );
+        for dto in &out {
+            assert!(
+                dto.text.chars().any(|c| c.is_ascii_digit())
+                    && dto.evidence.chars().any(|c| c.is_ascii_digit()),
+                "every suggestion cites its numbers: {dto:?}"
+            );
+        }
+        assert!(
+            out[1].text.contains("50%") && out[1].text.contains("80%"),
+            "momentum carries both halves: {}",
+            out[1].text
+        );
     }
 
     /// #419 S1: preview is PURE — no active exploration, no exercise log.
