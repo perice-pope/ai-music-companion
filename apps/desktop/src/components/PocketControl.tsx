@@ -145,16 +145,19 @@ export default function PocketControl() {
         )}
       </div>
       {/* #445: the honest acoustics line — headphones keep the click out
-          of the mic entirely; on speakers the backend's click gate does
-          its best. Complements (never contradicts) the wired-speakers
-          tip in PerceptionPanel: headphones are strictly better for
-          follow mode. Always visible with the Pocket UI. */}
+          of the mic entirely; on wired speakers the backend's click gate
+          does its best; wireless speakers add 100-250 ms of output
+          latency, past the gate's +90 ms window, so that leak is
+          disclosed, not hidden. Complements (never contradicts) the
+          wired-speakers tip in PerceptionPanel: headphones are strictly
+          better for follow mode. Always visible with the Pocket UI. */}
       <span
         data-testid="pocket-headphone-tip"
         className="text-[10px] text-gray-600"
       >
         Tip: headphones keep the click out of the mic — on speakers I do my best
-        to ignore my own click.
+        to ignore my own click, though wireless speakers delay the sound too
+        much for me to catch it.
       </span>
     </div>
   );

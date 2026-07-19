@@ -42,7 +42,8 @@ Plus one quiet UI line: headphones keep the click out of the mic entirely.
 - **Blurb (face)**: one `text-[10px] text-gray-600` line under the
   Pocket's mode chips, always visible with the Pocket UI:
   "Tip: headphones keep the click out of the mic — on speakers I do my
-  best to ignore my own click." (`data-testid="pocket-headphone-tip"`).
+  best to ignore my own click, though wireless speakers delay the sound
+  too much for me to catch it." (`data-testid="pocket-headphone-tip"`).
   Complements (never contradicts) the wired-speakers tip: headphones
   are strictly better for follow mode.
 
@@ -75,6 +76,11 @@ Plus one quiet UI line: headphones keep the click out of the mic entirely.
   timestamp) — only `is_onset` flips to `false`, BEFORE the event
   reaches emit/aggregator/perception, so every downstream consumer sees
   one consistent story.
+- **Known limit (disclosed in the tip)**: Bluetooth/wireless speakers
+  add ~100–250 ms of output latency — beyond the +90 ms post window —
+  so their click lands OUTSIDE the gate and is not suppressed. The gate
+  fails OPEN there (exactly today's behavior, never false-gating the
+  player); wired speakers/headphones are the supported path.
 
 ## 4. ACs
 1. A `Metronome` with a fire channel at a known BPM/sample-rate reports

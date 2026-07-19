@@ -271,6 +271,11 @@ describe("PocketControl (#421 S1)", () => {
       "headphones keep the click out of the mic",
     );
     expect(tip.textContent).toContain("I do my best to ignore my own click");
+    // #445 review: the wireless limit is DISCLOSED — Bluetooth output
+    // latency (100-250 ms) exceeds the gate's +90 ms window.
+    expect(tip.textContent).toContain(
+      "wireless speakers delay the sound too much for me to catch it",
+    );
     expect(screen.getByTestId("pocket-start")).toBeInTheDocument();
     // Playing (handoff with a frozen tempo): the tip stays and displaces
     // nothing — pulse, tempo label, and the drift line all still render.

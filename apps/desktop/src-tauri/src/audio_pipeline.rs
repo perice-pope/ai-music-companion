@@ -1044,6 +1044,11 @@ mod tests {
         events: Cell<usize>,
         /// Timestamps of emitted events that carried `is_onset` (#445).
         onsets: RefCell<Vec<f64>>,
+        /// Onset timestamps the AGGREGATOR retained — flattened
+        /// `PhraseSummary::onsets_secs` across all phrases, i.e. the groove
+        /// path's view of onsets. #445 one-story pin: the gate must run
+        /// BEFORE the aggregator too, not just before the emit copy.
+        phrase_onsets: RefCell<Vec<f64>>,
         /// (events seen when this position left the loop, the position).
         positions: RefCell<Vec<(usize, ScorePosition)>>,
         verdicts: Cell<usize>,
@@ -1089,7 +1094,12 @@ mod tests {
                     ev.onsets.borrow_mut().push(event.timestamp_secs);
                 }
             },
-            move |_phrase| phr.phrases.set(phr.phrases.get() + 1),
+            move |phrase| {
+                phr.phrases.set(phr.phrases.get() + 1);
+                phr.phrase_onsets
+                    .borrow_mut()
+                    .extend_from_slice(&phrase.onsets_secs);
+            },
             move |p| pos.positions.borrow_mut().push((pos.events.get(), p)),
             move |_verdict| ver.verdicts.set(ver.verdicts.get() + 1),
         );
@@ -1252,10 +1262,14 @@ mod tests {
 
     /// #445 AC4: the REAL worker loop, scripted PCM. Run 1 (no gate)
     /// finds where the detector hears onsets; run 2 installs a gate whose
-    /// clicks land exactly there → every one is stripped; run 3 shifts
-    /// the clicks 0.5 s away → every onset survives (the gate passes
-    /// DISAGREEMENT — the thing Follow mode must hear). Event counts stay
-    /// identical throughout: the gate drops flags, never events.
+    /// clicks land exactly there → every one is stripped — from the emit
+    /// stream AND from the aggregator's groove view (one story past the
+    /// emit boundary). Window-magnitude runs pin the post window through
+    /// the same path: a click 60 ms before the onset gates, 150 ms before
+    /// passes. Run 3 shifts the clicks 0.5 s away → every onset survives
+    /// on both sides (the gate passes DISAGREEMENT — the thing Follow
+    /// mode must hear). Event counts stay identical throughout: the gate
+    /// drops flags, never events.
     #[test]
     fn click_coincident_onsets_are_gated_and_off_beat_onsets_pass() {
         use ears::output_engine::click_fire_channel;
@@ -1271,12 +1285,18 @@ mod tests {
             window * 10,
         ));
 
-        // Run 1: no gate — collect the detector's onset timestamps.
+        // Run 1: no gate — collect the detector's onset timestamps. The
+        // aggregator's groove view must see them too (this also arms the
+        // run-2 phrase_onsets assertion against vacuous passes).
         let baseline = drive_loop(samples.clone(), None, None);
         let onsets = baseline.onsets.borrow().clone();
         assert!(
             !onsets.is_empty(),
             "the silence→sine attack must register at least one onset"
+        );
+        assert!(
+            !baseline.phrase_onsets.borrow().is_empty(),
+            "ungated onsets must reach the aggregator's groove path"
         );
 
         // The metronome's output clock: any rate works — the gate only
@@ -1311,13 +1331,45 @@ mod tests {
             "onsets agreeing with our own click must be stripped, got {:?}",
             gated.onsets.borrow()
         );
+        // ONE story past the emit boundary: the aggregator (groove path,
+        // PhraseSummary::onsets_secs) must see the SAME gated events — a
+        // gate that stripped only the emitted copy passes the assertion
+        // above but dies here.
+        assert!(
+            gated.phrase_onsets.borrow().is_empty(),
+            "the aggregator must see the gated events too (one story), got {:?}",
+            gated.phrase_onsets.borrow()
+        );
 
-        // Run 3: clicks 0.5 s off the onsets → disagreement passes.
+        // Window magnitude, through the same worker-loop path: a click
+        // 60 ms BEFORE the onset (onset at click + 60 ms, inside the
+        // +90 ms post window: decay + latency slop) must gate…
+        let post_window = drive_loop(samples.clone(), None, Some(gate_at(-0.06)));
+        assert!(
+            post_window.onsets.borrow().is_empty(),
+            "an onset 60 ms after the click sits in the post window and must gate"
+        );
+        // …while a click 150 ms before (onset at click + 150 ms, past the
+        // +90 ms edge) must pass.
+        let past_window = drive_loop(samples.clone(), None, Some(gate_at(-0.15)));
+        assert_eq!(
+            *past_window.onsets.borrow(),
+            onsets,
+            "an onset 150 ms after the click is outside the window and must pass"
+        );
+
+        // Run 3: clicks 0.5 s off the onsets → disagreement passes, on
+        // BOTH sides of the emit boundary.
         let passed = drive_loop(samples, None, Some(gate_at(0.5)));
         assert_eq!(
             *passed.onsets.borrow(),
             onsets,
             "onsets that DISAGREE with the click must pass untouched"
+        );
+        assert_eq!(
+            *passed.phrase_onsets.borrow(),
+            *baseline.phrase_onsets.borrow(),
+            "passing onsets must reach the aggregator unchanged"
         );
     }
 }
