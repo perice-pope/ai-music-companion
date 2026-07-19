@@ -57,7 +57,7 @@ Index unit: **interval n-grams** over the melodic surface of each score part.
 - From each `ScoreModel`, extract the note sequence per part; for polyphonic
   scores take the top line per onset (melody approximation) — chord tones
   collapse to their highest note, matching what a listener tracks.
-- Emit sliding windows of `N=5` consecutive **intervals** (semitone deltas,
+- Emit sliding windows of `N=4` consecutive **intervals** (5 notes) (semitone deltas,
   clamped to ±12): Für Elise's opening E–D#–E–D#–E–B–D–C–A becomes
   `[-1,+1,-1,+1]`, `[+1,-1,+1,-4]`, … Intervals, not pitches → the player
   practicing in another key still matches (RV: the cell rowed through 12 keys
