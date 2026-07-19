@@ -740,3 +740,46 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
     screen.getByTestId("opener-recipes-empty");
   });
 });
+
+describe("OpenersPanel (#445 pt 6a — reachable panel + indigo palette)", () => {
+  // The dead-zone fix is a layout contract: the open builder is an unbounded
+  // wall taller than the viewport, so its live feedback (chips + preview) and
+  // its primary action (Begin) render below an invisible fold — the founder's
+  // "static UI, cant click." jsdom can't measure layout, so we pin the
+  // STRUCTURAL fix that makes the surface reachable at any window height: a
+  // bounded, internally-scrollable card with Begin as an always-visible sticky
+  // footer. (The pixel-level reachability is proven by the headless-browser
+  // probe in docs/specs/445-openers-fix.md §2/§3.)
+  it("the open panel is a bounded, internally-scrollable card", () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    const panel = screen.getByTestId("openers-panel");
+    // Bounded height: the card can never exceed the viewport…
+    expect(panel.className).toMatch(/\bmax-h-/);
+    // …and its own content scrolls INSIDE it (the visible affordance) instead
+    // of pushing the page past an invisible fold.
+    expect(panel.className).toContain("overflow-y-auto");
+  });
+
+  it("Begin is pinned as a sticky footer — always reachable", () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    const begin = screen.getByTestId("opener-begin");
+    // Sticky to the bottom of the scroll container: Begin stays on-screen and
+    // clickable however tall the bank/preview grows. Un-pinning it (the revert)
+    // recreates the off-fold dead zone.
+    expect(begin.className).toContain("sticky");
+    expect(begin.className).toContain("bottom-0");
+  });
+
+  it("the whole openers surface is off teal — closed AND open", () => {
+    // Cheap, honest palette regression pin: any teal- class reappearing on the
+    // invitation or the builder is the old green the founder rejected.
+    const { container } = render(<OpenersPanel />);
+    // Closed: the invitation button.
+    expect(container.innerHTML).not.toMatch(/teal-/);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    // Open: the full builder.
+    expect(container.innerHTML).not.toMatch(/teal-/);
+  });
+});

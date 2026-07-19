@@ -283,7 +283,7 @@ export default function OpenersPanel() {
         type="button"
         data-testid="openers-toggle"
         onClick={() => setOpen(true)}
-        className="rounded-full border border-teal-700 bg-teal-900/30 px-4 py-1.5 text-sm text-teal-200 hover:bg-teal-900/50"
+        className="rounded-full border border-indigo-800 bg-indigo-950/40 px-4 py-1.5 text-sm text-indigo-200 hover:bg-indigo-900/50"
       >
         🎬 Openers — start with something in your hands
       </button>
@@ -293,15 +293,15 @@ export default function OpenersPanel() {
   return (
     <div
       data-testid="openers-panel"
-      className="w-full max-w-md rounded-lg border border-teal-800 bg-teal-950/30 p-4 text-left"
+      className="max-h-[70vh] w-full max-w-md overflow-y-auto rounded-lg border border-indigo-900 bg-indigo-950/30 p-4 text-left"
     >
       <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-teal-200">🎬 Openers</p>
+        <p className="text-sm font-semibold text-indigo-200">🎬 Openers</p>
         <button
           type="button"
           data-testid="openers-close"
           onClick={() => setOpen(false)}
-          className="text-sm text-teal-400/70 hover:text-teal-200"
+          className="text-sm text-indigo-400/70 hover:text-indigo-200"
           aria-label="Close openers"
         >
           ×
@@ -309,7 +309,7 @@ export default function OpenersPanel() {
       </div>
 
       {/* The bank — S1's two live entries. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Notes
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -321,14 +321,14 @@ export default function OpenersPanel() {
             onClick={() =>
               void addOpenerItem({ type: "note_sequence", degrees: [d] })
             }
-            className="h-8 w-8 rounded-md bg-teal-800/60 text-sm font-semibold text-teal-100 hover:bg-teal-700"
+            className="h-8 w-8 rounded-md bg-indigo-800/60 text-sm font-semibold text-indigo-100 hover:bg-indigo-700"
           >
             {d}
           </button>
         ))}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Note sequence
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -340,7 +340,7 @@ export default function OpenersPanel() {
             onClick={() =>
               void addOpenerItem({ type: "note_sequence", degrees: p.degrees })
             }
-            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           >
             {p.label}
           </button>
@@ -359,19 +359,19 @@ export default function OpenersPanel() {
             if (e.key === "Enter") addCustom();
           }}
           placeholder="your own: 1 5 3 2"
-          className="w-40 rounded-md border border-teal-800 bg-teal-950/60 px-2 py-1 text-sm text-teal-100 placeholder-teal-700"
+          className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder-gray-500"
         />
         <button
           type="button"
           data-testid="opener-custom-add"
           onClick={addCustom}
-          className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+          className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
         >
           Add
         </button>
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Intervals
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -383,14 +383,14 @@ export default function OpenersPanel() {
             onClick={() =>
               void addOpenerItem({ type: "interval", number: iv.number })
             }
-            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           >
             {iv.label}
           </button>
         ))}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Chords
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -400,14 +400,14 @@ export default function OpenersPanel() {
             type="button"
             data-testid={`opener-chord-${c.kind}`}
             onClick={() => void addOpenerItem({ type: "chord", kind: c.kind })}
-            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           >
             {c.label}
           </button>
         ))}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Scales
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -417,14 +417,14 @@ export default function OpenersPanel() {
             type="button"
             data-testid={`opener-scale-${sc.kind}`}
             onClick={() => void addOpenerItem({ type: "scale", kind: sc.kind })}
-            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           >
             {sc.label}
           </button>
         ))}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Enclosures
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -436,14 +436,14 @@ export default function OpenersPanel() {
             onClick={() =>
               void addOpenerItem({ type: "enclosure", style: en.style })
             }
-            className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           >
             {en.label}
           </button>
         ))}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Pattern direction
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
@@ -456,8 +456,8 @@ export default function OpenersPanel() {
             onClick={() => setOpenerDirection(d.value)}
             className={`rounded-md px-2.5 py-1 text-sm ${
               openerDirection === d.value
-                ? "bg-teal-600 font-semibold text-white"
-                : "bg-teal-800/60 text-teal-100 hover:bg-teal-700"
+                ? "bg-indigo-600 font-semibold text-white"
+                : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
             }`}
           >
             {d.label}
@@ -466,12 +466,12 @@ export default function OpenersPanel() {
       </div>
 
       {/* #419 S3: the bank's last entry, live — YOUR patterns. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         My patterns
       </p>
       {myPatterns.length === 0 ? (
         <p
-          className="mt-1 text-xs text-teal-700"
+          className="mt-1 text-xs text-gray-500"
           data-testid="my-patterns-empty"
         >
           play and lift a few things first — your patterns appear here
@@ -486,7 +486,7 @@ export default function OpenersPanel() {
               onClick={() =>
                 void addOpenerItem({ type: "notes", offsets: p.offsets })
               }
-              className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+              className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
               title={p.label}
             >
               {p.label}
@@ -496,7 +496,7 @@ export default function OpenersPanel() {
       )}
 
       {/* #419 S4: recall — yesterday's opener and the recipes you kept. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
         Recipes
       </p>
       {lastOpener ? (
@@ -504,14 +504,14 @@ export default function OpenersPanel() {
           type="button"
           data-testid="opener-yesterday"
           onClick={() => void beginOpenerRecall()}
-          className="mt-1 rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+          className="mt-1 rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
           title="replay it exactly — same notes, same journey"
         >
           ⟲ yesterday: {lastOpener.label}
         </button>
       ) : (
         <p
-          className="mt-1 text-xs text-teal-700"
+          className="mt-1 text-xs text-gray-500"
           data-testid="opener-yesterday-empty"
         >
           begin an opener and it&apos;ll be waiting here tomorrow
@@ -519,7 +519,7 @@ export default function OpenersPanel() {
       )}
       {recipes.length === 0 ? (
         <p
-          className="mt-1 text-xs text-teal-700"
+          className="mt-1 text-xs text-gray-500"
           data-testid="opener-recipes-empty"
         >
           name and save a builder you like — it&apos;ll live here
@@ -532,13 +532,13 @@ export default function OpenersPanel() {
           {recipes.map((r) => (
             <span
               key={r.id}
-              className="inline-flex items-center gap-1 rounded-md bg-teal-800/60 pr-1"
+              className="inline-flex items-center gap-1 rounded-md bg-indigo-800/60 pr-1"
             >
               <button
                 type="button"
                 data-testid={`opener-recipe-${r.id}`}
                 onClick={() => void applyOpenerRecipe(r.items, r.direction)}
-                className="px-2.5 py-1 text-sm text-teal-100 hover:text-white"
+                className="px-2.5 py-1 text-sm text-indigo-100 hover:text-white"
                 title={`${r.items.length} item${r.items.length === 1 ? "" : "s"}, ${r.direction}`}
               >
                 {r.name}
@@ -548,7 +548,7 @@ export default function OpenersPanel() {
                 data-testid={`opener-recipe-delete-${r.id}`}
                 onClick={() => forgetRecipe(r.id)}
                 aria-label={`Forget ${r.name}`}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs text-teal-400/70 hover:text-white"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs text-indigo-400/70 hover:text-white"
               >
                 ×
               </button>
@@ -563,14 +563,14 @@ export default function OpenersPanel() {
             value={recipeName}
             onChange={(e) => setRecipeName(e.target.value)}
             placeholder="name this recipe"
-            className="w-40 rounded-md border border-teal-800 bg-teal-950/60 px-2 py-1 text-sm text-teal-100 placeholder:text-teal-700"
+            className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder:text-gray-500"
           />
           <button
             type="button"
             data-testid="opener-recipe-save"
             onClick={saveRecipe}
             disabled={recipeName.trim().length === 0}
-            className="rounded-md bg-teal-700/70 px-2.5 py-1 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
+            className="rounded-md bg-indigo-600/80 px-2.5 py-1 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
           >
             Save
           </button>
@@ -595,7 +595,7 @@ export default function OpenersPanel() {
               data-testid={`opener-chip-${i}`}
               onClick={() => void removeOpenerItem(i)}
               title="Remove"
-              className="rounded-full bg-teal-800 px-2.5 py-0.5 text-xs text-teal-100 hover:bg-red-900/60"
+              className="rounded-full bg-indigo-800 px-2.5 py-0.5 text-xs text-indigo-100 hover:bg-red-900/60"
             >
               {itemLabel(item)} ×
             </button>
@@ -628,7 +628,7 @@ export default function OpenersPanel() {
         data-testid="opener-begin"
         disabled={openerItems.length === 0}
         onClick={() => void beginOpener()}
-        className="mt-4 w-full rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-40"
+        className="sticky bottom-0 mt-4 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:bg-indigo-950 disabled:text-indigo-400/60 disabled:hover:bg-indigo-950"
       >
         Begin
       </button>
