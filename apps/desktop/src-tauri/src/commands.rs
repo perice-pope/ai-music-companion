@@ -3491,11 +3491,7 @@ pub struct LastOpenerDto {
 /// session. A row that no longer parses to a cell offers nothing.
 fn last_opener_row(
     state: &AppState,
-) -> Option<(
-    brain::store::ExerciseLogEntry,
-    Vec<i8>,
-    brain::coach::DirectionMode,
-)> {
+) -> Option<(brain::store::ExerciseLogEntry, brain::coach::VariationSpec)> {
     let row = state
         .session_store
         .lock_or_recover()
@@ -3503,25 +3499,27 @@ fn last_opener_row(
         .ok()
         .flatten()?;
     let spec = serde_json::from_str::<brain::coach::VariationSpec>(&row.spec_json).ok()?;
-    let cell = spec.cell.filter(|c| c.len() >= 2)?;
-    Some((row, cell, spec.direction))
+    // The cell gate: a spec without one isn't an opener artifact.
+    spec.cell.as_ref().filter(|c| c.len() >= 2)?;
+    Some((row, spec))
 }
 
 /// #419 S4: what the recall chip shows — or None (no opener begun yet,
 /// or the last one no longer parses): honest absence, not a guess.
 pub fn recall_last_opener_impl(state: &AppState) -> Option<LastOpenerDto> {
-    let (row, _, _) = last_opener_row(state)?;
+    let (row, _) = last_opener_row(state)?;
     Some(LastOpenerDto {
         label: row.label.clone(),
         tonic: row.tonic,
     })
 }
 
-/// #419 S4: replay yesterday's opener EXACTLY — stored seed, stored
-/// cell, stored tonic, stored direction. Commits like `begin_opener`
-/// (fresh log row carrying the same seed, so recall chains).
+/// #419 S4: replay yesterday's opener EXACTLY — the stored spec (roots,
+/// rhythm, cell, direction) re-rendered under the stored seed; today's
+/// learner model touches nothing. Commits like `begin_opener` (fresh
+/// log row carrying the same seed and spec, so recall chains).
 pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> {
-    let (row, cell, direction) = last_opener_row(state)
+    let (row, spec) = last_opener_row(state)
         .ok_or_else(|| "no opener to recall yet — begin one first".to_string())?;
     let model = state
         .session_store
@@ -3529,8 +3527,12 @@ pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> 
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    // Review MF2: replay the STORED spec wholesale — roots, rhythm, and
+    // all. Rebuilding through start_explore_cell would let today's
+    // learner difficulty retune yesterday's opener (tempo, root count)
+    // under a chip that promises "exactly".
     let (explore, seq) =
-        brain::coach::start_explore_cell(cell, row.tonic % 12, &model, row.seed, direction);
+        brain::coach::resume_explore_spec(spec, row.tonic % 12, row.difficulty, row.seed);
     let dto = explore_dto(&explore, &seq, &model);
     {
         let store = state.session_store.lock_or_recover();
@@ -8645,6 +8647,18 @@ mod tests {
         assert!(err.contains("empty opener"), "got: {err}");
         let err = save_opener_recipe_impl(&s, "Bad dir", &notes, "sideways").unwrap_err();
         assert!(err.contains("forward, reversed, or varied"), "got: {err}");
+        // The compile pre-flight: an uncompilable recipe refuses at SAVE
+        // time with the backend's named message — never saved, never a
+        // strip chip that won't open.
+        let err = save_opener_recipe_impl(
+            &s,
+            "Bad degree",
+            &[brain::starter::StarterItem::NoteSequence { degrees: vec![9] }],
+            "forward",
+        )
+        .unwrap_err();
+        assert!(err.contains("1 to 8"), "got: {err}");
+        assert_eq!(list_opener_recipes_impl(&s).len(), 1, "nothing was saved");
     }
 
     /// #419 S4 AC3: recall's absences are honest — empty log, non-opener
@@ -8668,7 +8682,19 @@ mod tests {
                 })
                 .unwrap();
         };
-        log("lift", "{}");
+        // Review MF1: the lift row carries a fully PARSABLE spec WITH a
+        // cell — the None below can only come from the SOURCE filter,
+        // not from a convenient parse failure.
+        let model = brain::learner::LearnerModel::default();
+        let (lift_state, _) = brain::coach::start_explore_cell(
+            vec![0, 4, 7],
+            0,
+            &model,
+            1,
+            brain::coach::DirectionMode::Forward,
+        );
+        let lift_spec = serde_json::to_string(&lift_state.spec).unwrap();
+        log("lift", &lift_spec);
         assert_eq!(
             recall_last_opener_impl(&s),
             None,
@@ -8763,6 +8789,36 @@ mod tests {
     /// #419 S4 AC5: a Reversed opener comes back Reversed — recall honors
     /// the stored direction. A Forward-pinning mutant changes the row
     /// order and dies on the XML comparison.
+    /// #419 S4 review MF2: recall is exact ACROSS learner-model drift —
+    /// the stored spec replays wholesale, so a difficulty that moved
+    /// since the row was logged retunes nothing (tempo, root count). The
+    /// rebuild-from-today's-model mutant dies here.
+    #[test]
+    fn recall_is_exact_across_learner_model_drift() {
+        let s = AppState::with_mocks();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+        let begun = opener_impl(&s, &items, None, None, true).unwrap();
+        // The player got better overnight: the adaptive difficulty moves.
+        let mut model = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap_or_default();
+        model.difficulty = brain::learner::MAX_DIFFICULTY;
+        s.session_store
+            .lock_or_recover()
+            .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &model)
+            .unwrap();
+        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        assert_eq!(
+            replay.music_xml, begun.music_xml,
+            "a drifted difficulty must not retune the replay"
+        );
+    }
+
     #[test]
     fn reversed_opener_recalls_reversed() {
         let s = AppState::with_mocks();

@@ -1555,6 +1555,31 @@ pub fn edit_explore_note(
 /// Undo the most recent step — edit OR chip — restoring the exact rep the
 /// player saw (spec, seed, and difficulty together). Calm error when there is
 /// nothing to undo.
+/// #419 S4: rebuild an exploration from a STORED spec — the exact-replay
+/// path. The spec is the full resolved artifact (roots, rhythm, cell,
+/// direction), so NOTHING is re-derived from today's learner model — a
+/// difficulty that moved since the row was logged must not retune the
+/// replay (review MF2: "replay it exactly" has to mean it). The seed
+/// re-renders the identical sequence (F1 determinism).
+pub fn resume_explore_spec(
+    spec: VariationSpec,
+    tonic: u8,
+    difficulty: u8,
+    seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    let sequence = generate(&spec, seed);
+    (
+        ExploreState {
+            spec,
+            difficulty,
+            tonic,
+            seed,
+            history: Vec::new(),
+        },
+        sequence,
+    )
+}
+
 pub fn undo_explore_edit(
     state: &ExploreState,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
