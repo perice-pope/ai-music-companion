@@ -22,12 +22,15 @@ export default function UpdatePill() {
   const installUpdate = useUpdateStore((s) => s.installUpdate);
   const restartNow = useUpdateStore((s) => s.restartNow);
   const dismiss = useUpdateStore((s) => s.dismiss);
-  const [expanded, setExpanded] = useState(false);
+  // Review MF1: expansion is pinned to the OFFER — a dismissed window's
+  // state must never leak so a later version pops open uninvited.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
 
   if (phase === "idle") {
     return null;
   }
 
+  const expanded = expandedFor === version;
   const dimmed = phase === "downloading" || phase === "error";
 
   return (
@@ -46,7 +49,7 @@ export default function UpdatePill() {
           <button
             type="button"
             data-testid="update-pill-install"
-            onClick={() => setExpanded(true)}
+            onClick={() => setExpandedFor(version)}
             className="font-semibold hover:text-white"
           >
             Update to v{version}
@@ -97,7 +100,7 @@ export default function UpdatePill() {
             <button
               type="button"
               data-testid="update-window-later"
-              onClick={() => setExpanded(false)}
+              onClick={() => setExpandedFor(null)}
               className="rounded-md border border-sky-800 px-3 py-1.5 text-sky-200 hover:bg-sky-900/40"
             >
               Not now

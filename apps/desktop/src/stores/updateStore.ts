@@ -162,6 +162,9 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   restartNow: async () => {
+    if (get().phase !== "ready") {
+      return; // The only legitimate caller renders in ready (house rule).
+    }
     try {
       await relaunch();
     } catch (err) {

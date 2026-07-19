@@ -191,6 +191,8 @@ describe("UpdatePill (#58)", () => {
     });
     expect(useUpdateStore.getState().phase).toBe("ready");
     expect(offered.downloadAndInstall).toHaveBeenCalledTimes(1);
+    // Notes stay with the version the pill painted (reviewer note).
+    expect(useUpdateStore.getState().availableVersion).toBe("9.9.9");
   });
 
   it("double-clicking install downloads exactly once", async () => {
@@ -277,5 +279,19 @@ describe("UpdatePill (#58)", () => {
         "Quit and reopen",
       ),
     );
+  });
+
+  it("a dismissed window never leaks — the NEXT offer starts collapsed", async () => {
+    // Review MF1, reproduced at round 1: expand vA, dismiss, vB arrives →
+    // vB's window popped open with zero clicks.
+    mockCheck.mockResolvedValueOnce(updateHandle("9.9.9"));
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-install")); // expand
+    fireEvent.click(screen.getByTestId("update-pill-dismiss"));
+    mockCheck.mockResolvedValueOnce(updateHandle("9.9.10"));
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    expect(screen.getByTestId("update-pill").dataset.expanded).toBe("false");
+    expect(screen.queryByTestId("update-window")).toBeNull();
   });
 });
