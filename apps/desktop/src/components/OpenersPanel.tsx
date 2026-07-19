@@ -293,7 +293,7 @@ export default function OpenersPanel() {
   return (
     <div
       data-testid="openers-panel"
-      className="flex max-h-[70vh] w-full max-w-md flex-col overflow-y-auto rounded-lg border border-indigo-900 bg-indigo-950/30 p-4 text-left"
+      className="max-h-[70vh] w-full max-w-md overflow-y-auto rounded-lg border border-indigo-900 bg-indigo-950/30 p-4 text-left"
     >
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-indigo-200">🎬 Openers</p>
@@ -628,7 +628,7 @@ export default function OpenersPanel() {
         data-testid="opener-begin"
         disabled={openerItems.length === 0}
         onClick={() => void beginOpener()}
-        className="sticky bottom-0 mt-4 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
+        className="sticky bottom-0 mt-4 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:bg-indigo-950 disabled:text-indigo-400/60 disabled:hover:bg-indigo-950"
       >
         Begin
       </button>
