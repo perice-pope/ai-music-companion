@@ -1168,6 +1168,17 @@ pub const LIFT_MIN_RUN: usize = 5;
 /// in-range shape, never a refusal — the player can edit from there).
 /// `None` when fewer than [`LIFT_MIN_NOTES`] clear notes were heard.
 /// Returns the cell plus the first note's MIDI (the cell's home root).
+/// #214 S1b: the played MIDI note sequence from a phrase's pitch track —
+/// the identification query's raw material. Unlike the lift, repeated
+/// notes are KEPT (a repeated note is a real interval of 0 in a melody;
+/// Für Elise's E-D#-E depends on it).
+pub fn midi_track_from_pitch_track(pitches: &[f64], min_run: usize) -> Vec<u8> {
+    played_notes_from_pitch_track(pitches, min_run)
+        .into_iter()
+        .filter_map(|n| hz_to_midi(n.hz))
+        .collect()
+}
+
 pub fn lift_cell_from_pitch_track(pitches: &[f64], min_run: usize) -> Option<(Vec<i8>, u8)> {
     let collapsed = played_notes_from_pitch_track(pitches, min_run);
     // Merge re-articulated repeats (tuned on real data): a note re-struck at

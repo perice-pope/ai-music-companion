@@ -8,6 +8,7 @@ import SessionTimer from "./SessionTimer";
 import EndSessionButton from "./EndSessionButton";
 import AccompanimentToggle from "./AccompanimentToggle";
 import PocketControl from "./PocketControl";
+import PieceMatchChip from "./PieceMatchChip";
 import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
 import RevealCard from "./RevealCard";
@@ -251,6 +252,7 @@ export default function PracticeSession() {
           <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
             <PitchDisplay />
             <div className="flex flex-col gap-4">
+              <PieceMatchChip />
               <RevealCard />
             </div>
           </div>
@@ -293,6 +295,7 @@ export default function PracticeSession() {
             <PitchDisplay />
             <div className="flex flex-col gap-4">
               <CoachingTipPanel />
+              <PieceMatchChip />
               <RevealCard />
             </div>
           </div>

@@ -496,6 +496,15 @@ export interface PracticeState {
    * `accompaniment-status` event, so this doesn't set `accompanimentPlaying`
    * optimistically — it surfaces an error if the command fails.
    */
+  /** #214 S1b: the current library match, sticky per rule 0 (replaced
+   * in place by a newer match, dimming handled by the chip, dismissal
+   * quiets that score for the session). */
+  pieceMatch: { scoreId: string; title: string } | null;
+  /** Score ids the player dismissed this session — stay quiet. */
+  dismissedPieceIds: string[];
+  requestPieceMatch: () => Promise<void>;
+  dismissPieceMatch: () => void;
+
   /** #421 S1: The Pocket — strict Anchor click state. */
   pocketPlaying: boolean;
   pocketTempo: number;
@@ -1063,11 +1072,45 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       openerTonic: null,
       openerDirection: "forward",
       openerPreviewedDirection: "forward",
+      // #214 S1b: matches and dismissals are session-scoped.
+      pieceMatch: null,
+      dismissedPieceIds: [],
     });
     // Round-3 review MF1: session end also invalidates in-flight opener
     // refreshes (separate set — this one derives from current state).
     set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
   },
+
+  pieceMatch: null,
+  dismissedPieceIds: [],
+
+  requestPieceMatch: async () => {
+    try {
+      const dto = await invoke<{
+        score_id: string;
+        title: string;
+        coherent_hits: number;
+      } | null>("check_piece_match");
+      if (!dto) {
+        return; // None is the common answer — the chip holds (rule 0).
+      }
+      if (get().dismissedPieceIds.includes(dto.score_id)) {
+        return; // The player said "not this one" — stay quiet.
+      }
+      // Replace in place; never clear on a miss.
+      set({ pieceMatch: { scoreId: dto.score_id, title: dto.title } });
+    } catch {
+      // Identification must never surface an error — silence is normal.
+    }
+  },
+
+  dismissPieceMatch: () =>
+    set((s) => ({
+      pieceMatch: null,
+      dismissedPieceIds: s.pieceMatch
+        ? [...s.dismissedPieceIds, s.pieceMatch.scoreId]
+        : s.dismissedPieceIds,
+    })),
 
   pocketPlaying: false,
   pocketTempo: loadPocketTempo(),

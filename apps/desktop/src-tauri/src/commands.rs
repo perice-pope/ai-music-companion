@@ -613,6 +613,10 @@ pub struct AppState {
     /// this lock across an `.await`.
     session_store: std::sync::Mutex<SessionStore>,
     score_store: std::sync::Mutex<ScoreStore>,
+    /// #214 S1b: the in-memory library-match index (rebuilt at startup,
+    /// maintained by import/delete). Keys are hashes of the ScoreId's
+    /// string form; `titles` maps them back to (id string, title).
+    piece_matcher: std::sync::Mutex<PieceMatcher>,
     coaching_available: bool,
     /// On-disk persistence fell back to in-memory at startup (e.g. corrupt data
     /// dir, sandbox, or full disk): the practice loop still works, but this
@@ -796,12 +800,13 @@ impl AppState {
         let coaching_available = coaching_svc.coaching_available();
         let recap_gen = LlmRecapGenerator::new();
 
-        Self {
+        let state = Self {
             active_session: Mutex::new(None),
             coaching_service: Arc::new(coaching_svc),
             recap_generator: Arc::new(recap_gen),
             session_store: std::sync::Mutex::new(session_store),
             score_store: std::sync::Mutex::new(score_store),
+            piece_matcher: std::sync::Mutex::new(PieceMatcher::default()),
             coaching_available,
             persistence_degraded: !persisted,
             omr_enabled: pdf_omr_enabled_from_env(),
@@ -822,7 +827,11 @@ impl AppState {
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
             active_explore: Arc::new(std::sync::Mutex::new(None)),
-        }
+        };
+        // #214 S1b: the identification index over the library, built once
+        // at startup (each entry parses in ms; a bad file is skipped).
+        state.rebuild_piece_index();
+        state
     }
 
     /// Wire entirely with mocks and in-memory store. Used by tests.
@@ -837,6 +846,7 @@ impl AppState {
             score_store: std::sync::Mutex::new(
                 ScoreStore::in_memory().expect("in-memory store must succeed"),
             ),
+            piece_matcher: std::sync::Mutex::new(PieceMatcher::default()),
             coaching_available: false,
             // In-memory by design here — that's the test default, not a
             // degradation.
@@ -1059,6 +1069,51 @@ impl AppState {
         store.get(id).ok().map(|entry| entry.title)
     }
 
+    /// #214 S1b: (re)index one library entry for identification. A score
+    /// that fails to parse is skipped calmly — the library still works,
+    /// it just can't be identified (startup must never break on one bad
+    /// file).
+    pub(crate) fn index_entry(&self, entry: &ScoreLibraryEntry) {
+        let model = match brain::score::musicxml::parse_musicxml_str_part(
+            &entry.music_xml,
+            entry.part_index,
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, title = %entry.title, "score not indexable; skipped");
+                return;
+            }
+        };
+        let id_str = entry.id.to_string();
+        let key = piece_key(&id_str);
+        let mut matcher = self.piece_matcher.lock_or_recover();
+        matcher.index.index_score(key, &model);
+        matcher.titles.insert(key, (id_str, entry.title.clone()));
+    }
+
+    /// #214 S1b: forget a deleted score.
+    pub(crate) fn unindex_score(&self, id_str: &str) {
+        let key = piece_key(id_str);
+        let mut matcher = self.piece_matcher.lock_or_recover();
+        matcher.index.remove_score(key);
+        matcher.titles.remove(&key);
+    }
+
+    /// #214 S1b: build the identification index over the whole library —
+    /// called once at startup.
+    pub(crate) fn rebuild_piece_index(&self) {
+        let entries = match self.score_store.lock_or_recover().list() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "library unlistable; identification idle");
+                return;
+            }
+        };
+        for entry in &entries {
+            self.index_entry(entry);
+        }
+    }
+
     /// Import a MIDI file into the score library.
     ///
     /// Parses the raw MIDI bytes into a [`ScoreModel`], serialises it to
@@ -1112,6 +1167,10 @@ impl AppState {
                 duration_measures,
             )
             .map_err(|e| e.to_string())
+            .map(|entry| {
+                self.index_entry(&entry);
+                entry
+            })
     }
 
     /// Import a MusicXML file into the score library.
@@ -1156,6 +1215,10 @@ impl AppState {
                 duration_measures,
             )
             .map_err(|e| e.to_string())
+            .map(|entry| {
+                self.index_entry(&entry);
+                entry
+            })
     }
 
     /// Import an audio recording into the score library.
@@ -1669,6 +1732,29 @@ struct PocketStatusPayload {
 /// follow this, exactly as the band follows accompaniment-status.
 fn emit_pocket_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool, tempo_bpm: f64) {
     let _ = app.emit("pocket-status", PocketStatusPayload { playing, tempo_bpm });
+}
+
+/// #214 S1b: the library-match state — S1a's engine plus the id/title map
+/// the u64 index keys need (ScoreIds are UUIDs).
+#[derive(Default)]
+pub(crate) struct PieceMatcher {
+    index: brain::piece_match::PieceIndex,
+    titles: std::collections::HashMap<u64, (String, String)>,
+}
+
+fn piece_key(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
+}
+
+/// A gated library match, ready for the session chip.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PieceMatchDto {
+    pub score_id: String,
+    pub title: String,
+    pub coherent_hits: usize,
 }
 
 fn emit_accompaniment_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool) {
@@ -3927,6 +4013,9 @@ pub fn import_score(
             duration_measures,
         )
         .map_err(|e| e.to_string())?;
+    // #214 S1b: a new score is identifiable in the same session.
+    drop(score_store);
+    state.index_entry(&entry);
     Ok(entry.into())
 }
 
@@ -4312,12 +4401,50 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
 
 /// Delete a score from the library.
 #[tauri::command]
+/// #214 S1b: ambient identification — called by the frontend on each
+/// phrase (the same cadence as coaching tips), reads the backend's own
+/// phrase buffer, and answers through S1a's honesty gates. None is the
+/// COMMON answer and never an error.
+pub fn check_piece_match_impl(state: &AppState) -> Option<PieceMatchDto> {
+    let recent: Vec<u8> = {
+        let phrases = state.phrase_buffer.lock_or_recover();
+        let tail: Vec<_> = phrases.iter().rev().take(3).collect();
+        tail.into_iter()
+            .rev()
+            .flat_map(|p| {
+                brain::coach::midi_track_from_pitch_track(
+                    &p.pitch_stats.pitches,
+                    brain::coach::LIFT_MIN_RUN,
+                )
+            })
+            .collect()
+    };
+    let matcher = state.piece_matcher.lock_or_recover();
+    let m = matcher.index.identify(&recent)?;
+    let (score_id, title) = matcher.titles.get(&m.id)?.clone();
+    Some(PieceMatchDto {
+        score_id,
+        title,
+        coherent_hits: m.coherent_hits,
+    })
+}
+
+/// #214 S1b: the identification query, frontend-triggered per phrase.
+#[tauri::command]
+pub fn check_piece_match(state: State<'_, AppState>) -> Option<PieceMatchDto> {
+    check_piece_match_impl(&state)
+}
+
+#[tauri::command]
 pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
     // See `get_score`: turbofish pins the parse target without naming the
     // non-direct-dependency `uuid::Error` type.
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
     let score_store = state.score_store.lock_or_recover();
     score_store.delete(score_id).map_err(|e| e.to_string())?;
+    drop(score_store);
+    // #214 S1b: a deleted score is silent immediately.
+    state.unindex_score(&id);
     Ok(())
 }
 
@@ -7625,6 +7752,95 @@ mod tests {
             2,
             "a different connection is a new unlock"
         );
+    }
+
+    /// #214 S1b: the index lifecycle through the REAL import path —
+    /// an imported score becomes identifiable in the same session, free
+    /// noodling stays silent, deletion silences the score immediately,
+    /// and a corrupt entry is skipped calmly (never a startup break).
+    #[test]
+    fn imported_scores_identify_and_deleted_ones_fall_silent() {
+        let s = AppState::with_mocks();
+        // A distinctive 16-note tune, emitted to MusicXML and imported.
+        let melody: [u8; 16] = [
+            64, 62, 60, 65, 64, 67, 65, 69, 71, 72, 69, 67, 71, 74, 72, 76,
+        ];
+        let mut measures = Vec::new();
+        for (mi, chunk) in melody.chunks(4).enumerate() {
+            measures.push(brain::score::Measure {
+                number: mi + 1,
+                notes: chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &midi)| brain::score::ScoreNote {
+                        pitch_hz: 440.0,
+                        midi_number: midi,
+                        duration_beats: 1.0,
+                        start_beat: i as f64,
+                        dynamic: None,
+                        is_rest: false,
+                    })
+                    .collect(),
+            });
+        }
+        let model = brain::score::ScoreModel {
+            title: "The Lifecycle Tune".into(),
+            composer: None,
+            instrument: None,
+            time_signature: brain::score::TimeSignature::default(),
+            key_signature: brain::score::KeySignature::default(),
+            tempo_bpm: 100.0,
+            measures,
+            grand_staff: false,
+        };
+        let xml = brain::score::emit::score_model_to_musicxml(&model);
+        let entry = s
+            .import_musicxml("tune.musicxml".into(), xml, 0)
+            .expect("import succeeds");
+
+        // Play 14 notes of it (as a phrase pitch track) → identified.
+        let seed_phrases = |s: &AppState, midis: &[u8]| {
+            let mut phrase = sample_phrase();
+            phrase.pitch_stats.pitches = midis
+                .iter()
+                .flat_map(|&m| {
+                    let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                    std::iter::repeat_n(hz, 6)
+                })
+                .collect();
+            s.phrase_buffer.lock().unwrap().clear();
+            s.phrase_buffer.lock().unwrap().push(phrase);
+        };
+        seed_phrases(&s, &melody[2..16]);
+        let m = check_piece_match_impl(&s).expect("a real excerpt identifies");
+        assert_eq!(m.title, "The Lifecycle Tune");
+        assert_eq!(m.score_id, entry.id.to_string());
+
+        // Free noodling: silence (the S1a gates, end to end).
+        seed_phrases(
+            &s,
+            &[62, 65, 61, 70, 66, 59, 63, 71, 58, 67, 61, 73, 60, 68],
+        );
+        assert_eq!(check_piece_match_impl(&s), None, "noodling stays silent");
+
+        // Deletion silences immediately (the same seam delete_score calls).
+        seed_phrases(&s, &melody[2..16]);
+        assert!(check_piece_match_impl(&s).is_some());
+        s.score_store
+            .lock()
+            .unwrap()
+            .delete(entry.id)
+            .expect("delete succeeds");
+        s.unindex_score(&entry.id.to_string());
+        assert_eq!(check_piece_match_impl(&s), None, "deleted → silent");
+
+        // A corrupt entry never breaks indexing (startup-calm path).
+        let bogus = ScoreLibraryEntry {
+            music_xml: "<not really xml".into(),
+            ..entry
+        };
+        s.index_entry(&bogus); // must not panic
+        assert_eq!(check_piece_match_impl(&s), None);
     }
 
     /// #419 S1: preview is PURE — no active exploration, no exercise log.
