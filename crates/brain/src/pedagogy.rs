@@ -104,6 +104,11 @@ pub struct PedagogyEntry {
     /// Optional verbatim quote — permitted for `pd` sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
+    /// Optional editorial note — edition/translation caveats and similar
+    /// (e.g. "the PD status covers the French original; English translations
+    /// are largely still in copyright"). Never surfaced to the player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Evidence tags (kebab-case) a session fingerprint can match against,
     /// e.g. `ascending-leap-attacks`, `uneven-eighths`, `pitch-sag-sustain`.
     pub triggers: Vec<String>,
@@ -312,6 +317,7 @@ mod tests {
             },
             guidance: "Keep the pitch level while the volume changes.".to_owned(),
             quote: None,
+            note: None,
             triggers: vec!["pitch-sag-sustain".to_owned()],
         }
     }
@@ -387,6 +393,37 @@ mod tests {
         );
     }
 
+    // MF1 (review round 1): the gate's dial is a licensing decision. Pin it
+    // so a "harmless" constant bump cannot pass review as a refactor.
+    #[test]
+    fn gate_dial_is_pinned_at_15() {
+        assert_eq!(
+            MAX_QUOTED_WORDS, 15,
+            "the copyright gate's core dial — changing it is a licensing decision, not a refactor"
+        );
+    }
+
+    // MF1 (review round 1): a hardcoded 16-word quoted run must be rejected.
+    // Deliberately NOT expressed relative to MAX_QUOTED_WORDS — the
+    // constant-relative fixtures below would survive a 15→50 mutation; this
+    // one dies with it.
+    #[test]
+    fn gate_rejects_hardcoded_sixteen_word_quote() {
+        let mut entry = base_entry("fixture-hardcoded-sixteen", SourceStatus::ParaphraseOnly);
+        entry.guidance = "He wrote \"one two three four five six seven eight nine ten \
+                          eleven twelve thirteen fourteen fifteen sixteen\" in the drills."
+            .to_owned();
+        let err = validate_entries(&[entry]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PedagogyError::VerbatimInParaphraseOnly { words: 16, .. }
+            ),
+            "a 16-word verbatim run must trip the gate at any dial setting \
+             the house rule permits, got: {err}"
+        );
+    }
+
     // AC4: planted violation — a 16-word quoted run in paraphrase-only guidance.
     #[test]
     fn gate_rejects_long_verbatim_in_paraphrase_only() {
@@ -435,26 +472,61 @@ mod tests {
         validate_entries(&[entry]).expect("pd entries may carry verbatim quotes");
     }
 
-    // AC7: every paraphrase-only entry names its source in the guidance copy
-    // (attribution lives in the text the player will read).
+    // AC7 (strengthened in review round 1): every paraphrase-only entry names
+    // its author's SURNAME in the guidance copy — attribution lives in the
+    // text the player will read, and a loose any-word match is too easy to
+    // satisfy by accident.
     #[test]
     fn paraphrase_entries_carry_attribution_in_copy() {
         for entry in load_corpus() {
             if entry.source.status != SourceStatus::ParaphraseOnly {
                 continue;
             }
-            let guidance = entry.guidance.to_lowercase();
-            let named = format!("{} {}", entry.source.author, entry.source.title)
-                .to_lowercase()
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|w| w.len() >= 5)
-                .any(|w| guidance.contains(w));
+            // Surname = last word of the author, ignoring any parenthetical
+            // ("G. B. Lamperti (transcribed by W. E. Brown)" → "lamperti").
+            let surname = entry
+                .source
+                .author
+                .split('(')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .to_lowercase();
             assert!(
-                named,
-                "paraphrase-only entry {} must name its source (author or title) \
-                 in the guidance text",
+                !surname.is_empty(),
+                "entry {} has an author with no surname",
                 entry.id
             );
+            assert!(
+                entry.guidance.to_lowercase().contains(&surname),
+                "paraphrase-only entry {} must name the author's surname \
+                 ({surname}) in the guidance text",
+                entry.id
+            );
+        }
+    }
+
+    // SF3 (review round 1): a paraphrase-only entry that cites the book's
+    // exercises/drills sends the player to their own copy — the corpus never
+    // substitutes for the in-copyright book.
+    #[test]
+    fn exercise_citing_paraphrase_entries_point_to_own_copy() {
+        for entry in load_corpus() {
+            if entry.source.status != SourceStatus::ParaphraseOnly {
+                continue;
+            }
+            let section = entry.source.section.to_lowercase();
+            if section.contains("exercise") || section.contains("drill") {
+                assert!(
+                    entry.guidance.to_lowercase().contains("your own"),
+                    "paraphrase-only entry {} cites exercises/drills \
+                     ({:?}) but has no your-own-copy pointer in the guidance",
+                    entry.id,
+                    entry.source.section
+                );
+            }
         }
     }
 

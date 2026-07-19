@@ -53,8 +53,8 @@
       "status": "pd",
       "section": "Studies on the slur"
     },
-    "guidance": "Arban's slur studies ask for the air to stay continuous while only the note changes: move between partials with air speed and the vowel inside the mouth — think ah opening to ee as you rise — never by pinching the lips or adding pressure. Practice the slur studies slowly and evenly, listening for a seamless connection with no bump or gap between the notes. When a slur smears, the air stopped or the vowel never changed.",
-    "triggers": ["smeared-slurs", "slur-cleanliness", "register-shift-breaks"]
+    "guidance": "Arban's slur studies ask for the air to stay continuous while only the note changes: no pinching the lips, no added pressure — the connection is made with the air. Teachers building on Arban's slur studies often add a vowel picture, thinking ah opening toward ee as the line rises, to keep the air fast without force. Practice the studies slowly and evenly, listening for a seamless connection with no bump or gap between the notes. When a slur smears, the air stopped moving.",
+    "triggers": ["smeared-slurs", "register-shift-breaks"]
   },
   {
     "id": "brass-arban-scales-evenness",
@@ -96,7 +96,7 @@
       "section": "Long-tone drills (opening section)"
     },
     "guidance": "There are drills for exactly this in Schlossberg's Daily Drills — he builds everything on long tones: start the note softly, let it grow, and keep the pitch absolutely level while the volume changes. If your sustained notes sag or wobble, that is the drill to live with for a week: one note at a time, ears on the pitch, air doing the work. Work from your own copy — the long-tone drills at the front of the book.",
-    "triggers": ["pitch-sag-sustain", "unsteady-long-tones", "tone-wobble"]
+    "triggers": ["pitch-sag-sustain", "air-support-fade"]
   },
   {
     "id": "brass-schlossberg-interval-drills",

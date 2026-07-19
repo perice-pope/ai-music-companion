@@ -4,13 +4,14 @@
     "family": "Voice",
     "topic": "Breath management and clean onset",
     "source": {
-      "title": "A Complete Treatise on the Art of Singing",
+      "title": "Traite complet de l'art du chant",
       "author": "Manuel Garcia",
       "year": 1847,
       "status": "pd",
-      "section": "On the emission of the voice"
+      "section": "On the emission of the voice (Part I, 1840; Part II, 1847)"
     },
     "guidance": "Garcia — the first great scientist of the voice — has the singer take breath slowly and quietly, then begin the tone cleanly and exactly on pitch: no breathy leak before the note, no slam, and no sliding up into it. Practice single sustained vowels at a comfortable volume, giving all your attention to the first instant of each note; the onset sets the quality of everything that follows it.",
+    "note": "The pd status covers the French original (1840/1847). English translations — notably the 1975 Paschke edition, A Complete Treatise on the Art of Singing — are largely still in copyright: do not quote translations verbatim.",
     "triggers": ["breathy-onset", "attack-clarity", "scooped-onsets"]
   },
   {
@@ -25,7 +26,7 @@
       "section": "On the registers of the voice"
     },
     "guidance": "Marchesi's method treats the register break as something to be crossed gently and often, never forced: chest voice is not pushed upward past its comfortable limit, and exercises that cross the passaggio are sung softly, letting the voice turn over early rather than late. If your top notes strain or the break announces itself, sing slow scales through that area quietly, thinking of thinning the sound before the break arrives instead of muscling through it.",
-    "triggers": ["register-break", "strain-at-top", "tone-inconsistency"]
+    "triggers": ["register-shift-breaks", "strain-at-top", "tone-inconsistency"]
   },
   {
     "id": "voice-lamperti-appoggio",

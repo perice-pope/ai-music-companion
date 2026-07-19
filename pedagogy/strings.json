@@ -24,8 +24,8 @@
       "status": "paraphrase-only",
       "section": "Practice guidance — daily listening"
     },
-    "guidance": "Suzuki's whole approach rests on listening: hear the reference recording of your piece every day, so the ear knows exactly where each pitch lives before the fingers go searching for it. When intonation drifts, the fix is usually more listening, not more drilling — sing the phrase away from the instrument, then play it and match what you sang. The ear leads; the hand follows.",
-    "triggers": ["pitch-drift", "intonation-inconsistent", "interval-accuracy"]
+    "guidance": "Suzuki's whole approach rests on listening: hear the reference recording of your piece every day, so the ear knows exactly where each pitch lives before the fingers go searching for it. When intonation drifts, the fix is usually more listening, not more drilling — sing the phrase away from the instrument, then play it and match what you sang. The ear leads; the hand follows. Each volume pairs its pieces with reference recordings — work from your own copy.",
+    "triggers": ["pitch-drift", "interval-accuracy"]
   },
   {
     "id": "strings-suzuki-small-steps-review",
@@ -38,7 +38,7 @@
       "status": "paraphrase-only",
       "section": "Practice guidance — review pieces"
     },
-    "guidance": "A core Suzuki principle: ability grows by repeating what you can already do beautifully, in very small steps — old pieces are never dropped, because review is where technique actually matures. If a passage collapses when you push the tempo, shrink the step: a smaller chunk, a slower tempo, more repetitions of the version you can play well. Then return to pieces you have already mastered and let the new skill settle inside them.",
+    "guidance": "A core Suzuki principle: ability grows by repeating what you can already do beautifully, in very small steps — old pieces are never dropped, because review is where technique actually matures. If a passage collapses when you push the tempo, shrink the step: a smaller chunk, a slower tempo, more repetitions of the version you can play well. Then return to pieces you have already mastered and let the new skill settle inside them — your own copy of the earlier volumes is the review list.",
     "triggers": ["accuracy-collapse-at-tempo", "new-material-overreach", "rushing-runs"]
   },
   {
@@ -52,7 +52,7 @@
       "status": "paraphrase-only",
       "section": "Early volumes — bowing preparation exercises"
     },
-    "guidance": "Suzuki teachers drill a stop-and-prepare habit: stop the bow, silently set the next finger and the next string level, and only then sound the note. It turns crossings and shifts into deliberate acts instead of lucky ones. If your string crossings are noisy or your shifts scoop into the note, insert a silent preparation before each one at a slow tempo, then gradually shrink the silence until it disappears into the phrase.",
+    "guidance": "Suzuki teachers drill a stop-and-prepare habit: stop the bow, silently set the next finger and the next string level, and only then sound the note. It turns crossings and shifts into deliberate acts instead of lucky ones. If your string crossings are noisy or your shifts scoop into the note, insert a silent preparation before each one at a slow tempo, then gradually shrink the silence until it disappears into the phrase. The preparation exercises live in the early volumes — work from your own copy.",
     "triggers": ["string-crossing-noise", "shift-scoop", "transition-noise"]
   }
 ]
