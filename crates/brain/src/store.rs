@@ -336,6 +336,16 @@ CREATE TABLE IF NOT EXISTS exercise_log (
     accuracy REAL
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_log_source ON exercise_log(source);
+-- #419 S4: named opener recipes the player chose to keep. items_json is
+-- the serialized Vec<StarterItem>; parse failures on read are SKIPPED
+-- (a stale row must never break the panel), never surfaced.
+CREATE TABLE IF NOT EXISTS starter_recipes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    name TEXT NOT NULL,
+    items_json TEXT NOT NULL,
+    direction TEXT NOT NULL
+);
 ";
 
 /// One row of the exercise log (#252 self-improvement): what the engine
@@ -353,6 +363,16 @@ pub struct ExerciseLogEntry {
     pub tonic: u8,
     /// Graded accuracy 0..1; `None` = generated but never graded.
     pub accuracy: Option<f64>,
+}
+
+/// #419 S4: one saved opener recipe row, as stored. `items_json` is
+/// opaque here — the starter vocabulary lives above the store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedRecipeRow {
+    pub id: i64,
+    pub name: String,
+    pub items_json: String,
+    pub direction: String,
 }
 
 /// The `user_id` used for the single local taste profile before any cloud
@@ -895,6 +915,68 @@ impl SessionStore {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// #419 S4: keep a named opener recipe. Returns the new row id.
+    pub fn save_recipe(
+        &self,
+        name: &str,
+        items_json: &str,
+        direction: &str,
+    ) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO starter_recipes (created_at, name, items_json, direction)              VALUES (?1, ?2, ?3, ?4)",
+            params![Utc::now().to_rfc3339(), name, items_json, direction],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// #419 S4: saved recipes, most-recent-first. Raw rows — the caller
+    /// parses `items_json` and skips what no longer parses.
+    pub fn list_recipes(&self) -> Result<Vec<SavedRecipeRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, items_json, direction              FROM starter_recipes ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SavedRecipeRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                items_json: row.get(2)?,
+                direction: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// #419 S4: forget a saved recipe. Unknown ids are a no-op — the row
+    /// being gone IS the requested state.
+    pub fn delete_recipe(&self, id: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM starter_recipes WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// #419 S4: the newest log row for one source (recall reads the last
+    /// begun opener from here — its STORED seed, never a re-hash).
+    pub fn latest_exercise_for_source(
+        &self,
+        source: &str,
+    ) -> Result<Option<ExerciseLogEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source, label, spec_json, seed, difficulty, tonic, accuracy              FROM exercise_log WHERE source = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![source], |row| {
+            Ok(ExerciseLogEntry {
+                source: row.get(0)?,
+                label: row.get(1)?,
+                spec_json: row.get(2)?,
+                seed: row.get::<_, i64>(3)? as u64,
+                difficulty: row.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                tonic: row.get::<_, i64>(5)?.clamp(0, 255) as u8,
+                accuracy: row.get(6)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
     }
 
     /// The default on-disk path for the sessions database.

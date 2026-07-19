@@ -3399,6 +3399,202 @@ pub fn begin_opener(
     opener_impl(&state, &items, tonic, direction.as_deref(), true)
 }
 
+/// #419 S4: one saved opener recipe on the wire.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RecipeDto {
+    pub id: i64,
+    pub name: String,
+    pub items: Vec<brain::starter::StarterItem>,
+    pub direction: String,
+}
+
+/// The three direction words the Openers wire speaks (matches
+/// `opener_impl`'s parse — a recipe must never store a word that Begin
+/// would later refuse).
+fn validate_direction(direction: &str) -> Result<(), String> {
+    match direction {
+        "forward" | "reversed" | "varied" => Ok(()),
+        other => Err(format!(
+            "direction can be forward, reversed, or varied — not {other:?}"
+        )),
+    }
+}
+
+/// #419 S4: keep the current builder as a named recipe.
+pub fn save_opener_recipe_impl(
+    state: &AppState,
+    name: &str,
+    items: &[brain::starter::StarterItem],
+    direction: &str,
+) -> Result<RecipeDto, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("give the recipe a name first".into());
+    }
+    if items.is_empty() {
+        return Err("an empty opener isn't worth keeping — add something first".into());
+    }
+    validate_direction(direction)?;
+    // Prove the items still compile into a playable cell BEFORE keeping
+    // them — a saved recipe that can't preview is a door that won't open.
+    brain::starter::composite_cell(items, brain::coach::LIFT_MAX_NOTES)
+        .map_err(|e| e.to_string())?;
+    let items_json = serde_json::to_string(items).map_err(|e| e.to_string())?;
+    let id = state
+        .session_store
+        .lock_or_recover()
+        .save_recipe(name, &items_json, direction)
+        .map_err(|e| e.to_string())?;
+    Ok(RecipeDto {
+        id,
+        name: name.into(),
+        items: items.to_vec(),
+        direction: direction.into(),
+    })
+}
+
+/// #419 S4: saved recipes, most-recent-first. A row whose items no
+/// longer parse is skipped calmly (the My Patterns garbage-tolerance
+/// rule) — this list never errors the panel.
+pub fn list_opener_recipes_impl(state: &AppState) -> Vec<RecipeDto> {
+    let rows = match state.session_store.lock_or_recover().list_recipes() {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "recipes unreadable; list empty");
+            return Vec::new();
+        }
+    };
+    rows.into_iter()
+        .filter_map(|row| {
+            let items =
+                serde_json::from_str::<Vec<brain::starter::StarterItem>>(&row.items_json).ok()?;
+            Some(RecipeDto {
+                id: row.id,
+                name: row.name,
+                items,
+                direction: row.direction,
+            })
+        })
+        .collect()
+}
+
+/// #419 S4: yesterday's opener, as the chip announces it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LastOpenerDto {
+    pub label: String,
+    pub tonic: u8,
+}
+
+/// The stored-seed law (S4 spec §2): recall reads the newest begun
+/// opener's SEED, CELL, TONIC, and DIRECTION straight from the log row —
+/// never a recomputed hash, which is only promised stable within a
+/// session. A row that no longer parses to a cell offers nothing.
+fn last_opener_row(
+    state: &AppState,
+) -> Option<(
+    brain::store::ExerciseLogEntry,
+    Vec<i8>,
+    brain::coach::DirectionMode,
+)> {
+    let row = state
+        .session_store
+        .lock_or_recover()
+        .latest_exercise_for_source("opener")
+        .ok()
+        .flatten()?;
+    let spec = serde_json::from_str::<brain::coach::VariationSpec>(&row.spec_json).ok()?;
+    let cell = spec.cell.filter(|c| c.len() >= 2)?;
+    Some((row, cell, spec.direction))
+}
+
+/// #419 S4: what the recall chip shows — or None (no opener begun yet,
+/// or the last one no longer parses): honest absence, not a guess.
+pub fn recall_last_opener_impl(state: &AppState) -> Option<LastOpenerDto> {
+    let (row, _, _) = last_opener_row(state)?;
+    Some(LastOpenerDto {
+        label: row.label.clone(),
+        tonic: row.tonic,
+    })
+}
+
+/// #419 S4: replay yesterday's opener EXACTLY — stored seed, stored
+/// cell, stored tonic, stored direction. Commits like `begin_opener`
+/// (fresh log row carrying the same seed, so recall chains).
+pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> {
+    let (row, cell, direction) = last_opener_row(state)
+        .ok_or_else(|| "no opener to recall yet — begin one first".to_string())?;
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let (explore, seq) =
+        brain::coach::start_explore_cell(cell, row.tonic % 12, &model, row.seed, direction);
+    let dto = explore_dto(&explore, &seq, &model);
+    {
+        let store = state.session_store.lock_or_recover();
+        log_exercise_best_effort(
+            &store,
+            ExerciseOutcome {
+                source: "opener",
+                label: &dto.label,
+                spec: &explore.spec,
+                seed: explore.seed,
+                difficulty: explore.difficulty,
+                tonic: explore.tonic,
+                accuracy: None,
+            },
+        );
+    }
+    *state.active_explore.lock_or_recover() = Some(explore);
+    Ok(dto)
+}
+
+/// #419 S4: keep the current builder as a named recipe.
+#[tauri::command]
+pub fn save_opener_recipe(
+    state: State<'_, AppState>,
+    name: String,
+    items: Vec<brain::starter::StarterItem>,
+    direction: Option<String>,
+) -> Result<RecipeDto, String> {
+    save_opener_recipe_impl(
+        &state,
+        &name,
+        &items,
+        direction.as_deref().unwrap_or("forward"),
+    )
+}
+
+/// #419 S4: the saved-recipes strip.
+#[tauri::command]
+pub fn list_opener_recipes(state: State<'_, AppState>) -> Vec<RecipeDto> {
+    list_opener_recipes_impl(&state)
+}
+
+/// #419 S4: forget a saved recipe.
+#[tauri::command]
+pub fn delete_opener_recipe(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    state
+        .session_store
+        .lock_or_recover()
+        .delete_recipe(id)
+        .map_err(|e| e.to_string())
+}
+
+/// #419 S4: what the "yesterday's opener" chip shows.
+#[tauri::command]
+pub fn recall_last_opener(state: State<'_, AppState>) -> Option<LastOpenerDto> {
+    recall_last_opener_impl(&state)
+}
+
+/// #419 S4: replay yesterday's opener exactly (stored seed — spec §2).
+#[tauri::command]
+pub fn begin_opener_recall(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    begin_opener_recall_impl(&state)
+}
+
 /// #337 S5: row one measure of a stored score through 12 keys.
 #[tauri::command]
 pub fn explore_measure(
@@ -8405,6 +8601,185 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("1 to 8"), "got: {err}");
         assert!(state.active_explore.lock_or_recover().is_none());
+    }
+
+    /// #419 S4 AC1: recipes round-trip most-recent-first, delete removes,
+    /// a garbage row is skipped calmly (never errors the panel), and the
+    /// refusals speak by name.
+    #[test]
+    fn recipes_save_list_delete_and_skip_garbage() {
+        let s = AppState::with_mocks();
+        let notes = vec![brain::starter::StarterItem::Notes {
+            offsets: vec![0, 4, 7],
+        }];
+        let seq = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+        let first = save_opener_recipe_impl(&s, "Morning triad", &notes, "forward").unwrap();
+        let second = save_opener_recipe_impl(&s, "The classic", &seq, "reversed").unwrap();
+        let listed = list_opener_recipes_impl(&s);
+        assert_eq!(
+            listed.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["The classic", "Morning triad"],
+            "most recent first"
+        );
+        assert_eq!(listed[0].direction, "reversed");
+        assert_eq!(listed[0].items, seq);
+        s.session_store
+            .lock_or_recover()
+            .delete_recipe(second.id)
+            .unwrap();
+        let listed = list_opener_recipes_impl(&s);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, first.id);
+        // A stale row whose items no longer parse is SKIPPED, calmly.
+        s.session_store
+            .lock_or_recover()
+            .save_recipe("bad", "not json", "forward")
+            .unwrap();
+        assert_eq!(list_opener_recipes_impl(&s).len(), 1);
+        // Refusals, by name.
+        let err = save_opener_recipe_impl(&s, "   ", &notes, "forward").unwrap_err();
+        assert!(err.contains("name"), "got: {err}");
+        let err = save_opener_recipe_impl(&s, "Empty", &[], "forward").unwrap_err();
+        assert!(err.contains("empty opener"), "got: {err}");
+        let err = save_opener_recipe_impl(&s, "Bad dir", &notes, "sideways").unwrap_err();
+        assert!(err.contains("forward, reversed, or varied"), "got: {err}");
+    }
+
+    /// #419 S4 AC3: recall's absences are honest — empty log, non-opener
+    /// rows, and an opener row whose spec no longer parses all offer
+    /// None, never a guess.
+    #[test]
+    fn recall_last_opener_absences_are_honest() {
+        let s = AppState::with_mocks();
+        assert_eq!(recall_last_opener_impl(&s), None, "empty log");
+        let log = |source: &str, spec_json: &str| {
+            s.session_store
+                .lock_or_recover()
+                .log_exercise(&brain::store::ExerciseLogEntry {
+                    source: source.into(),
+                    label: "a row".into(),
+                    spec_json: spec_json.into(),
+                    seed: 1,
+                    difficulty: 1,
+                    tonic: 0,
+                    accuracy: None,
+                })
+                .unwrap();
+        };
+        log("lift", "{}");
+        assert_eq!(
+            recall_last_opener_impl(&s),
+            None,
+            "non-opener rows are not yesterday's opener"
+        );
+        log("opener", "not json");
+        assert_eq!(
+            recall_last_opener_impl(&s),
+            None,
+            "an unparsable opener row offers nothing"
+        );
+        let err = begin_opener_recall_impl(&s).unwrap_err();
+        assert!(err.contains("no opener to recall"), "got: {err}");
+        assert!(s.active_explore.lock_or_recover().is_none());
+    }
+
+    /// #419 S4 AC4 — the stored-seed law: recall replays the log row's
+    /// SEED, never a fresh cell hash. The row is written with a seed the
+    /// hash could never have produced (simulating a hash function that
+    /// drifted across releases); recall must follow the ROW. The
+    /// recompute mutant dies on the spec comparison.
+    #[test]
+    fn recall_replays_the_stored_seed_not_a_rehash() {
+        let s = AppState::with_mocks();
+        let cell: Vec<i8> = vec![0, 4, 7, 12];
+        let stored_seed: u64 = 777;
+        let model = brain::learner::LearnerModel::default();
+        // Varied direction makes the seed load-bearing (it drives the
+        // per-root contour draws), so a wrong seed is VISIBLE in the
+        // rendered sequence even though the spec is seed-independent.
+        let (original, original_seq) = brain::coach::start_explore_cell(
+            cell.clone(),
+            0,
+            &model,
+            stored_seed,
+            brain::coach::DirectionMode::RandomPerRoot,
+        );
+        let original_xml = explore_dto(&original, &original_seq, &model).music_xml;
+        // The seed opener_impl would hash today — and proof the pin has
+        // teeth: that seed produces a DIFFERENT spec than the stored one.
+        let rehash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            cell.hash(&mut h);
+            h.finish()
+        };
+        assert_ne!(rehash, stored_seed);
+        let (rehashed, rehashed_seq) = brain::coach::start_explore_cell(
+            cell.clone(),
+            0,
+            &model,
+            rehash,
+            brain::coach::DirectionMode::RandomPerRoot,
+        );
+        assert_ne!(
+            explore_dto(&rehashed, &rehashed_seq, &model).music_xml,
+            original_xml,
+            "the two seeds must differ visibly or this pin is vacuous"
+        );
+        s.session_store
+            .lock_or_recover()
+            .log_exercise(&brain::store::ExerciseLogEntry {
+                source: "opener".into(),
+                label: "yesterday".into(),
+                spec_json: serde_json::to_string(&original.spec).unwrap(),
+                seed: stored_seed,
+                difficulty: original.difficulty,
+                tonic: 0,
+                accuracy: None,
+            })
+            .unwrap();
+        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        assert_eq!(
+            replay.music_xml, original_xml,
+            "recall follows the STORED seed"
+        );
+        let guard = s.active_explore.lock_or_recover();
+        let replayed = guard.as_ref().expect("recall commits an exploration");
+        assert_eq!(replayed.seed, stored_seed);
+        drop(guard);
+        // Recall chains: the fresh log row carries the SAME seed, so
+        // recalling a recall replays the same opener again.
+        let last = s
+            .session_store
+            .lock_or_recover()
+            .latest_exercise_for_source("opener")
+            .unwrap()
+            .expect("recall logged a fresh row");
+        assert_eq!(last.seed, stored_seed);
+    }
+
+    /// #419 S4 AC5: a Reversed opener comes back Reversed — recall honors
+    /// the stored direction. A Forward-pinning mutant changes the row
+    /// order and dies on the XML comparison.
+    #[test]
+    fn reversed_opener_recalls_reversed() {
+        let s = AppState::with_mocks();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+        let begun = opener_impl(&s, &items, None, Some("reversed"), true).unwrap();
+        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        assert_eq!(
+            replay.music_xml, begun.music_xml,
+            "recall IS the begun opener, reversal included"
+        );
+        let guard = s.active_explore.lock_or_recover();
+        assert_eq!(
+            guard.as_ref().unwrap().spec.direction,
+            brain::coach::DirectionMode::Reversed
+        );
     }
 
     /// #253 S2 M2 (command wiring): `AppState::enrich_reveal` actually delegates

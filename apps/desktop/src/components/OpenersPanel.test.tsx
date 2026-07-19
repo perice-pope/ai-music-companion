@@ -32,10 +32,17 @@ const PREVIEW_DTO = {
 
 beforeEach(() => {
   mockInvoke.mockReset();
-  // my_patterns resolves to a LIST; every other command previews.
-  mockInvoke.mockImplementation((cmd: string) =>
-    Promise.resolve(cmd === "my_patterns" ? [] : PREVIEW_DTO),
-  );
+  // The list-shaped and recall commands resolve to their honest empties;
+  // every other command previews. Routed BY NAME — the E2 review lesson.
+  mockInvoke.mockImplementation((cmd: string) => {
+    if (cmd === "my_patterns" || cmd === "list_opener_recipes") {
+      return Promise.resolve([]);
+    }
+    if (cmd === "recall_last_opener") {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(PREVIEW_DTO);
+  });
   usePracticeStore.setState({
     openerItems: [],
     openerPreview: null,
@@ -576,5 +583,160 @@ describe("OpenersPanel (#419 S1)", () => {
     expect(screen.getByTestId("my-patterns-empty").textContent).toContain(
       "your patterns appear here",
     );
+  });
+});
+
+/**
+ * #419 S4 — recipe persistence + recall: save round-trips through the
+ * wire, a tapped recipe repopulates the builder through the EXISTING
+ * preview path, delete forgets, and yesterday's opener replays via
+ * begin_opener_recall (the stored-seed law lives backend-side — the
+ * frontend only carries semantic gestures).
+ */
+describe("OpenersPanel (#419 S4 recipes)", () => {
+  const RECIPE = {
+    id: 3,
+    name: "The classic",
+    items: [{ type: "note_sequence", degrees: [1, 2, 3, 5] }],
+    direction: "reversed",
+  };
+
+  it("save: named builder goes over the wire and lands on the strip", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns" || cmd === "list_opener_recipes") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve(null);
+      }
+      if (cmd === "save_opener_recipe") {
+        return Promise.resolve({
+          id: 7,
+          name: "Morning",
+          items: [{ type: "note_sequence", degrees: [3] }],
+          direction: "forward",
+        });
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    // Empty builder → no save controls at all (AC6: nothing to save).
+    expect(screen.queryByTestId("opener-recipe-save")).toBeNull();
+    fireEvent.click(screen.getByTestId("opener-note-3"));
+    await waitFor(() => screen.getByTestId("opener-recipe-save"));
+    // Unnamed → disabled; named → live.
+    expect(screen.getByTestId("opener-recipe-save")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("opener-recipe-name"), {
+      target: { value: "Morning" },
+    });
+    expect(screen.getByTestId("opener-recipe-save")).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId("opener-recipe-save"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("save_opener_recipe", {
+        name: "Morning",
+        items: [{ type: "note_sequence", degrees: [3] }],
+        direction: "forward",
+      }),
+    );
+    await waitFor(() => screen.getByTestId("opener-recipe-7"));
+    expect(screen.getByTestId("opener-recipe-7").textContent).toBe("Morning");
+    expect(
+      (screen.getByTestId("opener-recipe-name") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("a tapped recipe repopulates the builder through the preview path", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "list_opener_recipes") {
+        return Promise.resolve([RECIPE]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-recipe-3"));
+    fireEvent.click(screen.getByTestId("opener-recipe-3"));
+    // AC2: the EXISTING preview command, carrying the recipe's items AND
+    // direction — no new generation path frontend-side.
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("preview_opener", {
+        items: RECIPE.items,
+        tonic: null,
+        direction: "reversed",
+      }),
+    );
+    expect(usePracticeStore.getState().openerItems).toEqual(RECIPE.items);
+    expect(usePracticeStore.getState().openerDirection).toBe("reversed");
+  });
+
+  it("delete forgets the recipe and the honest empty state returns", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "list_opener_recipes") {
+        return Promise.resolve([RECIPE]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve(null);
+      }
+      if (cmd === "delete_opener_recipe") {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-recipe-delete-3"));
+    fireEvent.click(screen.getByTestId("opener-recipe-delete-3"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("delete_opener_recipe", {
+        id: 3,
+      }),
+    );
+    await waitFor(() => screen.getByTestId("opener-recipes-empty"));
+    expect(screen.queryByTestId("opener-recipe-3")).toBeNull();
+  });
+
+  it("yesterday's opener replays via begin_opener_recall", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns" || cmd === "list_opener_recipes") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve({ label: "1-2-3-5 · 12 keys", tonic: 9 });
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-yesterday"));
+    expect(screen.getByTestId("opener-yesterday").textContent).toContain(
+      "1-2-3-5 · 12 keys",
+    );
+    fireEvent.click(screen.getByTestId("opener-yesterday"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("begin_opener_recall", undefined),
+    );
+    // The recalled opener lands on the explore surface, like Begin.
+    await waitFor(() =>
+      expect(usePracticeStore.getState().explore).toEqual(PREVIEW_DTO),
+    );
+  });
+
+  it("no opener begun yet → the honest empty chip", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-yesterday-empty"));
+    expect(screen.queryByTestId("opener-yesterday")).toBeNull();
+    // And the recipes strip is honestly empty too.
+    screen.getByTestId("opener-recipes-empty");
   });
 });
