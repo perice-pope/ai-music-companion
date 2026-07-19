@@ -93,6 +93,21 @@ it through 12 keys, then "Back to listening." **Is the tally still visible, with
 numbers?** (Last run you reported it missing — we need to know if the strip was GONE or the
 counts were RESET to zero. Say which.)
 
+**PART B2 — The invisible loading message: the log pull that ends the hunt (~3 min, DEV build).**
+Still in the dev build: end the session if one is running and go back to **Practice with
+Score**, so the drop area is on screen. Drag **sample-recording-c-major-scale.wav** onto it.
+Watch for "Listening for notes… / Building the score…" and note EXACTLY what appears or
+doesn't — then, either way, run this and paste **every line** into the report:
+`grep -i "import feedback" ~/amc/.desktop.log | tail -12`
+The app now writes down the moments of that message's life — put on screen; what its on-screen
+position and size actually were one frame later; minimum display time done (a failed import
+skips this line, so three lines instead of four is itself information); taken down — plus
+whether the file arrived by drag or by "Choose file…". Run after run has reported the message
+missing; these lines are the first evidence that can say WHY. If the grep prints nothing, or
+nothing at all happened when you dragged, the drag itself may never have reached the app —
+import the same .wav once more via **Choose file…** and run the same grep again. Report what
+each attempt did; an empty grep after BOTH attempts is a headline finding, not a failed test.
+
 **PART C — Installer smoke, FRESH download (~15 min).**
 Delete any old installer/DMG first — this is the whole point. Download fresh from the public
 site, install, and check exactly three things in the packaged app:
@@ -100,7 +115,13 @@ site, install, and check exactly three things in the packaged app:
    highlight you saw in the dev build)?
 2. Drop the sample **.wav**: does the import produce sheet music (no "audio engine couldn't
    start" error)? Also note — honestly — whether you DRAG the file or use "Choose file…", and
-   whether any "Listening for notes…" message appears either way.
+   whether any "Listening for notes…" message appears either way. Don't run PART B2's grep
+   here — the packaged app doesn't write `~/amc/.desktop.log` (that's the dev script's file);
+   it logs to `~/Library/Caches/ai-music-companion/app.log` instead. Immediately after the
+   drop, run
+   `grep -i "import feedback" ~/Library/Caches/ai-music-companion/app.log | tail -8`
+   and paste the output. That file keeps appending across dev AND packaged runs, so only the
+   newest lines are this test's — check the timestamps and say which lines are from just now.
 3. The version in the Mac menu bar → About (we expect it still says 0.1.0 — that fix is queued;
    just record it).
 
@@ -139,7 +160,9 @@ overhauled this week: it should track through the WHOLE piece, not stall at meas
 deliberately skip a measure and confirm it catches up), **11b** (live verdicts ✓/~/✗, phrase
 cards, the score recap, and the 🎲 row-through-12-keys button), **11f** (tap any measure right on
 the notation — NEW), and **12** (the .wav upload; watch for the loading message — a known bug
-hunt: tell me EXACTLY what text appears, or doesn't, the moment you drop the file).
+hunt: tell me EXACTLY what text appears, or doesn't, the moment you drop the file — and paste
+the `import feedback` log lines from step 12's grep; that paste is this run's most valuable
+single output).
 
 **RUN 4 — "Lessons" (Piano, ~15 min).** Section **B** (steps 1–5: start, play, grade, adapt,
 recap, escape hatch) plus **11d** (chord drills — the lesson's second drill on Piano should say
@@ -357,6 +380,12 @@ Open the samples folder for her so she can drag a file:
 12. **Upload a recording (bonus)** — "Back at the drop area, drag in
    **sample-recording-c-major-scale.wav**. Does it show 'Listening for notes… / Building the
    score…' and turn into sheet music? (If it errors, just note it — this part is newer.)"
+   Whatever she sees, immediately run
+   `grep -i "import feedback" ~/amc/.desktop.log | tail -12` and paste every line into the
+   report (see PART B2 above for what the lines mean — this pull is the whole point of the
+   invisible-loading-message hunt). If the drag did nothing, or the grep prints nothing,
+   retry the import via **Choose file…** and run the same grep again — say what each
+   attempt did.
 
 ### C. The AI critique
 13. **Recap** — "End the session. Read me the recap. Does it actually reflect what you played —
@@ -445,6 +474,9 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Score (.musicxml) import & render: <answer>
 - Cursor follows while playing: <answer>
 - Audio (.wav) import & transcription: <answer>
+- Loading message seen during .wav import: <exact text, or "none">
+- `import feedback` log lines (paste from step 12 / PART B2's grep, or "grep printed nothing"):
+  <paste>
 
 ### Explore / "Practice this sound" 🎲 (desktop only — NEW)
 - Tapping the reveal's button opened a variation in free play: <answer>
@@ -527,6 +559,8 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 ### Installer smoke test (only when run)
 - Download + right-click-Open flow worked as the site describes: <answer>
 - Packaged app: mic / reveals / score+cursor / .wav each worked: <answer>
+- Packaged `import feedback` log lines (paste from the app.log grep, newest lines only, or
+  "grep printed nothing"): <paste>
 - Differences vs the dev version, scary dialogs, version string: <answer>
 
 ### Look, layout & wording
