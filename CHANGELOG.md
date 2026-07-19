@@ -1,3 +1,9 @@
+## [2.37.0](https://github.com/perice-pope/ai-music-companion/compare/v2.36.0...v2.37.0) (2026-07-19)
+
+### Features
+
+* library-match core — n-gram index + honesty gates ([#214](https://github.com/perice-pope/ai-music-companion/issues/214) S1a) ([#436](https://github.com/perice-pope/ai-music-companion/issues/436)) ([acca7e5](https://github.com/perice-pope/ai-music-companion/commit/acca7e51d91d8d180491214770d62b68e6b239e0))
+
 ## [2.36.0](https://github.com/perice-pope/ai-music-companion/compare/v2.35.1...v2.36.0) (2026-07-18)
 
 ### Features
