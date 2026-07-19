@@ -126,6 +126,10 @@ describe("practiceStore — state machine", () => {
       // #214 S1b MF5: matches and dismissals are session-scoped too.
       pieceMatch: { scoreId: "id-1", title: "Für Elise" },
       dismissedPieceIds: ["id-2"],
+      // #421 S2 MF6: the click personality is session-scoped.
+      pocketMode: "handoff",
+      pocketFrozenBpm: 96,
+      _pocketLastSentBpm: 96,
     });
 
     await useStore.getState().endSession();
@@ -141,6 +145,8 @@ describe("practiceStore — state machine", () => {
     expect(s.openerPreviewedDirection).toBe("forward");
     expect(s.pieceMatch).toBeNull();
     expect(s.dismissedPieceIds).toHaveLength(0);
+    expect(s.pocketMode).toBe("anchor");
+    expect(s.pocketFrozenBpm).toBeNull();
   });
 
   // #341: tapping a measure MID-PRACTICE swaps to the exploration WITHOUT

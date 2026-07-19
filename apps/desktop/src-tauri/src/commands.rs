@@ -680,9 +680,10 @@ pub struct AppState {
     /// entirely off-device via the lock-free control channel inside the driver —
     /// no network, no realtime-callback locking.
     accompaniment: Arc<std::sync::Mutex<Option<Accompaniment>>>,
-    /// #421 S1: The Pocket's click output — same one-owner audio-device
+    /// #421 S1/S2: The Pocket — the click output plus (S2) the live
+    /// tempo producer Follow/Handoff feed. Same one-owner audio-device
     /// discipline as the band, serialized by the same cmd lock.
-    pocket: Arc<std::sync::Mutex<Option<ears::output_engine::AudioOutput>>>,
+    pocket: Arc<std::sync::Mutex<Option<Pocket>>>,
     /// Serializes the `start`/`stop` accompaniment commands (and session-end
     /// teardown) so two overlapping Tauri command tasks can't race the audio
     /// device handoff — without it, an interleaved start could drop-join an
@@ -990,8 +991,8 @@ impl AppState {
     /// the band's teardown; both run at session end.
     pub(crate) fn teardown_pocket(&self) {
         let taken = self.pocket.lock_or_recover().take();
-        if let Some(output) = taken {
-            output.stop();
+        if let Some(pocket) = taken {
+            pocket.output.stop();
         }
     }
 
@@ -1756,6 +1757,13 @@ struct AccompanimentStatusPayload {
 }
 
 /// Tell the UI whether the follow-me band is playing. Non-fatal on error.
+/// #421 S2: the live Pocket — output device + the tempo channel's
+/// control side.
+pub(crate) struct Pocket {
+    output: ears::output_engine::AudioOutput,
+    tempo_tx: ringbuf::HeapProd<f64>,
+}
+
 #[derive(Clone, Serialize)]
 struct PocketStatusPayload {
     playing: bool,
@@ -2607,6 +2615,8 @@ pub async fn start_pocket<R: Runtime>(
     emit_accompaniment_status(&app, false);
 
     let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
+    // #421 S2: the tempo channel — Follow/Handoff push, render pops.
+    let (tempo_tx, tempo_rx) = ears::output_engine::pocket_tempo_channel(16);
     let output = ears::output_engine::AudioOutput::start(move |sample_rate| {
         let config = ears::output::MetronomeConfig {
             bpm: tempo,
@@ -2616,12 +2626,13 @@ pub async fn start_pocket<R: Runtime>(
         };
         // The params are clamped into the validated range, so construction
         // cannot fail.
-        ears::output::Metronome::new(config, sample_rate)
+        let metronome = ears::output::Metronome::new(config, sample_rate)
             .expect("clamped pocket config is always valid")
-            .with_count_in(if count_in { 1 } else { 0 })
+            .with_count_in(if count_in { 1 } else { 0 });
+        ears::output_engine::TempoFedMetronome::new(metronome, tempo_rx)
     })
     .map_err(|e| format!("could not start the click: {e}"))?;
-    *state.pocket.lock_or_recover() = Some(output);
+    *state.pocket.lock_or_recover() = Some(Pocket { output, tempo_tx });
     emit_pocket_status(&app, true, tempo);
     Ok(())
 }
@@ -2636,6 +2647,30 @@ pub async fn stop_pocket<R: Runtime>(
     state.teardown_pocket();
     emit_pocket_status(&app, false, 0.0);
     Ok(())
+}
+
+/// #421 S2: re-time a playing click to the player's measured pulse.
+/// Clamped by the SAME function start_pocket uses (played == reported);
+/// a silent Pocket is a calm no-op — Follow policy lives in the
+/// frontend, measurement in perception, and this seam just moves a
+/// number onto the render thread without locks.
+#[tauri::command]
+pub fn set_pocket_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
+    if let Some(pocket) = state.pocket.lock_or_recover().as_mut() {
+        push_clamped_tempo(&mut pocket.tempo_tx, tempo_bpm);
+    }
+    Ok(())
+}
+
+/// #421 S2 review MF5: the clamp+push seam, testable with a bare
+/// channel. This is what protects the 220..300 window where the
+/// Metronome's own validation (30..=300) would happily APPLY a value
+/// the product never plays — the frontend's same-range gate is UI
+/// policy, this is the API guarantee.
+fn push_clamped_tempo(tx: &mut ringbuf::HeapProd<f64>, tempo_bpm: f64) {
+    use ringbuf::traits::Producer;
+    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
+    let _ = tx.try_push(tempo); // full ring = drop, fine
 }
 
 /// #421 S1: the Pocket's parameter clamps — tempo 40..=220 (NaN → 40),
@@ -6878,6 +6913,33 @@ mod tests {
         // If a real device opened, close it so the test leaves silence.
         let _ = stop_pocket(handle, state.clone()).await;
         assert!(state.pocket.lock_or_recover().is_none());
+    }
+
+    /// #421 S2 review MF5: the clamp seam — a 250 BPM push arrives at
+    /// the consumer as 220 (the 220..300 window only THIS clamp covers;
+    /// the Metronome itself would apply up to 300).
+    #[test]
+    fn pushed_tempos_arrive_clamped() {
+        use ringbuf::traits::Consumer;
+        let (mut tx, mut rx) = ears::output_engine::pocket_tempo_channel(4);
+        push_clamped_tempo(&mut tx, 250.0);
+        push_clamped_tempo(&mut tx, 20.0);
+        push_clamped_tempo(&mut tx, f64::NAN);
+        assert_eq!(rx.try_pop(), Some(220.0));
+        assert_eq!(rx.try_pop(), Some(40.0));
+        assert_eq!(rx.try_pop(), Some(40.0));
+    }
+
+    /// #421 S2 AC2: a silent Pocket makes set_pocket_tempo a calm no-op
+    /// (no panic, no error) — the follow policy may outlive the click.
+    #[tokio::test]
+    async fn set_pocket_tempo_is_a_noop_when_silent() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+        set_pocket_tempo(state, 96.0).expect("silent no-op");
     }
 
     /// #421 S1 AC3: the clamp table — played and reported values agree
