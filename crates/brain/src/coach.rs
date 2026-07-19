@@ -841,7 +841,7 @@ fn push_span(
 pub enum VariationDelta {
     /// RV's signature: same material, new shuffled key order.
     ReshuffleRoots,
-    /// `[Make it spicy]` = +1 / `[Simpler]` = −1, clamped to the ladder.
+    /// `[Add keys]` = +1 / `[Simpler]` = −1, clamped to the ladder.
     BumpDifficulty { by: i8 },
     /// Swap to a different scale colour (seeded pick, never the current one).
     DifferentScale,
