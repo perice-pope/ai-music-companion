@@ -54,7 +54,11 @@ pub enum RevealSource {
 /// A real-world music connection for what the player is doing right now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reveal {
-    /// The musical concept detected, e.g. `"G Dorian"`.
+    /// The musical concept the card may claim, e.g. `"Dorian"`. This is the
+    /// **mode only** — the curated exemplars are mode-level, so stamping the
+    /// heard key onto them ("G# Major — Ode to Joy") fabricated a key claim
+    /// the catalog never made (#388). The heard key still rides along as
+    /// `tonic`/`mode` for dismissal and practice, it just isn't asserted.
     pub concept: String,
     /// The grounded real-world connection, e.g. `"Miles Davis — \"So What\""`.
     pub connection: String,
@@ -90,10 +94,6 @@ pub(crate) struct Exemplar {
     pub(crate) connection: &'static str,
     pub(crate) why: &'static str,
 }
-
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
 
 /// Curated, grounded exemplars per mode, keyed by a normalized (lowercased) mode
 /// label. The artist/piece is factually associated with that mode — that
@@ -241,10 +241,12 @@ pub fn reveal_for(ctx: &MusicalContext, seed: u64) -> Option<Reveal> {
         return None;
     }
     let tonic = ctx.tonic % 12;
-    let note = NOTE_NAMES[tonic as usize];
     let pick = &exemplars[(seed as usize) % exemplars.len()];
+    // #388: attribute by MODE, never by the heard key. The exemplars are
+    // genuinely associated with the mode; naming the key here ("G# Major —
+    // Ode to Joy") claimed the piece lives in a key it doesn't.
     Some(Reveal {
-        concept: format!("{note} {display_mode}"),
+        concept: display_mode.to_string(),
         connection: pick.connection.to_string(),
         why: pick.why.to_string(),
         source: RevealSource::Grounded,
@@ -299,18 +301,42 @@ mod tests {
     }
 
     /// AC1: a confident, curated context yields a reveal whose connection is one
-    /// of the curated exemplars for that mode (and the concept names the key).
+    /// of the curated exemplars for that mode (and the concept names the mode).
     /// Fails if selection ever returns an off-table connection.
     #[test]
     fn returns_curated_exemplar() {
         let r = reveal_for(&ctx(7, "Dorian", 0.9), 0).expect("confident Dorian should reveal");
-        assert_eq!(r.concept, "G Dorian");
+        assert_eq!(r.concept, "Dorian");
         assert!(
             r.connection.contains("So What") || r.connection.contains("Oye Como Va"),
             "connection must be a curated Dorian exemplar, got {:?}",
             r.connection
         );
         assert_eq!(r.source, RevealSource::Grounded);
+    }
+
+    /// #388: the concept attributes the exemplar by MODE, never by the heard
+    /// key — the curated songs are mode-level, so a key-stamped headline
+    /// ("G# Major — Ode to Joy") is fabrication. Pinned by asserting the
+    /// concept is byte-identical across all 12 tonics (a key claim would make
+    /// them differ) and exactly the mode's display label.
+    #[test]
+    fn concept_attributes_mode_never_the_heard_key() {
+        for (mode, display) in [
+            ("major", "Major"),
+            ("dorian", "Dorian"),
+            ("locrian", "Locrian"),
+        ] {
+            for tonic in 0..12u8 {
+                let r = reveal_for(&ctx(tonic, mode, 0.9), 0)
+                    .expect("confident curated mode should reveal");
+                assert_eq!(
+                    r.concept, display,
+                    "concept for tonic {tonic} must claim only the mode"
+                );
+                assert_eq!(r.tonic, tonic, "the heard key still rides along as data");
+            }
+        }
     }
 
     /// #266 AC1: the reveal carries the key it was generated for — `tonic` and

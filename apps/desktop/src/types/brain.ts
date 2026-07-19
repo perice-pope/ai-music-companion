@@ -252,7 +252,7 @@ export type RevealSource = "grounded" | "llm_grounded";
  * Mirrors `brain::connections::Reveal`. Returned by the `get_reveal` command.
  */
 export interface Reveal {
-  /** The musical concept detected, e.g. "G Dorian". */
+  /** The concept the card claims — the mode only, e.g. "Dorian" (#388). */
   concept: string;
   /** The grounded real-world connection, e.g. `Miles Davis — "So What"`. */
   connection: string;
