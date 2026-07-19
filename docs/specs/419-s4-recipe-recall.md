@@ -15,10 +15,11 @@ drifts across releases. So recall NEVER recomputes: it replays with
 the `seed` column the log row already carries, plus the row's stored
 cell, tonic, and direction.
 
-Corollary: the log must know the direction. `exercise_log` gains a
-nullable `direction` column (guarded ALTER for existing installs);
-`begin_opener` writes it. Rows that predate the column — or non-opener
-rows — simply don't offer recall (honest absence, not a guess).
+Corollary: recall needs the direction — and the log already has it:
+`spec_json` is the FULL resolved `VariationSpec`, whose `direction`
+field (and `cell`) rode along since S2b. No migration. A row whose
+spec_json doesn't parse or carries no cell simply doesn't offer recall
+(honest absence, not a guess).
 
 ## 3. Contract
 - **New table `starter_recipes`**: `id` PK, `name` TEXT, `items_json`
@@ -29,11 +30,11 @@ rows — simply don't offer recall (honest absence, not a guess).
 - **Commands**: `save_opener_recipe(name, items, direction)` →
   RecipeDto; `list_opener_recipes()` → `Vec<RecipeDto>`;
   `delete_opener_recipe(id)`; `recall_last_opener()` →
-  `Option<LastOpenerDto{label, cell, tonic, direction, seed}>` (newest
-  `source="opener"` log row WITH direction present);
-  `begin_opener_recall()` → ExploreDto — runs `start_explore_cell`
-  with the STORED cell/tonic/direction/seed and commits (logs a fresh
-  opener row, same discipline as `begin_opener`).
+  `Option<LastOpenerDto{label, tonic}>` (newest `source="opener"` log
+  row whose spec_json parses to a cell); `begin_opener_recall()` →
+  ExploreDto — runs `start_explore_cell` with the row's STORED
+  cell/tonic/direction/seed and commits (logs a fresh opener row, same
+  discipline as `begin_opener`).
 - **Panel**: a "Saved recipes" strip (name chips, tap → repopulate
   builder items + direction → existing preview flow; per-chip delete)
   and a "Yesterday's opener" chip (label from the log row; tap →
@@ -49,15 +50,15 @@ rows — simply don't offer recall (honest absence, not a guess).
 2. Tapping a saved recipe repopulates the builder (items + direction)
    and previews via the EXISTING preview path — no new generation
    logic frontend-side.
-3. `recall_last_opener` returns the newest opener row's label + stored
-   seed/cell/tonic/direction; returns None when no opener row carries
-   a direction (pre-S4 rows, empty log, non-opener rows).
+3. `recall_last_opener` returns the newest opener row's label + tonic;
+   None when the log has no opener row with a parsable cell (empty
+   log, non-opener rows, garbage spec_json).
 4. `begin_opener_recall` replays with the STORED seed — pinned by a
    test whose log row carries a seed that is NOT the cell hash, and
    whose replayed spec differs from the freshly-hashed one (the
    recompute mutant must die).
-5. `begin_opener` now logs direction; the recall chip only exists
-   because of it (new rows recallable, old rows honestly absent).
+5. Recall replays the stored DIRECTION too (a Reversed opener comes
+   back Reversed — pinned against a Forward-pinning mutant).
 6. Panel: both sections render, tap flows work, empty states honest,
    save disabled with an empty builder.
 
@@ -68,5 +69,5 @@ rows — simply don't offer recall (honest absence, not a guess).
 | 2 | OpenersPanel: tap recipe → builder repopulated + preview invoked |
 | 3 | commands: recall_last_opener stored-row happy + None cases |
 | 4 | commands: replay uses STORED seed ≠ cell hash (spec differs from re-hash) |
-| 5 | commands: begin_opener writes direction; recall sees it |
+| 5 | commands: a Reversed opener recalls Reversed |
 | 6 | OpenersPanel: sections, save flow, empty states |
