@@ -53,6 +53,7 @@ describe("RevealCard", () => {
       revealQueue: [],
       perception: null,
       collectionCount: null,
+      pieceMatch: null,
     });
   });
 
@@ -92,6 +93,66 @@ describe("RevealCard", () => {
       revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
     });
     render(<RevealCard />);
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
+  });
+
+  // #214 S2: with a confirmed library match live, the card finally EARNS
+  // identification — "You're playing — {title}" — the 2a framing retires
+  // on this card only, and the catalog reframes as company the piece
+  // keeps in this key. Fails if the hedge survives next to a real ID.
+  it("a confirmed match upgrades the card: identified, framing retired", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+    });
+    render(<RevealCard />);
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Für Elise",
+    );
+    expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
+    expect(screen.getByTestId("reveal-catalog-reframe-r1").textContent).toBe(
+      "also lives in this key:",
+    );
+  });
+
+  // #214 S2: the framing retires ONLY while the match is live — cleared
+  // or dismissed, the 2a hedge returns verbatim. Fails if identification
+  // leaves a permanent hole in the catalog voice. (Distinct title from
+  // the other S2 test, so a hardcoded header can't pass both.)
+  it("the framing returns verbatim when the match clears", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      pieceMatch: { scoreId: "id-9", title: "Preexisting Prelude" },
+    });
+    render(<RevealCard />);
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Preexisting Prelude",
+    );
+    expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
+    act(() => usePracticeStore.getState().dismissPieceMatch());
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
+  });
+
+  // #214 S2 review MF2: "You're playing —" is an ASSERTION riding a
+  // rule-0 sticky match. When the live key confidently contradicts the
+  // card (the same signal that dims it), the assertion must step back
+  // down to the hedged framing — a dimmed card asserting a title would
+  // be the wrong-Beethoven misread wearing a confident voice.
+  it("a confident key contradiction demotes the assertion to the hedge", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Miles Davis — "So What"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+      // The reveal is G Dorian (tonic 7); a confident D major reading
+      // contradicts it — the card dims AND the assertion retires.
+      perception: perceptionWithKey(2, "major") as never,
+    });
+    render(<RevealCard />);
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
     expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
       "other music that lives in this sound",
     );
