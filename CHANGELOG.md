@@ -1,3 +1,9 @@
+## [2.40.0](https://github.com/perice-pope/ai-music-companion/compare/v2.39.0...v2.40.0) (2026-07-19)
+
+### Features
+
+* My Patterns — the practice-data bank entry ([#419](https://github.com/perice-pope/ai-music-companion/issues/419) S3) ([#439](https://github.com/perice-pope/ai-music-companion/issues/439)) ([242b03b](https://github.com/perice-pope/ai-music-companion/commit/242b03b72e563dc79308fbf9b9bece681a931651)), closes [#335](https://github.com/perice-pope/ai-music-companion/issues/335)
+
 ## [2.39.0](https://github.com/perice-pope/ai-music-companion/compare/v2.38.0...v2.39.0) (2026-07-19)
 
 ### Features
