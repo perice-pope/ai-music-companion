@@ -1,3 +1,9 @@
+## [2.40.1](https://github.com/perice-pope/ai-music-companion/compare/v2.40.0...v2.40.1) (2026-07-19)
+
+### Bug Fixes
+
+* **theory:** retention rides an audibility floor — the label survives a towered root ([#382](https://github.com/perice-pope/ai-music-companion/issues/382)) ([#440](https://github.com/perice-pope/ai-music-companion/issues/440)) ([f20f777](https://github.com/perice-pope/ai-music-companion/commit/f20f77763da0ba7b8fcae3f2b0d533ecc3f4adb6))
+
 ## [2.40.0](https://github.com/perice-pope/ai-music-companion/compare/v2.39.0...v2.40.0) (2026-07-19)
 
 ### Features
