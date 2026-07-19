@@ -684,6 +684,11 @@ pub struct AppState {
     /// tempo producer Follow/Handoff feed. Same one-owner audio-device
     /// discipline as the band, serialized by the same cmd lock.
     pocket: Arc<std::sync::Mutex<Option<Pocket>>>,
+    /// #445: the click gate — the Pocket's click-fire consumer + epoch,
+    /// shared with the audio worker so it can ignore mic onsets that merely
+    /// agree with the app's own click. Installed by `start_pocket`, cleared
+    /// by `teardown_pocket`; `None` = nothing gated (fail-open).
+    click_gate: crate::audio_pipeline::SharedClickGate,
     /// Serializes the `start`/`stop` accompaniment commands (and session-end
     /// teardown) so two overlapping Tauri command tasks can't race the audio
     /// device handoff — without it, an interleaved start could drop-join an
@@ -720,6 +725,12 @@ struct Accompaniment {
 /// Control-channel depth (messages). Comfortably more than the render thread can
 /// fall behind between drains; excess is dropped (the next tick is fresher).
 const ACCOMPANIMENT_CHANNEL_CAPACITY: usize = 64;
+
+/// #445: click-fire channel depth. Clicks arrive < 4/s (220 BPM ceiling)
+/// and the audio worker drains every ~23 ms window; when no session is
+/// running nothing drains and the ring simply drops new fires — fine,
+/// there is no mic to protect then.
+const CLICK_FIRE_CHANNEL_CAPACITY: usize = 64;
 
 /// Minimum spacing between `perception` event emits (~8 Hz). Smooth enough for a
 /// live readout without flooding IPC; driven off event timestamps, not wall clock.
@@ -824,6 +835,7 @@ impl AppState {
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             pocket: Arc::new(std::sync::Mutex::new(None)),
+            click_gate: crate::audio_pipeline::SharedClickGate::default(),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
@@ -878,6 +890,7 @@ impl AppState {
             )),
             accompaniment: Arc::new(std::sync::Mutex::new(None)),
             pocket: Arc::new(std::sync::Mutex::new(None)),
+            click_gate: crate::audio_pipeline::SharedClickGate::default(),
             accompaniment_cmd_lock: Mutex::new(()),
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
@@ -1003,6 +1016,10 @@ impl AppState {
     /// #421 S1: stop The Pocket's click if it is playing. Idempotent, like
     /// the band's teardown; both run at session end.
     pub(crate) fn teardown_pocket(&self) {
+        // #445: clear the click gate FIRST so the audio worker stops
+        // consulting a dying click's fires. Fail-open by construction:
+        // an empty slot gates nothing.
+        *self.click_gate.lock_or_recover() = None;
         let taken = self.pocket.lock_or_recover().take();
         if let Some(pocket) = taken {
             pocket.output.stop();
@@ -2359,6 +2376,10 @@ pub async fn start_practice_session<R: Runtime>(
                     follower,
                     Some(idiom_buffer),
                     poly,
+                    // #445: the shared click-gate slot — empty until the
+                    // Pocket installs its gate, then the worker ignores
+                    // onsets that agree with our own click.
+                    Some(state.click_gate.clone()),
                     move |event, chroma| {
                         // Feed the accompaniment's clock from onset timing before
                         // the event is moved into the emit. Lock is uncontended
@@ -2630,6 +2651,9 @@ pub async fn start_pocket<R: Runtime>(
     let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
     // #421 S2: the tempo channel — Follow/Handoff push, render pops.
     let (tempo_tx, tempo_rx) = ears::output_engine::pocket_tempo_channel(16);
+    // #445: the click-fire channel — the render-side metronome reports
+    // every click's sample index; the audio worker's click gate consumes.
+    let (fire_tx, fire_rx) = ears::output_engine::click_fire_channel(CLICK_FIRE_CHANNEL_CAPACITY);
     let output = ears::output_engine::AudioOutput::start(move |sample_rate| {
         let config = ears::output::MetronomeConfig {
             bpm: tempo,
@@ -2641,10 +2665,20 @@ pub async fn start_pocket<R: Runtime>(
         // cannot fail.
         let metronome = ears::output::Metronome::new(config, sample_rate)
             .expect("clamped pocket config is always valid")
-            .with_count_in(if count_in { 1 } else { 0 });
+            .with_count_in(if count_in { 1 } else { 0 })
+            .with_fire_channel(fire_tx);
         ears::output_engine::TempoFedMetronome::new(metronome, tempo_rx)
     })
     .map_err(|e| format!("could not start the click: {e}"))?;
+    // #445: install the click gate. The epoch is recorded now — playback
+    // of the metronome's sample 0 begins (device already running) the
+    // moment `AudioOutput::start` returns; the few-ms slop is far inside
+    // the gate window. The output rate is the unit fire indices count in.
+    *state.click_gate.lock_or_recover() = Some(crate::audio_pipeline::ClickGate {
+        fires: fire_rx,
+        epoch: std::time::Instant::now(),
+        output_sample_rate: output.sample_rate(),
+    });
     *state.pocket.lock_or_recover() = Some(Pocket { output, tempo_tx });
     emit_pocket_status(&app, true, tempo);
     Ok(())
@@ -7146,6 +7180,51 @@ mod tests {
         let s = AppState::with_mocks();
         s.teardown_pocket();
         s.teardown_pocket();
+    }
+
+    /// #445 AC7: the click-gate lifecycle. A fresh state gates nothing;
+    /// a (manually) installed gate is cleared by `teardown_pocket` — the
+    /// same path stop_pocket, band start, and session end all take. And
+    /// when `start_pocket` actually opens a device (dev machine), the
+    /// gate slot is populated; either way stop leaves it empty.
+    #[tokio::test]
+    async fn pocket_click_gate_installed_on_start_and_cleared_on_teardown() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let s = AppState::with_mocks();
+        assert!(
+            s.click_gate.lock_or_recover().is_none(),
+            "a fresh state must gate nothing (fail-open)"
+        );
+        // Seed a gate without a device, then tear down: the slot empties.
+        let (_tx, rx) = ears::output_engine::click_fire_channel(8);
+        *s.click_gate.lock_or_recover() = Some(crate::audio_pipeline::ClickGate {
+            fires: rx,
+            epoch: std::time::Instant::now(),
+            output_sample_rate: 48_000,
+        });
+        s.teardown_pocket();
+        assert!(
+            s.click_gate.lock_or_recover().is_none(),
+            "teardown_pocket must clear the click gate"
+        );
+
+        // Through the real commands (device-dependent start, like
+        // `starting_the_pocket_reports_the_band_stopped_first`).
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let started = start_pocket(handle.clone(), state.clone(), 96.0, 4, false).await;
+        if started.is_ok() {
+            assert!(
+                state.click_gate.lock_or_recover().is_some(),
+                "a playing Pocket must install the click gate"
+            );
+        }
+        let _ = stop_pocket(handle, state.clone()).await;
+        assert!(state.click_gate.lock_or_recover().is_none());
     }
 
     /// #421 S1 AC2 (stop half): stop_pocket reports playing:false through

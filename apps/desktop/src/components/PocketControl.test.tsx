@@ -261,6 +261,34 @@ describe("PocketControl (#421 S1)", () => {
     vi.useRealTimers();
   });
 
+  // ── #445: headphone blurb ─────────────────────────────────────────────
+
+  it("the headphone tip renders quietly in BOTH idle and playing states", () => {
+    render(<PocketControl />);
+    // Idle: tip present, alongside the idle controls.
+    const tip = screen.getByTestId("pocket-headphone-tip");
+    expect(tip.textContent).toContain(
+      "headphones keep the click out of the mic",
+    );
+    expect(tip.textContent).toContain("I do my best to ignore my own click");
+    // #445 review: the wireless limit is DISCLOSED — Bluetooth output
+    // latency (100-250 ms) exceeds the gate's +90 ms window.
+    expect(tip.textContent).toContain(
+      "wireless speakers delay the sound too much for me to catch it",
+    );
+    expect(screen.getByTestId("pocket-start")).toBeInTheDocument();
+    // Playing (handoff with a frozen tempo): the tip stays and displaces
+    // nothing — pulse, tempo label, and the drift line all still render.
+    act(() => {
+      usePracticeStore.getState().setPocketStatus(true, 120);
+      usePracticeStore.setState({ pocketMode: "handoff", pocketFrozenBpm: 96 });
+    });
+    expect(screen.getByTestId("pocket-headphone-tip")).toBeInTheDocument();
+    expect(screen.getByTestId("pocket-pulse")).toBeInTheDocument();
+    expect(screen.getByTestId("pocket-tempo")).toBeInTheDocument();
+    expect(screen.getByTestId("pocket-drift")).toBeInTheDocument();
+  });
+
   it("exactly ±2 BPM reads 'in the pocket' — the boundary is inclusive", () => {
     vi.useFakeTimers();
     vi.setSystemTime(500_000);

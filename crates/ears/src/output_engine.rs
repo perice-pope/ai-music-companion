@@ -133,6 +133,30 @@ pub fn pocket_tempo_channel(capacity: usize) -> (HeapProd<f64>, HeapCons<f64>) {
     HeapRb::<f64>::new(capacity.max(2)).split()
 }
 
+/// #445: one click fire, reported from the render path the instant the
+/// [`crate::output::Metronome`] starts a click. We synthesize the click,
+/// so we know exactly when it happened — the processing-side click gate
+/// converts `sample_index` (in the metronome's own emitted stream,
+/// 0-based from construction) to wall time and ignores mic onsets that
+/// merely agree with our own click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClickFire {
+    /// Index of the sample at which this click began, counted over every
+    /// sample the metronome has emitted since construction (never reset
+    /// by retiming or count-in).
+    pub sample_index: u64,
+    /// True if the click used the accent (downbeat / count-in) voice.
+    pub is_accent: bool,
+}
+
+/// #445: build the click-fire channel (render side keeps the producer via
+/// [`crate::output::Metronome::with_fire_channel`], the processing-side
+/// gate takes the consumer). Same lock-free SPSC pattern as
+/// [`pocket_tempo_channel`].
+pub fn click_fire_channel(capacity: usize) -> (HeapProd<ClickFire>, HeapCons<ClickFire>) {
+    HeapRb::<ClickFire>::new(capacity.max(2)).split()
+}
+
 /// An [`OutputMixer`] is a render source: each slot is one mixed sample.
 impl RenderSource for OutputMixer {
     fn render(&mut self, out: &mut [f32]) {
@@ -799,5 +823,42 @@ mod pocket_tests {
         assert_eq!(source.metronome.samples_per_beat(), 24_000); // 120 BPM
         source.render(&mut buf);
         assert_eq!(source.metronome.samples_per_beat(), 24_000); // no push → untouched
+    }
+
+    /// #445 AC1 (follow/handoff path): the fire channel keeps reporting
+    /// through `TempoFedMetronome`, and a mid-stream retime moves the
+    /// reported grid exactly as the phase-preserving update dictates.
+    #[test]
+    fn tempo_fed_metronome_reports_fires_through_retiming() {
+        let config = MetronomeConfig {
+            bpm: 60.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let (fire_tx, mut fire_rx) = click_fire_channel(16);
+        let m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_fire_channel(fire_tx);
+        let (mut tempo_tx, tempo_rx) = pocket_tempo_channel(8);
+        let mut source = TempoFedMetronome::new(m, tempo_rx);
+
+        // Block 1: 24 000 samples at 60 BPM — one fire, at sample 0.
+        let mut block = vec![0.0f32; 24_000];
+        source.render(&mut block);
+        // Retime to 120 BPM; applied at the next block start (sample
+        // 24 000). Half the old period remained (24 000 of 48 000), so
+        // half the new period remains: the next fire lands at
+        // 24 000 + 12 000 = 36 000, then every 24 000 after (60 000).
+        tempo_tx.try_push(120.0).unwrap();
+        let mut rest = vec![0.0f32; 36_001];
+        source.render(&mut rest);
+
+        let fires: Vec<ClickFire> = std::iter::from_fn(|| fire_rx.try_pop()).collect();
+        let indices: Vec<u64> = fires.iter().map(|f| f.sample_index).collect();
+        assert_eq!(indices, vec![0, 36_000, 60_000]);
+        // Beats 0, 1, 2 of the bar: only the downbeat accents.
+        let accents: Vec<bool> = fires.iter().map(|f| f.is_accent).collect();
+        assert_eq!(accents, vec![true, false, false]);
     }
 }
