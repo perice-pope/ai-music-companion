@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 /**
  * #58 — the update pill's state machine.
@@ -57,6 +58,12 @@ export interface UpdateState {
   availableVersion: string | null;
   /** Calm player-facing line for the error phase. */
   notice: string | null;
+  /** #58 E1: the release's notes (updater manifest body), committed
+   * WITH the version they belong to — never paired across versions. */
+  releaseNotes: string | null;
+  /** #58 E1: relaunch failed (it shouldn't) — fall back to the calm
+   * quit-and-reopen instruction. */
+  restartFailed: boolean;
   /** Version the user dismissed — that one stays hidden; a newer shows. */
   dismissedVersion: string | null;
 
@@ -72,6 +79,8 @@ export interface UpdateState {
   installUpdate: () => Promise<void>;
   /** Hide the currently offered version (a newer one will re-surface). */
   dismiss: () => void;
+  /** #58 E1: relaunch into the staged build. */
+  restartNow: () => Promise<void>;
 }
 
 /**
@@ -80,6 +89,7 @@ export interface UpdateState {
  */
 let pendingUpdate: {
   version: string;
+  body?: string | null;
   downloadAndInstall: () => Promise<void>;
 } | null = null;
 
@@ -87,6 +97,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   phase: "idle",
   availableVersion: null,
   notice: null,
+  releaseNotes: null,
+  restartFailed: false,
   dismissedVersion: loadDismissed(),
 
   checkForUpdate: async (opts) => {
@@ -114,6 +126,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       set({
         phase: "available",
         availableVersion: update.version,
+        // Notes commit WITH the version (rule: never cross-paired).
+        releaseNotes: update.body ?? null,
         notice: null,
       });
       return "found";
@@ -147,6 +161,16 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     }
   },
 
+  restartNow: async () => {
+    try {
+      await relaunch();
+    } catch (err) {
+      // The staged build still takes over on next launch — say so calmly.
+      console.error("relaunch failed:", err);
+      set({ restartFailed: true });
+    }
+  },
+
   dismiss: () => {
     const version = get().availableVersion;
     if (version) {
@@ -157,6 +181,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       phase: "idle",
       availableVersion: null,
       notice: null,
+      releaseNotes: null,
+      restartFailed: false,
       dismissedVersion: version,
     });
   },
