@@ -16,6 +16,7 @@ import History from "../pages/History";
 export default function PracticeShell() {
   const screen = usePracticeStore((s) => s.screen);
   const goToConnections = usePracticeStore((s) => s.goToConnections);
+  const goToHistory = usePracticeStore((s) => s.goToHistory);
 
   switch (screen) {
     case "session":
@@ -40,6 +41,15 @@ export default function PracticeShell() {
             <p className="mt-2 text-sm text-gray-400">Free Play</p>
           </div>
           <InstrumentSelector />
+          {/* #445-8: the door to past sessions — History existed but was
+              only reachable through Connections & Privacy. */}
+          <button
+            onClick={() => goToHistory()}
+            className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+            data-testid="open-history"
+          >
+            My sessions
+          </button>
           <button
             onClick={() => goToConnections()}
             className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"

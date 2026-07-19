@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import PracticeShell from "./PracticeShell";
 import { usePracticeStore } from "../stores/practiceStore";
 
@@ -39,6 +39,14 @@ describe("PracticeShell routing", () => {
     // The selector heading doubles as the app title on this screen.
     screen.getByTestId("practice-shell-selector");
     screen.getByTestId("instrument-selector");
+  });
+
+  // #445-8: History was only reachable through Connections & Privacy —
+  // the selector now offers the door directly.
+  it("the selector offers My sessions and it lands on History", () => {
+    render(<PracticeShell />);
+    fireEvent.click(screen.getByTestId("open-history"));
+    expect(usePracticeStore.getState().screen).toBe("history");
   });
 
   it("renders the session screen when screen=session", () => {
