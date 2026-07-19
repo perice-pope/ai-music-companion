@@ -71,18 +71,18 @@ enum LabelReturn {
     /// The final snapshot's label: the take must STILL be labeled at its
     /// end (the standard fixtures sustain through their whole length).
     AtTakeEnd,
-    /// The label that showed and provably never churned; the take may
-    /// honestly end unlabeled once decay thins (solo-E3's ring-out rule).
-    HeldDuringTake,
+    /// The strictest contract (#382 interior dropout): once shown, the
+    /// label appears at EVERY subsequent snapshot through take end — a
+    /// chord that audibly rings the whole take must stay named the whole
+    /// take, no interior gap, no trailing gap.
+    Unbroken,
 }
 
 /// Like [`settled_label_with_bass`] with an explicit first-label deadline —
 /// for fixtures whose mix-exaggerated voicing-intrinsic effects (see the
-/// bass-voicing test) push the honest recognition point past the bar. Returns the label that
-/// SHOWED AND HELD (the stability assertion inside proves it never
-/// churned, and held >= MIN_HELD_SECS) — the take may honestly go
-/// unlabeled as decay thins, and the gap may be interior, not only
-/// trailing (this very fixture drops out mid-sustain).
+/// bass-voicing test) push the honest recognition point past the bar.
+/// Returns the label under the chosen [`LabelReturn`] contract; the churn
+/// assertion inside applies to every contract.
 fn settled_label_with_deadline(
     audio: &[f32],
     bass_midi: Option<u8>,
@@ -93,7 +93,7 @@ fn settled_label_with_deadline(
     let mut tracker = PerceptionTracker::new();
     let mut now = 0.0f64;
     let mut first_label: Option<(String, f64)> = None;
-    let mut last_seen = 0.0f64;
+    let mut first_gap: Option<f64> = None;
     for (i, w) in audio.chunks(1024).enumerate() {
         ex.feed(w);
         now += w.len() as f64 / f64::from(SR);
@@ -109,13 +109,14 @@ fn settled_label_with_deadline(
             match (&first_label, &label) {
                 (Some((seen, _)), Some(l)) => {
                     assert_eq!(l, seen, "label churned mid-take (was {seen:?}, now {l:?})");
-                    last_seen = now;
                 }
                 (None, Some(l)) => {
                     first_label = Some((l.clone(), now));
-                    last_seen = now;
                 }
-                _ => {}
+                (Some(_), None) => {
+                    first_gap.get_or_insert(now);
+                }
+                (None, None) => {}
             }
         }
     }
@@ -133,27 +134,19 @@ fn settled_label_with_deadline(
     // comparing this against the final snapshot below.
     match ret {
         LabelReturn::AtTakeEnd => tracker.snapshot(now).chord.map(|c| c.label),
-        LabelReturn::HeldDuringTake => {
-            // Round-2 review MF1: "held" must MEAN held — a one-snapshot
-            // flash of the right label is a regression this return would
-            // otherwise hide.
-            if let Some((label, first_at)) = first_label {
-                assert!(
-                    last_seen - first_at >= MIN_HELD_SECS,
-                    "label {label:?} showed at {first_at:.2}s but only held \
-                     {:.2}s — a flash is not a reading",
-                    last_seen - first_at
-                );
-                Some(label)
-            } else {
-                None
+        LabelReturn::Unbroken => {
+            if let Some(at) = first_gap {
+                panic!("label dropped out mid-take at {at:.2}s — the VA-visible flicker (#382)");
             }
+            let final_label = tracker.snapshot(now).chord.map(|c| c.label);
+            assert!(
+                final_label.is_some(),
+                "the take rings through its end and must end labeled"
+            );
+            final_label
         }
     }
 }
-
-/// HeldDuringTake's bar: the label must persist at least this long.
-const MIN_HELD_SECS: f64 = 1.0;
 
 /// See the use above (review r5 MF2).
 const FIRST_LABEL_DEADLINE_SECS: f64 = 1.0;
@@ -249,21 +242,21 @@ fn real_single_e3_never_invents_a_wrong_root() {
 /// here show unphysical signatures (C rising for 1.8s, E dip-and-
 /// recover) that plausibly exaggerate the magnitude.
 ///
-/// What this test PINS: the correct label, held ≥1s (a flash is not a
-/// reading), first shown within 2.25s (one snapshot over the measured
-/// 2.14s) — regression on the exact axis she reported. What stays OPEN
-/// on #382: the 1.0s bar itself — her real recordings (one hand, one
-/// soundboard) will set the true bar and supersede this pin. Known and
-/// disclosed: today's take has an INTERIOR label dropout (silence
-/// 3.5–4.3s mid-sustain, then C again) — a candidate VA-visible flicker
-/// of its own, noted on #382, distinct from first-label latency.
+/// What this test PINS: the correct label, UNBROKEN from first show to
+/// take end (the fold round's disclosed interior dropout at 3.5–4.3s —
+/// retention starving on the towered root bin — is now fixed by
+/// RETAIN_FLOOR and pinned here), first shown within 2.25s (one snapshot
+/// over the measured 2.14s) — regression on the exact axes she reported.
+/// What stays OPEN on #382: the 1.0s first-label bar itself — her real
+/// recordings (one hand, one soundboard) will set the true bar and
+/// supersede this pin.
 #[test]
 fn real_c_major_over_bass_c_says_c() {
     let label = settled_label_with_deadline(
         &load_wav("c-major-over-c3"),
         Some(48),
         2.25,
-        LabelReturn::HeldDuringTake,
+        LabelReturn::Unbroken,
     );
     assert_eq!(label.as_deref(), Some("C"), "LH-root + RH-triad C major");
 }

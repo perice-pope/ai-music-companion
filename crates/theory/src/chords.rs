@@ -189,14 +189,32 @@ const STRONG_OUTSIDER_RATIO: f32 = 0.75;
 /// DECAYS — the seventh that read 90% at the attack reads 30% two seconds
 /// later, and demanding promotion-grade evidence every reading made the
 /// label decay with the note ("G7" → "G" mid-hold, the VA's flicker). The
-/// INCUMBENT chord retains its extensions at the plain active bar instead
-/// (see [`best_match_retentive`]) — still sounding means still named;
-/// truly released (below active) still switches.
+/// INCUMBENT chord retains its tones at the audibility bar instead (see
+/// [`best_match_retentive`] and [`RETAIN_FLOOR`]) — still sounding means
+/// still named; truly released still switches.
 const EXTENSION_MIN_RATIO: f32 = 0.55;
 
 /// Round 5 (#415): see the maj7 note at the use site — the 3rd-partial
 /// class needs a stronger claim than other extensions.
 const MAJ7_MIN_RATIO: f32 = 0.7;
+
+/// #382 interior dropout: an INCUMBENT's tone counts as still-audible above
+/// this absolute level even when it fails the relative active bar. Root
+/// doubling towers the max bin (LH C3 + RH C: max ≈ 1.5–1.8), and harmonic
+/// subtraction eats the third in proportion to root energy, so the ringing
+/// third reads 0.18–0.31 absolute — under 25%-of-max, over any honest
+/// audibility floor. Calibrated between that band and a truly released
+/// tone's residue, which falls under 0.15 within ~1 s (the g7-release
+/// render) and keeps falling; retention therefore lets go later than the
+/// relative bar would, a latency `releasing_the_seventh_releases_the_label`
+/// bounds. Only [`best_match_retentive`]'s incumbent uses this — promotion
+/// always pays full evidence — so an incumbent's bar is never HIGHER than
+/// this value, whatever the max bin does. Must stay above
+/// [`CHROMA_SILENCE_FLOOR`], or retention outlives the sound itself
+/// (enforced below; the calibration band is pinned by the
+/// towered-retention and dead-third unit tests: 0.14 < floor ≤ 0.19).
+const RETAIN_FLOOR: f32 = 0.15;
+const _: () = assert!(RETAIN_FLOOR > CHROMA_SILENCE_FLOOR);
 
 /// Root/third/fifth pitch-class offsets — the tones ANY voicing carries.
 /// (Folded 3 covers both the minor 3rd and the folded #9; that ambiguity is
@@ -231,11 +249,13 @@ pub fn best_match(chroma: &[f32; 12], bass_pc: Option<u8>) -> Option<ChordMatch>
 }
 
 /// [`best_match`] with retention hysteresis (#411): `incumbent` is the
-/// currently displayed (root, quality), whose template gets the plain
-/// ACTIVE bar for its extension tones instead of the promotion bar — a
-/// held chord keeps its name while its decaying tones still sound at all,
-/// and a genuinely released tone (below active) still lets go. Promotion
-/// of any OTHER identity keeps full evidence requirements.
+/// currently displayed (root, quality), whose template gets the audibility
+/// bar — the relative active bar or [`RETAIN_FLOOR`], whichever is lower —
+/// for ALL its tones instead of the promotion bars, so a held chord keeps
+/// its name while its decaying tones still sound at all, even under a
+/// towered max bin (#382 interior dropout), and a genuinely released tone
+/// still lets go. Promotion of any OTHER identity keeps full evidence
+/// requirements.
 pub fn best_match_retentive(
     chroma: &[f32; 12],
     bass_pc: Option<u8>,
@@ -252,7 +272,10 @@ pub fn best_match_retentive(
     // Denoise with the same threshold that defines "sounding": bins under
     // it are analysis-noise floor (leakage, residual harmonics), not
     // evidence for or against any chord. Without this, a clean four-note
-    // chord over a realistic floor scores below the confidence gate.
+    // chord over a realistic floor scores below the confidence gate. The
+    // RAW values survive for the incumbent's retention checks, whose
+    // audibility floor sits below the denoise bar (#382 interior dropout).
+    let raw = *chroma;
     let mut chroma = *chroma;
     for v in chroma.iter_mut() {
         if *v < max_bin * ACTIVE_BIN_RATIO {
@@ -260,7 +283,15 @@ pub fn best_match_retentive(
         }
     }
     let active = chroma.iter().filter(|&&v| v > 0.0).count();
-    if active < MIN_CHORD_BINS {
+    // A decayed hold can thin to two relative-active bins while the chord
+    // audibly rings (max ≳ 1.0) — the incumbent may still retain through
+    // that, but nothing NEW can be named on fewer than MIN_CHORD_BINS.
+    // Today every quality carries ≥ 3 required tones needing denoised
+    // bins, so fresh minting on a thin chroma is already impossible by
+    // template arithmetic — this gate (and its per-root twin below) is
+    // defense-in-depth that becomes LOAD-BEARING the day a 2-required-tone
+    // quality (a "5" power chord, say) enters the vocabulary.
+    if active < MIN_CHORD_BINS && incumbent.is_none() {
         return None;
     }
     let total: f32 = chroma.iter().sum();
@@ -272,13 +303,19 @@ pub fn best_match_retentive(
         // promotion bar on a held chord, which deleted the incumbent from
         // candidacy entirely and elected its upper structure (Cmaj7→Em)
         // or dropped the label. Promotion proved the root once; keeping
-        // the name only requires the root to stay AUDIBLE.
-        let root_bar = if incumbent.is_some_and(|(r, _)| r == root) {
-            ACTIVE_BIN_RATIO
+        // the name only requires the root to stay AUDIBLE — measured on
+        // the raw chroma against [`RETAIN_FLOOR`], because the relative
+        // bar lies when another bin towers (#382 interior dropout).
+        let retained_root = incumbent.is_some_and(|(r, _)| r == root);
+        if active < MIN_CHORD_BINS && !retained_root {
+            continue;
+        }
+        let root_audible = if retained_root {
+            raw[usize::from(root)] >= (max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
         } else {
-            ROOT_BIN_RATIO
+            chroma[usize::from(root)] >= max_bin * ROOT_BIN_RATIO
         };
-        if chroma[usize::from(root)] < max_bin * root_bar {
+        if !root_audible {
             continue;
         }
         'quality: for &q in ChordQuality::all() {
@@ -302,7 +339,17 @@ pub fn best_match_retentive(
                 // residue-prone interval on real piano (a real C/E read
                 // "Cmaj7/E" off the E's partials). Claiming maj7 takes a
                 // genuinely prominent seventh.
-                let bar = if is_extension && !retained {
+                //
+                // #382 interior dropout: the incumbent's tones — base triad
+                // included — retain at an ABSOLUTE audibility floor when the
+                // relative bar is towered (root doubling puts two hammers'
+                // energy in one bin, and subtraction eats the third in
+                // proportion to it — the ringing third reads 0.18–0.31 while
+                // 25%-of-max asks ≥ 0.37). Measured on the raw chroma:
+                // denoise zeroes exactly the bins retention must still see.
+                let bar = if retained {
+                    (max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
+                } else if is_extension {
                     if iv == 11 {
                         max_bin * MAJ7_MIN_RATIO
                     } else {
@@ -311,9 +358,10 @@ pub fn best_match_retentive(
                 } else {
                     max_bin * ACTIVE_BIN_RATIO
                 };
+                let heard = if retained { raw[pc] } else { v };
                 // Required tones must actually sound (shells may drop the
                 // optional ones — at a small cost, tallied below).
-                if v < bar {
+                if heard < bar {
                     if !optional.contains(&iv) {
                         continue 'quality;
                     }
@@ -482,6 +530,101 @@ mod tests {
         }
         let m = best_match(&c, None).expect("C7 must match over a floor");
         assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Dom7));
+    }
+
+    /// The 3.16 s reading of the real c-major-over-c3 fixture (#382
+    /// interior dropout): the doubled root towers the max bin to 1.83, and
+    /// harmonic subtraction has eaten the still-ringing third down to 0.19
+    /// — under 25%-of-max (0.46), over the audibility floor. Fresh
+    /// matching honestly refuses (a new "C" claim needs a heard third),
+    /// but the INCUMBENT C major must retain. Fails if RETAIN_FLOOR is
+    /// removed or retention reads the denoised chroma (denoise zeroes the
+    /// 0.19 bin).
+    #[test]
+    fn a_towered_root_does_not_starve_retention() {
+        let mut c = [0.0f32; 12];
+        c[0] = 1.83; // C — LH root + RH root, two hammers
+        c[4] = 0.19; // E — ringing third, post-subtraction
+        c[7] = 0.94; // G
+        c[11] = 0.60; // B — root's maj7-region partial residue
+        c[10] = 0.42; // A#
+        c[1] = 0.27; // C# — leakage
+        assert!(
+            best_match(&c, None).is_none(),
+            "a FRESH match must still refuse — the third is below promotion evidence"
+        );
+        let m = best_match_retentive(&c, None, Some((0, ChordQuality::Maj)))
+            .expect("the incumbent C major must retain through the towered reading");
+        assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Maj));
+    }
+
+    /// Retention must not outlive the tone: the same towered shape with the
+    /// third truly gone lets go — no template matches, so the tracker's
+    /// clear dwell can run. The residue sits ONE notch under the floor
+    /// (0.14 vs 0.15 — the g7-release calibration: a released tone falls
+    /// under the floor within ~1 s and keeps falling), so this red-lines
+    /// any RETAIN_FLOOR ≤ 0.14; the towered-retention test above red-lines
+    /// any ≥ 0.20. Together they pin the calibration band around 0.15.
+    #[test]
+    fn retention_lets_go_when_the_third_truly_dies() {
+        let mut c = [0.0f32; 12];
+        c[0] = 1.83;
+        c[4] = 0.14; // E released — residue just under the audibility floor
+        c[7] = 0.94;
+        c[11] = 0.60;
+        c[10] = 0.42;
+        c[1] = 0.27;
+        assert!(
+            best_match_retentive(&c, None, Some((0, ChordQuality::Maj))).is_none(),
+            "a dead third must release the incumbent"
+        );
+    }
+
+    /// The other retained tone class (#411 review MF2): unison-string
+    /// beating dips the incumbent's ROOT below the relative bar while
+    /// another chord tone towers. Root raw 0.18 under a 1.5 max asks
+    /// ≥ 0.375 relative — fresh matching refuses (2 active bins), but the
+    /// incumbent's root retains at the audibility floor. Fails if the
+    /// root retention branch reverts to the denoised relative bar.
+    #[test]
+    fn a_beating_root_dip_does_not_unseat_the_incumbent() {
+        let mut c = [0.0f32; 12];
+        c[0] = 0.18; // C — root fundamental in a beat trough
+        c[4] = 1.5; // E — towering third
+        c[7] = 0.5; // G
+        assert!(
+            best_match(&c, None).is_none(),
+            "a FRESH match must refuse — the root is below promotion evidence"
+        );
+        let m = best_match_retentive(&c, None, Some((0, ChordQuality::Maj)))
+            .expect("the incumbent survives a root beat trough");
+        assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Maj));
+    }
+
+    /// The decayed-hold tail (#382): the take thins to TWO relative-active
+    /// bins (C and G) while the chord still audibly rings — the 4.64 s
+    /// reading. The incumbent may retain through it (its third is at 0.24
+    /// absolute), but the same chroma with no incumbent must stay
+    /// unnamed. Fails if the MIN_CHORD_BINS gate stops exempting the
+    /// incumbent. (The fresh-refusal half holds by template arithmetic
+    /// today — every quality carries ≥ 3 required tones — and is asserted
+    /// as documentation; the gate itself is defense-in-depth, see its
+    /// comment.)
+    #[test]
+    fn a_thinned_hold_retains_but_cannot_mint() {
+        let mut c = [0.0f32; 12];
+        c[0] = 1.02;
+        c[4] = 0.24; // below 25% of max — not "active"
+        c[7] = 0.82;
+        c[11] = 0.23;
+        c[1] = 0.20;
+        let m = best_match_retentive(&c, None, Some((0, ChordQuality::Maj)))
+            .expect("the incumbent retains through the thinned tail");
+        assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Maj));
+        assert!(
+            best_match(&c, None).is_none(),
+            "two active bins must not name a fresh chord"
+        );
     }
 
     /// Non-chord energy is punished: a triad drowned in chromatic mush must
