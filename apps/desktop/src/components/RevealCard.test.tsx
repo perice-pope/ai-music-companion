@@ -11,7 +11,8 @@ import type { Reveal } from "../types/brain";
 
 function reveal(connection: string): Reveal {
   return {
-    concept: "G Dorian",
+    // #388: the backend attributes by mode only — never the heard key.
+    concept: "Dorian",
     connection,
     why: "A cool, jazzy minor.",
     source: "grounded",
@@ -78,7 +79,7 @@ describe("RevealCard", () => {
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-card")).toBeInTheDocument();
     // Assert the concept shows; don't pin the decorative "In the wild ·" prefix.
-    expect(screen.getByText(/G Dorian/)).toBeInTheDocument();
+    expect(screen.getByText(/Dorian/)).toBeInTheDocument();
     expect(screen.getByText('Miles Davis — "So What"')).toBeInTheDocument();
     expect(screen.getByText("A cool, jazzy minor.")).toBeInTheDocument();
   });
@@ -101,7 +102,10 @@ describe("RevealCard", () => {
   // #214 S2: with a confirmed library match live, the card finally EARNS
   // identification — "You're playing — {title}" — the 2a framing retires
   // on this card only, and the catalog reframes as company the piece
-  // keeps in this key. Fails if the hedge survives next to a real ID.
+  // keeps in this sound. #388: the reframe says "sound", not "key" — the
+  // catalog exemplars share the identified piece's MODE, not its key, so
+  // "in this key" was the same fabrication the headline made. Fails if
+  // the hedge survives next to a real ID or the key claim returns.
   it("a confirmed match upgrades the card: identified, framing retired", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
@@ -113,7 +117,7 @@ describe("RevealCard", () => {
     );
     expect(screen.queryByTestId("reveal-framing-r1")).toBeNull();
     expect(screen.getByTestId("reveal-catalog-reframe-r1").textContent).toBe(
-      "also lives in this key:",
+      "also lives in this sound:",
     );
   });
 

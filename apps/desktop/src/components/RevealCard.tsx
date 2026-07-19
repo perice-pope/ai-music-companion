@@ -69,13 +69,15 @@ function RevealCardItem({
             <p className="text-xs font-semibold uppercase tracking-wider text-amber-300/80">
               In the wild · {concept}
             </p>
-            {/* #417-2a → #214 S2: the card is a KEY/MODE catalog, and next
-                to live playing a bare title reads as song identification —
-                worse than nothing when it's the wrong Beethoven. The framing
-                line makes that unmistakable, and it retires ONLY while real
-                identification (#214) has a confirmed match to say instead —
-                then the card can finally assert, and the catalog reframes
-                as company the piece keeps in this key. */}
+            {/* #417-2a → #214 S2: the card is a MODE catalog (#388: it
+                attributes by mode, never the heard key — the exemplars
+                aren't in the player's key), and next to live playing a bare
+                title reads as song identification — worse than nothing when
+                it's the wrong Beethoven. The framing line makes that
+                unmistakable, and it retires ONLY while real identification
+                (#214) has a confirmed match to say instead — then the card
+                can finally assert, and the catalog reframes as company the
+                piece keeps in this sound. */}
             {matchTitle !== null ? (
               <>
                 <p
@@ -88,7 +90,7 @@ function RevealCardItem({
                   className="text-[11px] italic text-amber-300/60"
                   data-testid={`reveal-catalog-reframe-${id}`}
                 >
-                  also lives in this key:
+                  also lives in this sound:
                 </p>
               </>
             ) : (

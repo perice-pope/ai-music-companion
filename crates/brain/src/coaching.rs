@@ -446,7 +446,7 @@ impl CoachingEngine {
         let system_prompt = "\
 You reword one short line for a music-practice app that just told a young player \
 what real-world music lives in the scale they are playing. You are given the \
-CONCEPT (a key + scale/mode) and the CONNECTION (a real, already-verified artist \
+CONCEPT (a scale/mode sound) and the CONNECTION (a real, already-verified artist \
 or piece). Write ONE warm, engaging sentence (max ~140 characters) about why that \
 music lives in that sound, for a curious beginner. Do NOT change, question, or add \
 any artist or piece — the connection is fixed and correct. No hype, no emojis. \
