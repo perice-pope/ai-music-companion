@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { usePracticeStore } from "../stores/practiceStore";
 import CellStaff from "./CellStaff";
 import type {
@@ -76,8 +77,13 @@ const DIRECTIONS: {
   { label: "varied", value: "varied" },
 ];
 
-/** Still resting: My patterns rides S3. */
-const COMING_SOON = ["My patterns"];
+/** #419 S3: a pattern your hands actually played, from the exercise log. */
+interface MyPattern {
+  label: string;
+  offsets: number[];
+  times_practiced: number;
+  last_tonic: number;
+}
 
 const CHORD_LABELS: Record<StarterChordKind, string> = {
   major_triad: "maj",
@@ -152,6 +158,33 @@ export default function OpenersPanel() {
   const openerDirection = usePracticeStore((s) => s.openerDirection);
   const setOpenerDirection = usePracticeStore((s) => s.setOpenerDirection);
   const [open, setOpen] = useState(false);
+  const [myPatterns, setMyPatterns] = useState<MyPattern[]>([]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // #419 S3: fetched when the panel opens — a pattern earned
+    // mid-session appears next open. Failures read as an empty list;
+    // the empty state is honest either way.
+    let cancelled = false;
+    void invoke<MyPattern[]>("my_patterns")
+      .then((patterns) => {
+        if (!cancelled) {
+          // A malformed response degrades to the honest empty state —
+          // this panel never crashes over its own convenience feature.
+          setMyPatterns(Array.isArray(patterns) ? patterns : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMyPatterns([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
   const [customSeq, setCustomSeq] = useState("");
   const [customNotice, setCustomNotice] = useState<string | null>(null);
 
@@ -356,18 +389,35 @@ export default function OpenersPanel() {
         ))}
       </div>
 
-      {/* The rest of the bank, resting — the builder's shape, honestly. */}
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {COMING_SOON.map((name) => (
-          <span
-            key={name}
-            className="rounded-md border border-teal-900 px-2 py-0.5 text-xs text-teal-700"
-            title="coming soon"
-          >
-            {name}
-          </span>
-        ))}
-      </div>
+      {/* #419 S3: the bank's last entry, live — YOUR patterns. */}
+      <p className="mt-3 text-xs uppercase tracking-wider text-teal-400/80">
+        My patterns
+      </p>
+      {myPatterns.length === 0 ? (
+        <p
+          className="mt-1 text-xs text-teal-700"
+          data-testid="my-patterns-empty"
+        >
+          play and lift a few things first — your patterns appear here
+        </p>
+      ) : (
+        <div className="mt-1 flex flex-wrap gap-1.5" data-testid="my-patterns">
+          {myPatterns.map((p, i) => (
+            <button
+              key={`${p.label}-${i}`}
+              type="button"
+              data-testid={`opener-my-pattern-${i}`}
+              onClick={() =>
+                void addOpenerItem({ type: "notes", offsets: p.offsets })
+              }
+              className="rounded-md bg-teal-800/60 px-2.5 py-1 text-sm text-teal-100 hover:bg-teal-700"
+              title={p.label}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* What's been added. */}
       {openerItems.length > 0 && (

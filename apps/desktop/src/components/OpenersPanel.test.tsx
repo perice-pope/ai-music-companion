@@ -32,7 +32,10 @@ const PREVIEW_DTO = {
 
 beforeEach(() => {
   mockInvoke.mockReset();
-  mockInvoke.mockResolvedValue(PREVIEW_DTO);
+  // my_patterns resolves to a LIST; every other command previews.
+  mockInvoke.mockImplementation((cmd: string) =>
+    Promise.resolve(cmd === "my_patterns" ? [] : PREVIEW_DTO),
+  );
   usePracticeStore.setState({
     openerItems: [],
     openerPreview: null,
@@ -143,9 +146,17 @@ describe("OpenersPanel (#419 S1)", () => {
     // Review MF3, reproduced at HEAD: tap → remove-while-in-flight → the
     // late response used to paint an orphan preview over an empty builder.
     let resolveLate: (dto: typeof PREVIEW_DTO) => void = () => {};
-    mockInvoke.mockImplementationOnce(
-      () => new Promise((res) => (resolveLate = res)),
-    );
+    let deferredArmed = true;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "preview_opener" && deferredArmed) {
+        deferredArmed = false;
+        return new Promise((res) => (resolveLate = res));
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
     render(<OpenersPanel />);
     fireEvent.click(screen.getByTestId("openers-toggle"));
     fireEvent.click(screen.getByTestId("opener-note-1"));
@@ -346,7 +357,13 @@ describe("OpenersPanel (#419 S1)", () => {
     });
     fireEvent.click(screen.getByTestId("opener-custom-add"));
     await waitFor(() => screen.getByTestId("opener-custom-notice"));
-    expect(mockInvoke).not.toHaveBeenCalled();
+    // Scoped re-pin (#419 S3): the panel's OPEN fetches my_patterns —
+    // the junk contract is that no OPENER command fires.
+    expect(
+      mockInvoke.mock.calls.some(
+        ([cmd]) => cmd === "preview_opener" || cmd === "begin_opener",
+      ),
+    ).toBe(false);
     // But out-of-range DEGREES do go over — the backend refuses by name.
     fireEvent.change(screen.getByTestId("opener-custom-input"), {
       target: { value: "9" },
@@ -516,6 +533,48 @@ describe("OpenersPanel (#419 S1)", () => {
     expect(usePracticeStore.getState().openerTonic).toBeNull();
     expect(usePracticeStore.getState().openerPreviewedDirection).toBe(
       "forward",
+    );
+  });
+
+  // ── #419 S3: My patterns ──────────────────────────────────────────────
+
+  it("your patterns surface as chips and add through the Notes wire", async () => {
+    mockInvoke.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === "my_patterns"
+          ? [
+              {
+                label: "your 5-note cell · 3×, last in A",
+                offsets: [0, 4, 2, 7, 4],
+                times_practiced: 3,
+                last_tonic: 9,
+              },
+            ]
+          : PREVIEW_DTO,
+      ),
+    );
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("opener-my-pattern-0"));
+    expect(screen.getByTestId("opener-my-pattern-0").textContent).toContain(
+      "3×, last in A",
+    );
+    fireEvent.click(screen.getByTestId("opener-my-pattern-0"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0, 4, 2, 7, 4] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("an empty practice history reads honestly, never hides", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    await waitFor(() => screen.getByTestId("my-patterns-empty"));
+    expect(screen.getByTestId("my-patterns-empty").textContent).toContain(
+      "your patterns appear here",
     );
   });
 });
