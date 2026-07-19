@@ -77,11 +77,12 @@ enum LabelReturn {
 }
 
 /// Like [`settled_label_with_bass`] with an explicit first-label deadline —
-/// for fixtures whose MIX artifacts (see the bass-voicing test) push the
-/// honest recognition point past the standard bar. Returns the label that
+/// for fixtures whose mix-exaggerated voicing-intrinsic effects (see the
+/// bass-voicing test) push the honest recognition point past the bar. Returns the label that
 /// SHOWED AND HELD (the stability assertion inside proves it never
-/// churned) — the take itself may honestly end unlabeled once the decay
-/// thins, exactly like the solo-E3 ring-out contract.
+/// churned, and held >= MIN_HELD_SECS) — the take may honestly go
+/// unlabeled as decay thins, and the gap may be interior, not only
+/// trailing (this very fixture drops out mid-sustain).
 fn settled_label_with_deadline(
     audio: &[f32],
     bass_midi: Option<u8>,
