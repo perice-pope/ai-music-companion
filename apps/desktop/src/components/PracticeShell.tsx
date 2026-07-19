@@ -44,6 +44,7 @@ export default function PracticeShell() {
           {/* #445-8: the door to past sessions — History existed but was
               only reachable through Connections & Privacy. */}
           <button
+            type="button"
             onClick={() => goToHistory()}
             className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
             data-testid="open-history"
