@@ -1183,6 +1183,17 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   setPocketStatus: (playing, tempoBpm) =>
     set((s) => ({
       pocketPlaying: playing,
+      // Review MF4: a FRESH click starts a fresh follow life — stale
+      // frozen/sent state from a previous click made the drift line lie
+      // and the delta gate block against a tempo the click no longer
+      // holds. The follow window anchors at the click's real start.
+      ...(playing && !s.pocketPlaying
+        ? {
+            pocketFrozenBpm: null,
+            _pocketLastSentBpm: null,
+            _pocketFollowStartedAt: Date.now(),
+          }
+        : {}),
       // The backend reports the CLAMPED tempo it actually plays — mirror
       // it so the pulse and label can never lie.
       pocketTempo: playing && tempoBpm > 0 ? tempoBpm : s.pocketTempo,
@@ -1213,6 +1224,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       s0.pocketPlaying &&
       s0.pocketMode !== "anchor" &&
       tempo !== null &&
+      // Review MF2: LOCKED means confident — an unconfident estimate
+      // ships a non-null tempo the click must never chase (the band's
+      // own filter, accompaniment.rs).
+      perception?.locked === true &&
       tempo >= 40 &&
       tempo <= 220
     ) {

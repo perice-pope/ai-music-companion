@@ -38,11 +38,11 @@ beforeEach(() => {
   });
 });
 
-const perceptionWithTempo = (bpm: number | null) =>
+const perceptionWithTempo = (bpm: number | null, locked = bpm !== null) =>
   ({
     tempo_bpm: bpm,
     swing_ratio: null,
-    locked: bpm !== null,
+    locked,
     key: null,
     chord: null,
     hearing_polyphony: false,
@@ -158,6 +158,8 @@ describe("PocketControl (#421 S1)", () => {
     vi.setSystemTime(103_000);
     send(null);
     send(500);
+    // Review MF2: a NON-NULL but UNLOCKED estimate must never be chased.
+    usePracticeStore.getState().setPerception(perceptionWithTempo(150, false));
     expect(mockInvoke).toHaveBeenCalledTimes(2);
     // Anchor mode: the stream stops (AC5 mid-play switch).
     usePracticeStore.getState().setPocketMode("anchor");
@@ -200,6 +202,83 @@ describe("PocketControl (#421 S1)", () => {
     expect(
       mockInvoke.mock.calls.filter(([c]) => c === "set_pocket_tempo").length,
     ).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it("mode chips stay clickable MID-PLAY and the switch stops the stream", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(300_000);
+    render(<PocketControl />);
+    act(() => {
+      usePracticeStore.setState({ pocketPlaying: true, pocketMode: "follow" });
+    });
+    // Review MF3: the chips render while playing — the switch is a UI
+    // action, not a store backdoor.
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(96)),
+    );
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("pocket-mode-anchor"));
+    vi.setSystemTime(302_000);
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(150)),
+    );
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("a restarted click starts a fresh follow life — no stale freeze or delta", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(400_000);
+    render(<PocketControl />);
+    // First click: handoff freezes at 96.
+    act(() => {
+      usePracticeStore.getState().setPocketStatus(true, 90);
+      usePracticeStore.getState().setPocketMode("handoff");
+    });
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(96)),
+    );
+    vi.setSystemTime(409_000);
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(98)),
+    );
+    expect(usePracticeStore.getState().pocketFrozenBpm).toBe(96);
+    // Stop, then start again: frozen and last-sent must clear, and the
+    // follow window anchors at the RESTART (review MF4).
+    act(() => usePracticeStore.getState().setPocketStatus(false, 0));
+    vi.setSystemTime(420_000);
+    act(() => usePracticeStore.getState().setPocketStatus(true, 90));
+    expect(usePracticeStore.getState().pocketFrozenBpm).toBeNull();
+    // Within the fresh window: it FOLLOWS again (would have frozen
+    // instantly under the stale window anchor).
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(97)),
+    );
+    expect(
+      mockInvoke.mock.calls.filter(([c]) => c === "set_pocket_tempo").length,
+    ).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it("exactly ±2 BPM reads 'in the pocket' — the boundary is inclusive", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(500_000);
+    render(<PocketControl />);
+    act(() => {
+      usePracticeStore.getState().setPocketStatus(true, 90);
+      usePracticeStore.getState().setPocketMode("handoff");
+    });
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(96)),
+    );
+    vi.setSystemTime(509_000);
+    act(() =>
+      usePracticeStore.getState().setPerception(perceptionWithTempo(98)),
+    );
+    expect(screen.getByTestId("pocket-drift").textContent).toContain(
+      "in the pocket",
+    );
     vi.useRealTimers();
   });
 });

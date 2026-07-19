@@ -28,6 +28,23 @@ export default function PocketControl() {
 
   return (
     <div className="flex items-center gap-2" data-testid="pocket-control">
+      {(["anchor", "follow", "handoff"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          data-testid={`pocket-mode-${m}`}
+          aria-pressed={mode === m}
+          disabled={!inSession}
+          onClick={() => setPocketMode(m)}
+          className={`rounded-md px-2 py-1 text-xs ${
+            mode === m
+              ? "bg-gray-600 font-semibold text-white"
+              : "border border-gray-700 text-gray-300 hover:bg-gray-800"
+          } disabled:opacity-40`}
+        >
+          {m}
+        </button>
+      ))}
       {playing ? (
         <>
           <span
@@ -61,7 +78,7 @@ export default function PocketControl() {
                   return `holding your ${Math.round(frozenBpm)}`;
                 }
                 const drift = Math.round(liveTempo - frozenBpm);
-                if (Math.abs(drift) < 2) {
+                if (Math.abs(drift) <= 2) {
                   return `holding your ${Math.round(frozenBpm)} — in the pocket`;
                 }
                 return `holding your ${Math.round(frozenBpm)} — you're ${
@@ -111,23 +128,6 @@ export default function PocketControl() {
             />
             count-in
           </label>
-          {(["anchor", "follow", "handoff"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              data-testid={`pocket-mode-${m}`}
-              aria-pressed={mode === m}
-              disabled={!inSession}
-              onClick={() => setPocketMode(m)}
-              className={`rounded-md px-2 py-1 text-xs ${
-                mode === m
-                  ? "bg-gray-600 font-semibold text-white"
-                  : "border border-gray-700 text-gray-300 hover:bg-gray-800"
-              } disabled:opacity-40`}
-            >
-              {m}
-            </button>
-          ))}
           <button
             type="button"
             data-testid="pocket-start"

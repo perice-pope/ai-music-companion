@@ -775,7 +775,6 @@ mod tests {
 mod pocket_tests {
     use super::*;
     use crate::output::{Metronome, MetronomeConfig};
-    use ringbuf::traits::Producer as _;
 
     /// #421 S2: a pushed tempo re-times the click via the phase-
     /// preserving path — the LAST pushed value wins, and without a push

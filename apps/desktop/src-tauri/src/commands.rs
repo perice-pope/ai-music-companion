@@ -2617,7 +2617,6 @@ pub async fn start_pocket<R: Runtime>(
     let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
     // #421 S2: the tempo channel — Follow/Handoff push, render pops.
     let (tempo_tx, tempo_rx) = ears::output_engine::pocket_tempo_channel(16);
-    let mut tempo_rx = Some(tempo_rx);
     let output = ears::output_engine::AudioOutput::start(move |sample_rate| {
         let config = ears::output::MetronomeConfig {
             bpm: tempo,
@@ -2630,10 +2629,7 @@ pub async fn start_pocket<R: Runtime>(
         let metronome = ears::output::Metronome::new(config, sample_rate)
             .expect("clamped pocket config is always valid")
             .with_count_in(if count_in { 1 } else { 0 });
-        ears::output_engine::TempoFedMetronome::new(
-            metronome,
-            tempo_rx.take().expect("builder runs once"),
-        )
+        ears::output_engine::TempoFedMetronome::new(metronome, tempo_rx)
     })
     .map_err(|e| format!("could not start the click: {e}"))?;
     *state.pocket.lock_or_recover() = Some(Pocket { output, tempo_tx });
@@ -2660,12 +2656,21 @@ pub async fn stop_pocket<R: Runtime>(
 /// number onto the render thread without locks.
 #[tauri::command]
 pub fn set_pocket_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
-    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
     if let Some(pocket) = state.pocket.lock_or_recover().as_mut() {
-        use ringbuf::traits::Producer;
-        let _ = pocket.tempo_tx.try_push(tempo); // full ring = drop, fine
+        push_clamped_tempo(&mut pocket.tempo_tx, tempo_bpm);
     }
     Ok(())
+}
+
+/// #421 S2 review MF5: the clamp+push seam, testable with a bare
+/// channel. This is what protects the 220..300 window where the
+/// Metronome's own validation (30..=300) would happily APPLY a value
+/// the product never plays — the frontend's same-range gate is UI
+/// policy, this is the API guarantee.
+fn push_clamped_tempo(tx: &mut ringbuf::HeapProd<f64>, tempo_bpm: f64) {
+    use ringbuf::traits::Producer;
+    let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
+    let _ = tx.try_push(tempo); // full ring = drop, fine
 }
 
 /// #421 S1: the Pocket's parameter clamps — tempo 40..=220 (NaN → 40),
@@ -6835,6 +6840,21 @@ mod tests {
         // If a real device opened, close it so the test leaves silence.
         let _ = stop_pocket(handle, state.clone()).await;
         assert!(state.pocket.lock_or_recover().is_none());
+    }
+
+    /// #421 S2 review MF5: the clamp seam — a 250 BPM push arrives at
+    /// the consumer as 220 (the 220..300 window only THIS clamp covers;
+    /// the Metronome itself would apply up to 300).
+    #[test]
+    fn pushed_tempos_arrive_clamped() {
+        use ringbuf::traits::Consumer;
+        let (mut tx, mut rx) = ears::output_engine::pocket_tempo_channel(4);
+        push_clamped_tempo(&mut tx, 250.0);
+        push_clamped_tempo(&mut tx, 20.0);
+        push_clamped_tempo(&mut tx, f64::NAN);
+        assert_eq!(rx.try_pop(), Some(220.0));
+        assert_eq!(rx.try_pop(), Some(40.0));
+        assert_eq!(rx.try_pop(), Some(40.0));
     }
 
     /// #421 S2 AC2: a silent Pocket makes set_pocket_tempo a calm no-op
