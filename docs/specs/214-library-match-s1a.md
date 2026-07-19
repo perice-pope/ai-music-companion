@@ -29,13 +29,17 @@ a feature.
   of NGRAM_INTERVALS=4 consecutive intervals (semitone deltas clamped
   ±12) hashed to postings of (id, position).
 - `identify(&self, recent_midi: &[u8]) -> Option<Match>` with
-  `Match { id, coherent_hits, total_hits, margin }`:
+  `Match { id, coherent_hits, total_hits, offset }` (offset = the
+  winning alignment, S1b's seed for follower confirmation and
+  open-at-your-measure; the margin is a GATE, not a datum):
   - query n-grams from the last QUERY_WINDOW=20 notes;
   - per candidate, positional coherence = the largest bucket of
     (score_pos − query_pos) alignment offsets;
-  - accept iff coherent_hits >= MIN_COHERENT_HITS=6 AND the best
-    candidate's coherent_hits >= MARGIN_RATIO=2.0 × the runner-up's
-    (sole candidates pass on the floor alone).
+  - accept iff coherent_hits >= MIN_COHERENT_HITS=6 AND those hits
+    come from >= MIN_DISTINCT_COHERENT=6 DISTINCT n-grams (review MF1:
+    ostinatos/chromatic runs pile the same windows — counts without
+    identity) AND the best candidate's coherent_hits >= MARGIN_RATIO=2.0
+    × the runner-up's (sole candidates pass on the floors alone).
 - Constants are pub(crate) and named — calibration knobs for S1b.
 
 ## 5. Acceptance criteria

@@ -11,7 +11,10 @@
 //! S1a is pure logic: no persistence, no audio, no UI. S1b wires it to
 //! the score store at import time and to the live note stream, and adds
 //! the follower-confirmation stage; until then the retrieval margin is
-//! deliberately strict.
+//! deliberately strict. S1b TODOs: a top-k finalists accessor (the
+//! design's §3.3 confirmation consumes pre-gate candidates) and
+//! delete-by-id via a reverse map once the index persists (remove_score
+//! scans all postings today — fine in-memory).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -19,15 +22,21 @@ use std::hash::{Hash, Hasher};
 
 use crate::score::ScoreModel;
 
-/// Intervals per n-gram window (5 notes). Small enough to survive one
-/// wrong note per phrase, long enough that random noodling rarely
-/// collides positionally.
+/// Intervals per n-gram window (5 notes). Long enough that random
+/// noodling rarely collides positionally; near-full-window queries
+/// survive a stray wrong note, short ones fail toward silence (the
+/// right direction).
 pub(crate) const NGRAM_INTERVALS: usize = 4;
 /// The query reads the last this-many notes of the live stream.
 pub(crate) const QUERY_WINDOW: usize = 20;
 /// A candidate must place at least this many n-grams at ONE alignment
 /// offset. 6 coherent windows ≈ 10 consecutive right notes.
 pub(crate) const MIN_COHERENT_HITS: usize = 6;
+/// Those coherent hits must come from at least this many DISTINCT
+/// n-grams (review MF1): an ostinato loop or a chromatic run aligns the
+/// SAME few windows over and over — counts without identity. Real melody
+/// clears this trivially; self-similar figuration reads as silence.
+pub(crate) const MIN_DISTINCT_COHERENT: usize = 6;
 /// The winner must beat the runner-up by this factor on coherent hits —
 /// ambiguity reads as silence, never a coin flip.
 pub(crate) const MARGIN_RATIO: f64 = 2.0;
@@ -45,6 +54,10 @@ pub struct Match {
     pub coherent_hits: usize,
     /// All hits for this candidate (coherent or not).
     pub total_hits: usize,
+    /// The winning alignment offset (score interval position minus query
+    /// interval position) — S1b's seed for follower confirmation and
+    /// "open the score at your measure".
+    pub offset: i64,
 }
 
 /// The melodic surface of a score: the TOP line per onset (a chord
@@ -54,20 +67,25 @@ pub struct Match {
 pub fn melody_line(model: &ScoreModel) -> Vec<u8> {
     let mut line: Vec<u8> = Vec::new();
     for measure in &model.measures {
+        // Review MF2: real MusicXML (voices, <backup>, grand staves) lists
+        // notes in DOCUMENT order, not time order — the parser preserves
+        // that. Sort by onset first; only then does "top note per onset"
+        // mean what it says. The sort is total (start_beats are finite)
+        // and ties break by pitch, so the result is deterministic.
+        let mut sounding: Vec<(f64, u8)> = measure
+            .notes
+            .iter()
+            .filter(|n| !n.is_rest)
+            .map(|n| (n.start_beat, n.midi_number))
+            .collect();
+        sounding.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut i = 0;
-        let notes = &measure.notes;
-        while i < notes.len() {
-            if notes[i].is_rest {
-                i += 1;
-                continue;
-            }
-            // Collapse the chord group sharing this onset to its top note.
-            let onset = notes[i].start_beat;
-            let mut top = notes[i].midi_number;
+        while i < sounding.len() {
+            let onset = sounding[i].0;
+            let mut top = sounding[i].1;
             let mut j = i + 1;
-            while j < notes.len() && !notes[j].is_rest && (notes[j].start_beat - onset).abs() < 1e-6
-            {
-                top = top.max(notes[j].midi_number);
+            while j < sounding.len() && (sounding[j].0 - onset).abs() < 1e-6 {
+                top = top.max(sounding[j].1);
                 j += 1;
             }
             line.push(top);
@@ -132,43 +150,65 @@ impl PieceIndex {
         if ivs.len() < NGRAM_INTERVALS {
             return None; // Too little played — never a guess.
         }
-        // candidate id → (alignment offset → hits at that offset).
+        // candidate id → (alignment offset → (hit count, distinct keys)).
         // Offsets are score_pos − query_pos: hits from real playing agree.
-        let mut alignments: HashMap<u64, HashMap<i64, usize>> = HashMap::new();
+        // Distinct keys are the MF1 defense: periodic material (ostinato,
+        // chromatic run) piles the SAME windows onto one offset — counts
+        // without identity.
+        type OffsetEvidence = HashMap<i64, (usize, std::collections::HashSet<u64>)>;
+        let mut alignments: HashMap<u64, OffsetEvidence> = HashMap::new();
         let mut totals: HashMap<u64, usize> = HashMap::new();
         for (qpos, window) in ivs.windows(NGRAM_INTERVALS).enumerate() {
-            if let Some(posts) = self.postings.get(&ngram_key(window)) {
+            let key = ngram_key(window);
+            if let Some(posts) = self.postings.get(&key) {
                 for &(id, spos) in posts {
-                    *alignments
+                    let slot = alignments
                         .entry(id)
                         .or_default()
                         .entry(spos as i64 - qpos as i64)
-                        .or_default() += 1;
+                        .or_default();
+                    slot.0 += 1;
+                    slot.1.insert(key);
                     *totals.entry(id).or_default() += 1;
                 }
             }
         }
         // Deterministic ranking: coherent hits, then total, then id —
-        // no HashMap iteration order reaches the outcome.
-        let mut ranked: Vec<Match> = alignments
+        // no HashMap iteration order reaches the outcome. The best offset
+        // per candidate breaks count-ties by distinct keys then offset.
+        let mut ranked: Vec<(Match, usize)> = alignments
             .iter()
-            .map(|(&id, offsets)| Match {
-                id,
-                coherent_hits: offsets.values().copied().max().unwrap_or(0),
-                total_hits: totals.get(&id).copied().unwrap_or(0),
+            .map(|(&id, offsets)| {
+                let (offset, count, distinct) = offsets
+                    .iter()
+                    .map(|(&off, (count, keys))| (off, *count, keys.len()))
+                    .max_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)).then(b.0.cmp(&a.0)))
+                    .unwrap_or((0, 0, 0));
+                (
+                    Match {
+                        id,
+                        coherent_hits: count,
+                        total_hits: totals.get(&id).copied().unwrap_or(0),
+                        offset,
+                    },
+                    distinct,
+                )
             })
             .collect();
         ranked.sort_by(|a, b| {
-            b.coherent_hits
-                .cmp(&a.coherent_hits)
-                .then(b.total_hits.cmp(&a.total_hits))
-                .then(a.id.cmp(&b.id))
+            b.0.coherent_hits
+                .cmp(&a.0.coherent_hits)
+                .then(b.0.total_hits.cmp(&a.0.total_hits))
+                .then(a.0.id.cmp(&b.0.id))
         });
-        let best = ranked.first()?.clone();
+        let (best, best_distinct) = ranked.first()?.clone();
         if best.coherent_hits < MIN_COHERENT_HITS {
             return None; // Thin evidence — silence beats a maybe.
         }
-        if let Some(second) = ranked.get(1) {
+        if best_distinct < MIN_DISTINCT_COHERENT {
+            return None; // Counts without identity (review MF1) — silence.
+        }
+        if let Some((second, _)) = ranked.get(1) {
             if (best.coherent_hits as f64) < MARGIN_RATIO * second.coherent_hits as f64 {
                 return None; // Ambiguous — silence beats a coin flip.
             }
@@ -350,5 +390,152 @@ mod tests {
             assert_eq!(idx.identify(played), first);
         }
         assert_eq!(idx.identify(&piece_a()[..4]), None, "4 notes is a guess");
+    }
+
+    /// Review MF1: self-similar figuration must read as silence. A bare
+    /// ostinato loop and a chromatic run rack up COUNTS at aligned
+    /// offsets, but from the same few n-grams — no identity.
+    #[test]
+    fn ostinatos_and_chromatic_runs_stay_silent() {
+        let mut idx = PieceIndex::new();
+        let mut alberti = Vec::new();
+        for _ in 0..4 {
+            alberti.extend_from_slice(&[60, 64, 67, 64]);
+        }
+        alberti.extend_from_slice(&[72, 71, 69, 67, 65, 64, 62, 60]);
+        idx.index_score(1, &model_from(&alberti));
+        let mut chroma = vec![55, 59, 62];
+        chroma.extend(60..73);
+        chroma.extend_from_slice(&[72, 67, 64, 60]);
+        idx.index_score(2, &model_from(&chroma));
+
+        let loop_query: Vec<u8> = (0..5).flat_map(|_| [60, 64, 67, 64]).collect();
+        assert_eq!(
+            idx.identify(&loop_query),
+            None,
+            "an ostinato is not a piece"
+        );
+        let run_query: Vec<u8> = (60..80).collect();
+        assert_eq!(idx.identify(&run_query), None, "a run is not a piece");
+    }
+
+    /// Review MF3(f): POSITIONAL coherence is the separator — disjoint
+    /// fragments of one piece, shuffled, have hits but no single
+    /// alignment. Coherence must refuse.
+    #[test]
+    fn scattered_fragments_never_cohere() {
+        let idx = library();
+        let a = piece_a();
+        let mut scattered = Vec::new();
+        scattered.extend_from_slice(&a[14..19]);
+        scattered.extend_from_slice(&a[0..5]);
+        scattered.extend_from_slice(&a[7..12]);
+        assert_eq!(
+            idx.identify(&scattered),
+            None,
+            "fragments without ONE alignment are not a performance"
+        );
+    }
+
+    /// Review MF3(f), the ranking half: a DECOY piece stuffed with
+    /// repeated copies of the true piece's fragments out-totals the true
+    /// piece while cohering nowhere. Total-hits ranking picks the decoy
+    /// (and dies on the distinct gate → None); coherence picks the truth.
+    #[test]
+    fn a_fragment_stuffed_decoy_never_outranks_the_real_piece() {
+        let mut idx = PieceIndex::new();
+        let run: Vec<u8> = vec![64, 62, 60, 65, 64, 67, 65, 69, 71, 72, 69, 67, 71, 74, 72];
+        let mut real = run.clone();
+        real.extend_from_slice(&[76, 74, 71, 67, 64]);
+        idx.index_score(1, &model_from(&real));
+        // The decoy: two 7-note fragments of the run, each FOUR times,
+        // separated by filler — many hits, scattered offsets.
+        let mut decoy = Vec::new();
+        for _ in 0..4 {
+            decoy.extend_from_slice(&run[0..7]);
+            decoy.extend_from_slice(&[50, 53]);
+        }
+        for _ in 0..4 {
+            decoy.extend_from_slice(&run[7..14]);
+            decoy.extend_from_slice(&[52, 55]);
+        }
+        idx.index_score(2, &model_from(&decoy));
+
+        let m = idx
+            .identify(&run[..14])
+            .expect("the real piece identifies over the decoy");
+        assert_eq!(m.id, 1, "coherence beats raw totals");
+        assert!(
+            m.total_hits <= m.coherent_hits + 2,
+            "the winner's evidence is one aligned run"
+        );
+    }
+
+    /// Review MF3(h2): two LIVE candidates — a shared quotation resolved
+    /// by piece-specific material — pins the deterministic ranking with
+    /// real competition.
+    #[test]
+    fn a_quotation_resolves_to_the_piece_that_continues_it() {
+        let mut idx = PieceIndex::new();
+        let quote: Vec<u8> = vec![67, 65, 64, 62, 60, 62, 64, 67];
+        let mut a = quote.clone();
+        a.extend_from_slice(&[72, 71, 67, 64, 69, 71, 72, 76]);
+        let mut b = quote.clone();
+        b.extend_from_slice(&[59, 62, 65, 69, 66, 62, 59, 55]);
+        idx.index_score(1, &model_from(&a));
+        idx.index_score(2, &model_from(&b));
+        assert_eq!(
+            idx.identify(&quote),
+            None,
+            "a shared quotation is ambiguous"
+        );
+        let played = &a[2..16];
+        let first = idx.identify(played);
+        assert_eq!(first.as_ref().map(|m| m.id), Some(1));
+        for _ in 0..10 {
+            assert_eq!(idx.identify(played), first);
+        }
+    }
+
+    /// Review MF2: notes arrive in DOCUMENT order in real MusicXML
+    /// (voices, <backup>, grand staves) — melody is the top line per
+    /// ONSET, not per list position.
+    #[test]
+    fn melody_line_survives_document_order_voices() {
+        let mut model = model_from(&[60, 64, 67, 72]);
+        model.measures[0].notes.push(ScoreNote {
+            pitch_hz: 440.0,
+            midi_number: 48,
+            duration_beats: 2.0,
+            start_beat: 0.0,
+            dynamic: None,
+            is_rest: false,
+        });
+        model.measures[0].notes.push(ScoreNote {
+            pitch_hz: 440.0,
+            midi_number: 55,
+            duration_beats: 2.0,
+            start_beat: 2.0,
+            dynamic: None,
+            is_rest: false,
+        });
+        assert_eq!(
+            melody_line(&model),
+            vec![60, 64, 67, 72],
+            "the LH never becomes melody; onsets collapse to the top note"
+        );
+    }
+
+    /// Spec §6: a leap wider than an octave clamps identically on both
+    /// sides — pinned with ONE wide leap inside real melody. (All-leap
+    /// material collapses to ±12 periodicity and the distinct-key gate
+    /// rightly silences it — the MF1 design working, not a bug.)
+    #[test]
+    fn a_wide_leap_clamps_and_still_matches() {
+        let mut idx = PieceIndex::new();
+        let mut tune = piece_b();
+        tune[7] = 91;
+        idx.index_score(1, &model_from(&tune));
+        assert_eq!(idx.identify(&tune[2..16]).map(|m| m.id), Some(1));
     }
 }
