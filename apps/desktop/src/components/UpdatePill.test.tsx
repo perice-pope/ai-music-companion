@@ -18,6 +18,11 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
   check: () => mockCheck(),
 }));
 
+const mockRelaunch = vi.fn();
+vi.mock("@tauri-apps/plugin-process", () => ({
+  relaunch: () => mockRelaunch(),
+}));
+
 import UpdatePill from "./UpdatePill";
 import { useUpdateStore } from "../stores/updateStore";
 import { useConnectionsStore } from "../stores/connectionsStore";
@@ -31,11 +36,15 @@ function updateHandle(version: string) {
 
 beforeEach(() => {
   mockCheck.mockReset();
+  mockRelaunch.mockReset();
+  mockRelaunch.mockResolvedValue(undefined);
   localStorage.clear();
   useUpdateStore.setState({
     phase: "idle",
     availableVersion: null,
     notice: null,
+    releaseNotes: null,
+    restartFailed: false,
     dismissedVersion: null,
   });
 });
@@ -69,7 +78,10 @@ describe("UpdatePill (#58)", () => {
     await act(() => useUpdateStore.getState().checkForUpdate());
 
     const before = screen.getByTestId("update-pill");
+    // E1: the pill click opens the window; Update now starts the install.
     fireEvent.click(screen.getByTestId("update-pill-install"));
+    expect(screen.getByTestId("update-pill")).toBe(before); // grew in place
+    fireEvent.click(screen.getByTestId("update-window-install"));
     await waitFor(() =>
       expect(screen.getByTestId("update-pill").dataset.phase).toBe(
         "downloading",
@@ -88,9 +100,9 @@ describe("UpdatePill (#58)", () => {
     );
     expect(screen.getByTestId("update-pill")).toBe(before);
     expect(handle.downloadAndInstall).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("update-pill-label").textContent).toContain(
-      "Quit and reopen",
-    );
+    // E1: ready now offers a real restart (the quit-and-reopen line is
+    // the relaunch-failure fallback, tested below).
+    expect(screen.getByTestId("update-pill-restart")).toBeInTheDocument();
   });
 
   it("dismiss hides that version; a NEWER version re-surfaces", async () => {
@@ -122,6 +134,7 @@ describe("UpdatePill (#58)", () => {
     render(<UpdatePill />);
     await act(() => useUpdateStore.getState().checkForUpdate());
     fireEvent.click(screen.getByTestId("update-pill-install"));
+    fireEvent.click(screen.getByTestId("update-window-install"));
     await waitFor(() =>
       expect(screen.getByTestId("update-pill").dataset.phase).toBe("error"),
     );
@@ -178,6 +191,8 @@ describe("UpdatePill (#58)", () => {
     });
     expect(useUpdateStore.getState().phase).toBe("ready");
     expect(offered.downloadAndInstall).toHaveBeenCalledTimes(1);
+    // Notes stay with the version the pill painted (reviewer note).
+    expect(useUpdateStore.getState().availableVersion).toBe("9.9.9");
   });
 
   it("double-clicking install downloads exactly once", async () => {
@@ -192,6 +207,7 @@ describe("UpdatePill (#58)", () => {
     render(<UpdatePill />);
     await act(() => useUpdateStore.getState().checkForUpdate());
     fireEvent.click(screen.getByTestId("update-pill-install"));
+    fireEvent.click(screen.getByTestId("update-window-install"));
     // The button is gone in the downloading phase, but pin the store too.
     await act(() => useUpdateStore.getState().installUpdate());
     expect(handle.downloadAndInstall).toHaveBeenCalledTimes(1);
@@ -208,5 +224,74 @@ describe("UpdatePill (#58)", () => {
     expect(
       localStorage.getItem("ai-music-companion:auto-update-check-enabled"),
     ).toBe("true");
+  });
+
+  // ── #58 E1: the window ────────────────────────────────────────────────
+
+  it("the window shows the release notes committed with the version", async () => {
+    mockCheck.mockResolvedValue({
+      version: "9.9.9",
+      body: "• The Pocket learns to listen\n• Bug fixes",
+      downloadAndInstall: vi.fn(),
+    });
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-install"));
+    expect(screen.getByTestId("update-window-title").textContent).toBe(
+      "v9.9.9 — what's new",
+    );
+    expect(screen.getByTestId("update-window-notes").textContent).toContain(
+      "The Pocket learns to listen",
+    );
+    // "Not now" collapses WITHOUT dismissing — the pill remains.
+    fireEvent.click(screen.getByTestId("update-window-later"));
+    expect(screen.queryByTestId("update-window")).toBeNull();
+    expect(screen.getByTestId("update-pill-install")).toBeInTheDocument();
+  });
+
+  it("missing notes get the honest placeholder, never an empty pane", async () => {
+    mockCheck.mockResolvedValue({
+      version: "9.9.9",
+      body: null,
+      downloadAndInstall: vi.fn(),
+    });
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-install"));
+    expect(screen.getByTestId("update-window-notes").textContent).toBe(
+      "No notes for this release.",
+    );
+  });
+
+  it("Restart now relaunches; a relaunch failure falls back calmly", async () => {
+    mockCheck.mockResolvedValue(updateHandle("9.9.9"));
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    await act(() => useUpdateStore.getState().installUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-restart"));
+    await waitFor(() => expect(mockRelaunch).toHaveBeenCalledTimes(1));
+
+    // Failure path: the calm quit-and-reopen line returns.
+    mockRelaunch.mockRejectedValueOnce(new Error("no"));
+    await act(() => useUpdateStore.getState().restartNow());
+    await waitFor(() =>
+      expect(screen.getByTestId("update-pill-label").textContent).toContain(
+        "Quit and reopen",
+      ),
+    );
+  });
+
+  it("a dismissed window never leaks — the NEXT offer starts collapsed", async () => {
+    // Review MF1, reproduced at round 1: expand vA, dismiss, vB arrives →
+    // vB's window popped open with zero clicks.
+    mockCheck.mockResolvedValueOnce(updateHandle("9.9.9"));
+    render(<UpdatePill />);
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    fireEvent.click(screen.getByTestId("update-pill-install")); // expand
+    fireEvent.click(screen.getByTestId("update-pill-dismiss"));
+    mockCheck.mockResolvedValueOnce(updateHandle("9.9.10"));
+    await act(() => useUpdateStore.getState().checkForUpdate());
+    expect(screen.getByTestId("update-pill").dataset.expanded).toBe("false");
+    expect(screen.queryByTestId("update-window")).toBeNull();
   });
 });

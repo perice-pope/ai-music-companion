@@ -42,6 +42,7 @@ brain = { path = "../../../crates/brain" }
 transcribe = { path = "../../../crates/transcribe" }
 omr = { path = "../../../crates/omr" }
 tone = { path = "../../../crates/tone" }
+tauri-plugin-process = "2.3.1"
 
 [dev-dependencies]
 # `test` feature enables Tauri's mock runtime so command/event behaviour

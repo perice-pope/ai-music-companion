@@ -23,6 +23,9 @@ fn main() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // #58 E1: the updater's official pairing — "Restart now" relaunches
+        // into the staged build. No network, no other capability.
+        builder = builder.plugin(tauri_plugin_process::init());
     }
 
     builder
