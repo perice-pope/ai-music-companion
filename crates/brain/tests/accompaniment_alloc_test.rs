@@ -112,8 +112,11 @@ fn source_render_with_control_drain_does_not_allocate() {
     source.render(&mut buf); // warm up
 
     COUNTING.with(|c| c.set(true));
-    for _ in 0..1000 {
+    for i in 0..1000 {
+        // #445 pt 9: SetTempo drains and the band-as-clock-carrier render
+        // branch must be allocation-free too.
         tx.set_clock(locked); // producer push (processing-thread side, but alloc-free)
+        tx.set_tempo(90.0 + (i % 7) as f64);
         source.render(&mut buf); // drain + render (render-thread side)
     }
     COUNTING.with(|c| c.set(false));

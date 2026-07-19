@@ -248,6 +248,10 @@ impl PadVoice {
 pub struct AccompanimentSynth {
     sample_rate: u32,
     tempo_bpm: Option<f32>,
+    /// #445 pt 9: the Pocket's effective clock, when the band is the clock
+    /// carrier. `Some` wins over the live clock: the band plays at this
+    /// tempo immediately (no lock needed) and never realigns to the player.
+    tempo_override: Option<f64>,
     locked: bool,
     /// Beats elapsed (fractional). Advances per sample at the current tempo;
     /// integer crossings are beats, half crossings are eighths.
@@ -269,6 +273,7 @@ impl AccompanimentSynth {
         let mut synth = Self {
             sample_rate,
             tempo_bpm: None,
+            tempo_override: None,
             locked: false,
             beat_pos: 0.0,
             beat_index: 0,
@@ -313,13 +318,24 @@ impl AccompanimentSynth {
     /// starts in time with them.
     pub fn set_clock(&mut self, clock: ClockState) {
         let now_locked = clock.is_locked();
-        if now_locked && !self.locked {
+        // #445 pt 9: with a tempo override the band IS the clock — the
+        // player's lock must never yank its grid (they lock to the band).
+        if now_locked && !self.locked && self.tempo_override.is_none() {
             // Just locked — align the grid to the player and start a fresh bar.
             self.beat_pos = clock.beat_phase as f64;
             self.beat_index = 0;
         }
         self.locked = now_locked;
         self.tempo_bpm = clock.tempo_bpm;
+    }
+
+    /// #445 pt 9: pin the band to the Pocket's effective clock. The band
+    /// plays at `bpm` immediately — when it starts, the click is torn down
+    /// (one audio owner), so the band must carry the clock itself. A retime
+    /// is phase-preserving: `beat_pos` is untouched, the grid bends instead
+    /// of restarting (the `TempoFedMetronome::update_config` law).
+    pub fn set_tempo_override(&mut self, bpm: f64) {
+        self.tempo_override = Some(bpm);
     }
 
     /// MIDI note for the bass on a given beat: root on even beats, the scale's
@@ -333,24 +349,32 @@ impl AccompanimentSynth {
         BASS_MIDI_BASE + self.tonic + degree
     }
 
-    /// True when the synth is producing audio (clock locked with a tempo).
+    /// True when the synth is producing audio: a tempo override (the band
+    /// carries the Pocket clock) or the live clock locked with a tempo.
     pub fn is_playing(&self) -> bool {
-        self.locked && self.tempo_bpm.is_some()
+        self.tempo_override.is_some() || (self.locked && self.tempo_bpm.is_some())
     }
 }
 
 impl RenderSource for AccompanimentSynth {
     fn render(&mut self, out: &mut [f32]) {
-        // Silent unless the clock is locked with a real tempo.
-        let Some(bpm) = self.tempo_bpm.filter(|_| self.locked) else {
-            for slot in out.iter_mut() {
-                *slot = 0.0;
-            }
-            return;
+        // #445 pt 9: the Pocket's effective clock wins; otherwise the live
+        // clock when locked with a real tempo; otherwise silence.
+        let bpm: f64 = match self.tempo_override {
+            Some(b) => b,
+            None => match self.tempo_bpm.filter(|_| self.locked) {
+                Some(b) => b as f64,
+                None => {
+                    for slot in out.iter_mut() {
+                        *slot = 0.0;
+                    }
+                    return;
+                }
+            },
         };
 
         // Beats advanced per sample.
-        let inc = bpm as f64 / 60.0 / self.sample_rate as f64;
+        let inc = bpm / 60.0 / self.sample_rate as f64;
         for slot in out.iter_mut() {
             let prev = self.beat_pos;
             self.beat_pos += inc;
@@ -390,6 +414,8 @@ pub enum AccompanimentControl {
     SetKey { tonic: u8, mode: Mode },
     /// Update the live clock (tempo / beat phase / lock).
     SetClock(ClockState),
+    /// #445 pt 9: pin the band to the Pocket's effective clock (BPM).
+    SetTempo(f64),
 }
 
 /// Producer side of the control channel, held by the processing thread.
@@ -411,10 +437,26 @@ impl AccompanimentSender {
     pub fn set_clock(&mut self, clock: ClockState) {
         let _ = self.0.try_push(AccompanimentControl::SetClock(clock));
     }
+
+    /// #445 pt 9: pin the band's clock to `bpm` (the Pocket's effective
+    /// tempo). The command side clamps; this just moves the number.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        let _ = self.0.try_push(AccompanimentControl::SetTempo(bpm));
+    }
 }
 
 /// Consumer side of the control channel — moved into the render-thread source.
 pub struct AccompanimentReceiver(HeapCons<AccompanimentControl>);
+
+impl AccompanimentReceiver {
+    /// Pop the next pending control message, if any. Lock-free. This is the
+    /// command-side test seam (#445 pt 9 review MF1): the app pins that its
+    /// clamped band tempos arrive on the channel exactly as played, the same
+    /// way the Pocket's `pushed_tempos_arrive_clamped` drains a bare channel.
+    pub fn try_pop(&mut self) -> Option<AccompanimentControl> {
+        self.0.try_pop()
+    }
+}
 
 /// Create a lock-free SPSC control channel buffering up to `capacity` messages.
 pub fn accompaniment_control_channel(
@@ -447,6 +489,7 @@ impl AccompanimentSynthSource {
             match msg {
                 AccompanimentControl::SetKey { tonic, mode } => self.synth.set_key(tonic, mode),
                 AccompanimentControl::SetClock(clock) => self.synth.set_clock(clock),
+                AccompanimentControl::SetTempo(bpm) => self.synth.set_tempo_override(bpm),
             }
         }
     }
@@ -531,6 +574,13 @@ impl AccompanimentDriver {
     /// Whether the key is currently pinned by the user.
     pub fn is_key_pinned(&self) -> bool {
         self.pinned
+    }
+
+    /// #445 pt 9: forward the Pocket's effective clock to the synth — the
+    /// seam `start_accompaniment` and `set_band_tempo` share. The command
+    /// side clamps into the Pocket's validated range before calling this.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.sender.set_tempo(bpm);
     }
 }
 
@@ -899,6 +949,104 @@ mod tests {
             "grid should align to the player's beat phase (0.5) on lock, got {}",
             synth.beat_pos
         );
+    }
+
+    // ── One clock (#445 pt 9): the band carries the Pocket's tempo ──────────
+
+    #[test]
+    fn tempo_override_plays_immediately_without_live_lock() {
+        // AC1 (anchor semantics): starting the band replaces the click, so
+        // the band must carry the clock itself — audible at the set tempo
+        // with NO player lock. A synth that still waits for the LiveClock
+        // stays silent here and fails.
+        let mut synth = AccompanimentSynth::new(SR);
+        synth.set_key(0, Mode::Ionian);
+        synth.set_tempo_override(120.0);
+        assert!(synth.is_playing(), "an override alone must mean playing");
+        solo_kick(&mut synth);
+        let mut buf = vec![0.0f32; (SR as f32 * 1.1) as usize];
+        synth.render(&mut buf);
+        // 120 BPM from beat_pos 0 → kicks at t≈0.5 s and t≈1.0 s.
+        let bursts = count_energy_bursts(&buf, SR, 0.02);
+        assert_eq!(
+            bursts, 2,
+            "override at 120 BPM should kick twice in 1.1 s, got {bursts}"
+        );
+    }
+
+    #[test]
+    fn override_retime_is_phase_preserving() {
+        // AC2: the `tempo_change_while_locked_is_continuous` law for the
+        // override path — a new tempo bends the grid, never restarts it.
+        let mut synth = AccompanimentSynth::new(SR);
+        synth.set_key(0, Mode::Ionian);
+        synth.set_tempo_override(120.0);
+        let mut buf = vec![0.0f32; SR as usize / 4]; // 0.25 s → 0.5 beat @120
+        synth.render(&mut buf);
+        let pos_before = synth.beat_pos;
+        assert!(pos_before > 0.0);
+
+        synth.set_tempo_override(180.0);
+        assert!(
+            (synth.beat_pos - pos_before).abs() < 1e-9,
+            "a retime must not reset the grid (was {pos_before}, now {})",
+            synth.beat_pos
+        );
+        let mut buf2 = vec![0.0f32; SR as usize / 4]; // 0.25 s @180 → 0.75 beat
+        synth.render(&mut buf2);
+        let advanced = synth.beat_pos - pos_before;
+        assert!(
+            (advanced - 0.75).abs() < 0.05,
+            "0.25 s at 180 BPM should advance 0.75 beats, got {advanced:.3}"
+        );
+    }
+
+    #[test]
+    fn live_lock_does_not_realign_grid_under_override() {
+        // AC3: while the band carries the clock, a player lock (which used
+        // to realign the grid to their phase) must leave the grid alone —
+        // the player locks to the band now — and the tempo must stay the
+        // override's, not the live estimate's.
+        let mut synth = AccompanimentSynth::new(SR);
+        synth.set_key(0, Mode::Ionian);
+        synth.set_tempo_override(120.0);
+        let mut buf = vec![0.0f32; SR as usize / 4];
+        synth.render(&mut buf);
+        let pos_before = synth.beat_pos;
+
+        let mut clock = locked_clock(75.0);
+        clock.beat_phase = 0.5;
+        synth.set_clock(clock);
+        assert!(
+            (synth.beat_pos - pos_before).abs() < 1e-9,
+            "a live lock must not yank the band's grid while overridden"
+        );
+        let mut buf2 = vec![0.0f32; SR as usize]; // 1 s
+        synth.render(&mut buf2);
+        let advanced = synth.beat_pos - pos_before;
+        assert!(
+            (advanced - 2.0).abs() < 0.05,
+            "tempo must stay the override's 120 (2 beats/s), not the live 75 — advanced {advanced:.3}"
+        );
+    }
+
+    #[test]
+    fn set_tempo_reaches_synth_through_channel() {
+        // AC1 (the start_accompaniment / set_band_tempo seam): driver →
+        // channel → source.render applies the Pocket tempo, exactly how the
+        // commands feed a playing band.
+        let (sender, receiver) = accompaniment_control_channel(16);
+        let mut driver = AccompanimentDriver::new(sender);
+        let mut source = AccompanimentSynthSource::new(AccompanimentSynth::new(SR), receiver);
+        driver.set_tempo(96.0);
+        assert!(
+            !source.synth.is_playing(),
+            "not applied until the render thread drains"
+        );
+        let mut buf = vec![0.0f32; 64];
+        source.render(&mut buf);
+        assert!(source.synth.is_playing(), "SetTempo must reach the synth");
+        assert_eq!(source.synth.tempo_override, Some(96.0));
     }
 
     // ── Pad (slice 3b) ───────────────────────────────────────────────────────
