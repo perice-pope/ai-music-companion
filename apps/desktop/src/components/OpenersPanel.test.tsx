@@ -146,9 +146,17 @@ describe("OpenersPanel (#419 S1)", () => {
     // Review MF3, reproduced at HEAD: tap → remove-while-in-flight → the
     // late response used to paint an orphan preview over an empty builder.
     let resolveLate: (dto: typeof PREVIEW_DTO) => void = () => {};
-    mockInvoke.mockImplementationOnce(
-      () => new Promise((res) => (resolveLate = res)),
-    );
+    let deferredArmed = true;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "preview_opener" && deferredArmed) {
+        deferredArmed = false;
+        return new Promise((res) => (resolveLate = res));
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
     render(<OpenersPanel />);
     fireEvent.click(screen.getByTestId("openers-toggle"));
     fireEvent.click(screen.getByTestId("opener-note-1"));
@@ -349,7 +357,13 @@ describe("OpenersPanel (#419 S1)", () => {
     });
     fireEvent.click(screen.getByTestId("opener-custom-add"));
     await waitFor(() => screen.getByTestId("opener-custom-notice"));
-    expect(mockInvoke).not.toHaveBeenCalled();
+    // Scoped re-pin (#419 S3): the panel's OPEN fetches my_patterns —
+    // the junk contract is that no OPENER command fires.
+    expect(
+      mockInvoke.mock.calls.some(
+        ([cmd]) => cmd === "preview_opener" || cmd === "begin_opener",
+      ),
+    ).toBe(false);
     // But out-of-range DEGREES do go over — the backend refuses by name.
     fireEvent.change(screen.getByTestId("opener-custom-input"), {
       target: { value: "9" },

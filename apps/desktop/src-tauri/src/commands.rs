@@ -4438,9 +4438,6 @@ pub struct MyPatternDto {
 }
 
 const MY_PATTERNS_CAP: usize = 6;
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
-];
 
 /// #419 S3: derive "My patterns" from the exercise log — rows carry the
 /// full VariationSpec as replayable JSON, and any row whose spec has a
@@ -4463,7 +4460,10 @@ pub fn my_patterns_impl(state: &AppState) -> Vec<MyPatternDto> {
             continue; // Old or foreign spec shape — skip calmly.
         };
         let Some(cell) = spec.cell.filter(|c| c.len() >= 2) else {
-            continue; // Catalog drills aren't "your" patterns.
+            // Catalog drills aren't "your" patterns, and a single note
+            // (reachable via cell editing) isn't a pattern either —
+            // there is nothing to row (the lift draws the same line).
+            continue;
         };
         if let Some(existing) = patterns.iter_mut().find(|p| p.offsets == cell) {
             existing.times_practiced += 1;
@@ -4483,10 +4483,13 @@ pub fn my_patterns_impl(state: &AppState) -> Vec<MyPatternDto> {
         } else {
             format!("{}×", p.times_practiced)
         };
+        // #335 discipline: one spelling voice — signature-driven, the
+        // same name the explore label would engrave (review MF3).
+        let fifths = brain::coach::key_signature_for(p.last_tonic, "major").fifths;
         p.label = format!(
             "your {}-note cell · {times}, last in {}",
             p.offsets.len(),
-            NOTE_NAMES[usize::from(p.last_tonic)]
+            brain::coach::tonic_display_name(p.last_tonic, fifths)
         );
     }
     patterns
@@ -4532,6 +4535,7 @@ pub fn check_piece_match(state: State<'_, AppState>) -> Option<PieceMatchDto> {
     check_piece_match_impl(&state)
 }
 
+/// Delete a score from the library.
 #[tauri::command]
 pub fn delete_score(state: State<'_, AppState>, id: String) -> Result<(), String> {
     // See `get_score`: turbofish pins the parse target without naming the
@@ -8101,6 +8105,42 @@ mod tests {
             "label carries count and last key: {}",
             patterns[1].label
         );
+
+        // Direct pin: the most recent row's tonic wins (not contains()).
+        assert_eq!(patterns[1].last_tonic, 9);
+
+        // Review MF2: REAL garbage — a raw junk spec_json row and a
+        // score-practice-shaped row (which every user with score history
+        // has; it fails the VariationSpec parse) are skipped calmly.
+        {
+            let store = s.session_store.lock_or_recover();
+            store
+                .log_exercise(&brain::store::ExerciseLogEntry {
+                    source: "opener".into(),
+                    label: "junk".into(),
+                    spec_json: "<not json>".into(),
+                    seed: 1,
+                    difficulty: 0,
+                    tonic: 0,
+                    accuracy: None,
+                })
+                .expect("junk row logs");
+            store
+                .log_exercise(&brain::store::ExerciseLogEntry {
+                    source: "score_practice".into(),
+                    label: "score row".into(),
+                    spec_json: r#"{"score_title":"Sonata"}"#.into(),
+                    seed: 1,
+                    difficulty: 0,
+                    tonic: 0,
+                    accuracy: None,
+                })
+                .expect("score row logs");
+        }
+        // A single-note cell (reachable via cell editing) isn't a pattern.
+        log(Some(vec![0]), 0);
+        let after = my_patterns_impl(&s);
+        assert_eq!(after.len(), 2, "garbage and single notes never surface");
 
         // Cap at 6 distinct patterns.
         for i in 0..8i8 {

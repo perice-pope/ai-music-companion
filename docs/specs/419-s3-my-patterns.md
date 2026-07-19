@@ -35,6 +35,6 @@ idea: the app remembers what YOUR hands actually played.
 ## 4. Test map
 | AC | Test |
 |---|---|
-| 1,4,5 | commands my_patterns_impl unit (seeded log: dedup, order, cap, skip-garbage, store-failure→empty) |
+| 1,4,5 | commands my_patterns_impl unit (seeded log: dedup, order, cap, REAL garbage rows incl. score-practice-shaped, single-note skip; the unreadable-store branch is code-covered with a warn — not induceable on the in-memory test store, stated honestly) |
 | 2 | OpenersPanel test: pattern chip tap → preview_opener with Notes offsets |
 | 3 | OpenersPanel test: empty → the honest line |

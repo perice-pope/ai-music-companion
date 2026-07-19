@@ -171,7 +171,9 @@ export default function OpenersPanel() {
     void invoke<MyPattern[]>("my_patterns")
       .then((patterns) => {
         if (!cancelled) {
-          setMyPatterns(patterns);
+          // A malformed response degrades to the honest empty state —
+          // this panel never crashes over its own convenience feature.
+          setMyPatterns(Array.isArray(patterns) ? patterns : []);
         }
       })
       .catch(() => {
