@@ -427,6 +427,30 @@ pub fn practice_suggestions(
     out
 }
 
+/// #453 S2: render suggestions as a GROUNDED INPUT block for the LLM recap
+/// prompt — the same posture as [`crate::idiom_recap::idiom_prompt_block`]:
+/// locally computed facts the model may narrate, hedged, but never assert
+/// beyond or extend. Empty string when there are no suggestions (no block,
+/// no claim — the prompt stays byte-identical to today's).
+pub fn history_prompt_block(suggestions: &[PracticeSuggestion]) -> String {
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = suggestions
+        .iter()
+        .map(|s| format!("  - {} (evidence: {})", s.text, s.evidence))
+        .collect();
+    format!(
+        "\n\nPractice-history suggestions (GROUNDED INPUT — computed locally from \
+         this student's own exercise log and key mastery, each citing its \
+         evidence; you MAY weave them into the next-session suggestions in your \
+         own warm voice, but keep every number exactly as given, NEVER invent \
+         further history claims, and NEVER present these as something you heard \
+         in today's playing):\n{}",
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1977,6 +1977,12 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         .ok()
         .flatten();
 
+    // #453 S2: the history-grounded suggestions, read through the same
+    // analyzer the `practice_suggestions` command exposes — evidence-cited
+    // local facts the recap may weave in (offline: at most one appended;
+    // LLM: prompt grounding). Store trouble → empty list, never an error.
+    let history_suggestions = practice_suggestions_core(state);
+
     // Capture the real session length and instrument before `complete()`
     // consumes the recorder — the empty-state path needs them so a session with
     // genuine elapsed time never reads as "you didn't play" (#185).
@@ -2007,6 +2013,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                 idiom_notes,
                 note_verdicts,
                 family,
+                history_suggestions,
             )
             .await?;
             // Persist the completed session so practice history, the stats
@@ -2061,6 +2068,7 @@ pub fn list_instruments_impl(state: &AppState) -> Vec<InstrumentInfo> {
     state.list_instruments()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_recap(
     completed: &CompletedSession,
     generator: &dyn RecapGenerator,
@@ -2068,6 +2076,7 @@ async fn build_recap(
     idiom_notes: Vec<brain::idiom_recap::IdiomMatch>,
     note_verdicts: Vec<brain::follower::NoteVerdict>,
     instrument_family: String,
+    history_suggestions: Vec<brain::insights::PracticeSuggestion>,
 ) -> Result<SessionRecap, CommandError> {
     completed
         .generate_recap_with_context(
@@ -2076,6 +2085,7 @@ async fn build_recap(
             idiom_notes,
             note_verdicts,
             instrument_family,
+            history_suggestions,
         )
         .await
         .map_err(CommandError::from)
@@ -4835,6 +4845,15 @@ impl From<brain::insights::PracticeSuggestion> for PracticeSuggestionDto {
 /// is the honest answer, this never errors a surface. Silence > lies: no
 /// history above the evidence bars means an EMPTY vec, not filler.
 pub fn practice_suggestions_impl(state: &AppState) -> Vec<PracticeSuggestionDto> {
+    practice_suggestions_core(state)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// The store→analyzer read shared by the command (DTOs, S3's box) and the
+/// recap path (#453 S2) — one read discipline, one silence discipline.
+fn practice_suggestions_core(state: &AppState) -> Vec<brain::insights::PracticeSuggestion> {
     let store = state.session_store.lock_or_recover();
     let log = match store.list_exercise_log_timed() {
         Ok(rows) => rows,
@@ -4851,9 +4870,6 @@ pub fn practice_suggestions_impl(state: &AppState) -> Vec<PracticeSuggestionDto>
         }
     };
     brain::insights::practice_suggestions(&log, &model.key_mastery, Utc::now())
-        .into_iter()
-        .map(Into::into)
-        .collect()
 }
 
 /// #453 S1: the practice-suggestions query (S2 recap + S3 coaching box
@@ -5071,6 +5087,7 @@ mod tests {
             Vec::new(),
             verdicts,
             String::new(),
+            Vec::new(),
         )
         .await
         .expect("recap builds");
@@ -8753,6 +8770,151 @@ mod tests {
         );
     }
 
+    /// #453 S2: the S1 test's store fixture, shared with the recap tests —
+    /// seeds a momentum cell history (50%→80%) AND a below-bar Eb-major
+    /// mastery trend, so the analyzer's pinned order is trend first,
+    /// momentum second.
+    fn seed_history_fixture(s: &AppState) {
+        let model = brain::learner::LearnerModel::default();
+        let (explore, _) = brain::coach::start_explore_cell(
+            vec![0, 4, 7],
+            0,
+            &model,
+            1,
+            brain::coach::DirectionMode::Forward,
+        );
+        let store = s.session_store.lock_or_recover();
+        for accuracy in [0.5, 0.5, 0.5, 0.5, 0.8, 0.8, 0.8, 0.8] {
+            log_exercise_best_effort(
+                &store,
+                ExerciseOutcome {
+                    source: "explore",
+                    label: "t",
+                    spec: &explore.spec,
+                    seed: 1,
+                    difficulty: 0,
+                    tonic: 0,
+                    accuracy: Some(accuracy),
+                },
+            );
+        }
+        let mut learner = brain::learner::LearnerModel::default();
+        learner.key_mastery.insert(
+            "3:major".to_owned(),
+            brain::learner::Mastery {
+                attempts: 6,
+                accuracy_ewma: 0.5,
+                owned: false,
+                last_epoch_secs: Utc::now().timestamp(),
+                extra: Default::default(),
+            },
+        );
+        store
+            .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &learner)
+            .expect("learner model upserts");
+    }
+
+    /// #453 S2 AC4: the REAL end-session path over a real store fixture
+    /// weaves exactly ONE evidence-cited history line into the offline
+    /// recap — the analyzer's FIRST (the Eb-major trend), never the second
+    /// (momentum) — with its citation numbers intact. Fails if the command
+    /// layer stops threading history into `build_recap`, more than one
+    /// line is woven, or the pinned order is ignored.
+    #[tokio::test]
+    async fn end_session_weaves_one_cited_history_line() {
+        let mut s = state();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+        seed_history_fixture(&s);
+
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+        {
+            // #445-6b: three settled phrases clear the thin bar.
+            let mut guard = s.active_session.lock().await;
+            for _ in 0..3 {
+                let mut p = sample_phrase();
+                p.duration_secs = 7.0;
+                guard.as_mut().unwrap().recorder.record_phrase(p).unwrap();
+            }
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        let history_lines: Vec<&String> = recap
+            .next_session_suggestions
+            .iter()
+            .filter(|t| t.contains("Eb major") || t.contains("climbed from"))
+            .collect();
+        assert_eq!(
+            history_lines.len(),
+            1,
+            "exactly one history line: {:?}",
+            recap.next_session_suggestions
+        );
+        assert!(
+            history_lines[0].contains("Eb major")
+                && history_lines[0].contains("50%")
+                && history_lines[0].contains("6 attempts"),
+            "the FIRST by pinned order (the trend), citation intact: {}",
+            history_lines[0]
+        );
+    }
+
+    /// #453 S2 AC4 (thin): the SAME seeded history + a thin session (one
+    /// short phrase) → the #445-6b short form keeps its single suggestion
+    /// and gains no history line through the real path. Fails if history
+    /// starts stacking onto thin recaps.
+    #[tokio::test]
+    async fn thin_end_session_weaves_no_history_line() {
+        let mut s = state();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+        seed_history_fixture(&s);
+
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+        {
+            // One 1.5s phrase = thin (below both #445-6b bars).
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(
+            recap.next_session_suggestions.len(),
+            1,
+            "the thin recap keeps its single suggestion: {:?}",
+            recap.next_session_suggestions
+        );
+        assert!(
+            !recap.next_session_suggestions[0].contains("Eb major")
+                && !recap.next_session_suggestions[0].contains("climbed from"),
+            "no history on a thin recap: {}",
+            recap.next_session_suggestions[0]
+        );
+    }
+
     /// #419 S1: preview is PURE — no active exploration, no exercise log.
     /// Begin commits both. Fails if preview grows side effects (a preview
     /// that hijacks the session on every keystroke) or Begin loses them.
@@ -9199,6 +9361,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         // Must not panic (no HTTP) and must return the grounded fallback recap.
@@ -9247,6 +9410,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let text_of = |r: &brain::session::SessionRecap| {
             format!(

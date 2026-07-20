@@ -214,6 +214,10 @@ async function handleInvoke(cmd: string, args?: InvokeArgs): Promise<unknown> {
         tone_trend: "unknown",
         total_owned: 0,
       };
+    case "practice_suggestions":
+      // #453 S3: no history accumulates in a browser preview — the honest
+      // empty list keeps the coaching box silent instead of erroring.
+      return [];
     case "record_reveal":
       // No reveals fire in the preview (see above), but keep the command
       // handled: report an unchanged, empty collection.

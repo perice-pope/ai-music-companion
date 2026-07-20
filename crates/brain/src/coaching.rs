@@ -904,6 +904,12 @@ All text should be written as a teacher would speak — warm, specific, and acti
         // must never assert as fact or invent. Empty string when silent.
         let idiom_block = crate::idiom_recap::idiom_prompt_block(&input.idiom_notes);
 
+        // #453 S2: history-grounded suggestions — evidence-cited facts the
+        // local analyzer computed over the student's own log. Same GROUNDED
+        // INPUT posture as the idiom block: the model narrates, the facts come
+        // from local analysis. Empty string when the history earned nothing.
+        let history_block = crate::insights::history_prompt_block(&input.history_suggestions);
+
         // The student's stated taste, as *context* for framing — never as a
         // performance fact. Joined here at coaching time only (the measured
         // fingerprint above stays the source of truth). Empty string at cold
@@ -934,7 +940,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
             {}{}{}{}\n\
-            {}{}{}{}\n\n\
+            {}{}{}{}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}{}",
             practicing_what,
@@ -950,6 +956,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             tip_summary,
             score_block,
             idiom_block,
+            history_block,
             taste_block,
             if input.score_title.is_some() {
                 " Where it helps, refer to specific measures by number so the \
@@ -1626,6 +1633,13 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
             "Warm up with long tones, then revisit what felt hardest today.".to_owned()
         });
     }
+    // #453 S2: at most ONE history-grounded line — the analyzer's first by
+    // its pinned order; the text already embeds its citation numbers, so it
+    // ships verbatim. Thin sessions returned the short form above, so a
+    // quick touch never stacks history onto its single suggestion (#445-6b).
+    if let Some(h) = input.history_suggestions.first() {
+        suggestions.push(h.text.clone());
+    }
 
     SessionRecap {
         overall_assessment: overall,
@@ -2253,6 +2267,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2285,6 +2300,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2357,6 +2373,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
@@ -3212,6 +3229,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3283,6 +3301,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile,
+            history_suggestions: Vec::new(),
         }
     }
 
@@ -3301,6 +3320,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3370,11 +3390,139 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
             !prompt.contains("Idiom proximity"),
             "no idiom block when nothing cleared the gate, got:\n{prompt}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // #453 S2: history-grounded suggestions in the recap.
+    // -----------------------------------------------------------------
+
+    fn history_suggestion(text: &str, evidence: &str) -> crate::insights::PracticeSuggestion {
+        crate::insights::PracticeSuggestion {
+            kind: crate::insights::SuggestionKind::Trend,
+            text: text.to_owned(),
+            evidence: evidence.to_owned(),
+        }
+    }
+
+    /// Three settled phrases — clears the #445-6b thin bar so these tests
+    /// pin the FULL recap's history behavior.
+    fn settled_sample_phrases() -> Vec<PhraseSummary> {
+        (0..3)
+            .map(|_| {
+                let mut p = sample_phrase();
+                p.duration_secs = 7.0;
+                p
+            })
+            .collect()
+    }
+
+    /// #453 S2 AC3: the LLM user prompt carries history suggestions as
+    /// GROUNDED INPUT — marked, text AND evidence present, further invention
+    /// forbidden — and no block at all when the history earned nothing.
+    /// Fails if the block is dropped, unmarked, loses its citation, or
+    /// starts rendering on empty history.
+    #[test]
+    fn recap_prompt_carries_history_as_grounded_input() {
+        let mut input = recap_input_with(vec![sample_phrase()], None);
+        input.history_suggestions = vec![history_suggestion(
+            "Your Eb major rows are sitting at 54% over 6 attempts (last one 2 days ago) — worth a slow pass.",
+            "key_mastery 3:major: 6 attempts, accuracy EWMA 0.54, last attempt 2d ago",
+        )];
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            prompt.contains("Practice-history suggestions") && prompt.contains("GROUNDED INPUT"),
+            "history rides in as marked grounded input, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("54% over 6 attempts") && prompt.contains("key_mastery 3:major"),
+            "text AND evidence travel into the prompt, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("NEVER invent further history claims"),
+            "the prompt forbids inventing history, got:\n{prompt}"
+        );
+
+        // Silence: no suggestions → the block is absent entirely.
+        let quiet = recap_input_with(vec![sample_phrase()], None);
+        assert!(
+            !CoachingEngine::build_recap_user_prompt(&quiet).contains("Practice-history"),
+            "no history block when the analyzer said nothing"
+        );
+    }
+
+    /// #453 S2 AC1: the offline full recap appends exactly ONE history line
+    /// — the FIRST by the analyzer's pinned order, verbatim (citation
+    /// numbers intact) — and adds nothing when history is silent. Fails if
+    /// a second suggestion leaks in, the text gets rephrased, or the append
+    /// point disappears.
+    #[test]
+    fn offline_recap_appends_at_most_one_history_suggestion() {
+        let mut input = recap_input_with(settled_sample_phrases(), None);
+        input.history_suggestions = vec![
+            history_suggestion(
+                "Your Eb major rows are sitting at 54% over 6 attempts (last one 2 days ago) — worth a slow pass.",
+                "e1",
+            ),
+            history_suggestion("SECOND — must never surface.", "e2"),
+        ];
+        let recap = grounded_offline_recap(&input);
+        let tail = recap
+            .next_session_suggestions
+            .last()
+            .expect("a full recap always suggests something");
+        assert!(
+            tail.contains("54% over 6 attempts (last one 2 days ago)"),
+            "the first suggestion's text ships verbatim as the tail line: {tail}"
+        );
+        assert!(
+            !recap
+                .next_session_suggestions
+                .iter()
+                .any(|s| s.contains("SECOND")),
+            "AT MOST ONE — the second pinned suggestion never surfaces: {:?}",
+            recap.next_session_suggestions
+        );
+
+        // No history → exactly the measured suggestions, one fewer line.
+        let quiet = recap_input_with(settled_sample_phrases(), None);
+        let base = grounded_offline_recap(&quiet);
+        assert_eq!(
+            base.next_session_suggestions.len() + 1,
+            recap.next_session_suggestions.len(),
+            "history adds exactly one line to the same session"
+        );
+    }
+
+    /// #453 S2 AC2: a thin session keeps its single #445-6b suggestion —
+    /// history NEVER stacks onto the short form (the thin gate fires before
+    /// the append). Fails if the append moves above the thin early-return.
+    #[test]
+    fn thin_recap_gains_no_history_suggestion() {
+        // One 1.5s phrase = thin (below both #445-6b bars).
+        let mut input = recap_input_with(vec![sample_phrase()], None);
+        input.history_suggestions = vec![history_suggestion(
+            "Your Eb major rows are sitting at 54% over 6 attempts (last one 2 days ago) — worth a slow pass.",
+            "e1",
+        )];
+        assert!(is_thin_session(&input), "fixture must actually be thin");
+        let recap = grounded_offline_recap(&input);
+        assert_eq!(
+            recap.next_session_suggestions.len(),
+            1,
+            "the thin short form keeps its single suggestion: {:?}",
+            recap.next_session_suggestions
+        );
+        assert!(
+            !recap.next_session_suggestions[0].contains("Eb major"),
+            "no history line on a thin recap: {}",
+            recap.next_session_suggestions[0]
         );
     }
 
@@ -3451,6 +3599,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
         let recap = CoachingEngine::fallback_recap(&input);
         assert_eq!(
@@ -4603,6 +4752,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         // Must NOT panic (no HttpClient call) and must return the fallback.
@@ -4709,6 +4859,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4766,6 +4917,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4804,6 +4956,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4846,6 +4999,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4881,6 +5035,7 @@ mod tests {
             note_verdicts: Vec::new(),
             idiom_notes: Vec::new(),
             taste_profile: None,
+            history_suggestions: Vec::new(),
         }
     }
 

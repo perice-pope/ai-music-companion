@@ -12,6 +12,7 @@ import PieceMatchChip from "./PieceMatchChip";
 import PerceptionPanel from "./PerceptionPanel";
 import CoachingTipPanel from "./CoachingTipPanel";
 import RevealCard from "./RevealCard";
+import CoachingBox from "./CoachingBox";
 import LessonPanel from "./LessonPanel";
 import ExplorePanel from "./ExplorePanel";
 import LiftLickButton from "./LiftLickButton";
@@ -254,6 +255,8 @@ export default function PracticeSession() {
             <div className="flex flex-col gap-4">
               <PieceMatchChip />
               <RevealCard />
+              {/* #453 S3: the coaching box sits just below the reveal. */}
+              <CoachingBox />
             </div>
           </div>
         </div>
@@ -297,6 +300,8 @@ export default function PracticeSession() {
               <CoachingTipPanel />
               <PieceMatchChip />
               <RevealCard />
+              {/* #453 S3: the coaching box sits just below the reveal. */}
+              <CoachingBox />
             </div>
           </div>
         </div>
@@ -341,6 +346,8 @@ export default function PracticeSession() {
             <CoachingTipPanel />
             <PieceMatchChip />
             <RevealCard />
+            {/* #453 S3: the coaching box sits just below the reveal. */}
+            <CoachingBox />
           </div>
         </div>
       )}
