@@ -25,6 +25,15 @@ pub struct KeyTrackerConfig {
     /// leapfrogging every few notes — the #277 header flapping. Time dwell
     /// kills the flicker; a real modulation sustains dominance and still wins.
     pub switch_dwell: u8,
+    /// Consecutive observations the held key's LIVE fit must fail the commit
+    /// bar (`min_confidence` / `min_pitch_classes`) before the reading stops
+    /// being settled (#404 finding 2). Key-less material — long-tone warm-ups,
+    /// chromatic wandering — keeps an early tentative commit on the strip
+    /// forever otherwise; once unsettled, the display's honest state is
+    /// "finding the key…", not a name the profile no longer supports. The
+    /// streak requirement is the hysteresis: one thin observation never
+    /// blanks the display.
+    pub unsettle_dwell: u8,
 }
 
 impl Default for KeyTrackerConfig {
@@ -39,9 +48,19 @@ impl Default for KeyTrackerConfig {
             switch_margin: 0.1,
             min_pitch_classes: 4,
             switch_dwell: 6,
+            // ~4 notes of sustained sub-bar fit before the name goes quiet —
+            // long enough to ride out one odd note, short enough that a
+            // warm-up doesn't wear a wrong name for a whole exercise.
+            unsettle_dwell: 4,
         }
     }
 }
+
+/// Clear-fit observations needed to re-settle after the reading went quiet —
+/// shorter than `unsettle_dwell` (real material re-earns its name in a few
+/// notes) but more than one, so a fit that hovers at the bar can't flap the
+/// display between a name and "finding the key…".
+const RESETTLE_DWELL: u8 = 3;
 
 /// Tracks the current key over a stream of detected notes.
 ///
@@ -57,6 +76,13 @@ pub struct KeyTracker {
     /// The key currently out-correlating the held one, and for how many
     /// consecutive observations — the dwell counter behind the anti-flap rule.
     challenger: Option<(u8, crate::Mode, u8)>,
+    /// Whether the held reading is settled enough to display as a name
+    /// (#404 finding 2). Both directions are dwelled (see `bump_settling`),
+    /// so the display can't flap between a name and "finding the key…".
+    settled: bool,
+    /// Consecutive observations pushing AGAINST the current `settled` state:
+    /// thin-fit ones while settled, clear-fit ones while unsettled.
+    settle_streak: u8,
 }
 
 impl Default for KeyTracker {
@@ -78,6 +104,8 @@ impl KeyTracker {
             profile: PitchClassProfile::new(),
             held: None,
             challenger: None,
+            settled: true,
+            settle_streak: 0,
         }
     }
 
@@ -100,11 +128,24 @@ impl KeyTracker {
         self.held
     }
 
+    /// Whether the held reading is settled enough to display as a name.
+    /// `false` once the held key's LIVE fit has failed the commit bar for
+    /// `unsettle_dwell` consecutive observations (#404 finding 2) — key-less
+    /// material (long-tone warm-ups, chromatic wandering) keeps whatever the
+    /// tracker tentatively committed, and the honest strip state for it is
+    /// "finding the key…", not the name. With no held key there is nothing
+    /// to disclaim: vacuously `true`.
+    pub fn is_settled(&self) -> bool {
+        self.held.is_none() || self.settled
+    }
+
     /// Forget all accumulated pitch history and the held key.
     pub fn reset(&mut self) {
         self.profile = PitchClassProfile::new();
         self.held = None;
         self.challenger = None;
+        self.settled = true;
+        self.settle_streak = 0;
     }
 
     /// Re-evaluate the held key against the current profile, applying the
@@ -121,6 +162,8 @@ impl KeyTracker {
             None => {
                 if committable {
                     self.held = Some(candidate);
+                    self.settled = true;
+                    self.settle_streak = 0;
                 }
             }
             Some(held) => {
@@ -129,7 +172,22 @@ impl KeyTracker {
                     // challenger.
                     self.held = Some(candidate);
                     self.challenger = None;
-                } else if committable {
+                    self.bump_settling(candidate.confidence);
+                    return;
+                }
+                // The top candidate sits elsewhere: the held key's honest fit
+                // is its correlation against the CURRENT profile — a frozen
+                // commit-time confidence outlives its evidence on wandering
+                // material (#404 finding 2). Margin is 0: it is not the best
+                // fit right now.
+                let held_r = correlation_for(&self.profile, held.tonic, held.mode);
+                self.held = Some(KeyEstimate {
+                    confidence: held_r.clamp(0.0, 1.0),
+                    margin: 0.0,
+                    ..held
+                });
+                self.bump_settling(held_r);
+                if committable {
                     // Two very different cases share this branch:
                     //  - SAME tonic, different mode — the tracker *refining*
                     //    its read as evidence sharpens (C Mixolydian → C major
@@ -150,7 +208,6 @@ impl KeyTracker {
                     } else {
                         (self.config.switch_margin, self.config.switch_dwell)
                     };
-                    let held_r = correlation_for(&self.profile, held.tonic, held.mode);
                     if candidate.confidence - held_r > margin {
                         let streak = match self.challenger {
                             Some((t, m, n)) if t == candidate.tonic && m == candidate.mode => {
@@ -161,6 +218,10 @@ impl KeyTracker {
                         if streak >= dwell {
                             self.held = Some(candidate);
                             self.challenger = None;
+                            // A switch is a fresh, dwell-earned reading —
+                            // settling starts over on the new key.
+                            self.settled = true;
+                            self.settle_streak = 0;
                         } else {
                             self.challenger = Some((candidate.tonic, candidate.mode, streak));
                         }
@@ -169,6 +230,32 @@ impl KeyTracker {
                     }
                 }
             }
+        }
+    }
+
+    /// Advance the settling state from the held key's live fit. The bar is
+    /// the commit bar — what it takes to earn a display is what it takes to
+    /// keep it — and BOTH transitions are dwelled: `unsettle_dwell` thin
+    /// observations to go quiet, [`RESETTLE_DWELL`] clear ones to name again,
+    /// so the strip can't flap between a name and "finding the key…" when the
+    /// fit hovers at the bar.
+    fn bump_settling(&mut self, live_fit: f32) {
+        let thin = live_fit < self.config.min_confidence
+            || self.profile.distinct() < self.config.min_pitch_classes as usize;
+        if thin == self.settled {
+            // Pushing against the current state — count toward flipping it.
+            self.settle_streak = self.settle_streak.saturating_add(1);
+            let dwell = if self.settled {
+                self.config.unsettle_dwell
+            } else {
+                RESETTLE_DWELL
+            };
+            if self.settle_streak >= dwell {
+                self.settled = !self.settled;
+                self.settle_streak = 0;
+            }
+        } else {
+            self.settle_streak = 0;
         }
     }
 }
@@ -327,5 +414,109 @@ mod tests {
         assert!(t.current().is_some());
         t.reset();
         assert!(t.current().is_none());
+        assert!(t.is_settled(), "reset must return to the settled state");
+    }
+
+    /// Chromatic long tones, each held (the VA's quiet warm-up shape, #404
+    /// finding 2). The tracker tentatively commits a key a few notes in
+    /// (margin ~0) — the display must go UNSETTLED once the window wanders
+    /// on, and stay quiet through the rest of the key-less material instead
+    /// of wearing a confident-looking wrong name. Fails on code that never
+    /// re-examines the held key's fit against the live profile.
+    #[test]
+    fn keyless_warmup_reads_unsettled_not_a_confident_name() {
+        let mut t = KeyTracker::new();
+        let mut unsettled_tail = 0;
+        for i in 0..24 {
+            let pc = ((12 - (i % 12)) % 12) as u8;
+            t.observe_pc(pc, 2.0);
+            // The second full chromatic pass is unambiguously key-less.
+            if i >= 12 && !t.is_settled() {
+                unsettled_tail += 1;
+            }
+        }
+        assert!(
+            t.current().is_some(),
+            "the tracker still holds its tentative estimate internally"
+        );
+        assert!(
+            unsettled_tail >= 10,
+            "a chromatic warm-up must read unsettled through its tail; \
+             only {unsettled_tail}/12 observations were"
+        );
+    }
+
+    /// #404 finding 2, the stale-fit half: the held estimate's confidence
+    /// must track the LIVE profile. After C major is established, wandering
+    /// material that never dethrones C (near-ties don't clear the switch
+    /// margin) must still drag the displayed confidence down. Fails on code
+    /// that only refreshes confidence when the top candidate is the held key.
+    #[test]
+    fn held_confidence_tracks_the_live_profile() {
+        // Chromatic long tones: the tracker commits a tentative key a few
+        // notes in (fit ~0.4, margin ~0), then the window wanders on and the
+        // top candidate moves elsewhere while near-ties never clear the
+        // switch margin — exactly the case where a frozen commit-time
+        // confidence lies to the display.
+        let mut t = KeyTracker::new();
+        let mut committed: Option<KeyEstimate> = None;
+        let mut min_fit = f32::MAX;
+        for i in 0..24 {
+            let pc = ((12 - (i % 12)) % 12) as u8;
+            t.observe_pc(pc, 2.0);
+            match (committed, t.current()) {
+                (None, Some(est)) => committed = Some(est),
+                (Some(first), Some(now)) => {
+                    assert_eq!(
+                        (now.tonic, now.mode),
+                        (first.tonic, first.mode),
+                        "near-tie mush must not flip the held identity"
+                    );
+                    min_fit = min_fit.min(now.confidence);
+                }
+                _ => {}
+            }
+        }
+        let first = committed.expect("the warm-up shape commits a tentative key");
+        assert!(
+            min_fit < first.confidence.min(0.2),
+            "held confidence must fall with the live profile, not freeze at \
+             its commit-time value {:.2}; lowest seen {:.2}",
+            first.confidence,
+            min_fit
+        );
+    }
+
+    /// Steady one-key material must never flash "finding the key…": settled
+    /// at every observation from first commit on. Guards against the
+    /// unsettle rule firing on honest material (the false-quiet failure).
+    #[test]
+    fn steady_material_never_flashes_unsettled() {
+        let mut t = KeyTracker::new();
+        let mut committed = false;
+        for _ in 0..6 {
+            for (i, &iv) in Mode::Ionian.intervals().iter().enumerate() {
+                t.observe_pc(iv, if i == 0 { 3.0 } else { 1.0 });
+                committed |= t.current().is_some();
+                assert!(
+                    t.is_settled(),
+                    "steady C-major material must stay settled at every note"
+                );
+            }
+        }
+        assert!(committed, "the material must actually commit a key");
+    }
+
+    /// A sustained modulation still lands and asserts: after C major then
+    /// heavy F# major, the held key is F#-tonic and SETTLED — the settling
+    /// gate must never leave a real modulation stuck in "finding the key…".
+    #[test]
+    fn a_modulation_lands_settled() {
+        let mut t = KeyTracker::new();
+        feed_scale(&mut t, 0, Mode::Ionian, 6);
+        feed_scale(&mut t, 6, Mode::Ionian, 12);
+        let est = t.current().unwrap();
+        assert_eq!(est.tonic, 6, "should end on F#; got {}", est.name());
+        assert!(t.is_settled(), "a landed modulation must read settled");
     }
 }

@@ -162,6 +162,20 @@ pub struct KeySnapshot {
     /// The relative-key reading the player might actually mean (e.g. "E minor"
     /// for a "G major" call) — structured so the UI can switch the band to it.
     pub alternative: Option<KeyOption>,
+    /// Whether the reading is settled enough to display as a name (#404
+    /// finding 2). `false` once the held key's live fit has failed the
+    /// tracker's commit bar for a sustained stretch — key-less material like
+    /// long-tone warm-ups — and the strip's honest state is "finding the
+    /// key…", not a name the profile no longer supports. Wire-additive:
+    /// absent means `true` (the pre-#404 behavior).
+    #[serde(default = "settled_default")]
+    pub settled: bool,
+}
+
+/// Serde default for [`KeySnapshot::settled`] — snapshots from before the
+/// field existed were always displayed as settled.
+fn settled_default() -> bool {
+    true
 }
 
 /// A named chord the app is hearing right now (#349 T1: jazz ears).
@@ -540,7 +554,10 @@ impl PerceptionTracker {
                 None
             }
         };
-        let key = self.key.current().map(key_snapshot);
+        let key = self
+            .key
+            .current()
+            .map(|est| key_snapshot(est, self.key.is_settled()));
         // Spell the chord with the accidentals of the key being heard —
         // pcs {1,5,8} over an Ab vamp read "Db", over an A-major line "C#"
         // (#335 discipline, same table as the drills).
@@ -620,7 +637,7 @@ fn ema(prev: Option<f32>, raw: f32, alpha: f32) -> f32 {
 }
 
 /// Build a [`KeySnapshot`] (name + relative alternative) from an estimate.
-fn key_snapshot(est: KeyEstimate) -> KeySnapshot {
+fn key_snapshot(est: KeyEstimate, settled: bool) -> KeySnapshot {
     let (alt_tonic, alt_mode) = relative_key(est.tonic, est.mode);
     let alternative = KeyOption {
         tonic: alt_tonic,
@@ -639,6 +656,7 @@ fn key_snapshot(est: KeyEstimate) -> KeySnapshot {
         name: est.name(),
         confidence: est.confidence,
         alternative: Some(alternative),
+        settled,
     }
 }
 
@@ -809,12 +827,15 @@ mod tests {
     fn key_snapshot_major_offers_relative_minor() {
         // The user's exact example: G major's honest alternative is E minor —
         // pinned end-to-end through key_snapshot (mapping + naming + wiring).
-        let s = key_snapshot(KeyEstimate {
-            tonic: 7,
-            mode: Mode::Ionian,
-            confidence: 0.8,
-            margin: 0.2,
-        });
+        let s = key_snapshot(
+            KeyEstimate {
+                tonic: 7,
+                mode: Mode::Ionian,
+                confidence: 0.8,
+                margin: 0.2,
+            },
+            true,
+        );
         assert_eq!(s.name, "G major");
         let alt = s.alternative.expect("alternative");
         assert_eq!(alt.name, "E minor");
@@ -824,12 +845,15 @@ mod tests {
 
     #[test]
     fn key_snapshot_minor_offers_relative_major() {
-        let s = key_snapshot(KeyEstimate {
-            tonic: 9,
-            mode: Mode::Aeolian,
-            confidence: 0.7,
-            margin: 0.2,
-        });
+        let s = key_snapshot(
+            KeyEstimate {
+                tonic: 9,
+                mode: Mode::Aeolian,
+                confidence: 0.7,
+                margin: 0.2,
+            },
+            true,
+        );
         assert_eq!(s.name, "A minor");
         let alt = s.alternative.expect("alternative");
         assert_eq!(alt.name, "C major");
@@ -862,6 +886,42 @@ mod tests {
             }
         }
         t
+    }
+
+    /// #404 finding 2, at the layer the strip reads: a quiet long-tone
+    /// warm-up (chromatic descending, each note held) must snapshot its key
+    /// as UNSETTLED — the display's honest state is "finding the key…" —
+    /// while steady one-key material snapshots settled. Fails if the settling
+    /// gate is dropped from the tracker or not wired through the snapshot.
+    #[test]
+    fn warmup_snapshot_is_unsettled_steady_is_settled() {
+        // Two chromatic passes of held long tones, C5 downward.
+        let mut warmup = PerceptionTracker::new();
+        let mut t = 0.0;
+        for i in 0..24 {
+            let hz = 523.25 * f64::powf(2.0, -f64::from(i % 12) / 12.0);
+            t = feed_note_frames(&mut warmup, hz, t, 1.5);
+        }
+        let key = warmup
+            .snapshot(t)
+            .key
+            .expect("the warm-up still carries a tentative reading");
+        assert!(
+            !key.settled,
+            "a chromatic long-tone warm-up must read unsettled; got {key:?}"
+        );
+
+        // Control: the same pipeline on steady one-key material.
+        let mut steady = PerceptionTracker::new();
+        let end = feed_c_major_frames(&mut steady, 0.0, 4);
+        let key = steady
+            .snapshot(end)
+            .key
+            .expect("steady C material should read a key");
+        assert!(
+            key.settled,
+            "steady one-key material must never read unsettled; got {key:?}"
+        );
     }
 
     /// The #313 strip flap: at the pipeline's real frame rate, a brief foreign

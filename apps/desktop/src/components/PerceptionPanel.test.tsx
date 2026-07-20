@@ -96,6 +96,47 @@ describe("PerceptionPanel", () => {
     expect(key).not.toHaveTextContent("maybe");
   });
 
+  // #404 finding 2: on key-less material (long-tone warm-ups) the reading is
+  // unsettled — the strip says "finding the key…" instead of cycling
+  // confident-looking names, and offers no pin/alternative controls for a
+  // reading the evidence doesn't support.
+  it("shows 'finding the key…' (no name, no controls) when the reading is unsettled", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: { ...LOCKED_G, key: { ...LOCKED_G.key!, settled: false } },
+    });
+    render(<PerceptionPanel instrumentPolyphonic roomListening={false} />);
+    expect(screen.getByTestId("perception-key-finding")).toHaveTextContent(
+      "finding the key",
+    );
+    expect(screen.queryByTestId("perception-key")).toBeNull();
+    expect(screen.queryByText(/G major/)).toBeNull();
+    expect(screen.queryByTestId("key-use-alternative")).toBeNull();
+    expect(screen.queryByTestId("key-lock")).toBeNull();
+  });
+
+  it("renders a settled reading exactly as before (settled true and absent alike)", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: { ...LOCKED_G, key: { ...LOCKED_G.key!, settled: true } },
+    });
+    render(<PerceptionPanel instrumentPolyphonic roomListening={false} />);
+    expect(screen.getByTestId("perception-key")).toHaveTextContent("G major");
+    expect(screen.queryByTestId("perception-key-finding")).toBeNull();
+  });
+
+  it("a pinned key still shows while the auto reading is unsettled — the pin is the user's choice", () => {
+    usePracticeStore.setState({
+      status: "listening",
+      perception: { ...LOCKED_G, key: { ...LOCKED_G.key!, settled: false } },
+      keyPinned: true,
+      pinnedKey: { tonic: 4, minor: true, name: "E minor" },
+    });
+    render(<PerceptionPanel instrumentPolyphonic roomListening={false} />);
+    expect(screen.getByTestId("perception-key")).toHaveTextContent("E minor");
+    expect(screen.queryByTestId("perception-key-finding")).toBeNull();
+  });
+
   it("always shows the Bluetooth/output speakers tip during a session", () => {
     usePracticeStore.setState({ status: "listening", perception: LOCKED_G });
     render(<PerceptionPanel instrumentPolyphonic roomListening={false} />);
