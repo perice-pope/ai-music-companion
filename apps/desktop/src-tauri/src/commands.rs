@@ -4879,6 +4879,62 @@ pub fn practice_suggestions(state: State<'_, AppState>) -> Vec<PracticeSuggestio
     practice_suggestions_impl(&state)
 }
 
+/// #454 S2: one method-book tip over the wire — the pedagogy entry the last
+/// session's measured fingerprint earned. `source_line` is
+/// "{author}, {title}": the attribution the issue mandates, ALWAYS present.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PedagogyTipDto {
+    pub topic: String,
+    pub guidance: String,
+    pub source_line: String,
+}
+
+/// #454 S2: resolve the LAST stored session's instrument family (the same
+/// catalog resolution the recap uses — `instrument_family_for`) and run the
+/// evidence-gated selection engine over that session's fingerprint.
+///
+/// `None` is the common, calm answer: no sessions yet, no measured
+/// fingerprint on the latest session (the tip speaks to the last session,
+/// never a stale one), an instrument outside the catalog, nothing above the
+/// evidence bars, or a store failure (warn + `None` — the
+/// `practice_suggestions` discipline: this never errors a surface).
+/// Silence > lies: no measured trigger, no tip.
+pub fn method_book_tip_impl(state: &AppState) -> Option<PedagogyTipDto> {
+    let (instrument, fingerprint) = {
+        let store = state.session_store.lock_or_recover();
+        let latest = match store.list_recent(1) {
+            Ok(mut sessions) => sessions.pop()?,
+            Err(e) => {
+                tracing::warn!(error = %e, "session history unreadable; no method-book tip");
+                return None;
+            }
+        };
+        let recap = match store.load_recap(latest.id) {
+            Ok(recap) => recap,
+            Err(e) => {
+                tracing::warn!(error = %e, "latest recap unreadable; no method-book tip");
+                return None;
+            }
+        };
+        (recap.instrument, recap.fingerprint?)
+    };
+    let family = instrument_family_for(state, &instrument);
+    let entry = brain::pedagogy::select_pedagogy(&family, &fingerprint)?;
+    Some(PedagogyTipDto {
+        topic: entry.topic,
+        guidance: entry.guidance,
+        source_line: format!("{}, {}", entry.source.author, entry.source.title),
+    })
+}
+
+/// #454 S2: the method-book-tip query (S3 wires it into the recap and the
+/// #453 coaching box with the attribution visible; no frontend in this
+/// slice).
+#[tauri::command]
+pub fn method_book_tip(state: State<'_, AppState>) -> Option<PedagogyTipDto> {
+    method_book_tip_impl(&state)
+}
+
 /// #214 S1b: ambient identification — called by the frontend on each
 /// phrase (the same cadence as coaching tips), reads the backend's own
 /// phrase buffer, and answers through S1a's honesty gates. None is the
@@ -8912,6 +8968,71 @@ mod tests {
                 && !recap.next_session_suggestions[0].contains("climbed from"),
             "no history on a thin recap: {}",
             recap.next_session_suggestions[0]
+        );
+    }
+
+    /// #454 S2 AC7/AC8: the method-book-tip command cites its book or stays
+    /// silent. Empty store → None; a measured Trumpet session whose only
+    /// crossed bar is flat sustains (E1) → the Schlossberg long-tones entry
+    /// with the attribution line always present; a NEWER unmeasured session
+    /// silences it (the tip speaks to the last session, never a stale one);
+    /// an instrument outside the catalog resolves to no family → None.
+    /// Fails if the store wiring, family resolution, or the attribution
+    /// formatting breaks, or if the command starts erroring/fabricating.
+    #[test]
+    fn method_book_tip_cites_book_or_stays_silent() {
+        let s = AppState::with_mocks();
+        assert!(method_book_tip_impl(&s).is_none(), "no sessions, no tip");
+
+        // Save one session with the given instrument + optional fingerprint,
+        // `secs` after the epoch base so list_recent ordering is explicit.
+        let save = |instrument: &str, fingerprint: Option<&serde_json::Value>, secs: i64| {
+            use chrono::{Duration, TimeZone, Utc};
+            let store = s.session_store.lock_or_recover();
+            let mut recap = empty_state_recap(60.0, instrument.to_owned());
+            recap.fingerprint = fingerprint
+                .map(|f| serde_json::from_value(f.clone()).expect("fixture fingerprint parses"));
+            let t0 = Utc.timestamp_opt(1_000_000 + secs, 0).unwrap();
+            store
+                .save(
+                    brain::session::SessionId::new(),
+                    t0,
+                    t0 + Duration::seconds(60),
+                    &recap,
+                )
+                .unwrap();
+        };
+        // Internally consistent flat-only deficit: mean −20 ¢ trips E1 while
+        // mean_abs (20 < 25) and in_tune_ratio (0.55) stay healthy-side.
+        let flat = serde_json::json!({
+            "intonation": {
+                "note_count": 20, "mean_cents": -20.0, "mean_abs_cents": 20.0,
+                "in_tune_ratio": 0.55, "tendencies": []
+            }
+        });
+
+        save("Trumpet", Some(&flat), 0);
+        let tip = method_book_tip_impl(&s).expect("measured brass deficit earns a tip");
+        assert_eq!(tip.topic, "Long tones and pitch stability");
+        assert_eq!(
+            tip.source_line, "Max Schlossberg, Daily Drills and Technical Studies",
+            "attribution is always present, author-comma-title"
+        );
+        assert!(!tip.guidance.is_empty());
+
+        // A newer session with no fingerprint → silent, even though an older
+        // measured session exists.
+        save("Trumpet", None, 100);
+        assert!(
+            method_book_tip_impl(&s).is_none(),
+            "the tip speaks to the LATEST session; unmeasured → silence"
+        );
+
+        // Unknown instrument → empty family → silent, never a borrowed tip.
+        save("Theremin", Some(&flat), 200);
+        assert!(
+            method_book_tip_impl(&s).is_none(),
+            "an instrument outside the catalog has no family pedagogy"
         );
     }
 
