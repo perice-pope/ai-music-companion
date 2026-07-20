@@ -8826,7 +8826,6 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
     /// #453 S2: the S1 test's store fixture, shared with the recap tests —
     /// seeds a momentum cell history (50%→80%) AND a below-bar Eb-major
     /// mastery trend, so the analyzer's pinned order is trend first,
@@ -8969,7 +8968,9 @@ mod tests {
                 && !recap.next_session_suggestions[0].contains("climbed from"),
             "no history on a thin recap: {}",
             recap.next_session_suggestions[0]
-=======
+        );
+    }
+
     /// #454 S2 AC7/AC8: the method-book-tip command cites its book or stays
     /// silent. Empty store → None; a measured Trumpet session whose only
     /// crossed bar is flat sustains (E1) → the Schlossberg long-tones entry
@@ -9032,7 +9033,6 @@ mod tests {
         assert!(
             method_book_tip_impl(&s).is_none(),
             "an instrument outside the catalog has no family pedagogy"
->>>>>>> a629b76 (feat: evidence-gated method-book selection engine (#454 S2))
         );
     }
 

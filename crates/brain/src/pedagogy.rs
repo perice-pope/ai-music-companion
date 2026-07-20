@@ -484,23 +484,41 @@ pub fn select_entry<'a>(
     best.map(|(_, entry)| entry)
 }
 
+/// Family-aware evidence seam: [`evidence_tags`] with the fixed-pitch
+/// exemption applied. For families where the player cannot bend pitch
+/// ([`crate::coaching::fixed_pitch_family`] — reused, never duplicated),
+/// the intonation-derived tags (E1–E3) are stripped: measured cents there
+/// are the INSTRUMENT's tuning, never the player's technique (#417-4/#389)
+/// — the same honesty rule that keeps tuner advice out of keyboard recaps.
+///
+/// `pub(crate)` so the exemption is pinned by a test that cannot be
+/// satisfied by corpus shape (today no Keyboard entry carries an E1–E3
+/// trigger, so end-to-end selection alone could not catch this strip
+/// being deleted; S4 corpus growth is data-only and must not become this
+/// path's only guard).
+pub(crate) fn evidence_tags_for_family(
+    family: &str,
+    fingerprint: &MusicalFingerprint,
+) -> Vec<&'static str> {
+    let mut tags = evidence_tags(fingerprint);
+    if crate::coaching::fixed_pitch_family(family) {
+        tags.retain(|tag| !INTONATION_DEFICIT_TAGS.contains(tag));
+    }
+    tags
+}
+
 /// The S2 selection engine: the player's family (display name, as
 /// `instrument_family_for` emits it) + the session's measured fingerprint →
 /// the single most relevant corpus entry, or `None` below the evidence bars.
 ///
-/// Pure and offline: derive [`evidence_tags`], drop intonation-derived tags
-/// for fixed-pitch families (measured cents belong to the instrument there,
-/// #417-4/#389), then run [`select_entry`] over the embedded corpus.
+/// Pure and offline: derive the family-aware evidence tags
+/// ([`evidence_tags_for_family`] — the fixed-pitch exemption lives there),
+/// then run [`select_entry`] over the embedded corpus.
 /// Unknown/empty family, no tags, or no family entry matching the evidence →
 /// `None` — no tip without a measured trigger.
 pub fn select_pedagogy(family: &str, fingerprint: &MusicalFingerprint) -> Option<PedagogyEntry> {
     let parsed = Family::from_display_name(family)?;
-    let mut tags = evidence_tags(fingerprint);
-    // Reuses coaching's fixed-pitch list rather than duplicating it — the
-    // same honesty rule that keeps tuner advice out of keyboard recaps.
-    if crate::coaching::fixed_pitch_family(family) {
-        tags.retain(|tag| !INTONATION_DEFICIT_TAGS.contains(tag));
-    }
+    let tags = evidence_tags_for_family(family, fingerprint);
     if tags.is_empty() {
         return None;
     }
@@ -1159,5 +1177,112 @@ mod tests {
         );
         let entry = select_pedagogy("Strings", &fp).expect("strings intonation pedagogy exists");
         assert_eq!(entry.id, "strings-suzuki-listening");
+    }
+
+    // MF1 (review round 1): the fixed-pitch exemption pinned AT THE SEAM.
+    // No Keyboard corpus entry carries an E1–E3 trigger today, so the
+    // end-to-end AC5 test would stay green if the strip were deleted — S4
+    // corpus growth (data-only) must never be this path's only guard. This
+    // asserts directly that "Keyboard" strips exactly the intonation-derived
+    // tags from an out-of-tune fingerprint while "Brass" keeps them.
+    #[test]
+    fn s2_fixed_pitch_exemption_strips_intonation_tags_at_the_seam() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 30,
+            mean_cents: -30.0,
+            mean_abs_cents: 30.0,
+            in_tune_ratio: 0.3,
+            tendencies: Vec::new(),
+        });
+        fp.groove.as_mut().unwrap().timing_consistency = 0.6; // E4 rides along
+
+        assert_eq!(
+            evidence_tags_for_family("Brass", &fp),
+            vec![
+                "pitch-sag-sustain",
+                "pitch-drift",
+                "interval-accuracy",
+                "uneven-eighths",
+            ],
+            "a bendable-pitch family keeps every measured tag"
+        );
+        let keyboard = evidence_tags_for_family("Keyboard", &fp);
+        assert_eq!(
+            keyboard,
+            vec!["uneven-eighths"],
+            "Keyboard strips exactly the intonation-derived tags — cents \
+             there are the instrument's tuning, not the player's technique"
+        );
+        for tag in INTONATION_DEFICIT_TAGS {
+            assert!(
+                !keyboard.contains(&tag),
+                "{tag} must never survive the fixed-pitch strip"
+            );
+        }
+    }
+
+    // SF2 (review round 1): every tag the engine can emit is a member of the
+    // corpus's trigger vocabulary — a data-only S4 rename of a trigger must
+    // go red here, never silently orphan an engine tag into unselectability.
+    #[test]
+    fn s2_engine_tags_are_corpus_vocabulary() {
+        // Worst-on-every-axis fingerprint emits the full E1..E7 set.
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 30,
+            mean_cents: -40.0,
+            mean_abs_cents: 45.0,
+            in_tune_ratio: 0.2,
+            tendencies: Vec::new(),
+        });
+        fp.groove.as_mut().unwrap().timing_consistency = 0.1;
+        fp.tone.as_mut().unwrap().air_noise = 0.9;
+        fp.tone.as_mut().unwrap().core_clarity = 0.1;
+        let emitted = evidence_tags(&fp);
+        assert_eq!(emitted.len(), 8, "fixture sanity: the full emission");
+
+        let corpus = load_corpus();
+        let vocabulary: HashSet<&str> = corpus
+            .iter()
+            .flat_map(|e| e.triggers.iter().map(String::as_str))
+            .collect();
+        for tag in emitted {
+            assert!(
+                vocabulary.contains(tag),
+                "engine tag {tag} is not in the corpus trigger vocabulary — \
+                 an S4 rename must update the mapping, not orphan the tag"
+            );
+        }
+    }
+
+    // SF2 bonus: the two engine tags no other test drove through a real
+    // selection do select — tempo-instability is Czerny's ONLY matching
+    // trigger on Keyboard (the tie with Hanon's uneven-eighths resolves to
+    // the smaller id, so the tag decides czerny matches at all), and
+    // scratchy-tone is the only string trigger a noisy tone can reach.
+    #[test]
+    fn s2_tempo_instability_and_scratchy_tone_select_for_real() {
+        let mut fp = healthy_fingerprint();
+        fp.groove.as_mut().unwrap().timing_consistency = 0.49; // E4 + E5
+        let kb = select_pedagogy("Keyboard", &fp).expect("an unstable pulse selects keyboard work");
+        assert_eq!(kb.id, "keyboard-czerny-velocity");
+        assert!(
+            kb.triggers.contains(&"tempo-instability".to_owned())
+                && !kb.triggers.contains(&"uneven-eighths".to_owned()),
+            "Czerny matched via tempo-instability alone: {:?}",
+            kb.triggers
+        );
+
+        let mut fp = healthy_fingerprint();
+        fp.tone.as_mut().unwrap().air_noise = 0.7; // E6
+        let strings =
+            select_pedagogy("Strings", &fp).expect("a noisy string tone selects pedagogy");
+        assert_eq!(strings.id, "strings-suzuki-tonalization");
+        assert!(
+            strings.triggers.contains(&"scratchy-tone".to_owned()),
+            "tonalization matched via scratchy-tone: {:?}",
+            strings.triggers
+        );
     }
 }
