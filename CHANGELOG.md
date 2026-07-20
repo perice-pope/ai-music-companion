@@ -1,3 +1,9 @@
+## [2.41.0](https://github.com/perice-pope/ai-music-companion/compare/v2.40.3...v2.41.0) (2026-07-20)
+
+### Features
+
+* history suggestions reach the recap and the coaching box ([#453](https://github.com/perice-pope/ai-music-companion/issues/453) S2+S3) ([#462](https://github.com/perice-pope/ai-music-companion/issues/462)) ([3fbcfcb](https://github.com/perice-pope/ai-music-companion/commit/3fbcfcb3d75e8b2dc98c8c3dba78284616a4a9ab)), closes [#445-6b](https://github.com/perice-pope/ai-music-companion/issues/445-6b)
+
 ## [2.40.3](https://github.com/perice-pope/ai-music-companion/compare/v2.40.2...v2.40.3) (2026-07-19)
 
 ### Bug Fixes
