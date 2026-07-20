@@ -68,6 +68,14 @@ fn steady_one_key_stream_fires_a_reveal_context() {
         }
     }
     let snapshot = p.snapshot(t);
+    // #404: the store also mutes `get_reveal` while the reading is unsettled,
+    // so the flagship pin must cover BOTH gates — a recalibration that leaves
+    // steady material permanently "finding the key…" re-mutes the loop even
+    // with the confidence gate untouched.
+    assert!(
+        snapshot.key.as_ref().expect("key").settled,
+        "steady one-key material must read settled, or the store mutes every reveal"
+    );
     let ctx = context_of(&snapshot).expect("30 s of one-key material must read a key");
 
     let reveal = reveal_for(&ctx, 0).unwrap_or_else(|| {
