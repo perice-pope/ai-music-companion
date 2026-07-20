@@ -35,9 +35,18 @@
 //! part of corpus-PR review — the gate exists so verbatim paste can't land
 //! silently.
 //!
-//! Nothing consumes the corpus yet: selection (S2) and surfacing (S3, behind
-//! #453's coaching box) build on this seam.
+//! ## Selection (S2)
+//!
+//! [`select_pedagogy`] is the evidence-gated selection engine: it derives
+//! corpus trigger tags from what a session's [`MusicalFingerprint`]
+//! **actually measured** (see [`evidence_tags`] — every mapping names its
+//! measured field and threshold; tags without a measurement are never
+//! derived), filters the corpus to the player's family, and picks the entry
+//! with the most trigger overlap, ties broken by smallest id. Below the
+//! evidence bars it returns `None` — silence > lies. Surfacing (S3, behind
+//! #453's coaching box) builds on this.
 
+use crate::fingerprint::MusicalFingerprint;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -62,6 +71,22 @@ impl Family {
         Family::Woodwind,
         Family::Keyboard,
     ];
+
+    /// Exact display-name parse ("Brass" … "Keyboard") — the casing the
+    /// desktop shell's `instrument_family_for` emits over IPC (it returns
+    /// exactly these strings, or "" for an unknown instrument). Anything
+    /// else — empty, lowercase, "Percussion" (no corpus file) — is `None`,
+    /// and selection stays calmly silent.
+    pub fn from_display_name(name: &str) -> Option<Family> {
+        match name {
+            "Brass" => Some(Family::Brass),
+            "Strings" => Some(Family::Strings),
+            "Voice" => Some(Family::Voice),
+            "Woodwind" => Some(Family::Woodwind),
+            "Keyboard" => Some(Family::Keyboard),
+            _ => None,
+        }
+    }
 }
 
 /// Copyright status of a source book — the gate's pivot.
@@ -296,6 +321,191 @@ fn longest_quoted_run_words(text: &str) -> usize {
         max_words = max_words.max(current.split_whitespace().count());
     }
     max_words
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// S2: evidence-gated selection (#454)
+//
+// The mapping below is an AUDIT of `MusicalFingerprint`, not a wishlist:
+// only 7 of the corpus's 34 trigger tags have a measured evidence source
+// today, and only those 7 can ever be derived. Everything else stays silent
+// until ears/brain measure it (the full not-mapped audit lives in
+// docs/specs/454-s2-selection.md §4.1). Silence > lies.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// E1–E3 count bar: mirrors `coaching::aggregate_intonation`'s `MIN_NOTES`
+/// gate (12). The fingerprint's own docs say building code must reuse those
+/// gates, never loosen them; re-checking here also guards fingerprints that
+/// arrive from persistence rather than the live gates.
+pub const MIN_INTONATION_NOTES: u32 = 12;
+
+/// E4–E5 count bar: mirrors `coaching::aggregate_groove`'s `MIN_ONSETS`
+/// gate (6), for the same reasons as [`MIN_INTONATION_NOTES`].
+pub const MIN_GROOVE_ONSETS: u32 = 6;
+
+/// E1 threshold: the session's **signed** mean pitch deviation is at least
+/// one full in-tune tolerance ([`theory::DEFAULT_IN_TUNE_TOLERANCE_CENTS`],
+/// 15 ¢) *flat*. The sign is measured, so "sagging below center" is a fact,
+/// not a guess.
+pub const FLAT_SUSTAIN_MEAN_CENTS: f32 = -theory::DEFAULT_IN_TUNE_TOLERANCE_CENTS;
+
+/// E2 threshold: fewer than half the observed notes landed within the
+/// in-tune tolerance — the majority of the session's pitch was off center.
+pub const DRIFT_MAX_IN_TUNE_RATIO: f32 = 0.5;
+
+/// E3 threshold: mean *absolute* pitch error of a quarter semitone or worse —
+/// at that magnitude the intervals between successive notes cannot be
+/// landing accurately.
+pub const INACCURATE_MEAN_ABS_CENTS: f32 = 25.0;
+
+/// E4 threshold: below 0.7 is exactly the band `coaching::describe_groove`
+/// already reads to the player as "uneven" — same dial, same meaning.
+pub const UNEVEN_TIMING_CONSISTENCY: f32 = 0.7;
+
+/// E5 threshold: an inter-onset-interval coefficient of variation above 0.5
+/// (`timing_consistency` = 1 − CV) — not just uneven subdivisions, the pulse
+/// itself is unstable.
+pub const UNSTABLE_TIMING_CONSISTENCY: f32 = 0.5;
+
+/// E6 threshold: the session-mean noise component (`ToneDescriptor::air_noise`,
+/// 0..1) dominates the sound.
+pub const NOISY_TONE_AIR_NOISE: f32 = 0.6;
+
+/// E7 threshold: the session-mean tonal-core focus
+/// (`ToneDescriptor::core_clarity`, 0..1) failed to hold.
+pub const UNFOCUSED_CORE_CLARITY: f32 = 0.35;
+
+/// Tags derived from the intonation dimension (E1–E3). Dropped before
+/// matching for fixed-pitch families ([`crate::coaching::fixed_pitch_family`]):
+/// on those instruments measured cents are the INSTRUMENT's tuning, never the
+/// player's technique (#417-4/#389), so pitch pedagogy would be a lie.
+const INTONATION_DEFICIT_TAGS: [&str; 3] =
+    ["pitch-sag-sustain", "pitch-drift", "interval-accuracy"];
+
+/// Derive corpus evidence tags from what `fingerprint` **measured**.
+///
+/// Each mapping fires only when its dimension is present, its count bar is
+/// met, and its threshold is crossed — the rationale for every row (measured
+/// field + threshold) is on the constants above and in the spec's mapping
+/// table. Returns tags in a fixed E1..E7 order (deterministic), empty when
+/// nothing crossed a bar. Tags the fingerprint carries no evidence for
+/// (attack quality, rushing direction, …) are never derived.
+pub fn evidence_tags(fingerprint: &MusicalFingerprint) -> Vec<&'static str> {
+    let mut tags = Vec::new();
+
+    if let Some(intonation) = &fingerprint.intonation {
+        if intonation.note_count >= MIN_INTONATION_NOTES {
+            // E1: measured signed mean (`mean_cents`) ≤ −15 ¢ → the pitch is
+            // sagging flat across the session's sustained playing.
+            if intonation.mean_cents <= FLAT_SUSTAIN_MEAN_CENTS {
+                tags.push("pitch-sag-sustain");
+            }
+            // E2: measured `in_tune_ratio` < 0.5 → most notes off center.
+            if intonation.in_tune_ratio < DRIFT_MAX_IN_TUNE_RATIO {
+                tags.push("pitch-drift");
+            }
+            // E3: measured `mean_abs_cents` ≥ 25 ¢ → pitch placement (and so
+            // the intervals between notes) is inaccurate on average.
+            if intonation.mean_abs_cents >= INACCURATE_MEAN_ABS_CENTS {
+                tags.push("interval-accuracy");
+            }
+        }
+    }
+
+    if let Some(groove) = &fingerprint.groove {
+        if groove.onset_count >= MIN_GROOVE_ONSETS {
+            // E4: measured `timing_consistency` < 0.7 — the band the recap
+            // already calls "uneven". NOTE: deliberately NOT mapped to
+            // "rushing-runs": rushing claims a direction, and 1 − CV is
+            // undirected (lay-back/rush needs a beat grid we don't have).
+            if groove.timing_consistency < UNEVEN_TIMING_CONSISTENCY {
+                tags.push("uneven-eighths");
+            }
+            // E5: measured `timing_consistency` < 0.5 — the pulse itself is
+            // unstable, in addition to (never instead of) E4.
+            if groove.timing_consistency < UNSTABLE_TIMING_CONSISTENCY {
+                tags.push("tempo-instability");
+            }
+        }
+    }
+
+    if let Some(tone) = &fingerprint.tone {
+        // E6: measured session-mean `air_noise` ≥ 0.6 — noise dominates the
+        // tone. One measurement, two family readings: voice pedagogy carries
+        // `breathy-onset`, strings pedagogy carries `scratchy-tone`; family
+        // filtering in [`select_entry`] keeps only the one that applies.
+        if tone.air_noise >= NOISY_TONE_AIR_NOISE {
+            tags.push("breathy-onset");
+            tags.push("scratchy-tone");
+        }
+        // E7: measured session-mean `core_clarity` ≤ 0.35 — the tonal core
+        // never held focus; `tone-inconsistency` is the corpus's fundamental
+        // tone-production tag (tonalization / sonorité / mouthpiece work).
+        if tone.core_clarity <= UNFOCUSED_CORE_CLARITY {
+            tags.push("tone-inconsistency");
+        }
+    }
+
+    tags
+}
+
+/// Deterministic matching core: among `entries` of `family` whose `triggers`
+/// intersect `tags`, pick the one with the **most trigger overlap**, ties
+/// broken by **lexicographically smallest id**. `None` when nothing matches.
+///
+/// Exposed separately from [`select_pedagogy`] so tests (and future callers
+/// with their own evidence) can exercise the rule with tags the fingerprint
+/// cannot yet produce.
+pub fn select_entry<'a>(
+    entries: &'a [PedagogyEntry],
+    family: Family,
+    tags: &[&str],
+) -> Option<&'a PedagogyEntry> {
+    let mut best: Option<(usize, &PedagogyEntry)> = None;
+    for entry in entries.iter().filter(|e| e.family == family) {
+        let overlap = entry
+            .triggers
+            .iter()
+            .filter(|t| tags.contains(&t.as_str()))
+            .count();
+        if overlap == 0 {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((best_overlap, best_entry)) => {
+                overlap > best_overlap || (overlap == best_overlap && entry.id < best_entry.id)
+            }
+        };
+        if better {
+            best = Some((overlap, entry));
+        }
+    }
+    best.map(|(_, entry)| entry)
+}
+
+/// The S2 selection engine: the player's family (display name, as
+/// `instrument_family_for` emits it) + the session's measured fingerprint →
+/// the single most relevant corpus entry, or `None` below the evidence bars.
+///
+/// Pure and offline: derive [`evidence_tags`], drop intonation-derived tags
+/// for fixed-pitch families (measured cents belong to the instrument there,
+/// #417-4/#389), then run [`select_entry`] over the embedded corpus.
+/// Unknown/empty family, no tags, or no family entry matching the evidence →
+/// `None` — no tip without a measured trigger.
+pub fn select_pedagogy(family: &str, fingerprint: &MusicalFingerprint) -> Option<PedagogyEntry> {
+    let parsed = Family::from_display_name(family)?;
+    let mut tags = evidence_tags(fingerprint);
+    // Reuses coaching's fixed-pitch list rather than duplicating it — the
+    // same honesty rule that keeps tuner advice out of keyboard recaps.
+    if crate::coaching::fixed_pitch_family(family) {
+        tags.retain(|tag| !INTONATION_DEFICIT_TAGS.contains(tag));
+    }
+    if tags.is_empty() {
+        return None;
+    }
+    let corpus = load_corpus();
+    select_entry(&corpus, parsed, &tags).cloned()
 }
 
 #[cfg(test)]
@@ -608,5 +818,346 @@ mod tests {
             longest_quoted_run_words("\"one two\" then \"one two three\""),
             3
         );
+    }
+
+    // ─── S2: evidence-gated selection (#454) ───────────────────────────────
+
+    /// An all-dimensions-measured, HEALTHY fingerprint: every value sits on
+    /// the healthy side of every S2 threshold. Deficit fixtures mutate this.
+    fn healthy_fingerprint() -> MusicalFingerprint {
+        MusicalFingerprint {
+            tone: Some(tone::ToneDescriptor {
+                brightness: 0.5,
+                warmth: 0.5,
+                air_noise: 0.2,
+                core_clarity: 0.8,
+                vibrato_quality: 0.5,
+            }),
+            key: None,
+            key_claim: None,
+            intonation: Some(theory::IntonationSummary {
+                note_count: 30,
+                mean_cents: 2.0,
+                mean_abs_cents: 8.0,
+                in_tune_ratio: 0.9,
+                tendencies: Vec::new(),
+            }),
+            groove: Some(groove::GrooveDescriptor {
+                tempo_bpm: Some(100.0),
+                swing_ratio: Some(1.0),
+                mean_ioi_secs: 0.3,
+                timing_consistency: 0.9,
+                onset_count: 24,
+            }),
+        }
+    }
+
+    fn empty_fingerprint() -> MusicalFingerprint {
+        MusicalFingerprint {
+            tone: None,
+            key: None,
+            key_claim: None,
+            intonation: None,
+            groove: None,
+        }
+    }
+
+    /// Internally consistent flat-only intonation deficit: mean −20 ¢ (E1
+    /// fires at ≤ −15) while mean_abs (20 < 25) and in_tune_ratio (0.55 ≥
+    /// 0.5) stay on the healthy side of E3/E2.
+    fn flat_sustains_fingerprint() -> MusicalFingerprint {
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 20,
+            mean_cents: -20.0,
+            mean_abs_cents: 20.0,
+            in_tune_ratio: 0.55,
+            tendencies: Vec::new(),
+        });
+        fp
+    }
+
+    // AC1 E1: fires at the −15 ¢ threshold, not just inside it, and never
+    // below the 12-note evidence bar (a persisted blob could carry one).
+    #[test]
+    fn s2_flat_mean_tags_pitch_sag_only_above_bar() {
+        let mut fp = flat_sustains_fingerprint();
+        fp.intonation.as_mut().unwrap().mean_cents = FLAT_SUSTAIN_MEAN_CENTS; // −15.0 exactly
+        assert_eq!(evidence_tags(&fp), vec!["pitch-sag-sustain"]);
+
+        fp.intonation.as_mut().unwrap().mean_cents = -14.9;
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "just inside tolerance → no tag"
+        );
+
+        fp.intonation.as_mut().unwrap().mean_cents = -40.0;
+        fp.intonation.as_mut().unwrap().note_count = MIN_INTONATION_NOTES - 1;
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "below the note-count evidence bar even a big sag derives nothing"
+        );
+    }
+
+    // AC1 E2: majority-off-center fires strictly below 0.5, above the bar.
+    #[test]
+    fn s2_low_in_tune_ratio_tags_pitch_drift() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation.as_mut().unwrap().in_tune_ratio = 0.49;
+        assert_eq!(evidence_tags(&fp), vec!["pitch-drift"]);
+
+        fp.intonation.as_mut().unwrap().in_tune_ratio = DRIFT_MAX_IN_TUNE_RATIO; // 0.5
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "exactly half in tune → no tag"
+        );
+
+        fp.intonation.as_mut().unwrap().in_tune_ratio = 0.1;
+        fp.intonation.as_mut().unwrap().note_count = MIN_INTONATION_NOTES - 1;
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "below the note-count bar → silent"
+        );
+    }
+
+    // AC1 E3: quarter-semitone mean absolute error fires at 25 ¢ exactly.
+    #[test]
+    fn s2_high_abs_error_tags_interval_accuracy() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation.as_mut().unwrap().mean_abs_cents = INACCURATE_MEAN_ABS_CENTS; // 25.0
+        assert_eq!(evidence_tags(&fp), vec!["interval-accuracy"]);
+
+        fp.intonation.as_mut().unwrap().mean_abs_cents = 24.9;
+        assert!(evidence_tags(&fp).is_empty());
+    }
+
+    // AC1 E4/E5 + the graduation edge: 0.69 is uneven; 0.49 is uneven AND
+    // unstable (E5 adds to E4, never replaces it); 0.7 is clean; and below
+    // the onset bar even chaos derives nothing.
+    #[test]
+    fn s2_uneven_timing_tags_graduate_with_severity() {
+        let mut fp = healthy_fingerprint();
+        fp.groove.as_mut().unwrap().timing_consistency = 0.69;
+        assert_eq!(evidence_tags(&fp), vec!["uneven-eighths"]);
+
+        fp.groove.as_mut().unwrap().timing_consistency = 0.49;
+        assert_eq!(
+            evidence_tags(&fp),
+            vec!["uneven-eighths", "tempo-instability"]
+        );
+
+        fp.groove.as_mut().unwrap().timing_consistency = UNEVEN_TIMING_CONSISTENCY; // 0.7
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "at the dial → steady enough, no tag"
+        );
+
+        fp.groove.as_mut().unwrap().timing_consistency = 0.2;
+        fp.groove.as_mut().unwrap().onset_count = MIN_GROOVE_ONSETS - 1;
+        assert!(
+            evidence_tags(&fp).is_empty(),
+            "below the onset bar → silent"
+        );
+    }
+
+    // AC1 E6: a noise-dominated tone derives BOTH family readings of the one
+    // measurement — family filtering later keeps the applicable one.
+    #[test]
+    fn s2_noisy_tone_tags_breath_and_scratch() {
+        let mut fp = healthy_fingerprint();
+        fp.tone.as_mut().unwrap().air_noise = NOISY_TONE_AIR_NOISE; // 0.6 exactly
+        assert_eq!(evidence_tags(&fp), vec!["breathy-onset", "scratchy-tone"]);
+
+        fp.tone.as_mut().unwrap().air_noise = 0.59;
+        assert!(evidence_tags(&fp).is_empty());
+    }
+
+    // AC1 E7: an unfocused tonal core reads as the corpus's fundamental
+    // tone-production tag, at 0.35 exactly and not above.
+    #[test]
+    fn s2_unfocused_core_tags_tone_inconsistency() {
+        let mut fp = healthy_fingerprint();
+        fp.tone.as_mut().unwrap().core_clarity = UNFOCUSED_CORE_CLARITY; // 0.35 exactly
+        assert_eq!(evidence_tags(&fp), vec!["tone-inconsistency"]);
+
+        fp.tone.as_mut().unwrap().core_clarity = 0.36;
+        assert!(evidence_tags(&fp).is_empty());
+    }
+
+    // AC2: healthy measurements and no measurements both select nothing, for
+    // every family — the engine has no filler path.
+    #[test]
+    fn s2_healthy_fingerprint_selects_nothing() {
+        for fp in [healthy_fingerprint(), empty_fingerprint()] {
+            assert!(evidence_tags(&fp).is_empty());
+            for family in ["Brass", "Strings", "Voice", "Woodwind", "Keyboard"] {
+                assert_eq!(
+                    select_pedagogy(family, &fp),
+                    None,
+                    "no measured deficit must mean no tip for {family}"
+                );
+            }
+        }
+    }
+
+    // AC3: even a worst-on-every-axis fingerprint derives ONLY the tags that
+    // have a measured evidence source. Attack-quality tags and directional
+    // rushing are unmeasured and must stay unreachable.
+    #[test]
+    fn s2_derived_tags_stay_inside_the_measured_set() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 30,
+            mean_cents: -40.0,
+            mean_abs_cents: 45.0,
+            in_tune_ratio: 0.2,
+            tendencies: Vec::new(),
+        });
+        fp.groove.as_mut().unwrap().timing_consistency = 0.1;
+        fp.tone.as_mut().unwrap().air_noise = 0.9;
+        fp.tone.as_mut().unwrap().core_clarity = 0.1;
+
+        let tags = evidence_tags(&fp);
+        assert_eq!(
+            tags,
+            vec![
+                "pitch-sag-sustain",
+                "pitch-drift",
+                "interval-accuracy",
+                "uneven-eighths",
+                "tempo-instability",
+                "breathy-onset",
+                "scratchy-tone",
+                "tone-inconsistency",
+            ],
+            "the full derivable set, in deterministic E1..E7 order"
+        );
+        for unmeasured in [
+            "cracked-attacks",
+            "attack-clarity",
+            "ascending-leap-attacks",
+            "rushing-runs",
+            "tempo-drag-on-articulation",
+        ] {
+            assert!(
+                !tags.contains(&unmeasured),
+                "{unmeasured} has no measured evidence source and must never be derived"
+            );
+        }
+    }
+
+    // AC4: the player's family bounds the answer — a brass player's flat
+    // sustains get Schlossberg's long tones, never a Suzuki entry; a family
+    // with no entry for the evidence stays silent.
+    #[test]
+    fn s2_selection_filters_by_family() {
+        let fp = flat_sustains_fingerprint();
+
+        let brass = select_pedagogy("Brass", &fp).expect("brass has long-tone pedagogy");
+        assert_eq!(brass.id, "brass-schlossberg-long-tones");
+        assert_eq!(brass.family, Family::Brass);
+
+        assert_eq!(
+            select_pedagogy("Strings", &fp),
+            None,
+            "no strings entry carries pitch-sag-sustain — silence, not a borrowed family's tip"
+        );
+
+        // Whatever family answers, the entry belongs to it.
+        for family in ["Brass", "Strings", "Voice", "Woodwind", "Keyboard"] {
+            if let Some(entry) = select_pedagogy(family, &fp) {
+                assert_eq!(entry.family, Family::from_display_name(family).unwrap());
+            }
+        }
+    }
+
+    // AC4: unknown, empty, and wrong-cased family strings select nothing —
+    // the display-name contract is exact.
+    #[test]
+    fn s2_unknown_family_selects_nothing() {
+        let mut fp = flat_sustains_fingerprint();
+        fp.groove.as_mut().unwrap().timing_consistency = 0.1; // plenty of evidence
+        for family in ["", "Percussion", "brass", "BRASS", "Theremin"] {
+            assert_eq!(select_pedagogy(family, &fp), None, "family {family:?}");
+        }
+    }
+
+    // AC5: on a fixed-pitch family measured cents are the instrument's
+    // tuning, so intonation tags (E1–E3) never reach matching — an
+    // out-of-tune keyboard alone selects nothing, and with uneven timing it
+    // selects timing pedagogy via E4 only.
+    #[test]
+    fn s2_fixed_pitch_family_gets_no_intonation_tags() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 30,
+            mean_cents: -30.0,
+            mean_abs_cents: 30.0,
+            in_tune_ratio: 0.3,
+            tendencies: Vec::new(),
+        });
+        assert_eq!(
+            select_pedagogy("Keyboard", &fp),
+            None,
+            "an out-of-tune piano is the tuner's problem, not the player's"
+        );
+        // The same evidence on a bendable-pitch family DOES select.
+        assert!(select_pedagogy("Brass", &fp).is_some());
+
+        fp.groove.as_mut().unwrap().timing_consistency = 0.6; // E4 only
+        let entry = select_pedagogy("Keyboard", &fp).expect("timing evidence applies to keyboard");
+        assert_eq!(
+            entry.id, "keyboard-hanon-evenness",
+            "selected via uneven-eighths, never via the suppressed pitch tags"
+        );
+    }
+
+    // AC6 (core rule): equal overlap resolves to the lexicographically
+    // smallest id — pinned with tags the fingerprint cannot yet produce, via
+    // the exposed matching core.
+    #[test]
+    fn s2_tie_breaks_by_smallest_id() {
+        let corpus = load_corpus();
+        // Both brass-arban-attack-tu and brass-arban-single-tonguing carry
+        // attack-clarity (overlap 1 each).
+        let entry = select_entry(&corpus, Family::Brass, &["attack-clarity"])
+            .expect("two brass entries match");
+        assert_eq!(entry.id, "brass-arban-attack-tu");
+    }
+
+    // AC6 (end to end): a real tie in the shipped corpus — a breathy voice
+    // fingerprint matches Concone and García at overlap 1 — resolves the
+    // same way on every call.
+    #[test]
+    fn s2_selection_is_deterministic_end_to_end() {
+        let mut fp = healthy_fingerprint();
+        fp.tone.as_mut().unwrap().air_noise = 0.7;
+        let first = select_pedagogy("Voice", &fp).expect("voice has breathiness pedagogy");
+        assert_eq!(first.id, "voice-concone-legato", "smallest id wins the tie");
+        for _ in 0..3 {
+            assert_eq!(select_pedagogy("Voice", &fp).as_ref(), Some(&first));
+        }
+    }
+
+    // AC6: more trigger overlap beats a smaller id — drifting AND inaccurate
+    // pitch (overlap 2) selects Suzuki's listening entry over any overlap-1
+    // strings entry.
+    #[test]
+    fn s2_most_trigger_overlap_wins() {
+        let mut fp = healthy_fingerprint();
+        fp.intonation = Some(theory::IntonationSummary {
+            note_count: 20,
+            mean_cents: -5.0,
+            mean_abs_cents: 30.0,
+            in_tune_ratio: 0.3,
+            tendencies: Vec::new(),
+        });
+        assert_eq!(
+            evidence_tags(&fp),
+            vec!["pitch-drift", "interval-accuracy"],
+            "fixture sanity: exactly the two listening triggers"
+        );
+        let entry = select_pedagogy("Strings", &fp).expect("strings intonation pedagogy exists");
+        assert_eq!(entry.id, "strings-suzuki-listening");
     }
 }
