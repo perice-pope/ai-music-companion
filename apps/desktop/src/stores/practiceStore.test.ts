@@ -87,8 +87,11 @@ describe("practiceStore — state machine", () => {
     await expect(useStore.getState().startSession("Piano")).rejects.toThrow(
       /cannot start session from status=listening/,
     );
-    // Only the first call reached invoke.
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // Only the first START reached invoke (#453 S3's fire-and-forget
+    // coaching fetch rides alongside, so filter by command).
+    expect(
+      mockInvoke.mock.calls.filter((c) => c[0] === "start_practice_session"),
+    ).toHaveLength(1);
   });
 
   it("endSession is rejected from idle", async () => {
@@ -1287,5 +1290,136 @@ describe("practiceStore — the band carries the Pocket clock (#445 pt 9)", () =
       expect.anything(),
     );
     vi.useRealTimers();
+  });
+});
+
+describe("practiceStore — the coaching box (#453 S3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  const trend = {
+    kind: "trend",
+    text: "Your Eb major rows are sitting at 54% over 6 attempts (last one 2 days ago) — worth a slow pass.",
+    evidence:
+      "key_mastery 3:major: 6 attempts, accuracy EWMA 0.54, last attempt 2d ago",
+  };
+  const momentum = {
+    kind: "momentum",
+    text: "Your 3-note cell (0 4 7) climbed from 50% to 80% across its last 8 graded rows — push the tempo.",
+    evidence: "cell [0 4 7]: older-half mean 0.50 → newer-half mean 0.80",
+  };
+
+  /** Let the fire-and-forget refresh settle. */
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  // AC9: session start fires the history fetch, routed by command name,
+  // and the FIRST pinned suggestion lands in the store. Fails if the
+  // startSession hook is dropped or the store keeps more than one.
+  it("session start fetches a coaching suggestion (#453 S3)", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "start_practice_session") return Promise.resolve("sid");
+      if (cmd === "practice_suggestions")
+        return Promise.resolve([trend, momentum]);
+      return Promise.resolve(null);
+    });
+    await useStore.getState().startSession("Trumpet");
+    await flush();
+    expect(mockInvoke.mock.calls.map((c) => c[0])).toContain(
+      "practice_suggestions",
+    );
+    expect(useStore.getState().coachingSuggestion).toEqual(trend);
+  });
+
+  // AC9 + rule 0: explore begin refreshes; an EMPTY analyzer result never
+  // clears the shown suggestion; session end resets the box (suggestion
+  // cleared, quiet lifted). Fails if empties clear, explore stops
+  // refreshing, or the box leaks across sessions.
+  it("explore begin refreshes; empty results never clear; session end resets", async () => {
+    const useStore = await freshStore();
+    let suggestions: unknown[] = [trend];
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "start_practice_session") return Promise.resolve("sid");
+      if (cmd === "practice_suggestions") return Promise.resolve(suggestions);
+      if (cmd === "start_explore_variation")
+        return Promise.resolve({
+          label: "x",
+          music_xml: "<score-partwise/>",
+          chips: [],
+          root_pitch_classes: [0],
+        });
+      if (cmd === "end_practice_session") return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    await useStore.getState().startSession("Trumpet");
+    await flush();
+    expect(useStore.getState().coachingSuggestion).toEqual(trend);
+
+    // Explore begin refreshes — the analyzer now says NOTHING, and the
+    // box must hold what it has (rule 0).
+    suggestions = [];
+    await useStore.getState().startExplore(0, "major");
+    await flush();
+    expect(
+      mockInvoke.mock.calls.filter((c) => c[0] === "practice_suggestions"),
+    ).toHaveLength(2);
+    expect(useStore.getState().coachingSuggestion).toEqual(trend);
+
+    // A NEWER suggestion replaces in place through the same hook.
+    suggestions = [momentum];
+    await useStore.getState().startExplore(0, "major");
+    await flush();
+    expect(useStore.getState().coachingSuggestion).toEqual(momentum);
+
+    // Session end resets the box AND the quiet for the next session.
+    useStore.setState({ coachingQuieted: true });
+    await useStore.getState().endSession();
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+    expect(useStore.getState().coachingQuieted).toBe(false);
+  });
+
+  // Dismissal quiets for the session: later fetches must NOT resurface
+  // a suggestion. Fails if refresh ignores the quiet flag.
+  it("dismissal quiets the box against later fetches", async () => {
+    const useStore = await freshStore();
+    useStore.setState({ coachingSuggestion: trend });
+    useStore.getState().dismissCoachingSuggestion();
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+    mockInvoke.mockResolvedValueOnce([momentum]);
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+  });
+
+  // Review R1: a fetch that resolves AFTER its session ended must not
+  // write a stale suggestion into the next session (the seq-token
+  // invalidation — same discipline as _openerRefreshSeq). Fails if the
+  // post-await seq check is dropped.
+  it("a fetch resolving after a session boundary writes nothing", async () => {
+    const useStore = await freshStore();
+    let resolveFetch: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveFetch = res;
+      }),
+    );
+    const inflight = useStore.getState().refreshCoachingSuggestion();
+    // The session boundary bumps the token (endSession-tail style).
+    useStore.setState((s) => ({
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
+    resolveFetch([trend]);
+    await inflight;
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+  });
+
+  // Fetch failure is silent — the box neither crashes nor clears.
+  it("a failed fetch never throws and never clears", async () => {
+    const useStore = await freshStore();
+    useStore.setState({ coachingSuggestion: trend });
+    mockInvoke.mockRejectedValueOnce(new Error("boom"));
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingSuggestion).toEqual(trend);
   });
 });

@@ -70,6 +70,18 @@ export interface QueuedReveal {
   phraseIndex: number;
 }
 
+/**
+ * #453 S3: one evidence-cited practice suggestion from the local history
+ * analyzer (the `practice_suggestions` command). `text` embeds its own
+ * numbers; `evidence` is the compact citation; `kind` is the lowercase
+ * rule name ("trend" | "neglect" | "momentum").
+ */
+export interface PracticeSuggestion {
+  kind: string;
+  text: string;
+  evidence: string;
+}
+
 /** A live note verdict class from the backend (#337 S2). */
 export type NoteVerdictKind = "hit" | "near" | "missed";
 
@@ -519,6 +531,22 @@ export interface PracticeState {
    * stages the matched score and lands on the selector. Resolves false
    * (staying put, quieting that id) if the score can't load. */
   openMatchedScore: () => Promise<boolean>;
+
+  /** #453 S3: the coaching box's suggestion — at most ONE (the history
+   * analyzer's first by pinned order), sticky per rule 0: a newer fetch
+   * replaces it in place, an empty fetch never clears it, dismissal
+   * quiets the box for the session. */
+  coachingSuggestion: PracticeSuggestion | null;
+  /** Review R1: invalidates in-flight suggestion fetches across session
+   * boundaries — the _openerRefreshSeq pattern. */
+  _coachingFetchSeq: number;
+  /** The player dismissed the coaching box this session — stay quiet. */
+  coachingQuieted: boolean;
+  /** Ask the backend's history analyzer for fresh suggestions. Fired at
+   * session start and explore begin (the cheap exercise-log-writing
+   * hooks); fire-and-forget, errors silent. */
+  refreshCoachingSuggestion: () => Promise<void>;
+  dismissCoachingSuggestion: () => void;
 
   /** #421 S2: the click's personality — anchor holds, follow locks to
    * YOUR pulse, handoff follows then freezes ("now hold it"). */
@@ -1016,6 +1044,11 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         cursorPosition: null,
       });
       useAudioStore.getState().setInstrument(instrument, vibratoToleranceCents);
+      // #453 S3: session start is a coaching-box refresh point — the
+      // history analyzer reads the store, so what it says can only have
+      // moved between sessions or on exercise-log writes. Fire-and-forget:
+      // the box is ambient, never in the session-start critical path.
+      void get().refreshCoachingSuggestion();
       // NOTE: `isListening` is *not* flipped here. It's driven by the
       // `audio-event` listener — the first event that arrives is
       // evidence that the backend pipeline actually opened the mic.
@@ -1113,6 +1146,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // #214 S1b: matches and dismissals are session-scoped.
       pieceMatch: null,
       dismissedPieceIds: [],
+      // #453 S3: the coaching box (and its quiet) is session-scoped too.
+      coachingSuggestion: null,
+      coachingQuieted: false,
       // #421 S2: the click personality resets with the session.
       pocketMode: "anchor",
       pocketFrozenBpm: null,
@@ -1120,7 +1156,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     });
     // Round-3 review MF1: session end also invalidates in-flight opener
     // refreshes (separate set — this one derives from current state).
-    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
+    set((s) => ({
+      _openerRefreshSeq: s._openerRefreshSeq + 1,
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
   },
 
   pieceMatch: null,
@@ -1158,6 +1197,40 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         ? [...s.dismissedPieceIds, s.pieceMatch.scoreId]
         : s.dismissedPieceIds,
     })),
+
+  coachingSuggestion: null,
+  coachingQuieted: false,
+  _coachingFetchSeq: 0,
+
+  refreshCoachingSuggestion: async () => {
+    // Review R1: capture the seq BEFORE the await — a session boundary
+    // (endSession / openMatchedScore) bumps it, and a fetch that resolves
+    // after its session ended must not write a stale suggestion into the
+    // next one (the opener-refresh discipline, applied here too).
+    const seq = get()._coachingFetchSeq;
+    try {
+      const list = await invoke<PracticeSuggestion[]>("practice_suggestions");
+      if (get()._coachingFetchSeq !== seq) {
+        return; // a newer session owns the box now.
+      }
+      if (!Array.isArray(list) || list.length === 0) {
+        // Silence is the analyzer's common answer — the box HOLDS what it
+        // already shows (rule 0: an empty result never clears).
+        return;
+      }
+      if (get().coachingQuieted) {
+        return; // the player dismissed the box — quiet for the session.
+      }
+      // AT MOST ONE — the analyzer's first by pinned order; a newer
+      // suggestion replaces the shown one in place.
+      set({ coachingSuggestion: list[0] });
+    } catch {
+      // History must never surface an error — silence is normal.
+    }
+  },
+
+  dismissCoachingSuggestion: () =>
+    set({ coachingSuggestion: null, coachingQuieted: true }),
 
   openMatchedScore: async () => {
     const match = get().pieceMatch;
@@ -1206,6 +1279,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       cursorPosition: null,
       pieceMatch: null,
       dismissedPieceIds: [],
+      // #453 S3: session-scoped like the match state (endSession's tail).
+      coachingSuggestion: null,
+      coachingQuieted: false,
       openerItems: [],
       openerPreview: null,
       openerNotice: null,
@@ -1216,7 +1292,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       pocketFrozenBpm: null,
       _pocketLastSentBpm: null,
     });
-    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
+    set((s) => ({
+      _openerRefreshSeq: s._openerRefreshSeq + 1,
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
     return true;
   },
 
@@ -1630,6 +1709,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         mode,
       });
       set({ explore: dto });
+      // #453 S3: explore begin writes an exercise-log row backend-side —
+      // the cheap hook to let the coaching box catch up with the history.
+      void get().refreshCoachingSuggestion();
     } catch (err) {
       console.error("start_explore_variation failed:", err);
     }

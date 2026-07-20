@@ -135,6 +135,7 @@ fn bench_integrated_analysis(c: &mut Criterion) {
                 note_verdicts: Vec::new(),
                 idiom_notes: Vec::new(),
                 taste_profile: None,
+                history_suggestions: Vec::new(),
             };
 
             idx = idx.wrapping_add(1);

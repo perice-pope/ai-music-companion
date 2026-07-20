@@ -304,6 +304,14 @@ pub struct RecapInput {
     /// its existing genre-neutral behavior — silence over a hollow connection.
     #[serde(default)]
     pub taste_profile: Option<TasteProfile>,
+    /// #453 S2: history-grounded practice suggestions from the local analyzer
+    /// ([`crate::insights::practice_suggestions`]) — evidence-cited facts over
+    /// the exercise log + key mastery, threaded in by the command layer at
+    /// recap time (the recorder stays history-agnostic, like `note_verdicts`).
+    /// Empty when the history clears no evidence bar — the recap then stays
+    /// silent on history. `serde(default)` so stored inputs load unchanged.
+    #[serde(default)]
+    pub history_suggestions: Vec<crate::insights::PracticeSuggestion>,
 }
 
 /// The post-session recap shown to the student.
@@ -510,6 +518,9 @@ impl CompletedSession {
             // at coaching time (see `generate_recap_with_context`). A bare
             // `CompletedSession` carries no profile, so default to `None` here.
             taste_profile: None,
+            // History is store-owned too (#453 S2) — the command layer threads
+            // it in through `generate_recap_with_context`, same as the profile.
+            history_suggestions: Vec::new(),
         }
     }
 
@@ -531,8 +542,15 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         profile: Option<TasteProfile>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, profile, Vec::new(), Vec::new(), String::new())
-            .await
+        self.generate_recap_with_context(
+            generator,
+            profile,
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+            Vec::new(),
+        )
+        .await
     }
 
     /// Generate a recap via the given [`RecapGenerator`].
@@ -546,8 +564,15 @@ impl CompletedSession {
         &self,
         generator: &dyn RecapGenerator,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, Vec::new(), Vec::new(), String::new())
-            .await
+        self.generate_recap_with_context(
+            generator,
+            None,
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+            Vec::new(),
+        )
+        .await
     }
 
     /// Like [`Self::generate_recap`], but feeds the generator the
@@ -558,8 +583,15 @@ impl CompletedSession {
         generator: &dyn RecapGenerator,
         idiom_notes: Vec<IdiomMatch>,
     ) -> Result<SessionRecap, SessionError> {
-        self.generate_recap_with_context(generator, None, idiom_notes, Vec::new(), String::new())
-            .await
+        self.generate_recap_with_context(
+            generator,
+            None,
+            idiom_notes,
+            Vec::new(),
+            String::new(),
+            Vec::new(),
+        )
+        .await
     }
 
     /// The combined recap-generation path that threads **both** personalization
@@ -567,8 +599,10 @@ impl CompletedSession {
     /// single [`RecapInput`]. The two are complementary and independent: idiom
     /// notes are grounded, confidence-gated audio proximities that surface even
     /// offline, while connections are the LLM-hedged cross-genre lines that
-    /// depend on a taste profile. The other `generate_recap*` methods are thin
-    /// wrappers that default one or both of these to "absent".
+    /// depend on a taste profile. `history_suggestions` (#453 S2) are the
+    /// store-derived, evidence-cited practice suggestions the recap may weave
+    /// in — grounded facts, like the verdicts. The other `generate_recap*`
+    /// methods are thin wrappers that default these to "absent".
     ///
     /// The same authoritative-fields guarantee as [`Self::generate_recap`]
     /// applies: `duration_secs`, `phrase_count`, and `instrument` are
@@ -580,11 +614,13 @@ impl CompletedSession {
         idiom_notes: Vec<IdiomMatch>,
         note_verdicts: Vec<crate::follower::NoteVerdict>,
         instrument_family: String,
+        history_suggestions: Vec<crate::insights::PracticeSuggestion>,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
         input.note_verdicts = note_verdicts;
         input.instrument_family = instrument_family;
+        input.history_suggestions = history_suggestions;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
