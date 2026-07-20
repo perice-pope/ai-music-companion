@@ -1,3 +1,9 @@
+## [2.42.0](https://github.com/perice-pope/ai-music-companion/compare/v2.41.0...v2.42.0) (2026-07-20)
+
+### Features
+
+* evidence-gated method-book selection engine ([#454](https://github.com/perice-pope/ai-music-companion/issues/454) S2) ([#463](https://github.com/perice-pope/ai-music-companion/issues/463)) ([05e578c](https://github.com/perice-pope/ai-music-companion/commit/05e578c1f66c99afbad6f6cca3fd5daa0970b129))
+
 ## [2.41.0](https://github.com/perice-pope/ai-music-companion/compare/v2.40.3...v2.41.0) (2026-07-20)
 
 ### Features
