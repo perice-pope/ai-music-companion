@@ -115,7 +115,9 @@ describe("PerceptionPanel", () => {
     expect(screen.queryByTestId("key-lock")).toBeNull();
   });
 
-  it("renders a settled reading exactly as before (settled true and absent alike)", () => {
+  // (The absent-flag case — older wire — is covered by the LOCKED_G tests
+  // above, whose fixture has no `settled` field.)
+  it("renders an explicitly settled reading exactly as before", () => {
     usePracticeStore.setState({
       status: "listening",
       perception: { ...LOCKED_G, key: { ...LOCKED_G.key!, settled: true } },

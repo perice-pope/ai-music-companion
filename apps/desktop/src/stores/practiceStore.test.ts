@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type {
   CoachingTip,
+  KeySnapshot,
   PhraseSummary,
   Reveal,
   SessionRecap,
@@ -548,14 +549,14 @@ describe("practiceStore — requestReveal (#253)", () => {
     };
   }
 
-  const gDorianKey = {
+  const gDorianKey: KeySnapshot = {
     tonic: 7,
     mode: "dorian",
     name: "G Dorian",
     confidence: 0.9,
     alternative: null,
   };
-  const perceptionWith = (key: typeof gDorianKey | null) => ({
+  const perceptionWith = (key: KeySnapshot | null) => ({
     tempo_bpm: null,
     swing_ratio: null,
     locked: false,
@@ -584,6 +585,19 @@ describe("practiceStore — requestReveal (#253)", () => {
   it("fires no IPC when no session is listening", async () => {
     const useStore = await freshStore();
     useStore.setState({ perception: perceptionWith(gDorianKey) });
+    await useStore.getState().requestReveal(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #404: while the strip shows "finding the key…" (an unsettled reading), a
+  // reveal generated from the still-held key would contradict the header it
+  // rides. Deleting the `settled === false` guard fires get_reveal here.
+  it("fires no IPC while the key reading is unsettled", async () => {
+    const useStore = await listeningStoreWithKey();
+    useStore.setState({
+      perception: perceptionWith({ ...gDorianKey, settled: false }),
+    });
     await useStore.getState().requestReveal(samplePhrase());
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(useStore.getState().revealQueue).toHaveLength(0);

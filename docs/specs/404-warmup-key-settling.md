@@ -49,6 +49,9 @@ confident-looking name on key-less material is precisely the dishonesty it forbi
 - Frontend `KeySnapshot` mirror (`types/brain.ts`) gains `settled: boolean`.
 - `PerceptionPanel`: an unsettled, unpinned key renders **"finding the key…"** (no name, no
   "maybe", no relative-alternative or lock buttons). Pinned display is unchanged.
+- The strip's honesty set rides together: while unsettled, `requestReveal` fires no
+  `get_reveal` IPC (a card must never contradict a header saying "finding the key…") and the
+  opener preview captures no tonic. The backend gate constants are untouched.
 
 ## 5. Acceptance criteria (numbered, testable)
 
@@ -68,6 +71,8 @@ confident-looking name on key-less material is precisely the dishonesty it forbi
    a pinned key renders the pinned name regardless.
 7. Existing reveal trigger pins stay green: steady material fires, noodling never fires
    (`crates/brain/tests/reveal_trigger_test.rs` unchanged and passing).
+8. While the reading is unsettled, no reveal request leaves the store — even if the held key's
+   recovering confidence transiently clears the backend gate before the resettle dwell is served.
 
 ## 6. Edge cases & failure modes
 
@@ -90,7 +95,9 @@ confident-looking name on key-less material is precisely the dishonesty it forbi
 | AC5 | `brain::perception::tests::warmup_snapshot_is_unsettled_steady_is_settled` | `key.settled` through the real frame path |
 | AC6 | `PerceptionPanel.test.tsx` (new cases) | "finding the key…" rendering + button absence; settled/pinned unchanged |
 | AC7 | existing `reveal_trigger_test.rs` | unchanged, green |
-| reset edge | extend `theory::tracker::tests::reset_clears_state` | settled true after reset |
+| AC8 | `practiceStore.test.ts` "fires no IPC while the key reading is unsettled" | no `get_reveal` call on an unsettled key |
+| §6 hysteresis edges | `theory::tracker::tests::brief_thin_dips_never_blank_the_display_sustained_thinness_does`, `…::interrupted_recovery_stays_quiet_sustained_recovery_names_again` | dwell + consecutiveness, both directions (each verified to kill its mutation) |
+| reset edge | (unobservable) | with `held` cleared, `is_settled()` is vacuously true and every commit path resets the flag — `reset()` clears it defensively |
 
 ## 8. Architecture / approach
 

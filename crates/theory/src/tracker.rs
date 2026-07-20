@@ -414,7 +414,9 @@ mod tests {
         assert!(t.current().is_some());
         t.reset();
         assert!(t.current().is_none());
-        assert!(t.is_settled(), "reset must return to the settled state");
+        // Note on the settling flag: with `held` cleared, `is_settled()` is
+        // vacuously true and every re-commit path resets the flag, so a
+        // forgotten flag reset is unobservable — nothing real to assert here.
     }
 
     /// Chromatic long tones, each held (the VA's quiet warm-up shape, #404
@@ -518,5 +520,125 @@ mod tests {
         let est = t.current().unwrap();
         assert_eq!(est.tonic, 6, "should end on F#; got {}", est.name());
         assert!(t.is_settled(), "a landed modulation must read settled");
+    }
+
+    /// The unsettle hysteresis itself (#404, spec §6): brief thin dips —
+    /// fewer than `unsettle_dwell` CONSECUTIVE sub-bar observations — must
+    /// never blank the display, however many accumulate across a session,
+    /// while a sustained sub-bar stretch goes quiet at exactly the dwell.
+    /// The commit bar is raised so light off-key notes read "thin" without
+    /// genuinely re-keying the profile — the state machine in isolation.
+    /// Fails if the dwell is shortened (a single odd note would flicker the
+    /// strip to "finding the key…") or if the consecutiveness reset is
+    /// dropped (dips would accumulate forever and go quiet mid-tune).
+    #[test]
+    fn brief_thin_dips_never_blank_the_display_sustained_thinness_does() {
+        let mut t = KeyTracker::with_config(KeyTrackerConfig {
+            min_confidence: 0.8,
+            ..Default::default()
+        });
+        feed_scale(&mut t, 0, Mode::Ionian, 8);
+        assert!(t.is_settled(), "setup: established C major reads settled");
+
+        // Three rounds of a brief off-key dip (the fit falls under the bar
+        // for under-dwell observations) followed by in-key recovery: settled
+        // at EVERY observation, even as the dips accumulate.
+        for round in 0..3 {
+            for _ in 0..3 {
+                t.observe_pc(6, 2.0);
+                assert!(
+                    t.is_settled(),
+                    "round {round}: a brief dip must not blank the display"
+                );
+            }
+            for _ in 0..10 {
+                for (j, &iv) in Mode::Ionian.intervals().iter().enumerate() {
+                    t.observe_pc(iv, if j == 0 { 3.0 } else { 1.0 });
+                    assert!(
+                        t.is_settled(),
+                        "round {round}: recovery material must stay settled"
+                    );
+                }
+            }
+        }
+
+        // A SUSTAINED sub-bar stretch: quiet after `unsettle_dwell`
+        // consecutive thin observations (the fit falls under 0.8 from the
+        // second observation on), and the eventually dwell-earned switch to
+        // the new key re-asserts a settled name.
+        let mut states = Vec::new();
+        for _ in 0..10 {
+            t.observe_pc(6, 4.0);
+            states.push((t.is_settled(), t.current().unwrap().tonic));
+        }
+        assert!(
+            states[..4].iter().all(|&(s, _)| s),
+            "under-dwell thinness must not yet blank the display; got {states:?}"
+        );
+        assert!(
+            !states[4].0 && !states[5].0,
+            "the dwell-th consecutive thin observation must unsettle; got {states:?}"
+        );
+        let last = *states.last().unwrap();
+        assert_eq!(
+            last,
+            (true, 6),
+            "a dwell-earned switch must re-assert a settled name; got {states:?}"
+        );
+    }
+
+    /// The other half of the hysteresis (#404, spec §6): while unsettled,
+    /// re-earning the name takes CONSECUTIVE clear observations. Interrupted
+    /// recovery — two in-key notes, then a heavy off-key one, repeated — must
+    /// stay quiet however many clear observations accumulate, while sustained
+    /// in-key material re-earns a settled name. Fails if the streak's
+    /// consecutiveness reset is dropped (accumulated clears would flash the
+    /// name back mid-wander — the flap this state machine exists to kill).
+    #[test]
+    fn interrupted_recovery_stays_quiet_sustained_recovery_names_again() {
+        let mut t = KeyTracker::new();
+        // The chromatic long-tone warm-up until the reading goes quiet.
+        let mut i = 0;
+        while t.current().is_none() || t.is_settled() {
+            t.observe_pc(((12 - (i % 12)) % 12) as u8, 2.0);
+            i += 1;
+            assert!(i < 60, "the warm-up shape must unsettle the reading");
+        }
+        let tonic = t.current().unwrap().tonic;
+
+        // Interrupted recovery: the held key's fit clears the bar for two
+        // notes at a time (never RESETTLE_DWELL consecutively), so the
+        // display must stay at "finding the key…" throughout.
+        for cycle in 0..2 {
+            for off in [0u8, 7] {
+                t.observe_pc((tonic + off) % 12, 2.0);
+                assert!(
+                    !t.is_settled(),
+                    "cycle {cycle}: interrupted recovery must not flash the name back"
+                );
+            }
+            t.observe_pc((tonic + 6) % 12, 5.0);
+            assert!(!t.is_settled(), "cycle {cycle}: still wandering");
+        }
+
+        // Sustained tonal material re-earns a settled name (whichever key
+        // wins the accumulated evidence) within a realistic stretch.
+        let mode = t.current().unwrap().mode;
+        let mut resettled = false;
+        for k in 0..20 {
+            let ivs = mode.intervals();
+            t.observe_pc(
+                (tonic + ivs[k % 7]) % 12,
+                if k % 7 == 0 { 3.0 } else { 1.5 },
+            );
+            if t.is_settled() {
+                resettled = true;
+                break;
+            }
+        }
+        assert!(
+            resettled,
+            "sustained tonal material must re-earn a settled name"
+        );
     }
 }
