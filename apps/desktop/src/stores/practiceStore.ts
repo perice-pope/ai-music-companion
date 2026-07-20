@@ -537,6 +537,9 @@ export interface PracticeState {
    * replaces it in place, an empty fetch never clears it, dismissal
    * quiets the box for the session. */
   coachingSuggestion: PracticeSuggestion | null;
+  /** Review R1: invalidates in-flight suggestion fetches across session
+   * boundaries — the _openerRefreshSeq pattern. */
+  _coachingFetchSeq: number;
   /** The player dismissed the coaching box this session — stay quiet. */
   coachingQuieted: boolean;
   /** Ask the backend's history analyzer for fresh suggestions. Fired at
@@ -1153,7 +1156,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     });
     // Round-3 review MF1: session end also invalidates in-flight opener
     // refreshes (separate set — this one derives from current state).
-    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
+    set((s) => ({
+      _openerRefreshSeq: s._openerRefreshSeq + 1,
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
   },
 
   pieceMatch: null,
@@ -1194,10 +1200,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
 
   coachingSuggestion: null,
   coachingQuieted: false,
+  _coachingFetchSeq: 0,
 
   refreshCoachingSuggestion: async () => {
+    // Review R1: capture the seq BEFORE the await — a session boundary
+    // (endSession / openMatchedScore) bumps it, and a fetch that resolves
+    // after its session ended must not write a stale suggestion into the
+    // next one (the opener-refresh discipline, applied here too).
+    const seq = get()._coachingFetchSeq;
     try {
       const list = await invoke<PracticeSuggestion[]>("practice_suggestions");
+      if (get()._coachingFetchSeq !== seq) {
+        return; // a newer session owns the box now.
+      }
       if (!Array.isArray(list) || list.length === 0) {
         // Silence is the analyzer's common answer — the box HOLDS what it
         // already shows (rule 0: an empty result never clears).
@@ -1277,7 +1292,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       pocketFrozenBpm: null,
       _pocketLastSentBpm: null,
     });
-    set((s) => ({ _openerRefreshSeq: s._openerRefreshSeq + 1 }));
+    set((s) => ({
+      _openerRefreshSeq: s._openerRefreshSeq + 1,
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
     return true;
   },
 

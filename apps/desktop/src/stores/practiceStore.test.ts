@@ -1392,6 +1392,28 @@ describe("practiceStore — the coaching box (#453 S3)", () => {
     expect(useStore.getState().coachingSuggestion).toBeNull();
   });
 
+  // Review R1: a fetch that resolves AFTER its session ended must not
+  // write a stale suggestion into the next session (the seq-token
+  // invalidation — same discipline as _openerRefreshSeq). Fails if the
+  // post-await seq check is dropped.
+  it("a fetch resolving after a session boundary writes nothing", async () => {
+    const useStore = await freshStore();
+    let resolveFetch: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveFetch = res;
+      }),
+    );
+    const inflight = useStore.getState().refreshCoachingSuggestion();
+    // The session boundary bumps the token (endSession-tail style).
+    useStore.setState((s) => ({
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
+    resolveFetch([trend]);
+    await inflight;
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+  });
+
   // Fetch failure is silent — the box neither crashes nor clears.
   it("a failed fetch never throws and never clears", async () => {
     const useStore = await freshStore();
