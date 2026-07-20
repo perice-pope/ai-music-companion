@@ -605,6 +605,13 @@ export interface KeySnapshot {
   confidence: number;
   /** Relative-key reading the player might mean, e.g. "E minor" for "G major". */
   alternative: KeyOption | null;
+  /**
+   * Whether the reading is settled enough to display as a name (#404): `false`
+   * on key-less material (long-tone warm-ups, chromatic wandering), where the
+   * honest strip state is "finding the key…". Wire-additive — absent means
+   * settled (the pre-#404 behavior).
+   */
+  settled?: boolean;
 }
 
 /** A named chord being heard live (#349 jazz ears). Mirrors `brain::perception::ChordReading`. */

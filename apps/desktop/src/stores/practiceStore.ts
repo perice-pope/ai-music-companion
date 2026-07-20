@@ -1524,7 +1524,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return;
     }
     const key = perception?.key;
-    if (!key) {
+    // #404: an unsettled reading is "finding the key…" on the strip — a
+    // reveal generated from it would contradict the header it rides.
+    if (!key || key.settled === false) {
       return;
     }
     try {
@@ -1704,10 +1706,13 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return;
     }
     // #419 S2b: read the live key ONCE per refresh — confident reads only
-    // (the shared assert threshold, KEY_ASSERT_CONFIDENCE).
+    // (the shared assert threshold, KEY_ASSERT_CONFIDENCE), and never an
+    // unsettled one (#404: the strip is showing "finding the key…").
     const key = get().perception?.key;
     const tonic =
-      key && key.confidence >= KEY_ASSERT_CONFIDENCE ? key.tonic : null;
+      key && key.settled !== false && key.confidence >= KEY_ASSERT_CONFIDENCE
+        ? key.tonic
+        : null;
     const direction = get().openerDirection;
     try {
       const dto = await invoke<ExploreDto>("preview_opener", {

@@ -113,7 +113,18 @@ export default function PerceptionPanel({
               </span>
             )
           )}
-          {key && (
+          {/* #404: an unsettled reading (key-less material — long-tone
+              warm-ups, chromatic wandering) shows the honest search state,
+              never a name the evidence no longer supports. A pinned key is
+              the user's own choice and always shows. */}
+          {key && !keyPinned && key.settled === false ? (
+            <span
+              data-testid="perception-key-finding"
+              className="italic text-gray-400"
+            >
+              🎵 finding the key…
+            </span>
+          ) : key ? (
             <span
               data-testid="perception-key"
               className="flex items-center gap-1.5"
@@ -169,7 +180,7 @@ export default function PerceptionPanel({
                 </>
               )}
             </span>
-          )}
+          ) : null}
         </>
       )}
 

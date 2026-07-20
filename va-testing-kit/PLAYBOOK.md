@@ -200,6 +200,11 @@ playing**. She'll need to make sound — humming or singing a few notes is total
    roughly match what you're singing? Does it feel quick or laggy?"
 3. **'I hear' strip** — "Look for an 'I hear' line. Does it show a tempo (like '120 BPM') and a key
    (like 'G major') while you play?"
+3b. **The key line knows when it doesn't know (NEW — your warm-up finding)** — "Do a quiet
+   warm-up: slow long tones or aimless notes, not a tune. After a few notes the key part of the
+   strip should switch to *'🎵 finding the key…'* and stay calm — it should NOT keep cycling
+   through confident-looking key names (that was the old bug you reported). Then play a steady
+   simple melody in one key — the real key name should come back within a few notes."
 4. **Coaching tips** — (you checked the switch in step 1) If **'AI coaching narration'** was OFF,
    tip cards are **expected to be absent** (that's the offline mode, not a bug) — note the toggle
    state and move on. If it was ON: "Do small tip cards slide in while you play? Read one to me —

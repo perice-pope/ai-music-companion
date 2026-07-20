@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type {
   CoachingTip,
+  KeySnapshot,
   PhraseSummary,
   Reveal,
   SessionRecap,
+  StarterItem,
 } from "../types/brain";
 
 const mockInvoke = vi.fn();
@@ -548,14 +550,14 @@ describe("practiceStore — requestReveal (#253)", () => {
     };
   }
 
-  const gDorianKey = {
+  const gDorianKey: KeySnapshot = {
     tonic: 7,
     mode: "dorian",
     name: "G Dorian",
     confidence: 0.9,
     alternative: null,
   };
-  const perceptionWith = (key: typeof gDorianKey | null) => ({
+  const perceptionWith = (key: KeySnapshot | null) => ({
     tempo_bpm: null,
     swing_ratio: null,
     locked: false,
@@ -584,6 +586,19 @@ describe("practiceStore — requestReveal (#253)", () => {
   it("fires no IPC when no session is listening", async () => {
     const useStore = await freshStore();
     useStore.setState({ perception: perceptionWith(gDorianKey) });
+    await useStore.getState().requestReveal(samplePhrase());
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useStore.getState().revealQueue).toHaveLength(0);
+  });
+
+  // #404: while the strip shows "finding the key…" (an unsettled reading), a
+  // reveal generated from the still-held key would contradict the header it
+  // rides. Deleting the `settled === false` guard fires get_reveal here.
+  it("fires no IPC while the key reading is unsettled", async () => {
+    const useStore = await listeningStoreWithKey();
+    useStore.setState({
+      perception: perceptionWith({ ...gDorianKey, settled: false }),
+    });
     await useStore.getState().requestReveal(samplePhrase());
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(useStore.getState().revealQueue).toHaveLength(0);
@@ -1287,5 +1302,70 @@ describe("practiceStore — the band carries the Pocket clock (#445 pt 9)", () =
       expect.anything(),
     );
     vi.useRealTimers();
+  });
+});
+
+describe("practiceStore — opener tonic capture (#419 S2b / #404)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  const heardKey: KeySnapshot = {
+    tonic: 7,
+    mode: "dorian",
+    name: "G Dorian",
+    confidence: 0.9,
+    alternative: null,
+  };
+  const item: StarterItem = { type: "note_sequence", degrees: [1, 2, 3] };
+
+  async function listeningStoreHearing(key: KeySnapshot) {
+    const useStore = await freshStore();
+    mockInvoke.mockResolvedValueOnce("sid"); // start_practice_session
+    await useStore.getState().startSession("Trumpet");
+    useStore.setState({
+      perception: {
+        tempo_bpm: null,
+        swing_ratio: null,
+        locked: false,
+        key,
+      },
+    });
+    mockInvoke.mockClear();
+    return useStore;
+  }
+
+  // Control for the #404 guard below: a confident settled reading IS
+  // captured. Together the pair pins the guard to exactly `settled`.
+  it("captures the heard tonic for the preview when the reading is settled", async () => {
+    const useStore = await listeningStoreHearing({
+      ...heardKey,
+      settled: true,
+    });
+    mockInvoke.mockResolvedValueOnce({ svg: "<svg/>", plan: [] });
+    await useStore.getState().addOpenerItem(item);
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "preview_opener",
+      expect.objectContaining({ tonic: 7 }),
+    );
+  });
+
+  // #404 (spec §4, AC8's opener half): while the strip says "finding the
+  // key…", the opener preview must not anchor to the disclaimed key even
+  // though its confidence still clears KEY_ASSERT_CONFIDENCE. Deleting
+  // `key.settled !== false` from _refreshOpenerPreview captures tonic 7 here.
+  it("captures no tonic while the key reading is unsettled", async () => {
+    const useStore = await listeningStoreHearing({
+      ...heardKey,
+      settled: false,
+    });
+    mockInvoke.mockResolvedValueOnce({ svg: "<svg/>", plan: [] });
+    await useStore.getState().addOpenerItem(item);
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "preview_opener",
+      expect.objectContaining({ tonic: null }),
+    );
+    expect(useStore.getState().openerTonic).toBeNull();
   });
 });
