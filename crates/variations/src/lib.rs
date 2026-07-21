@@ -659,7 +659,8 @@ fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
 ///    wider than the window get their overflow balanced around it instead of
 ///    (as before) silently clamped flat;
 /// 2. ties break to the smallest |shift| (stay nearest the as-built register);
-/// 3. a remaining tie breaks to the lower octave.
+/// 3. (defensive, provably unreachable — review r2 convexity proof: an
+/// |shift|-tie cannot occur; kept only to make min_by_key total).
 ///
 /// If the placed figure would poke past physical MIDI (0..=127), the shift
 /// steps back inside — register beats centering; intervals never bend. A

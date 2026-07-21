@@ -3708,10 +3708,10 @@ pub fn explore_measure_impl(
         .iter()
         .map(|&m| {
             let mut off = i16::from(m) - i16::from(first);
-            while off > 36 {
+            while off > i16::from(brain::coach::MAX_CELL_OFFSET) {
                 off -= 12;
             }
-            while off < -36 {
+            while off < -i16::from(brain::coach::MAX_CELL_OFFSET) {
                 off += 12;
             }
             off as i8
