@@ -5302,7 +5302,14 @@ mod tests {
             instrument_family: String::new(),
             duration_secs: 3600.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase(); 2],
+            // Round 3: the input must CLEAR the thin bar or the engine
+            // short-circuits to the thin-session recap BEFORE any HTTP and
+            // the prose body is never even fetched (a vacuous pass — the
+            // old 2-phrase/3 s input did exactly that). 14 × 1.5 s = 21 s
+            // played ≥ THIN_SESSION_MIN_PLAYED_SECS (20) and 14 ≥ 3
+            // phrases; note 3 phrases alone is NOT enough (4.5 s still
+            // trips the seconds bar).
+            phrases: vec![sample_phrase(); 14],
             tips: vec![],
             score_title: None,
             note_verdicts: Vec::new(),
