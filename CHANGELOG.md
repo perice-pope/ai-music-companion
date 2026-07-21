@@ -1,3 +1,9 @@
+## [2.43.0](https://github.com/perice-pope/ai-music-companion/compare/v2.42.0...v2.43.0) (2026-07-21)
+
+### Features
+
+* surface method-book tips in the recap and coaching box with attribution ([#454](https://github.com/perice-pope/ai-music-companion/issues/454) S3) ([#464](https://github.com/perice-pope/ai-music-companion/issues/464)) ([eaf879c](https://github.com/perice-pope/ai-music-companion/commit/eaf879c053e118b167b1d990d4e58a8a174b7e67))
+
 ## [2.42.0](https://github.com/perice-pope/ai-music-companion/compare/v2.41.0...v2.42.0) (2026-07-20)
 
 ### Features
