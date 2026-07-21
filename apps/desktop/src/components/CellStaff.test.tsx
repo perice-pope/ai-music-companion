@@ -780,6 +780,62 @@ describe("CellStaff — accidental spacing (#471-1)", () => {
     expect(Number(ebAcc.getAttribute("x"))).toBeCloseTo(dCx, 5);
   });
 
+  // #471-1 round 1, review MF1 (reviewer's exact probe): a hoist must
+  // verify its LANDING space. The beat-0 stacked second F5+G5 pushes G5's
+  // head +9 right — directly under the first hoist slot of the F#5 on beat
+  // 0.5: the cue box would land −2.2px INTO that foreign offset head. The
+  // glyph must rise further until the slot is actually clear. Fails on the
+  // unverified single-rise hoist.
+  it("a hoisted glyph rises past a foreign offset head (review probe)", () => {
+    render(
+      <CellStaff
+        staff={view(
+          [
+            note({ midi: 77, step: 5, duration_beats: 0.5 }),
+            note({ midi: 79, step: 6, duration_beats: 0.5, is_root: false }),
+            note({
+              midi: 78,
+              step: 5,
+              start_beat: 0.5,
+              duration_beats: 0.5,
+              accidental: 1,
+              is_root: false,
+            }),
+          ],
+          { total_beats: 4 },
+        )}
+      />,
+    );
+    const acc = screen.getByTestId("staff-accidental");
+    expect(acc.getAttribute("text-anchor")).toBe("middle"); // it hoisted
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+  });
+
+  // #471-1 round 1, review MF2 (ACC_CLEAR pin): same-step QUARTER columns
+  // sit 24.625px apart — the in-line box clears the previous head by only
+  // 0.125px, inside the 2px engraving minimum, so the hoist must fire.
+  // Kills the ACC_CLEAR 2→0 mutant, which would leave the glyph in-line,
+  // visually welded to the neighboring head.
+  it("hoists at sub-2px in-line clearance — same-step quarter columns", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 60, step: -2 }),
+          note({
+            midi: 61,
+            step: -2,
+            start_beat: 1,
+            accidental: 1,
+            is_root: false,
+          }),
+        ])}
+      />,
+    );
+    const acc = screen.getByTestId("staff-accidental");
+    expect(acc).toHaveAttribute("data-dodged", "true");
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+  });
+
   // #471-1 AC5: a hoisted glyph above a high column must stay ON canvas —
   // the viewBox grows upward to cover it (the no-vanish rule extends to
   // accidentals). Fails if the hoist can place ink above viewBox.minY.

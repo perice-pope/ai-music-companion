@@ -69,6 +69,8 @@ const HEAD_RY = 4.2;
  * glyph honestly in-line. */
 const ACC_CLEAR = 2;
 const ACC_CUE_SIZE = 10;
+/** Cue-glyph ink half-width (fontSize 10, textAnchor=middle). */
+const ACC_CUE_HALF_W = 3;
 /** Cue-glyph ink half-height (fontSize 10). */
 const ACC_CUE_HALF_H = 5;
 /** Head-center → hoisted-glyph-center rise: HEAD_RY + ACC_CLEAR +
@@ -440,19 +442,37 @@ export default function CellStaff({
   /** note index → hoisted glyph center y (undefined = in-line). */
   const accDodge = new Map<number, number>();
   {
-    const stacked = new Map<string, number>();
+    // Round-1 review MF1: a hoist must VERIFY its landing space — a
+    // stacked-second's +9 offset head one column over can occupy the first
+    // candidate slot (measured: −2.2px into the foreign head). The cue box
+    // rises by ACC_DODGE_STACK until it clears EVERY same-system head.
+    const cueClear = (sys: number, colX: number, y: number) =>
+      placed.every((p) => {
+        if (p.sys !== sys) return true;
+        const gapX = Math.max(
+          p.headX - HEAD_RX - (colX + ACC_CUE_HALF_W),
+          colX - ACC_CUE_HALF_W - (p.headX + HEAD_RX),
+        );
+        const gapY = Math.max(
+          p.y - HEAD_RY - (y + ACC_CUE_HALF_H),
+          y - ACC_CUE_HALF_H - (p.y + HEAD_RY),
+        );
+        return gapX >= ACC_CLEAR || gapY >= ACC_CLEAR;
+      });
+    // Per-column candidate slots keep stacked glyphs apart even after a
+    // rise: the next glyph starts one ACC_DODGE_STACK above the last.
+    const nextY = new Map<string, number>();
     const hoisted = placed
       .filter((p) => p.n.accidental !== null && collidesInline(p))
       // Higher note's glyph sits nearest the heads when a column stacks.
       .sort((a, b) => b.n.step - a.n.step);
     for (const p of hoisted) {
       const key = `${p.sys}:${p.n.start_beat}`;
-      const k = stacked.get(key) ?? 0;
-      stacked.set(key, k + 1);
-      accDodge.set(
-        p.index,
-        (colTop.get(key) ?? p.y) - ACC_DODGE_RISE - k * ACC_DODGE_STACK,
-      );
+      let y = nextY.get(key) ?? (colTop.get(key) ?? p.y) - ACC_DODGE_RISE;
+      // Terminates: y strictly decreases and heads are bounded above.
+      while (!cueClear(p.sys, p.colX, y)) y -= ACC_DODGE_STACK;
+      accDodge.set(p.index, y);
+      nextY.set(key, y - ACC_DODGE_STACK);
     }
   }
   const [rawMinY, rawHeight] = viewBoxFor(visible.map(({ n }) => n.step));

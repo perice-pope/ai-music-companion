@@ -54,6 +54,12 @@ dense bars. Mechanism, measured from the #445 systems layout constants
   `ACC_DODGE_RISE = 12px` above the column's topmost head; multiple hoisted glyphs
   in one column stack upward by `ACC_DODGE_STACK = 11px` (higher note's glyph
   nearest the heads). Marked `data-dodged="true"`.
+- **Landing verification (round-1 review MF1):** a hoist candidate slot is itself
+  re-verified against every same-system notehead box (offset heads included — a
+  stacked-second's +9 head one column over can occupy the first slot, measured
+  −2.2px). The glyph rises by further `ACC_DODGE_STACK` steps until its cue box
+  clears every head by ≥ 2px on an axis; per-column candidate slots keep stacked
+  glyphs apart after a rise.
 - The viewBox grows upward when a hoisted glyph would exceed it (no-vanish rule).
 
 Chosen convention: hoisting an accidental above its note is the established
@@ -79,6 +85,13 @@ intrudes into earlier columns and makes dense bars strictly worse.
    stays inside `viewBox.minY`.
 6. All pre-existing CellStaff tests stay green (stacked-second offsets, #445 inset
    pins, rhythm-layer no-reflow, editing).
+7. **Hoist landing verified (round 1):** a hoisted glyph whose first slot is
+   occupied by a foreign (offset) head rises further until its cue box clears
+   every notehead by ≥ 2px on an axis (reviewer probe: F5+G5 stacked second at
+   beat 0, F#5 at beat 0.5).
+8. **Collision threshold pinned (round 1):** same-step quarter columns
+   (Δx = 24.625px, in-line clearance 0.125px < ACC_CLEAR) trigger the hoist —
+   kills the `ACC_CLEAR 2→0` mutant.
 
 ## 6. Edge cases & failure modes
 - Accidental on the first column of a measure: `NOTE_INSET_L = 22` still covers the
@@ -109,6 +122,8 @@ rendered attributes:
 | AC4 | `stacked second with accidentals stays clear in a dense bar` | AC1 clearance + hoisted x = column x (not +9 offset) |
 | AC5 | `the viewBox grows to keep a hoisted accidental visible` | viewBox minY ≤ glyph top |
 | AC6 | existing suite | unchanged, green |
+| AC7 | `a hoisted glyph rises past a foreign offset head (review probe)` | reviewer's exact fixture; fails at −2.2px on the unverified hoist |
+| AC8 | `hoists at sub-2px in-line clearance — same-step quarter columns` | hoist fires + ≥2px; dies under ACC_CLEAR 2→0 |
 
 ## 8. Architecture / approach
 Pure geometry inside `CellStaff.tsx` (no music theory, no Rust): after `visible`,
@@ -125,6 +140,18 @@ Single slice (one PR): spec + tests + `CellStaff.tsx`. Footprint:
 `apps/desktop/src/components/CellStaff.tsx`, `CellStaff.test.tsx`, this spec.
 
 ## 10. Risks / open questions
+- **Cross-system safety (round-1 review, verified by the reviewer):** hoisted ink
+  cannot collide with the system above — ≥ 17.8px margin, independent of stacking
+  depth, because the band (and thus every system's stride) grows with the deepest
+  hoist. Cited as reviewer math; the collision pass additionally never compares
+  across systems.
+- **Selection halo vs hoisted ink (round-1 review, non-blocking — declined):** a
+  selected note's halo (r=9, stroke 1.5) can reach ~2px into a hoisted glyph at
+  the default rise. Folding halos into the rise loop would either make layout
+  depend on transient selection state (glyphs jump on tap — violates the
+  no-reflow rule) or treat every head as permanently haloed (all hoists float
+  ~5px higher). The 2px transient overlap of an emphasis ring is accepted;
+  revisit if founders notice.
 - Glyph ink metrics are modeled (8px body @13, 6px @10), not measured from fonts —
   same model the existing #445 pins use; conservative half-heights chosen.
 - A hoisted glyph above a *chord* is ambiguous about which tone it modifies; RV
