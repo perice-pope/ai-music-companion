@@ -120,6 +120,9 @@ mod tests {
             started_at,
             duration_secs,
             phrase_count: 1,
+            played_secs: None,
+            note_count: None,
+            silence_ratio: None,
         }
     }
 

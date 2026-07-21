@@ -296,6 +296,12 @@ pub struct CoachingEngine {
     /// request is ever built and [`Self::http_client`] is never invoked.
     /// Defaults to [`NetworkPolicy::Offline`] — offline by default.
     policy: NetworkPolicy,
+    /// #449 T1: whether the LAST `generate_recap` produced its recap from a
+    /// parsed LLM response (vs. the offline/thin/failure fallbacks). Atomic
+    /// because the `RecapGenerator` impl takes `&self`. Read via
+    /// [`Self::recap_used_llm`] to journal `narration_used {"kind":"recap"}`
+    /// — and only when a narration genuinely fired.
+    recap_llm_fired: std::sync::atomic::AtomicBool,
 }
 
 impl CoachingEngine {
@@ -347,7 +353,17 @@ impl CoachingEngine {
             // Offline by default. The internet is never required; callers
             // opt in explicitly via `set_network_policy`.
             policy: NetworkPolicy::Offline,
+            recap_llm_fired: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// #449 T1: did the last [`RecapGenerator::generate_recap`] call on this
+    /// engine produce its recap from a parsed LLM response? `false` for the
+    /// offline-policy, thin-session, API-failure, and parse-failure paths —
+    /// all of which serve on-device text.
+    pub fn recap_used_llm(&self) -> bool {
+        self.recap_llm_fired
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set the [`NetworkPolicy`] — the airplane switch. The command layer
@@ -641,6 +657,11 @@ Respond with valid JSON in this exact form: { \"why\": \"...\" }";
 #[async_trait]
 impl RecapGenerator for CoachingEngine {
     async fn generate_recap(&self, input: &RecapInput) -> Result<SessionRecap, SessionError> {
+        // #449 T1: pessimistic until a network response actually parses —
+        // every early return below serves on-device text, and the telemetry
+        // journal must never claim a narration that didn't fire.
+        self.recap_llm_fired
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         // Airplane switch (hard, Rust-core). When offline we return the
         // grounded on-device fallback recap *before* building any prompt or
         // request and before touching `http_client`. The fallback is sourced
@@ -683,10 +704,22 @@ impl RecapGenerator for CoachingEngine {
             .await;
 
         match response {
-            Ok(body) => Self::parse_recap_from_response(&body, input)
-                .or_else(|_| Ok(Self::fallback_recap(input))),
+            Ok(body) => match Self::parse_recap_from_response(&body, input) {
+                Ok(recap) => {
+                    // The one branch where the narration genuinely fired:
+                    // network response received AND parsed into the recap.
+                    self.recap_llm_fired
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    Ok(recap)
+                }
+                Err(_) => Ok(Self::fallback_recap(input)),
+            },
             Err(_) => Ok(Self::fallback_recap(input)),
         }
+    }
+
+    async fn recap_used_llm(&self) -> bool {
+        CoachingEngine::recap_used_llm(self)
     }
 }
 
@@ -5131,6 +5164,85 @@ mod tests {
         assert!(recap.duration_secs > 0.0);
         assert!(!recap.overall_assessment.is_empty());
         assert!(!recap.strengths.is_empty());
+    }
+
+    /// #449 T1 AC10: `recap_used_llm` is true ONLY after a network response
+    /// actually parsed into the recap. Offline policy resets a previous
+    /// `true` (the flag speaks for the LAST call), and an API failure's
+    /// fallback reports false — so the practice_events journal can never
+    /// claim a narration that didn't fire.
+    #[tokio::test]
+    async fn recap_used_llm_true_only_after_parsed_network_recap() {
+        use crate::session::RecapInput;
+
+        let full_input = || {
+            // 7 s per phrase clears the thin-session bar so the mocked
+            // response actually reaches the parser.
+            let mut p = sample_phrase();
+            p.duration_secs = 7.0;
+            RecapInput {
+                instrument: "trumpet".to_owned(),
+                instrument_family: String::new(),
+                duration_secs: 1800.0,
+                practice_mode: crate::session::PracticeMode::default(),
+                phrases: vec![p; 3],
+                tips: vec![],
+                score_title: None,
+                note_verdicts: Vec::new(),
+                idiom_notes: Vec::new(),
+                taste_profile: None,
+                history_suggestions: Vec::new(),
+                method_book_tip: None,
+            }
+        };
+        let config = || CoachingConfig {
+            api_key: "test".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
+            rate_limit_secs: 0.0,
+        };
+
+        let recap_content = serde_json::json!({
+            "overall_assessment": "Strong session.",
+            "strengths": ["Tone"],
+            "areas_to_improve": ["Time"],
+            "next_session_suggestions": ["Drone work"]
+        });
+        let anthropic_response = serde_json::json!({
+            "content": [{ "type": "text", "text": recap_content.to_string() }]
+        });
+        let mut engine = online_engine(
+            config(),
+            Box::new(MockHttpClient::succeeding(&anthropic_response.to_string())),
+        );
+        assert!(
+            !engine.recap_used_llm(),
+            "a fresh engine has narrated nothing"
+        );
+        engine.generate_recap(&full_input()).await.unwrap();
+        assert!(
+            engine.recap_used_llm(),
+            "a parsed network recap IS a fired narration"
+        );
+
+        // The flag speaks for the LAST call: going offline (the airplane
+        // switch mid-app-life) resets it on the next recap.
+        engine.set_network_policy(NetworkPolicy::Offline);
+        engine.generate_recap(&full_input()).await.unwrap();
+        assert!(
+            !engine.recap_used_llm(),
+            "an offline fallback recap must not inherit the previous call's flag"
+        );
+
+        // API failure → the fallback recap is served → no narration fired.
+        let failing = online_engine(
+            config(),
+            Box::new(MockHttpClient::failing("Service unavailable")),
+        );
+        failing.generate_recap(&full_input()).await.unwrap();
+        assert!(
+            !failing.recap_used_llm(),
+            "a failure fallback is not a narration"
+        );
     }
 
     #[tokio::test]
