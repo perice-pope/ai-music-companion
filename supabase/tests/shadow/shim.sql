@@ -6,10 +6,14 @@
 -- CI loop globs that directory non-recursively and must not run this file
 -- against the real stack.
 --
--- Agreed harness baseline (#449 T3 review round 1): null-safe auth.uid()
--- (the nullif-before-cast ::jsonb form) and the Supabase blanket default
--- privileges applied BEFORE migrations, so both the builder's and the
--- reviewer's runs exercise identical grant semantics.
+-- Agreed harness baseline (#449 T3 review round 1, amended post-#467): the
+-- null-safe auth.uid() (the nullif-before-cast ::jsonb form), and — the
+-- amendment — NO blanket default-privileges grant. The CI/real stack gives
+-- client roles only what migrations grant EXPLICITLY (the 0003 per-table
+-- convention); the original shim's ALTER DEFAULT PRIVILEGES was MORE
+-- generous than reality and masked a missing-grant hole in 0006's surface
+-- ("permission denied for table profiles" on main). The shim must mirror
+-- the real stack's stinginess so the shadow fails exactly where CI fails.
 
 create schema if not exists auth;
 
@@ -48,12 +52,9 @@ grant usage on schema public to anon, authenticated, service_role;
 grant usage on schema auth  to anon, authenticated, service_role;
 grant execute on function auth.uid() to public;
 
--- Supabase baseline: client roles get blanket privileges on public; RLS is
--- the real gate. Set BEFORE migrations run so objects they create inherit
--- these (this is what makes 0001's un-granted profiles/sessions reachable,
--- and what the 0006 matview REVOKE meaningfully undoes).
-alter default privileges in schema public grant all on tables    to anon, authenticated, service_role;
-alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
-alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
-grant all on all tables    in schema public to anon, authenticated, service_role;
-grant all on all sequences in schema public to anon, authenticated, service_role;
+-- Deliberately NOTHING else: no ALTER DEFAULT PRIVILEGES, no blanket table
+-- grants. Table/view privileges for client roles must come from the
+-- migrations themselves (explicit per-table grants, the 0003 convention) —
+-- a table a migration forgets to grant is unreachable here exactly as it is
+-- on the CI stack. (Functions still default to EXECUTE for PUBLIC, which is
+-- ordinary Postgres and why the 0002-style revokes matter.)
