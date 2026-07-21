@@ -31,8 +31,23 @@ interface RecordedCall {
   opts?: unknown;
 }
 let calls: RecordedCall[] = [];
-/** Tables that should fail their next write with this error. */
-let failWrites: { message: string } | null = null;
+/**
+ * PER-TABLE write failures (review round 1 MF1): a map so a test can fail
+ * exactly one write in the chain — the partial-failure discipline
+ * ("synced only after ALL of a session's writes land") is unprovable with
+ * a uniform all-writes-fail switch.
+ */
+let failWrites: Map<string, { message: string }> = new Map();
+const ALL_WRITE_TABLES = [
+  "fact_session",
+  "fact_phrase",
+  "fact_tool_event",
+  "dim_material",
+  "fact_exercise",
+];
+function failAllWrites(message: string): void {
+  failWrites = new Map(ALL_WRITE_TABLES.map((t) => [t, { message }]));
+}
 /** What the dim_material read-back returns. */
 let materialRows: Array<{ material_id: string; spec_hash: string | null }> = [];
 /** The cloud uuid fact_session upserts resolve to. */
@@ -47,8 +62,9 @@ vi.mock("../lib/supabase", () => ({
     from: (table: string) => ({
       upsert: (payload: unknown, opts?: unknown) => {
         calls.push({ table, op: "upsert", payload, opts });
-        const result = failWrites
-          ? { data: null, error: failWrites }
+        const fail = failWrites.get(table) ?? null;
+        const result = fail
+          ? { data: null, error: fail }
           : { data: null, error: null };
         const promise = Promise.resolve(result);
         return {
@@ -56,19 +72,20 @@ vi.mock("../lib/supabase", () => ({
           catch: promise.catch.bind(promise),
           select: () => ({
             single: async () =>
-              failWrites
-                ? { data: null, error: failWrites }
+              fail
+                ? { data: null, error: fail }
                 : { data: { session_id: cloudSessionUuid }, error: null },
           }),
         };
       },
       insert: (payload: unknown) => {
         calls.push({ table, op: "insert", payload });
+        const fail = failWrites.get(table) ?? null;
         return {
           select: () => ({
             single: async () =>
-              failWrites
-                ? { data: null, error: failWrites }
+              fail
+                ? { data: null, error: fail }
                 : { data: { material_id: "mat-score-1" }, error: null },
           }),
         };
@@ -210,7 +227,7 @@ describe("syncDashboard — gating matrix (AC1)", () => {
     vi.clearAllMocks();
     localStorageMock.clear();
     calls = [];
-    failWrites = null;
+    failWrites = new Map();
   });
 
   it.each([
@@ -245,7 +262,7 @@ describe("syncDashboard — the projection pushes (AC2/AC3)", () => {
     vi.clearAllMocks();
     localStorageMock.clear();
     calls = [];
-    failWrites = null;
+    failWrites = new Map();
     materialRows = [{ material_id: "mat-1", spec_hash: "h1" }];
   });
 
@@ -405,7 +422,7 @@ describe("syncDashboard — idempotency and the watermarks (AC5/AC6)", () => {
     vi.clearAllMocks();
     localStorageMock.clear();
     calls = [];
-    failWrites = null;
+    failWrites = new Map();
     materialRows = [{ material_id: "mat-1", spec_hash: "h1" }];
   });
 
@@ -447,13 +464,13 @@ describe("syncDashboard — calm failure (AC7)", () => {
     vi.clearAllMocks();
     localStorageMock.clear();
     calls = [];
-    failWrites = null;
+    failWrites = new Map();
     materialRows = [{ material_id: "mat-1", spec_hash: "h1" }];
   });
 
   it("a supabase failure sets the dashboard status, marks nothing synced, and retries clean", async () => {
     wireInvoke([summary("s1")], [exerciseFact(1, "h1", 0)]);
-    failWrites = { message: "rls denied" };
+    failAllWrites("rls denied");
     const useStore = await freshStore();
 
     await useStore.getState().syncDashboard("user-1", true, true);
@@ -465,11 +482,46 @@ describe("syncDashboard — calm failure (AC7)", () => {
     expect(useStore.getState().status).toBe("idle");
 
     // Next trigger retries the same rows and succeeds.
-    failWrites = null;
+    failWrites = new Map();
     await useStore.getState().syncDashboard("user-1", true, true);
     expect(useStore.getState().dashboardStatus).toBe("synced");
     expect(useStore.getState().dashboardSyncedThisRun).toBe(1);
     expect(store[WATERMARK_KEY]).toBe("1");
+  });
+
+  // Review round 1 MF1: the all-three-writes-or-nothing discipline. A
+  // uniform failure can't prove it — here fact_session LANDS but the
+  // fact_phrase child write fails, and the session must still NOT enter
+  // the synced set (a mutant that marks synced right after the session
+  // upsert dies here), then fully re-push on the next run.
+  it("a partial failure (session landed, phrases failed) does not mark the session synced and retries ALL writes", async () => {
+    wireInvoke([summary("s1")], []);
+    failWrites = new Map([["fact_phrase", { message: "phrase write lost" }]]);
+    const useStore = await freshStore();
+
+    await useStore.getState().syncDashboard("user-1", true, true);
+    // The session write itself went through…
+    expect(upserts("fact_session")).toHaveLength(1);
+    // …but the run failed, and the synced set must NOT contain s1.
+    expect(useStore.getState().dashboardStatus).toBe("error");
+    expect(useStore.getState().dashboardError).toContain("phrase write lost");
+    const syncedSet =
+      store["ai-music-companion:dashboard-synced-sessions:user-1"];
+    expect(syncedSet ?? "[]").not.toContain("s1");
+    expect(useStore.getState().dashboardSyncedThisRun).toBe(0);
+
+    // Next run: the WHOLE session re-pushes (session + phrases + events),
+    // absorbed by the device-id conflict keys, and only now is remembered.
+    calls = [];
+    failWrites = new Map();
+    await useStore.getState().syncDashboard("user-1", true, true);
+    expect(upserts("fact_session")).toHaveLength(1);
+    expect(upserts("fact_phrase")).toHaveLength(1);
+    expect(upserts("fact_tool_event")).toHaveLength(1);
+    expect(useStore.getState().dashboardStatus).toBe("synced");
+    expect(
+      store["ai-music-companion:dashboard-synced-sessions:user-1"],
+    ).toContain("s1");
   });
 });
 
@@ -501,6 +553,28 @@ describe("dashboard payload builders — the structural privacy pin (AC4/AC9)", 
       "start_secs",
       "tone",
     ]);
+  });
+
+  // Review round 1 MF2: `JSON.parse("null")` SUCCEEDS — a raw passthrough
+  // would push `params: null` into a NOT NULL column (0006 L599) and wedge
+  // that session out of the synced set on every run, forever. Any
+  // non-object JSON coerces to {}; so does garbage.
+  it("tool-event params coerce non-object JSON (null, arrays, scalars) and garbage to {}", async () => {
+    const { buildFactToolEventRows } = await import("./syncStore");
+    const event = (id: number, paramsJson: string) => ({
+      device_event_id: id,
+      at_secs: 1.0,
+      kind: "band_stop",
+      params_json: paramsJson,
+    });
+    const rows = buildFactToolEventRows("cloud-1", "user-1", [
+      event(1, "null"), // valid JSON, not an object — the wedge case
+      event(2, "[1,2]"), // valid JSON array
+      event(3, '"free"'), // valid JSON string
+      event(4, "not json at all"), // parse failure
+      event(5, '{"bpm":92}'), // the real vocabulary passes through
+    ]);
+    expect(rows.map((r) => r.params)).toEqual([{}, {}, {}, {}, { bpm: 92 }]);
   });
 
   it("documents the #470 narration-flag semantics at the projection site (option b)", () => {

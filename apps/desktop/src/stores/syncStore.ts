@@ -158,10 +158,23 @@ export function buildFactToolEventRows(
   }));
 }
 
-/** Defensive parse of the journal's params_json; `{}` over garbage. */
+/**
+ * Defensive parse of the journal's params_json; `{}` over garbage — and
+ * over any non-object JSON. The second clause is load-bearing:
+ * `JSON.parse("null")` SUCCEEDS and returns `null`, but
+ * `fact_tool_event.params` is NOT NULL (0006 L599) — pushing it through
+ * would 400 that session on EVERY run, permanently wedging it out of the
+ * synced set. Arrays/numbers/strings are coerced for the same reason: the
+ * T1 vocabulary is an object, and anything else is corruption, not data.
+ */
 function parseParams(paramsJson: string): Json {
   try {
-    return JSON.parse(paramsJson) as Json;
+    const parsed: unknown = JSON.parse(paramsJson);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as Json)
+      : {};
   } catch {
     return {};
   }

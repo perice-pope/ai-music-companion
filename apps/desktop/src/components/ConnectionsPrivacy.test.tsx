@@ -161,6 +161,14 @@ describe("ConnectionsPrivacy", () => {
     expect(inRow.getByText(/start and end times of each phrase/i)).toBeTruthy();
     expect(inRow.getByText(/names and scores of exercises/i)).toBeTruthy();
     expect(inRow.getByText(/metronome on\/off and tempo/i)).toBeTruthy();
+    // Review round 1 MF3: the copy must enumerate EVERYTHING that crosses —
+    // the piece title (the dim_material label), score opens (the piece's
+    // id), and that AI narration was used.
+    expect(inRow.getByText(/title of any piece you practiced/i)).toBeTruthy();
+    expect(inRow.getByText(/when you opened a piece — its id/i)).toBeTruthy();
+    expect(
+      inRow.getByText(/whether the AI coach's narration was used/i),
+    ).toBeTruthy();
     // To whom.
     expect(
       inRow.getByText(/teacher you joined through a classroom code/i),
