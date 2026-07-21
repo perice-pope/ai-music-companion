@@ -1510,6 +1510,36 @@ describe("practiceStore — the method-book tip voice (#454 S3)", () => {
   // #454 AC7: the seq token guards the tip voice too — a tip resolving
   // after a session boundary writes nothing into the next session. Fails
   // if the post-await seq check stops covering the tip.
+  // Review note 1: a malformed tip payload (mis-mocked backend, foreign
+  // shape) must be rejected by the runtime shape guard — tsc can't see
+  // wire payloads. Fails if the guard is dropped.
+  it("a malformed tip payload never enters the box", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "practice_suggestions") return Promise.resolve([]);
+      if (cmd === "method_book_tip") return Promise.resolve({ topic: 1 });
+      return Promise.resolve(null);
+    });
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toBeNull();
+  });
+
+  // Review note 2: the two voices fetch independently — a history
+  // rejection must not poison a fulfilled tip. Fails if allSettled
+  // regresses to Promise.all with a shared catch.
+  it("the tip still applies when the history fetch rejects", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "practice_suggestions")
+        return Promise.reject(new Error("boom"));
+      if (cmd === "method_book_tip") return Promise.resolve(schlossberg);
+      return Promise.resolve(null);
+    });
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toEqual(schlossberg);
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+  });
+
   it("a tip resolving after a session boundary writes nothing", async () => {
     const useStore = await freshStore();
     let resolveTip: (v: unknown) => void = () => {};
