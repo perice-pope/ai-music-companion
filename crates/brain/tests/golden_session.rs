@@ -196,7 +196,11 @@ fn legacy_database_survives_the_whole_new_stack() {
         brain::coach::DirectionMode::Forward,
     );
     assert!(seq.root_order.len() >= LIFT_MIN_ROOTS);
-    let staff = cell_staff_view(&seq, brain::coach::key_signature_for(state.tonic, "major"));
+    let staff = cell_staff_view(
+        &seq,
+        brain::coach::key_signature_for(state.tonic, "major"),
+        "major",
+    );
     assert_eq!(staff.notes.len(), seq.target_midi.len());
 
     // Exercise log: absent pre-upgrade → empty read, working append.

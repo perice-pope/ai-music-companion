@@ -1,11 +1,12 @@
 //! CellStaff view (#292 slice 1): everything the frontend's dot-staff renderer
 //! needs, computed HERE so the frontend does zero music theory. Each note maps
-//! to a diatonic staff step (spelled per the key signature — flats in flat
-//! keys, #277) plus the accidental glyph to draw, if any. The renderer is pure
-//! geometry over this view.
+//! to a diatonic staff step — spelled per-SEGMENT under each key's own
+//! signature (#471-2 F3; flats in flat keys, #277) — plus the accidental
+//! glyph to draw, if any, read against the staff's DRAWN (tonic) signature.
+//! The renderer is pure geometry over this view.
 
 use serde::{Deserialize, Serialize};
-use variations::GeneratedSequence;
+use variations::{GeneratedNote, GeneratedSequence};
 
 use super::emit::midi_to_pitch;
 use super::KeySignature;
@@ -92,15 +93,70 @@ pub fn accidental_for(midi: u8, key: &KeySignature) -> Option<i8> {
     }
 }
 
-/// Build the staff view for a generated sequence under a key signature.
-/// Pure and deterministic.
-pub fn cell_staff_view(seq: &GeneratedSequence, key: KeySignature) -> CellStaffView {
+/// Build the staff view for a generated sequence. Pure and deterministic.
+///
+/// `key` is the DRAWN signature (the tonic's) — it stays on the staff for
+/// visual continuity, and every accidental glyph is computed against it so
+/// signature + glyphs always add up to the true pitch. But each segment is
+/// SPELLED under its own root's signature — `key_signature_for(segment root,
+/// material)`, the same one-voice #335 helpers applied locally (#471-2 F3),
+/// exactly as RV itself engraves. One global spelling made chromatic cells
+/// render different staff SHAPES across keys (a Db-rooted bar spelled in the
+/// tonic's sharps starts on the wrong letter); per-segment spelling gives
+/// every key the same shape wherever the intervals are the same. The
+/// principled residual: shapes may still differ by where the staff's two
+/// natural semitones (E–F, B–C) fall inside the figure — a 7-letter staff
+/// has no letter between them.
+///
+/// `material` is the row's material label (`coach::explore_material`) the
+/// per-segment signatures derive from.
+pub fn cell_staff_view(
+    seq: &GeneratedSequence,
+    key: KeySignature,
+    material: &str,
+) -> CellStaffView {
+    // Segment attribution: melodic rows deal uniform-length figures (one per
+    // root, in play order); stacked/progression notes carry their segment in
+    // `chord_group` with the root (and family) in `chord_targets`. A ragged
+    // sequence falls back to the drawn key — today's exact behavior.
+    let melodic_seg_len = (!seq.root_order.is_empty()
+        && seq.notes.iter().all(|n| n.chord_group.is_none())
+        && seq.notes.len().is_multiple_of(seq.root_order.len()))
+    .then(|| seq.notes.len() / seq.root_order.len())
+    .filter(|&len| len > 0);
+    let segment_key = |idx: usize, n: &GeneratedNote| -> KeySignature {
+        if let Some(g) = n.chord_group {
+            if let Some(t) = seq.chord_targets.iter().find(|t| t.segment == g) {
+                // A stacked cell spells under its own chord's family — the
+                // same family `explore_key` uses for the anchor.
+                let family = crate::coach::practice_chord_type(t.quality)
+                    .label()
+                    .to_lowercase();
+                return crate::coach::key_signature_for(t.root_pc, &family);
+            }
+            return key.clone();
+        }
+        match melodic_seg_len {
+            Some(len) => crate::coach::key_signature_for(
+                seq.root_order[(idx / len).min(seq.root_order.len() - 1)] % 12,
+                material,
+            ),
+            None => key.clone(),
+        }
+    };
     let notes: Vec<CellStaffNote> = seq
         .notes
         .iter()
-        .map(|n| {
-            let step = staff_step(n.midi, &key);
-            let accidental = accidental_for(n.midi, &key);
+        .enumerate()
+        .map(|(idx, n)| {
+            let seg_key = segment_key(idx, n);
+            // The SHAPE: letter (staff line/space) from the segment's own
+            // spelling…
+            let step = staff_step(n.midi, &seg_key);
+            let (letter, alter, _) = midi_to_pitch(n.midi, seg_key.fifths < 0);
+            // …the GLYPH: read against the signature actually drawn on the
+            // staff, so the reader recovers the true pitch (never lie).
+            let accidental = (alter != key_alter_for(letter, key.fifths)).then_some(alter);
             CellStaffNote {
                 midi: n.midi,
                 start_beat: n.start_beat,
@@ -170,7 +226,7 @@ mod tests {
     /// line. Fails if the mapping (or its E4 rebase) shifts.
     #[test]
     fn steps_are_anchored_at_the_bottom_line() {
-        let v = cell_staff_view(&seq(&[64, 60, 77, 71]), key(0));
+        let v = cell_staff_view(&seq(&[64, 60, 77, 71]), key(0), "major");
         let steps: Vec<i16> = v.notes.iter().map(|n| n.step).collect();
         // E4 = 0, C4 = -2, F5 = 8, B4 = 4.
         assert_eq!(steps, vec![0, -2, 8, 4]);
@@ -182,7 +238,7 @@ mod tests {
     /// Fails if spelling ignores the key or the implied-alter logic breaks.
     #[test]
     fn flat_keys_spell_flat_and_dedupe_against_the_signature() {
-        let v = cell_staff_view(&seq(&[70, 71]), key(-1)); // F major: Bb in sig
+        let v = cell_staff_view(&seq(&[70, 71]), key(-1), "major"); // F major staff, Bb-rooted bar
         let bb = &v.notes[0];
         assert_eq!(bb.step, 4, "Bb sits on the B line (middle)");
         assert_eq!(bb.accidental, None, "the signature already flats B");
@@ -191,15 +247,77 @@ mod tests {
     }
 
     /// Sharp keys mirror the rule: F# in D major (2 sharps) needs no glyph;
-    /// F natural needs a natural; C# outside the signature (in C major) draws
-    /// a sharp.
+    /// F natural needs a natural. And #471-2 F3: a segment ROOTED on pitch
+    /// class 1 over a C-major staff spells its own key's way — Db (the name
+    /// its colored root cell shows, #335), so the glyph is a FLAT. The old
+    /// global spelling drew C# here, contradicting the row's own labels.
     #[test]
     fn sharp_keys_mirror_the_dedupe() {
-        let v = cell_staff_view(&seq(&[66, 65]), key(2)); // D major: F#, C#
+        let v = cell_staff_view(&seq(&[66, 65]), key(2), "major"); // F#-rooted bar
         assert_eq!(v.notes[0].accidental, None, "F# is in the signature");
         assert_eq!(v.notes[1].accidental, Some(0), "F natural needs a glyph");
-        let v2 = cell_staff_view(&seq(&[61]), key(0));
-        assert_eq!(v2.notes[0].accidental, Some(1), "C# in C major draws #");
+        let v2 = cell_staff_view(&seq(&[61]), key(0), "major");
+        assert_eq!(
+            v2.notes[0].accidental,
+            Some(-1),
+            "a pc-1 root spells as its key does: Db, drawn flat over C major"
+        );
+    }
+
+    /// #471-2 F3 — the chromatic [0,1,2,3] probe: every key's bar spells
+    /// under ITS OWN signature, so the staff-step shapes collapse from 4
+    /// variants (one global spelling) to the 3 the 7-letter staff forces,
+    /// and roots sharing a spelling side pair up exactly. The residual
+    /// shapes differ only by where E–F / B–C (the staff's two natural
+    /// semitones, with no letter between them) fall inside the figure —
+    /// principled, and exactly how RV engraves. Fails if spelling regresses
+    /// to one global signature (4 shapes, roots starting off-letter).
+    #[test]
+    fn chromatic_probe_spells_per_segment() {
+        use variations::{generate, DirectionMode, RhythmSpec, VariationSpec};
+        let spec = VariationSpec {
+            roots: (60..72).collect(),
+            cell: Some(vec![0, 1, 2, 3]),
+            degrees: None,
+            progression: None,
+            scale: None,
+            chord: None,
+            interval: None,
+            enclosure: None,
+            direction: DirectionMode::Forward,
+            rhythm: RhythmSpec::default(),
+            randomize_roots: false,
+        };
+        let sequence = generate(&spec, 0);
+        let v = cell_staff_view(&sequence, key(0), "major");
+        assert_eq!(v.fifths, 0, "the DRAWN signature stays the tonic's");
+        let shapes: Vec<Vec<i16>> = v
+            .notes
+            .chunks(4)
+            .map(|c| c.windows(2).map(|w| w[1].step - w[0].step).collect())
+            .collect();
+        // Pinned per root C, Db, D, Eb, E, F, F#, G, Ab, A, Bb, B:
+        let (a, b, c) = (vec![0, 1, 0], vec![0, 1, 1], vec![1, 0, 1]);
+        assert_eq!(
+            shapes,
+            vec![
+                a.clone(), // C:  C  C# D  D#
+                a.clone(), // Db: Db D  Eb E   — pairs with C
+                b.clone(), // D:  D  D# E  F   (E–F falls inside)
+                b.clone(), // Eb: Eb E  F  Gb  — pairs with D
+                c.clone(), // E:  E  F  F# G   (starts on E–F)
+                c.clone(), // F:  F  Gb G  Ab  — pairs with E
+                c.clone(), // F#: F# G  G# A
+                a.clone(), // G:  G  G# A  A#
+                a,         // Ab: Ab A  Bb B   — pairs with G
+                b.clone(), // A:  A  A# B  C   (B–C falls inside)
+                b,         // Bb: Bb B  C  Db  — pairs with A
+                c,         // B:  B  C  C# D   (starts on B–C)
+            ],
+            "12 keys collapse to the 3 boundary-forced shapes, in signature pairs"
+        );
+        let distinct: std::collections::BTreeSet<&Vec<i16>> = shapes.iter().collect();
+        assert_eq!(distinct.len(), 3, "down from the global spelling's 4");
     }
 
     /// RV color rule: the view carries the generator's PER-CELL root flags
@@ -209,7 +327,7 @@ mod tests {
     #[test]
     fn the_view_carries_per_cell_root_flags_through() {
         let s = seq(&[64, 67, 76, 71]); // E4, G4, E5, B4 — root E
-        let v = cell_staff_view(&s, key(0));
+        let v = cell_staff_view(&s, key(0), "major");
         let flags: Vec<bool> = v.notes.iter().map(|n| n.is_root).collect();
         assert_eq!(
             flags,
@@ -222,9 +340,9 @@ mod tests {
     /// below one measure, so an empty/short cell still draws a full bar.
     #[test]
     fn total_beats_supports_windowing() {
-        let v = cell_staff_view(&seq(&[60]), key(0));
+        let v = cell_staff_view(&seq(&[60]), key(0), "major");
         assert_eq!(v.total_beats, 4.0, "min one measure");
-        let v2 = cell_staff_view(&seq(&[60; 10]), key(0));
+        let v2 = cell_staff_view(&seq(&[60; 10]), key(0), "major");
         assert_eq!(v2.total_beats, 10.0);
         assert_eq!(v2.beats_per_measure, 4);
     }

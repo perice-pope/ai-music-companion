@@ -3227,7 +3227,13 @@ fn explore_dto(explore: &ExploreState, seq: &brain::coach::GeneratedSequence) ->
             .iter()
             .map(|&r| brain::coach::tonic_display_name(r % 12, key.fifths).to_owned())
             .collect(),
-        staff: brain::score::cellstaff::cell_staff_view(seq, key),
+        staff: brain::score::cellstaff::cell_staff_view(
+            seq,
+            key,
+            // Per-segment spelling (#471-2 F3) derives from the same material
+            // label the drawn signature does — one derivation, one voice.
+            &brain::coach::explore_material(&explore.spec),
+        ),
         can_undo: !explore.history.is_empty(),
     }
 }
@@ -3403,30 +3409,18 @@ fn note_pocket_stopped(state: &AppState) {
     write_practice_event(state, session_id, at_secs, "pocket_stop", &params);
 }
 
-/// The active explore key signature (for the edit engine's staff-step math).
+/// The active explore key signature — the DRAWN (tonic's) signature. The
+/// material derivation lives in `brain::coach::explore_material` (#471-2 F3)
+/// so the edit engine and the per-segment staff spelling share it: the
+/// signature follows the FIGURE the row actually deals (#335) — a scale
+/// explore engraves in its scale's family; a chord explore (the jam bridge,
+/// #349 T4a) in its chord family; a lifted progression in its ANCHOR chord's
+/// family (#349 T3c).
 fn explore_key(explore: &ExploreState) -> brain::score::KeySignature {
-    // The signature follows the FIGURE the row actually deals (#335): a
-    // scale explore engraves in its scale's family; a chord explore (the
-    // jam bridge, #349 T4a) in its chord family — an Am7 row must not
-    // engrave in A MAJOR and drown every stack in accidentals (review S1).
-    let material = explore
-        .spec
-        .scale
-        .map(|m| m.scale.label().to_lowercase())
-        .or_else(|| explore.spec.chord.map(|c| c.chord.label().to_lowercase()))
-        .or_else(|| {
-            // #349 T3c: a lifted progression engraves in its ANCHOR chord's
-            // family — a Dm7-anchored row must not read in D MAJOR (the
-            // T4a M4 split-brain class, pre-empted this time).
-            explore
-                .spec
-                .progression
-                .as_ref()
-                .and_then(|p| p.first())
-                .map(|st| st.chord.label().to_lowercase())
-        })
-        .unwrap_or_else(|| "major".to_owned());
-    brain::coach::key_signature_for(explore.tonic, &material)
+    brain::coach::key_signature_for(
+        explore.tonic,
+        &brain::coach::explore_material(&explore.spec),
+    )
 }
 
 /// Start (or restart) a free-play exploration from the live key. Reads the
@@ -4203,8 +4197,10 @@ pub fn edit_explore_note_impl(
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
-    let key = explore_key(current);
-    let (next, seq) = brain::coach::edit_explore_note(current, index, &edit, &key)?;
+    // The gesture's key derivation lives with the edit engine now (#471-2
+    // F3): it speaks each edited segment's own signature — the one the
+    // staff draws for that bar.
+    let (next, seq) = brain::coach::edit_explore_note(current, index, &edit)?;
     let dto = explore_dto(&next, &seq);
     *guard = Some(next);
     Ok(dto)
