@@ -58,16 +58,40 @@ permission-denied for authenticated; `v_roster_heat`/`v_session_integrity` scope
 invoker RLS (PG ≥ 15; version-skipped locally on PG14).
 
 ## 5. Validation actually performed
-- Local shadow Postgres 14.18 (initdb scratch cluster + minimal Supabase shim:
-  `auth.users`, `auth.uid()`, anon/authenticated/service_role, default
-  privileges): migrations 0001→0006 apply clean; all three RLS suites pass
-  (`rls_teacher_linking`, `rls_taste_profile`, `rls_teacher_dashboard_star`);
-  `refresh_dashboard_rollups()` + `purge_expired_dashboard_facts()` execute;
-  `dim_date` spot-checked (3652 rows, school-year labels correct).
-- PG14 caveat, stated honestly: `security_invoker` is PG15+ syntax — stripped for
-  the local run only; the committed migration targets Supabase (PG15+), and the CI
-  job runs the real file + the version-gated view assertions on the real stack.
-  Docker (and therefore `supabase start`) was unavailable on this machine.
+- Local shadow **Postgres 15.18** (initdb scratch cluster + the committed
+  `supabase/tests/shadow/shim.sql`: `auth.users`, null-safe `auth.uid()`,
+  anon/authenticated/service_role, Supabase blanket default privileges applied
+  BEFORE migrations). Migrations 0001→0006 apply clean **unmodified** (PG15
+  parses `security_invoker`); all three RLS suites pass — including the star
+  suite's PG15-only assertions (the `reloption @> security_invoker=true` check
+  on both live views + the invoker-scoped roster/integrity assertions, which
+  no longer skip); `refresh_dashboard_rollups()` + `purge_expired_dashboard_facts()`
+  execute; `dim_date` spot-checked (3652 rows, school-year labels correct).
+- Docker (and therefore `supabase start`) was unavailable on this machine; the
+  PG15 shadow harness above is the substitute. CI (`supabase-rls.yml`) remains
+  the authority and runs the same files on the real Supabase stack.
+
+### Review round 1 (MF1) — consent-audit forgery, fixed
+The reviewer's executed attack: a student, riding the self-revoke policy (whose
+`WITH CHECK` can only pin `student_id` + `status`, never compare NEW to OLD),
+ran `UPDATE enrollments SET status='revoked', classroom_id=<victim room>,
+consent='parent', consented_at=now(), consenting_adult_id=<fabricated>` and
+wrote a forged ghost row into an **unrelated** teacher's roster (no fact/profile
+leak — revoked grants nothing — but consent-audit forgery + cross-classroom
+write). Fix = two belts: (a) `enrollments_guard_student_update` BEFORE UPDATE
+trigger freezing every column except `status`/`revoked_at` when a **client role**
+acts as the enrolled student; (b) the policy kept as-is. The trigger is
+**INVOKER-rights** (not SECURITY DEFINER) so `current_user` stays the acting
+role — a definer trigger swaps it to the owner and would exempt the attacker;
+`search_path=''` is still pinned. Verified: the attack is RED against the
+unfixed schema (row written) and BLOCKED post-fix (`students may only change
+enrollment status`), with the legitimate status-only self-revoke still working —
+all on the PG15 shadow cluster. Non-blocking hardening also taken: `issue_join_code`
+TTL clamped to ≤30 days; a defensive test asserting the `security_invoker`
+reloption on both views (that view fails OPEN if it's ever lost); and a
+`redeem_join_code` rate-limit TODO (no DB-level throttle — 40-bit code + ≤30-day
+TTL makes in-window brute force infeasible; gateway rate-limiting recommended in
+the T4/deploy slice, noted at the function).
 
 ## 6. Non-goals
 Everything the doc's non-goals list says, plus: no `products`/`entitlements`

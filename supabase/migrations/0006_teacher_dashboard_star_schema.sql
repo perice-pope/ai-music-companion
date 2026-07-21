@@ -159,6 +159,64 @@ create policy enrollments_update_student_revoke on public.enrollments
     for update using ((select auth.uid()) = student_id)
     with check ((select auth.uid()) = student_id and status = 'revoked');
 
+-- MF1 guard (review round 1): the student self-revoke policy above pins only
+-- student_id + status — WITH CHECK cannot compare NEW to OLD, so on its own
+-- it would let a student rewrite the OTHER columns of their row in the same
+-- statement: relocate the enrollment into an unrelated teacher's classroom
+-- and forge the consent audit trail (consent='parent', a fabricated
+-- consenting_adult_id) while setting status='revoked'. No fact/profile leak
+-- (revoked grants nothing), but a forged ghost row with a fake consent
+-- record in a victim teacher's roster is consent-audit forgery. This BEFORE
+-- UPDATE trigger is the second belt: when the updater is a CLIENT role
+-- acting as the enrolled student (and not the classroom's owner), every
+-- column except status/revoked_at is frozen.
+--
+-- INVOKER-rights (not SECURITY DEFINER, unlike the 0002 RPC functions):
+-- current_user must remain the ROLE that issued the UPDATE. A definer trigger
+-- would swap current_user to the function owner even for a client call, so
+-- the current_user gate below would exempt the very attacker it must catch.
+-- search_path is still pinned to '' (the 0002 hardening that DOES apply to a
+-- trigger), and every reference is schema-qualified. The definer redemption
+-- path (redeem_join_code, owner-rights) and service_role writers therefore
+-- see current_user = the function owner / service_role — roles a client can
+-- never SET ROLE to — and are exempt by the current_user check, not a
+-- spoofable GUC.
+-- blocks: the reviewer's executed attack, verbatim — `UPDATE enrollments
+--         SET status='revoked', classroom_id=<victim>, consent='parent',
+--         consented_at=now(), consenting_adult_id=<fabricated>` as the
+--         student (raises 'students may only change enrollment status').
+create function public.enrollments_guard_student_update()
+    returns trigger
+    language plpgsql
+    set search_path = ''
+as $$
+begin
+    if current_user in ('anon', 'authenticated')
+       and (select auth.uid()) = old.student_id
+       and not exists (select 1 from public.classrooms c
+                       where c.id = old.classroom_id
+                         and c.teacher_id = (select auth.uid()))
+    then
+        if new.student_id             is distinct from old.student_id
+           or new.classroom_id        is distinct from old.classroom_id
+           or new.consent             is distinct from old.consent
+           or new.consented_at        is distinct from old.consented_at
+           or new.consenting_adult_id is distinct from old.consenting_adult_id
+           or new.joined_via_code_at  is distinct from old.joined_via_code_at
+           or new.created_at          is distinct from old.created_at
+        then
+            raise exception 'students may only change enrollment status';
+        end if;
+    end if;
+    return new;
+end;
+$$;
+create trigger enrollments_guard_student_update
+    before update on public.enrollments
+    for each row execute function public.enrollments_guard_student_update();
+-- 0002 precedent: trigger-only function — close the public RPC surface.
+revoke execute on function public.enrollments_guard_student_update() from anon, authenticated, public;
+
 -- Teacher may clear rows in their own classroom. Deleting a revoked row is
 -- the re-admit path: redeem_join_code() refuses revoked rows, so a revoked
 -- student can rejoin only after the teacher deletes the old row.
@@ -203,6 +261,11 @@ declare
     v_code    text;
     v_bytes   bytea;
     v_attempt int;
+    -- TTL clamp (review round 1): a join code is a roster invite, not a
+    -- standing credential — cap the caller-supplied TTL at 30 days so no
+    -- client can mint an effectively-permanent code. (A non-positive TTL
+    -- just yields an already-expired code: harmless.)
+    v_ttl     interval := least(coalesce(p_ttl, interval '7 days'), interval '30 days');
 begin
     select c.teacher_id into v_teacher
       from public.classrooms c where c.id = p_classroom_id;
@@ -222,7 +285,7 @@ begin
         begin
             update public.classrooms
                set join_code            = v_code,
-                   join_code_expires_at = now() + p_ttl
+                   join_code_expires_at = now() + v_ttl
              where id = p_classroom_id;
             return v_code;
         exception when unique_violation then
@@ -244,6 +307,14 @@ $$;
 --         teacher-audit verbatim); re-activation of a revoked enrollment
 --         (the teacher must re-admit by deleting the row first — a revoked
 --         student holding a still-live code cannot let themselves back in).
+-- TODO(#449 T4 / deploy slice): redeem_join_code has NO DB-level rate limit.
+-- The threat (brute-forcing codes) is already impractical — an 8-char code
+-- over a 31-symbol alphabet is ~40 bits and the TTL is ≤30 days, so the
+-- expected guesses to hit any live code vastly exceed the window — but add
+-- gateway/PostgREST rate-limiting on this RPC when the deploy config lands
+-- (belt-and-suspenders; the code space is the primary defense, throttling is
+-- the second). This note is the placeholder until supabase/config.toml (or
+-- the edge gateway config) exists in the T4 slice.
 create function public.redeem_join_code(p_code text, p_consent text)
     returns uuid
     language plpgsql
@@ -734,5 +805,7 @@ grant execute on function public.purge_expired_dashboard_facts() to service_role
 --   drop function public.redeem_join_code(text, text);
 --   drop function public.issue_join_code(uuid, interval);
 --   drop policy profiles_select_enrolled_teacher on public.profiles;
+--   drop trigger enrollments_guard_student_update on public.enrollments;
+--   drop function public.enrollments_guard_student_update();
 --   drop table public.enrollments;
 --   drop table public.classrooms;

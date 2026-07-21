@@ -171,7 +171,28 @@ begin
   exception when insufficient_privilege then ok := true;
   end;
   if not ok then raise exception 'FAIL: student must not be able to set a non-revoked status'; end if;
+
+  -- ── MF1 (review round 1): consent-audit forgery / cross-classroom write ──
+  -- The reviewer's executed attack: riding the self-revoke policy (whose
+  -- WITH CHECK pins only student_id + status), a student relocates their own
+  -- enrollment row into an UNRELATED teacher's classroom while forging the
+  -- parent-consent audit columns. The victim teacher would then see a ghost
+  -- row with a fabricated consent trail. MUST-BLOCK: the freeze trigger
+  -- raises and the row is untouched.
+  ok := false;
+  begin
+    update public.enrollments
+       set status = 'revoked', classroom_id = k2, consent = 'parent',
+           consented_at = now(), consenting_adult_id = t2
+     where student_id = a;
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: MF1 — student rewrote consent/classroom columns (forged ghost row written)'; end if;
   reset role;
+  select count(*) into cnt from public.enrollments
+   where student_id = a and classroom_id = k and status = 'active'
+     and consent = 'student' and consenting_adult_id is null;
+  if cnt <> 1 then raise exception 'FAIL: MF1 — A''s enrollment row was mutated by the blocked update'; end if;
 
   -- ── the join-code path: the ONLY road to status=active ────────────────────
   perform set_config('request.jwt.claims', json_build_object('sub', t::text)::text, true);
@@ -246,6 +267,17 @@ begin
 
   -- ── live views scope by invoker RLS (security_invoker; Postgres >= 15) ────
   if current_setting('server_version_num')::int >= 150000 then
+    -- Defensive (review round 1): the reloption must actually be present on
+    -- both live views. If security_invoker is ever lost (e.g. a careless
+    -- CREATE OR REPLACE), v_session_integrity fails OPEN school-wide —
+    -- owner-rights views bypass RLS entirely.
+    select count(*) into cnt from pg_class
+     where relnamespace = 'public'::regnamespace
+       and relname in ('v_roster_heat', 'v_session_integrity')
+       and reloptions @> array['security_invoker=true'];
+    if cnt <> 2 then
+      raise exception 'FAIL: v_roster_heat/v_session_integrity must carry security_invoker=true (fails OPEN otherwise)';
+    end if;
     perform set_config('request.jwt.claims', json_build_object('sub', t::text)::text, true);
     set local role authenticated;
     -- Roster heat: active students with synced sessions only (A + B; B has
@@ -265,6 +297,17 @@ begin
     raise notice 'SKIP: security_invoker view assertions need Postgres >= 15 (this is %)',
       current_setting('server_version');
   end if;
+
+  -- ── the legitimate self-serve leave still works after the MF1 freeze ──────
+  -- (status + revoked_at only — the columns the trigger leaves writable)
+  perform set_config('request.jwt.claims', json_build_object('sub', b::text)::text, true);
+  set local role authenticated;
+  update public.enrollments set status = 'revoked', revoked_at = now()
+   where student_id = b and classroom_id = k;
+  reset role;
+  select count(*) into cnt from public.enrollments
+   where student_id = b and classroom_id = k and status = 'revoked' and revoked_at is not null;
+  if cnt <> 1 then raise exception 'FAIL: student self-revoke (status-only) must still work'; end if;
 
   raise notice 'ALL RLS ASSERTIONS PASSED';
   raise exception 'ROLLBACK_SENTINEL';  -- undo all seed data, leave no residue
