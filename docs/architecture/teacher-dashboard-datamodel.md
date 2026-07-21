@@ -3,8 +3,14 @@
 **Companion doc to:** [`platform-spine-commerce.md`](./platform-spine-commerce.md),
 [`teacher-audit.md`](./teacher-audit.md), and
 [`offline-first-and-network-transparency.md`](./offline-first-and-network-transparency.md)
-**Status:** Draft (design; precedes any build — issue #449, goal G1)
-**Date:** 2026-07-19
+**Status:** In build (issue #449, goal G1). **T3 — the cloud star schema (§3),
+its RLS, and the rollups — landed** in
+[`supabase/migrations/0006_teacher_dashboard_star_schema.sql`](../../supabase/migrations/0006_teacher_dashboard_star_schema.sql)
+(policy tests: `supabase/tests/rls_teacher_dashboard_star.sql`; decisions:
+[`docs/specs/449-t3-cloud-schema.md`](../specs/449-t3-cloud-schema.md)).
+Remaining slices per §Sequencing: T1/T2 (local telemetry + projection) and T4
+(dashboard v1).
+**Date:** 2026-07-19 (T3 landed 2026-07-21)
 
 ---
 
