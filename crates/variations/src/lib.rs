@@ -24,8 +24,11 @@ pub use catalog::{ChordType, Enclosure, ScaleType};
 
 use serde::{Deserialize, Serialize};
 
-/// Playable MIDI range the generator folds figures into (C2..=C7) — beyond
-/// this, real students can't follow.
+/// Comfort window the generator folds figures toward (C2..=C7). This is a
+/// register PREFERENCE, not truth (#471-2): a figure wider than the window
+/// pokes past it rather than ever bending an interval — the only hard pitch
+/// bound is physical MIDI 0..=127. #471-4 (H4) will narrow this per
+/// instrument through [`fold_into_window`], under the same rule.
 pub const MIDI_MIN: u8 = 36;
 /// See [`MIDI_MIN`].
 pub const MIDI_MAX: u8 = 96;
@@ -313,35 +316,15 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
 
     // 1. Root order — RV's shuffle keeps the first root fixed and permutes the
     //    rest (seeded Fisher–Yates).
-    let mut roots = spec.roots.clone();
-    if spec.randomize_roots && roots.len() > 2 {
-        for i in (2..roots.len()).rev() {
-            let j = 1 + rng.below(i); // 1..=i — never index 0
-            roots.swap(i, j);
-        }
-    }
+    let roots = shuffled_roots(spec, &mut rng);
 
     // 2. Per root: figure + direction + enclosure, folded into range.
     let mut notes: Vec<GeneratedNote> = Vec::new();
     let step = 1.0 / f64::from(spec.rhythm.notes_per_beat.max(1));
     let mut cursor_beat = 0.0_f64;
 
-    // #349 T2a: a stacked chord is the effective figure only when the chord
-    // modifier IS the figure (cell and scale take precedence, same order as
-    // `figure_for`).
-    let stacked_chord = if spec.cell.as_ref().is_none_or(|c| c.is_empty()) && spec.scale.is_none() {
-        spec.chord.filter(|c| c.stacked)
-    } else {
-        None
-    };
-
-    // #349 T3c: a lifted progression is the player's material — it outranks
-    // catalog figures (cell still wins: cell > progression > scale > chord).
-    let progression = if spec.cell.as_ref().is_none_or(|c| c.is_empty()) {
-        spec.progression.as_deref().filter(|p| !p.is_empty())
-    } else {
-        None
-    };
+    let stacked_chord = active_stacked_chord(spec);
+    let progression = active_progression(spec);
 
     let mut chord_targets: Vec<ChordTarget> = Vec::new();
     for (segment, &root) in roots.iter().enumerate() {
@@ -393,7 +376,8 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
             let mut tones = chord_tones(c, i16::from(root));
             fold_into_range(&mut tones);
             tones.sort_unstable();
-            tones.dedup(); // range-clamping a too-wide voicing can collide tones
+            tones.dedup(); // guard duplicate template tones (fold no longer
+                           // collides tones — it never clamps, #471-2)
                            // The grading target (#349 T2b): what the T1 engine should hear.
                            // An inversion drill demands its voicing's lowest tone as the
                            // bass; root-position drills leave the bass unjudged.
@@ -422,27 +406,8 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
             continue;
         }
 
-        let mut figure = figure_for(spec, root);
-
-        let reversed = match spec.direction {
-            DirectionMode::Forward => false,
-            DirectionMode::Reversed => true,
-            DirectionMode::RandomPerRoot => rng.coin(),
-        };
-        if reversed {
-            figure.reverse();
-        }
-
-        // Enclosure approaches the figure's (post-direction) first note.
-        if let (Some(enc), Some(&first)) = (spec.enclosure, figure.first()) {
-            let mut with_enclosure: Vec<i16> = enc
-                .approach_semitones()
-                .iter()
-                .map(|&s| first + i16::from(s))
-                .collect();
-            with_enclosure.extend_from_slice(&figure);
-            figure = with_enclosure;
-        }
+        let reversed = segment_reversed(spec, &mut rng);
+        let mut figure = realized_figure(spec, root, reversed);
 
         fold_into_range(&mut figure);
 
@@ -482,6 +447,93 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         tempo_bpm: spec.rhythm.tempo_bpm,
         beats_per_measure: BEATS_PER_MEASURE,
     }
+}
+
+/// RV's shuffle: keeps the first root fixed and permutes the rest (seeded
+/// Fisher–Yates). Extracted so [`unfolded_figures`] consumes the seed
+/// identically to [`generate`].
+fn shuffled_roots(spec: &VariationSpec, rng: &mut Xorshift64) -> Vec<u8> {
+    let mut roots = spec.roots.clone();
+    if spec.randomize_roots && roots.len() > 2 {
+        for i in (2..roots.len()).rev() {
+            let j = 1 + rng.below(i); // 1..=i — never index 0
+            roots.swap(i, j);
+        }
+    }
+    roots
+}
+
+/// #349 T2a: a stacked chord is the effective figure only when the chord
+/// modifier IS the figure (cell and scale take precedence, same order as
+/// `figure_for`).
+fn active_stacked_chord(spec: &VariationSpec) -> Option<ChordModifier> {
+    if spec.cell.as_ref().is_none_or(|c| c.is_empty()) && spec.scale.is_none() {
+        spec.chord.filter(|c| c.stacked)
+    } else {
+        None
+    }
+}
+
+/// #349 T3c: a lifted progression is the player's material — it outranks
+/// catalog figures (cell still wins: cell > progression > scale > chord).
+fn active_progression(spec: &VariationSpec) -> Option<&[ProgressionStep]> {
+    if spec.cell.as_ref().is_none_or(|c| c.is_empty()) {
+        spec.progression.as_deref().filter(|p| !p.is_empty())
+    } else {
+        None
+    }
+}
+
+/// One melodic segment's direction draw. RandomPerRoot consumes exactly one
+/// coin per segment — [`generate`] and [`unfolded_figures`] MUST both go
+/// through here so their RNG streams stay in lockstep.
+fn segment_reversed(spec: &VariationSpec, rng: &mut Xorshift64) -> bool {
+    match spec.direction {
+        DirectionMode::Forward => false,
+        DirectionMode::Reversed => true,
+        DirectionMode::RandomPerRoot => rng.coin(),
+    }
+}
+
+/// One root's fully-realized melodic figure — figure + direction + enclosure —
+/// BEFORE any register fold. This is the truth of the cell's shape.
+fn realized_figure(spec: &VariationSpec, root: u8, reversed: bool) -> Vec<i16> {
+    let mut figure = figure_for(spec, root);
+    if reversed {
+        figure.reverse();
+    }
+    // Enclosure approaches the figure's (post-direction) first note.
+    if let (Some(enc), Some(&first)) = (spec.enclosure, figure.first()) {
+        let mut with_enclosure: Vec<i16> = enc
+            .approach_semitones()
+            .iter()
+            .map(|&s| first + i16::from(s))
+            .collect();
+        with_enclosure.extend_from_slice(&figure);
+        figure = with_enclosure;
+    }
+    figure
+}
+
+/// The exact PRE-FOLD melodic figures [`generate`] deals, per segment in play
+/// order (#471-2 F2): same shuffle, same per-root direction draws, same
+/// enclosure — only the register fold is left out. This is what the edit
+/// engine bakes cell offsets from, so a fold can never smuggle a register
+/// shift (or, historically, a clamp) into the player's material.
+/// Empty for stacked-chord and progression rows — they deal no melodic cell.
+pub fn unfolded_figures(spec: &VariationSpec, seed: u64) -> Vec<Vec<i16>> {
+    let mut rng = Xorshift64::new(seed);
+    let roots = shuffled_roots(spec, &mut rng);
+    if active_stacked_chord(spec).is_some() || active_progression(spec).is_some() {
+        return Vec::new();
+    }
+    roots
+        .iter()
+        .map(|&root| {
+            let reversed = segment_reversed(spec, &mut rng);
+            realized_figure(spec, root, reversed)
+        })
+        .collect()
 }
 
 /// Expand one root into its figure (before direction/enclosure), as i16 so
@@ -594,26 +646,73 @@ fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
     vec![root]
 }
 
-/// Shift a whole figure by octaves until it fits `MIDI_MIN..=MIDI_MAX` (whole-
-/// figure shifts preserve the contour); per-note clamp as a last resort for
-/// figures wider than the range.
-fn fold_into_range(figure: &mut [i16]) {
+/// Shift a whole figure by ONE whole-octave amount toward the given register
+/// window — never per note, never a clamp (#471-2 F1: a wrong interval is the
+/// one thing this generator must never emit; RV is "the same cell, exactly,
+/// through 12 keys").
+///
+/// Placement criterion (deterministic, pinned by tests):
+/// 1. minimize the figure's worst poke past the window — the larger of the
+///    two per-end overflows, 0 when the figure fits. For any figure that FITS
+///    the window this reproduces the legacy fold's placement exactly, so
+///    stored-seed replays of never-broken rows stay bit-identical; figures
+///    wider than the window get their overflow balanced around it instead of
+///    (as before) silently clamped flat;
+/// 2. ties break to the smallest |shift| (stay nearest the as-built register);
+/// 3. a remaining tie breaks to the lower octave.
+///
+/// If the placed figure would poke past physical MIDI (0..=127), the shift
+/// steps back inside — register beats centering; intervals never bend. A
+/// figure no whole-octave shift can fit into 0..=127 (span > 127 semitones —
+/// hostile wire only; every UI-constructible cell spans ≤ 72 and is proven in
+/// tests to always fit) is a loud validation panic, never a clamp.
+///
+/// `lo..=hi` is the comfort window — `MIDI_MIN..=MIDI_MAX` today; #471-4 (H4)
+/// plugs per-instrument windows in here.
+pub fn fold_into_window(figure: &mut [i16], lo: u8, hi: u8) {
     if figure.is_empty() {
         return;
     }
+    let (lo, hi) = (i16::from(lo), i16::from(hi.max(lo)));
     let (min, max) = figure
         .iter()
-        .fold((i16::MAX, i16::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));
-    let mut shift = 0i16;
-    while min + shift < i16::from(MIDI_MIN) {
-        shift += 12;
-    }
-    while max + shift > i16::from(MIDI_MAX) {
+        .fold((i16::MAX, i16::MIN), |(a, b), &m| (a.min(m), b.max(m)));
+    // Scan every octave shift that could possibly matter: from "top of the
+    // figure at the window floor" to "bottom of the figure at the window
+    // ceiling", one octave of slack each side.
+    let k_lo = (lo - max).div_euclid(12) - 1;
+    let k_hi = (hi - min).div_euclid(12) + 1;
+    let mut shift = (k_lo..=k_hi)
+        .map(|k| k * 12)
+        .min_by_key(|&s| {
+            let poke_low = (lo - (min + s)).max(0);
+            let poke_high = ((max + s) - hi).max(0);
+            // Lexicographic: worst poke, then |shift|, then the lower octave.
+            (poke_low.max(poke_high), s.abs(), s)
+        })
+        .expect("candidate range is non-empty");
+    // Physical MIDI is the only hard bound. Step the WHOLE figure back inside
+    // if the comfort placement pokes past it (still a whole-octave move).
+    while max + shift > 127 {
         shift -= 12;
     }
-    for m in figure.iter_mut() {
-        *m = (*m + shift).clamp(i16::from(MIDI_MIN), i16::from(MIDI_MAX));
+    while min + shift < 0 {
+        shift += 12;
     }
+    assert!(
+        min + shift >= 0 && max + shift <= 127,
+        "figure spans {} semitones — no whole-octave shift fits MIDI 0..=127; \
+         refusing to clamp (a lied interval is worse than a loud failure, #471-2)",
+        max - min
+    );
+    for m in figure.iter_mut() {
+        *m += shift;
+    }
+}
+
+/// [`fold_into_window`] with the default comfort window.
+fn fold_into_range(figure: &mut [i16]) {
+    fold_into_window(figure, MIDI_MIN, MIDI_MAX);
 }
 
 /// Human description of the drill, e.g.
@@ -966,6 +1065,168 @@ mod tests {
             .map(|w| i16::from(w[1]) - i16::from(w[0]))
             .collect();
         assert_eq!(deltas, vec![2, 2, 1, 2, 2, 2, 1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // #471-2 F1 — transposition NEVER loses the pattern. The investigation's
+    // exact repros, pinned: the old fold's per-note clamp flattened intervals
+    // on any figure wider than 49 semitones, in exactly the keys whose octave
+    // shift overflowed ("broken keys ≈ span − 49").
+    // -----------------------------------------------------------------------
+
+    fn delta_seq(midis: &[u8]) -> Vec<i16> {
+        midis
+            .windows(2)
+            .map(|w| i16::from(w[1]) - i16::from(w[0]))
+            .collect()
+    }
+
+    /// The true delta sequence of a cell after direction + enclosure,
+    /// computed from first principles (independently of `realized_figure`,
+    /// so a bug shared with production can't hide).
+    fn expected_deltas(cell: &[i8], reversed: bool, enclosure: Option<Enclosure>) -> Vec<i16> {
+        let mut offs: Vec<i16> = cell.iter().map(|&o| i16::from(o)).collect();
+        if reversed {
+            offs.reverse();
+        }
+        if let Some(enc) = enclosure {
+            let first = offs[0];
+            let mut with: Vec<i16> = enc
+                .approach_semitones()
+                .iter()
+                .map(|&s| first + i16::from(s))
+                .collect();
+            with.extend_from_slice(&offs);
+            offs = with;
+        }
+        offs.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    /// AC1: the investigation's repro cells — span 50 (the root-61 break),
+    /// span 55 ("6 of 12 keys wrong, up to 6-semitone errors"), and a span-72
+    /// lifted-style cell (the legal maximum: ±MAX_CELL_OFFSET) — play the
+    /// EXACT interval sequence in all 12 keys, Forward AND Reversed AND with
+    /// an enclosure. Fails if any fold ever bends an interval again.
+    #[test]
+    fn wide_cells_transpose_exactly_in_every_key() {
+        let repros: [&[i8]; 3] = [
+            &[0, 25, -25],                    // span 50
+            &[0, 16, 28, 36, 26, 14, 2, -19], // span 55
+            &[0, 36, -36, 24, -24, 12, -12],  // span 72, lifted-style extremes
+        ];
+        for cell in repros {
+            for direction in [DirectionMode::Forward, DirectionMode::Reversed] {
+                for enclosure in [None, Some(Enclosure::OneDownOneUp)] {
+                    let mut spec = base_spec();
+                    spec.scale = None;
+                    spec.cell = Some(cell.to_vec());
+                    spec.roots = chromatic_roots(); // 60..72 — root 61 included
+                    spec.direction = direction;
+                    spec.enclosure = enclosure;
+                    let seq = generate(&spec, 3);
+                    let seg_len = seq.target_midi.len() / 12;
+                    let expected =
+                        expected_deltas(cell, direction == DirectionMode::Reversed, enclosure);
+                    for (root, seg) in seq.root_order.iter().zip(seq.target_midi.chunks(seg_len)) {
+                        assert_eq!(
+                            delta_seq(seg),
+                            expected,
+                            "root {root} must play the cell's exact interval sequence \
+                             (cell {cell:?}, {direction:?}, enclosure {enclosure:?})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// AC2 — the physical-fit proof: a span-72 figure (the widest a ±36-offset
+    /// cell can be) fits MIDI 0..=127 under the chosen shift at EVERY
+    /// placement and every 12-key root, span preserved exactly. This is why
+    /// the loud-failure path is unreachable for UI-constructible material.
+    #[test]
+    fn span_72_always_fits_physical_midi() {
+        for lo_off in -72..=0i16 {
+            let cell = vec![lo_off as i8, (lo_off + 72) as i8];
+            for root in 60..=71u8 {
+                let mut spec = base_spec();
+                spec.scale = None;
+                spec.cell = Some(cell.clone());
+                spec.roots = vec![root];
+                let seq = generate(&spec, 0);
+                // All notes physical (u8 already ≤ 255; assert the real bound)…
+                assert!(
+                    seq.target_midi.iter().all(|&m| m <= 127),
+                    "root {root}, placement {lo_off}: {:?}",
+                    seq.target_midi
+                );
+                // …and the 72-semitone interval is EXACT, never clamped.
+                assert_eq!(
+                    delta_seq(&seq.target_midi),
+                    vec![72],
+                    "root {root}, placement {lo_off}"
+                );
+            }
+        }
+    }
+
+    /// AC3: a figure that cannot fit 0..=127 under ANY whole-octave shift
+    /// (span > 127 — hostile wire only) fails LOUDLY. A silent clamp here
+    /// would lie an interval; that is the one forbidden outcome.
+    #[test]
+    #[should_panic(expected = "refusing to clamp")]
+    fn an_unfittable_figure_fails_loudly_instead_of_lying() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![-128, 127]); // span 255 > 127: no shift fits
+        generate(&spec, 0);
+    }
+
+    /// AC4 — replay stability: any figure the old fold placed WITHOUT
+    /// clamping keeps its exact legacy placement (smallest fitting |shift|),
+    /// so stored-seed replays of never-broken rows are bit-identical. Pinned
+    /// on the root-95 major run the fold suite has always used.
+    #[test]
+    fn fitting_figures_keep_their_legacy_placement() {
+        let mut spec = base_spec();
+        spec.roots = vec![95];
+        let seq = generate(&spec, 0);
+        assert_eq!(
+            seq.target_midi,
+            vec![83, 85, 87, 88, 90, 92, 94, 95],
+            "the legacy -12 placement, not a deeper re-centering"
+        );
+    }
+
+    /// F2's seam: `unfolded_figures` deals the SAME segments as `generate` —
+    /// same shuffle, same per-root direction coins, same enclosure — differing
+    /// only by the whole-octave register shift. Fails if the two RNG streams
+    /// ever drift apart (which would bake the wrong segment's shape).
+    #[test]
+    fn unfolded_figures_mirror_generates_segments() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, 16, 28, 36, 26, 14, 2, -19]);
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        spec.enclosure = Some(Enclosure::TwoDown);
+        let seq = generate(&spec, 11);
+        let figs = unfolded_figures(&spec, 11);
+        assert_eq!(figs.len(), 12);
+        let seg_len = seq.target_midi.len() / 12;
+        for (i, fig) in figs.iter().enumerate() {
+            let mut folded = fig.clone();
+            fold_into_window(&mut folded, MIDI_MIN, MIDI_MAX);
+            let dealt: Vec<i16> = seq.target_midi[i * seg_len..(i + 1) * seg_len]
+                .iter()
+                .map(|&m| i16::from(m))
+                .collect();
+            assert_eq!(folded, dealt, "segment {i} must be the folded truth");
+        }
+        // Stacked/progression rows deal no melodic cell to bake.
+        let stacked = stacked_spec(ChordType::Dominant7, 0);
+        assert!(unfolded_figures(&stacked, 7).is_empty());
     }
 
     /// The label names the material honestly.
