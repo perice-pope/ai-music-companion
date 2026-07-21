@@ -5243,6 +5243,28 @@ mod tests {
             !failing.recap_used_llm(),
             "a failure fallback is not a narration"
         );
+
+        // Review round 1 MF4: a body that ARRIVES (Ok) but doesn't parse
+        // into a recap serves the fallback — that is NOT a fired narration.
+        // A mutant that flags on any Ok(body) — received-but-malformed —
+        // dies here. The input clears the thin bar, so the garbled body
+        // genuinely reaches the parser; the inner text is PROSE (not JSON),
+        // because `parse_recap_json` is deliberately forgiving with
+        // valid-JSON-wrong-keys text (canned defaults) — prose is the shape
+        // that actually errors and falls back.
+        let garbled_body = serde_json::json!({
+            "content": [{ "type": "text",
+                          "text": "Sorry — I can only reply in prose today." }]
+        });
+        let garbled = online_engine(
+            config(),
+            Box::new(MockHttpClient::succeeding(&garbled_body.to_string())),
+        );
+        garbled.generate_recap(&full_input()).await.unwrap();
+        assert!(
+            !garbled.recap_used_llm(),
+            "a received-but-unparseable body must not count as a fired narration"
+        );
     }
 
     #[tokio::test]

@@ -10304,14 +10304,37 @@ mod tests {
         note_pocket_tempo(&s, 121.0); // immediately after → gated again
         assert_eq!(kinds(&s), vec!["pocket_start", "pocket_tempo"]);
 
+        // Review round 1 MF1: the delta gate's baseline is the last
+        // JOURNALED value (120), never the last PUSHED one (121). With the
+        // time gate rewound, 125.5 must journal: |125.5 − 120| = 5.5 ≥ 5.
+        // A mutant comparing against the last pushed value stays silent
+        // (|125.5 − 121| = 4.5 < 5) and dies on this assert.
+        s.telemetry
+            .lock_or_recover()
+            .as_mut()
+            .expect("session context")
+            .tempo_last_logged_at_secs = -10.0;
+        note_pocket_tempo(&s, 125.5);
+        assert_eq!(
+            kinds(&s),
+            vec!["pocket_start", "pocket_tempo", "pocket_tempo"],
+            "a ≥5 BPM move from the last JOURNALED row must journal"
+        );
+        assert!(
+            journal(&s, &sid)[2].1.contains("125.5"),
+            "the third row carries the settled tempo: {}",
+            journal(&s, &sid)[2].1
+        );
+
+        note_pocket_tempo(&s, 126.0); // gated wobble — tracked, not journaled
         note_pocket_stopped(&s);
         let events = journal(&s, &sid);
         let (stop_kind, stop_params) = events.last().unwrap();
         assert_eq!(stop_kind, "pocket_stop");
         assert!(
-            stop_params.contains("121"),
-            "pocket_stop must report the last EFFECTIVE tempo (121), \
-             not the last journaled one: {stop_params}"
+            stop_params.contains("126"),
+            "pocket_stop must report the last EFFECTIVE tempo (126), \
+             not the last journaled one (125.5): {stop_params}"
         );
         let start_params = &events[0].1;
         assert!(
@@ -10523,6 +10546,61 @@ mod tests {
         assert!(
             journal(&s, &sid).iter().all(|(k, _)| k != "narration_used"),
             "a mock recap is not an LLM narration"
+        );
+    }
+
+    /// Review round 1 MF2: a NO-OP teardown journals nothing. With a live
+    /// session (so the writers COULD write) and neither click nor band
+    /// running, the stop commands must not fabricate `pocket_stop` /
+    /// `band_stop` rows — this pins the teardown bool-return guard. A
+    /// mutant whose teardowns report `true` unconditionally dies here.
+    #[tokio::test]
+    async fn noop_teardown_journals_no_stop_events() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let sid = start_session(state.inner()).await;
+
+        stop_pocket(handle.clone(), state.clone())
+            .await
+            .expect("stopping a silent click is a calm no-op");
+        stop_accompaniment(handle, state.clone())
+            .await
+            .expect("stopping a silent band is a calm no-op");
+
+        let events = journal(state.inner(), &sid);
+        assert!(
+            events.is_empty(),
+            "nothing was running — a no-op teardown must journal no stop: {events:?}"
+        );
+    }
+
+    /// Review round 1 MF3: the best-effort writer survives a genuinely
+    /// broken journal MID-SESSION — it returns calmly (a `.expect()` mutant
+    /// panics here) and the session still closes normally afterwards. The
+    /// store-level half (the `Err` actually exists) is pinned in
+    /// `brain::store::tests::log_practice_event_err_is_surfaced_to_the_swallowing_caller`;
+    /// this is the command-layer swallow, exercised for real.
+    #[tokio::test]
+    async fn best_effort_writer_survives_a_broken_journal() {
+        let s = state();
+        let _sid = start_session(&s).await;
+        s.session_store
+            .lock_or_recover()
+            .break_practice_events_for_tests();
+
+        // Under the mutant this panics; correct code shrugs (one warn).
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({ "score_id": "x" }));
+
+        let recap = end_practice_session_impl(&s).await;
+        assert!(
+            recap.is_ok(),
+            "a broken journal must never sink the session close: {:?}",
+            recap.err()
         );
     }
 }

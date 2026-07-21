@@ -826,6 +826,19 @@ impl SessionStore {
         decode_session_count(count)
     }
 
+    /// Failure injection for tests ONLY (#449 T1 review MF3): drop the
+    /// `practice_events` table so the next journal write fails, letting the
+    /// desktop crate prove its best-effort writer swallows a real store
+    /// error instead of panicking or surfacing it into the practice loop.
+    /// Compiled only under the `test-support` feature, which only downstream
+    /// dev-dependencies enable — a shipping build cannot contain it.
+    #[cfg(feature = "test-support")]
+    pub fn break_practice_events_for_tests(&self) {
+        self.conn
+            .execute_batch("DROP TABLE IF EXISTS practice_events;")
+            .expect("dropping the journal table in a test fixture");
+    }
+
     /// Persist the per-phrase metrics for a session.
     ///
     /// Stored alongside the session row (FK with `ON DELETE CASCADE`) so a
