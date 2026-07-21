@@ -82,6 +82,18 @@ export interface PracticeSuggestion {
   evidence: string;
 }
 
+/**
+ * #454 S3: one method-book tip from the evidence-gated pedagogy engine (the
+ * `method_book_tip` command). `guidance` is the founder-voice paraphrase;
+ * `source_line` is the "{author}, {title}" attribution the box MUST render
+ * visibly — attribution is non-negotiable (#454's copyright posture).
+ */
+export interface MethodBookTip {
+  topic: string;
+  guidance: string;
+  source_line: string;
+}
+
 /** A live note verdict class from the backend (#337 S2). */
 export type NoteVerdictKind = "hit" | "near" | "missed";
 
@@ -537,14 +549,21 @@ export interface PracticeState {
    * replaces it in place, an empty fetch never clears it, dismissal
    * quiets the box for the session. */
   coachingSuggestion: PracticeSuggestion | null;
-  /** Review R1: invalidates in-flight suggestion fetches across session
+  /** #454 S3: the box's second voice — the method-book tip the last
+   * session's measured evidence earned. Same rule 0 as the history voice
+   * (empty never clears, replace in place). DISPLAY policy lives in the
+   * component: history outranks the tip when both exist. */
+  coachingTip: MethodBookTip | null;
+  /** Review R1: invalidates in-flight fetches (both voices) across session
    * boundaries — the _openerRefreshSeq pattern. */
   _coachingFetchSeq: number;
-  /** The player dismissed the coaching box this session — stay quiet. */
+  /** The player dismissed the coaching box this session — BOTH voices stay
+   * quiet (one calm surface, one dismissal). */
   coachingQuieted: boolean;
-  /** Ask the backend's history analyzer for fresh suggestions. Fired at
-   * session start and explore begin (the cheap exercise-log-writing
-   * hooks); fire-and-forget, errors silent. */
+  /** Ask the backend for both of the box's voices — the history analyzer
+   * and the method-book tip (#454 S3) — at the same refresh points: session
+   * start and explore begin (the cheap exercise-log-writing hooks);
+   * fire-and-forget, errors silent. */
   refreshCoachingSuggestion: () => Promise<void>;
   dismissCoachingSuggestion: () => void;
 
@@ -1146,8 +1165,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // #214 S1b: matches and dismissals are session-scoped.
       pieceMatch: null,
       dismissedPieceIds: [],
-      // #453 S3: the coaching box (and its quiet) is session-scoped too.
+      // #453 S3: the coaching box (and its quiet) is session-scoped too —
+      // both voices (#454 S3 added the method-book tip).
       coachingSuggestion: null,
+      coachingTip: null,
       coachingQuieted: false,
       // #421 S2: the click personality resets with the session.
       pocketMode: "anchor",
@@ -1199,38 +1220,51 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     })),
 
   coachingSuggestion: null,
+  coachingTip: null,
   coachingQuieted: false,
   _coachingFetchSeq: 0,
 
   refreshCoachingSuggestion: async () => {
     // Review R1: capture the seq BEFORE the await — a session boundary
     // (endSession / openMatchedScore) bumps it, and a fetch that resolves
-    // after its session ended must not write a stale suggestion into the
+    // after its session ended must not write a stale result into the
     // next one (the opener-refresh discipline, applied here too).
     const seq = get()._coachingFetchSeq;
-    try {
-      const list = await invoke<PracticeSuggestion[]>("practice_suggestions");
-      if (get()._coachingFetchSeq !== seq) {
-        return; // a newer session owns the box now.
-      }
-      if (!Array.isArray(list) || list.length === 0) {
-        // Silence is the analyzer's common answer — the box HOLDS what it
-        // already shows (rule 0: an empty result never clears).
-        return;
-      }
-      if (get().coachingQuieted) {
-        return; // the player dismissed the box — quiet for the session.
-      }
-      // AT MOST ONE — the analyzer's first by pinned order; a newer
-      // suggestion replaces the shown one in place.
-      set({ coachingSuggestion: list[0] });
-    } catch {
-      // History must never surface an error — silence is normal.
+    // #454 S3: both of the box's voices fetch at the same refresh points,
+    // independently settled so one failing never silences the other.
+    const [historyRes, tipRes] = await Promise.allSettled([
+      invoke<PracticeSuggestion[]>("practice_suggestions"),
+      invoke<MethodBookTip | null>("method_book_tip"),
+    ]);
+    if (get()._coachingFetchSeq !== seq) {
+      return; // a newer session owns the box now.
+    }
+    if (get().coachingQuieted) {
+      return; // the player dismissed the box — BOTH voices stay quiet.
+    }
+    // Rule 0, per voice: an empty (or failed) result never clears what a
+    // voice already holds; a newer result replaces it in place.
+    if (
+      historyRes.status === "fulfilled" &&
+      Array.isArray(historyRes.value) &&
+      historyRes.value.length > 0
+    ) {
+      // AT MOST ONE — the analyzer's first by pinned order.
+      set({ coachingSuggestion: historyRes.value[0] });
+    }
+    if (
+      tipRes.status === "fulfilled" &&
+      tipRes.value &&
+      typeof tipRes.value.guidance === "string" &&
+      typeof tipRes.value.source_line === "string"
+    ) {
+      set({ coachingTip: tipRes.value });
     }
   },
 
   dismissCoachingSuggestion: () =>
-    set({ coachingSuggestion: null, coachingQuieted: true }),
+    // One dismissal quiets BOTH voices — the box is one calm surface.
+    set({ coachingSuggestion: null, coachingTip: null, coachingQuieted: true }),
 
   openMatchedScore: async () => {
     const match = get().pieceMatch;
@@ -1279,8 +1313,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       cursorPosition: null,
       pieceMatch: null,
       dismissedPieceIds: [],
-      // #453 S3: session-scoped like the match state (endSession's tail).
+      // #453 S3: session-scoped like the match state (endSession's tail) —
+      // both voices (#454 S3 added the method-book tip).
       coachingSuggestion: null,
+      coachingTip: null,
       coachingQuieted: false,
       openerItems: [],
       openerPreview: null,

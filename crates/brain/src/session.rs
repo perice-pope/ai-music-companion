@@ -312,6 +312,15 @@ pub struct RecapInput {
     /// silent on history. `serde(default)` so stored inputs load unchanged.
     #[serde(default)]
     pub history_suggestions: Vec<crate::insights::PracticeSuggestion>,
+    /// #454 S3: the method-book tip THIS session's measured fingerprint
+    /// earned ([`crate::pedagogy::select_pedagogy`]), resolved by the command
+    /// layer on the live end-session path (it owns the instrument-catalog
+    /// family fact) and threaded in like `history_suggestions` — the
+    /// recorder stays pedagogy-agnostic. `None` when no evidence bar was
+    /// crossed (silence > lies) — the recap then stays silent on the books.
+    /// `serde(default)` so stored inputs load unchanged.
+    #[serde(default)]
+    pub method_book_tip: Option<crate::pedagogy::PedagogyEntry>,
 }
 
 /// The post-session recap shown to the student.
@@ -521,6 +530,9 @@ impl CompletedSession {
             // History is store-owned too (#453 S2) — the command layer threads
             // it in through `generate_recap_with_context`, same as the profile.
             history_suggestions: Vec::new(),
+            // The method-book tip (#454 S3) needs the catalog family the
+            // command layer owns — threaded in the same way.
+            method_book_tip: None,
         }
     }
 
@@ -549,6 +561,7 @@ impl CompletedSession {
             Vec::new(),
             String::new(),
             Vec::new(),
+            None,
         )
         .await
     }
@@ -571,6 +584,7 @@ impl CompletedSession {
             Vec::new(),
             String::new(),
             Vec::new(),
+            None,
         )
         .await
     }
@@ -590,6 +604,7 @@ impl CompletedSession {
             Vec::new(),
             String::new(),
             Vec::new(),
+            None,
         )
         .await
     }
@@ -601,12 +616,18 @@ impl CompletedSession {
     /// offline, while connections are the LLM-hedged cross-genre lines that
     /// depend on a taste profile. `history_suggestions` (#453 S2) are the
     /// store-derived, evidence-cited practice suggestions the recap may weave
-    /// in — grounded facts, like the verdicts. The other `generate_recap*`
-    /// methods are thin wrappers that default these to "absent".
+    /// in — grounded facts, like the verdicts. `method_book_tip` (#454 S3) is
+    /// the pedagogy entry this session's measured evidence earned, resolved
+    /// by the command layer (it owns the catalog family). The other
+    /// `generate_recap*` methods are thin wrappers that default these to
+    /// "absent".
     ///
     /// The same authoritative-fields guarantee as [`Self::generate_recap`]
     /// applies: `duration_secs`, `phrase_count`, and `instrument` are
     /// overwritten from this session regardless of what the generator emits.
+    // One parameter per store-owned context fact the command layer joins at
+    // coaching time — the count is the join point's honest shape.
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_recap_with_context(
         &self,
         generator: &dyn RecapGenerator,
@@ -615,12 +636,14 @@ impl CompletedSession {
         note_verdicts: Vec<crate::follower::NoteVerdict>,
         instrument_family: String,
         history_suggestions: Vec<crate::insights::PracticeSuggestion>,
+        method_book_tip: Option<crate::pedagogy::PedagogyEntry>,
     ) -> Result<SessionRecap, SessionError> {
         let mut input = self.to_recap_input_with_idioms(idiom_notes);
         input.taste_profile = profile;
         input.note_verdicts = note_verdicts;
         input.instrument_family = instrument_family;
         input.history_suggestions = history_suggestions;
+        input.method_book_tip = method_book_tip;
         let mut recap = generator.generate_recap(&input).await?;
         recap.duration_secs = self.duration_secs;
         recap.phrase_count = self.phrase_count();
