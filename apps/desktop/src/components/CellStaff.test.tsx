@@ -525,3 +525,291 @@ describe("CellStaff — extreme registers (Monday review)", () => {
     expect(byCx[0]).toBeLessThan(byCx[1]);
   });
 });
+
+describe("CellStaff — accidental spacing (#471-1)", () => {
+  // Geometry model shared with the #445 pins: a notehead is cx±5.5 / cy±4.2;
+  // an in-line accidental anchors END at its x with ~8px of body and ~13px of
+  // ink height; a hoisted cue glyph anchors MIDDLE at fontSize 10 (~6px wide,
+  // ~10px tall). Boxes are computed from RENDERED attributes so the tests
+  // measure what the user sees, not what the implementation intended.
+  type Box = { l: number; r: number; t: number; b: number };
+  const headBox = (dot: Element): Box => {
+    const cx = Number(dot.getAttribute("cx"));
+    const cy = Number(dot.getAttribute("cy"));
+    return { l: cx - 5.5, r: cx + 5.5, t: cy - 4.2, b: cy + 4.2 };
+  };
+  const accBox = (acc: Element): Box => {
+    const x = Number(acc.getAttribute("x"));
+    const y = Number(acc.getAttribute("y"));
+    return acc.getAttribute("text-anchor") === "middle"
+      ? { l: x - 3, r: x + 3, t: y - 5, b: y + 5 }
+      : { l: x - 8, r: x, t: y - 6.5, b: y + 6.5 };
+  };
+  /** Largest separation on any side; ≥ 2 means the boxes read as distinct. */
+  const clearance = (a: Box, h: Box) =>
+    Math.max(h.l - a.r, a.l - h.r, h.t - a.b, a.t - h.b);
+  /** Min clearance between every accidental and every notehead on screen. */
+  const minClearance = () => {
+    const accs = screen.getAllByTestId("staff-accidental").map(accBox);
+    const heads = screen.getAllByTestId("staff-dot").map(headBox);
+    return Math.min(...accs.flatMap((a) => heads.map((h) => clearance(a, h))));
+  };
+
+  // A dense chromatic bar: 8 eighth-note columns (~12.3px apart — far below
+  // the measured 26.5px an in-line accidental needs), sharps on the
+  // chromatic tones. This is the founder's bug: before the fix the C#'s
+  // glyph sits ~6.8px INSIDE the C's notehead.
+  const dense = () =>
+    view(
+      [
+        note({ midi: 60, step: -2, duration_beats: 0.5 }),
+        note({
+          midi: 61,
+          step: -2,
+          start_beat: 0.5,
+          duration_beats: 0.5,
+          accidental: 1,
+          is_root: false,
+        }),
+        note({
+          midi: 62,
+          step: -1,
+          start_beat: 1,
+          duration_beats: 0.5,
+          is_root: false,
+        }),
+        note({
+          midi: 63,
+          step: -1,
+          start_beat: 1.5,
+          duration_beats: 0.5,
+          accidental: 1,
+          is_root: false,
+        }),
+        note({
+          midi: 64,
+          step: 0,
+          start_beat: 2,
+          duration_beats: 0.5,
+          is_root: false,
+        }),
+        note({
+          midi: 65,
+          step: 1,
+          start_beat: 2.5,
+          duration_beats: 0.5,
+          is_root: false,
+        }),
+        note({
+          midi: 66,
+          step: 1,
+          start_beat: 3,
+          duration_beats: 0.5,
+          accidental: 1,
+          is_root: false,
+        }),
+        note({
+          midi: 67,
+          step: 2,
+          start_beat: 3.5,
+          duration_beats: 0.5,
+          is_root: false,
+        }),
+      ],
+      { total_beats: 4 },
+    );
+
+  // #471-1 AC1: no accidental may sit on any notehead, however dense the
+  // bar. Fails before the fix (clearance ≈ −6.8px: glyph inside the
+  // previous head) and again if the hoist rise/clearance regresses.
+  it("dense chromatic bars keep every accidental clear of every notehead", () => {
+    render(<CellStaff staff={dense()} />);
+    expect(screen.getAllByTestId("staff-accidental")).toHaveLength(3);
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+  });
+
+  // #471-1 AC2: the space comes from the GLYPH, never the noteheads — in
+  // the default stemless view horizontal position is the only rhythm
+  // signal, so straight eighths must stay evenly spaced. Fails if collision
+  // handling re-spaces columns (weighted layout).
+  it("resolving collisions never moves a notehead", () => {
+    const positions = (dots: HTMLElement[]) =>
+      dots.map((d) => `${d.getAttribute("cx")},${d.getAttribute("cy")}`);
+    const bare = view(
+      dense().notes.map((n) => ({ ...n, accidental: null })),
+      { total_beats: 4 },
+    );
+    const a = render(<CellStaff staff={bare} />);
+    const before = positions(a.getAllByTestId("staff-dot"));
+    a.unmount();
+    render(<CellStaff staff={dense()} />);
+    const after = screen.getAllByTestId("staff-dot");
+    expect(positions(after)).toEqual(before);
+    const cx = after.map((d) => Number(d.getAttribute("cx")));
+    for (let i = 2; i < cx.length; i++) {
+      expect(cx[i] - cx[i - 1]).toBeCloseTo(cx[1] - cx[0], 5);
+    }
+  });
+
+  // #471-1 AC3: when nothing collides the engraving is untouched — the
+  // in-line glyph at column-left exactly as before this fix. Fails if the
+  // collision pass rewrites sparse layouts.
+  it("sparse measures keep the in-line engraving untouched", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 61, step: -2, accidental: 1 }),
+          note({
+            midi: 63,
+            step: -1,
+            start_beat: 2,
+            accidental: 1,
+            is_root: false,
+          }),
+        ])}
+      />,
+    );
+    const accs = screen.getAllByTestId("staff-accidental");
+    const dots = screen.getAllByTestId("staff-dot");
+    expect(accs).toHaveLength(2);
+    accs.forEach((acc, i) => {
+      expect(acc.getAttribute("text-anchor")).toBe("end");
+      expect(acc.getAttribute("font-size")).toBe("13");
+      expect(acc).not.toHaveAttribute("data-dodged");
+      expect(Number(acc.getAttribute("x"))).toBeCloseTo(
+        Number(dots[i].getAttribute("cx")) - 11,
+        5,
+      );
+    });
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+  });
+
+  // #471-1 AC3 (the 2D honesty pin): quarter columns are only 24.6px apart
+  // — horizontally inside the in-line demand — but 3+ staff steps of
+  // vertical separation already clears the glyph, so it must STAY in-line.
+  // Fails if the dodge triggers on horizontal proximity alone
+  // (over-hoisting every tight bar).
+  it("vertical separation keeps tight columns in-line", () => {
+    render(
+      <CellStaff
+        staff={view([
+          note({ midi: 61, step: -2, accidental: 1 }),
+          note({
+            midi: 66,
+            step: 1,
+            start_beat: 1,
+            accidental: 1,
+            is_root: false,
+          }),
+          note({
+            midi: 70,
+            step: 4,
+            start_beat: 2,
+            accidental: -1,
+            is_root: false,
+          }),
+          note({
+            midi: 75,
+            step: 7,
+            start_beat: 3,
+            accidental: 1,
+            is_root: false,
+          }),
+        ])}
+      />,
+    );
+    for (const acc of screen.getAllByTestId("staff-accidental")) {
+      expect(acc.getAttribute("text-anchor")).toBe("end");
+      expect(acc).not.toHaveAttribute("data-dodged");
+    }
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+  });
+
+  // #471-1 AC4: a stacked second (offset head +9) inside a dense bar — the
+  // combined case. Clearance must hold against the SHIFTED head too, and a
+  // hoisted glyph centers on the column, never riding the +9 offset (the
+  // #349 T2a rule extended: accidentals belong to the column).
+  it("stacked second with accidentals stays clear in a dense bar", () => {
+    render(
+      <CellStaff
+        staff={view(
+          [
+            note({ midi: 60, step: -2, duration_beats: 0.5 }),
+            // Stacked second on beat 0.5: D + Eb (Eb takes the +9 shift).
+            note({
+              midi: 62,
+              step: -1,
+              start_beat: 0.5,
+              duration_beats: 0.5,
+              is_root: false,
+            }),
+            note({
+              midi: 63,
+              step: 0,
+              start_beat: 0.5,
+              duration_beats: 0.5,
+              accidental: -1,
+              is_root: false,
+            }),
+            note({
+              midi: 66,
+              step: 1,
+              start_beat: 1,
+              duration_beats: 0.5,
+              accidental: 1,
+              is_root: false,
+            }),
+          ],
+          { total_beats: 4 },
+        )}
+      />,
+    );
+    expect(minClearance()).toBeGreaterThanOrEqual(2);
+    // The Eb hoists (C's head sits 12.3px left, one step below): its glyph
+    // centers on the COLUMN x — the unshifted D's cx — not on Eb's +9 head.
+    const ebAcc = screen
+      .getByTestId("staff-note-63-0.5")
+      .querySelector('[data-testid="staff-accidental"]')!;
+    expect(ebAcc.getAttribute("text-anchor")).toBe("middle");
+    const dCx = Number(
+      screen
+        .getByTestId("staff-note-62-0.5")
+        .querySelector('[data-testid="staff-dot"]')!
+        .getAttribute("cx"),
+    );
+    expect(Number(ebAcc.getAttribute("x"))).toBeCloseTo(dCx, 5);
+  });
+
+  // #471-1 AC5: a hoisted glyph above a high column must stay ON canvas —
+  // the viewBox grows upward to cover it (the no-vanish rule extends to
+  // accidentals). Fails if the hoist can place ink above viewBox.minY.
+  it("grows the viewBox to keep a hoisted accidental visible", () => {
+    render(
+      <CellStaff
+        staff={view(
+          [
+            note({ midi: 84, step: 12, duration_beats: 0.5 }),
+            note({
+              midi: 85,
+              step: 12,
+              start_beat: 0.5,
+              duration_beats: 0.5,
+              accidental: 1,
+              is_root: false,
+            }),
+          ],
+          { total_beats: 4 },
+        )}
+      />,
+    );
+    const acc = screen.getByTestId("staff-accidental");
+    expect(acc.getAttribute("text-anchor")).toBe("middle"); // it hoisted
+    const [, minY] = document
+      .querySelector("svg")!
+      .getAttribute("viewBox")!
+      .split(" ")
+      .map(Number);
+    // Cue glyph ink extends ~5px above its center.
+    expect(minY).toBeLessThanOrEqual(Number(acc.getAttribute("y")) - 5);
+  });
+});

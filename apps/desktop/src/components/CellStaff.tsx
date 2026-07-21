@@ -47,6 +47,35 @@ const NOTE_INSET_L = 22;
  * ledger-line overhang (+9 from the shifted head) — review N1: the intent
  * is notes live INSIDE their measure, shifted heads included. */
 const NOTE_INSET_R = 24;
+/** #471-1 accidental collision model. An in-line glyph anchors
+ * textAnchor=end at column x−ACC_ANCHOR with ~ACC_W px of body: box
+ * [x−19, x−11]. A notehead is cx±HEAD_RX / cy±HEAD_RY. Measured: adjacent
+ * columns need ≥ 26.5px for ACC_CLEAR of daylight (24.5 = touching), but a
+ * full eighth-note measure spaces columns ~12.3px — so dense chromatic
+ * bars CANNOT be solved horizontally inside the founder's fixed-width
+ * no-scroll measures (8 columns would need 185.5px of the 98.5px span).
+ * Colliding glyphs instead HOIST: cue size, centered above their own
+ * column (the editorial/ficta convention). The noteheads NEVER move — in
+ * the default stemless view horizontal position is the only rhythm signal,
+ * and widening accidental columns would fake a syncopation. */
+const ACC_ANCHOR = 11;
+const ACC_W = 8;
+/** Half-height of the in-line glyph's ink (fontSize 13). */
+const ACC_HALF_H = 6.5;
+const HEAD_RX = 5.5;
+const HEAD_RY = 4.2;
+/** A glyph within this of a foreign notehead on BOTH axes is a collision —
+ * vertical separation alone (≥ 3 staff steps at quarter spacing) keeps a
+ * glyph honestly in-line. */
+const ACC_CLEAR = 2;
+const ACC_CUE_SIZE = 10;
+/** Cue-glyph ink half-height (fontSize 10). */
+const ACC_CUE_HALF_H = 5;
+/** Head-center → hoisted-glyph-center rise: HEAD_RY + ACC_CLEAR +
+ * ACC_CUE_HALF_H, rounded up so the glyph clears its own head. */
+const ACC_DODGE_RISE = 12;
+/** Extra rise per additional hoisted glyph stacked over one column. */
+const ACC_DODGE_STACK = 11;
 /** Vertical gap between stacked systems. */
 const SYSTEM_GAP = LINE_GAP;
 const RIGHT_PAD = 12;
@@ -95,6 +124,7 @@ function Dot({
   note,
   x,
   headOffset = 0,
+  accDodgeY,
   showRhythms,
   selected,
   ghostSteps,
@@ -107,6 +137,10 @@ function Dot({
    * second. Moves the head/halo/stem — never the accidental, which stays
    * left of the whole chord column per engraving convention. */
   headOffset?: number;
+  /** #471-1: when set, the accidental HOISTS — cue glyph centered above the
+   * column at this y — because its in-line box would sit on a neighboring
+   * notehead. Undefined = the classic in-line engraving, byte-identical. */
+  accDodgeY?: number;
   showRhythms: boolean;
   selected: boolean;
   /** Live drag preview: diatonic steps the ghost has moved (0 = at rest). */
@@ -139,19 +173,37 @@ function Dot({
           strokeWidth={1}
         />
       ))}
-      {note.accidental !== null && (
-        <text
-          x={x - 11}
-          y={y}
-          textAnchor="end"
-          dominantBaseline="central"
-          className="fill-gray-300"
-          fontSize={13}
-          data-testid="staff-accidental"
-        >
-          {accidentalGlyph(note.accidental)}
-        </text>
-      )}
+      {note.accidental !== null &&
+        (accDodgeY === undefined ? (
+          <text
+            x={x - ACC_ANCHOR}
+            y={y}
+            textAnchor="end"
+            dominantBaseline="central"
+            className="fill-gray-300"
+            fontSize={13}
+            data-testid="staff-accidental"
+          >
+            {accidentalGlyph(note.accidental)}
+          </text>
+        ) : (
+          // #471-1 hoisted form: the in-line slot is occupied by a neighbor
+          // notehead, so the glyph rides above its own column — cue size,
+          // the editorial (ficta) placement. Follows the drag ghost like
+          // the in-line form does.
+          <text
+            x={x}
+            y={accDodgeY - ghostSteps * STEP}
+            textAnchor="middle"
+            dominantBaseline="central"
+            className="fill-gray-300"
+            fontSize={ACC_CUE_SIZE}
+            data-testid="staff-accidental"
+            data-dodged="true"
+          >
+            {accidentalGlyph(note.accidental)}
+          </text>
+        ))}
       {selected && (
         <circle
           cx={headX}
@@ -169,8 +221,8 @@ function Dot({
       <ellipse
         cx={headX}
         cy={y}
-        rx={5.5}
-        ry={4.2}
+        rx={HEAD_RX}
+        ry={HEAD_RY}
         fill={
           note.is_root ? colorForPitchClass(note.midi % 12) : RV_NON_ROOT_FILL
         }
@@ -347,7 +399,71 @@ export default function CellStaff({
     )
       ? 9
       : 0;
-  const [vbMinY, bandHeight] = viewBoxFor(visible.map(({ n }) => n.step));
+  // #471-1: accidental collision pass — pure geometry over the layout the
+  // notes already have. An accidental whose in-line box would land within
+  // ACC_CLEAR of any same-system notehead box (BOTH axes — vertical
+  // separation keeps a glyph honestly in-line) hoists above its column.
+  // Sparse layouts take the `undefined` path everywhere: byte-identical.
+  const placed = visible.map(({ n, index }) => {
+    const colX = xFor(n.start_beat);
+    return {
+      n,
+      index,
+      colX,
+      headX: colX + secondOffset(n),
+      y: yFor(n.step),
+      sys: systemOf(n.start_beat),
+    };
+  });
+  const collidesInline = (a: (typeof placed)[number]) =>
+    placed.some((p) => {
+      if (p.sys !== a.sys) return false;
+      const accL = a.colX - ACC_ANCHOR - ACC_W;
+      const accR = a.colX - ACC_ANCHOR;
+      const gapX = Math.max(
+        p.headX - HEAD_RX - accR,
+        accL - (p.headX + HEAD_RX),
+      );
+      const gapY = Math.max(
+        p.y - HEAD_RY - (a.y + ACC_HALF_H),
+        a.y - ACC_HALF_H - (p.y + HEAD_RY),
+      );
+      return gapX < ACC_CLEAR && gapY < ACC_CLEAR;
+    });
+  // Topmost head of each occupied column — hoisted glyphs rise above it.
+  const colTop = new Map<string, number>();
+  for (const p of placed) {
+    const key = `${p.sys}:${p.n.start_beat}`;
+    const cur = colTop.get(key);
+    if (cur === undefined || p.y < cur) colTop.set(key, p.y);
+  }
+  /** note index → hoisted glyph center y (undefined = in-line). */
+  const accDodge = new Map<number, number>();
+  {
+    const stacked = new Map<string, number>();
+    const hoisted = placed
+      .filter((p) => p.n.accidental !== null && collidesInline(p))
+      // Higher note's glyph sits nearest the heads when a column stacks.
+      .sort((a, b) => b.n.step - a.n.step);
+    for (const p of hoisted) {
+      const key = `${p.sys}:${p.n.start_beat}`;
+      const k = stacked.get(key) ?? 0;
+      stacked.set(key, k + 1);
+      accDodge.set(
+        p.index,
+        (colTop.get(key) ?? p.y) - ACC_DODGE_RISE - k * ACC_DODGE_STACK,
+      );
+    }
+  }
+  const [rawMinY, rawHeight] = viewBoxFor(visible.map(({ n }) => n.step));
+  // No-vanish rule extends to hoisted glyphs: the band grows upward to
+  // cover their ink (+ACC_CLEAR of margin), for every system's stride.
+  const accTop = Math.min(
+    rawMinY,
+    ...[...accDodge.values()].map((y) => y - ACC_CUE_HALF_H - ACC_CLEAR),
+  );
+  const vbMinY = accTop;
+  const bandHeight = rawHeight + (rawMinY - accTop);
   const systemStride = bandHeight + SYSTEM_GAP;
   const vbHeight = systems * bandHeight + (systems - 1) * SYSTEM_GAP;
   vbHeightRef.current = vbHeight;
@@ -439,6 +555,7 @@ export default function CellStaff({
                     note={n}
                     x={xFor(n.start_beat)}
                     headOffset={secondOffset(n)}
+                    accDodgeY={accDodge.get(index)}
                     showRhythms={showRhythms}
                     selected={selected === index}
                     ghostSteps={drag.current?.index === index ? ghostSteps : 0}
