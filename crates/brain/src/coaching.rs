@@ -5267,15 +5267,25 @@ mod tests {
         );
     }
 
+    /// #470 (deadline: with T2): for this test's name to mean anything the
+    /// body must ACTUALLY fail to parse. `parse_recap_json` is deliberately
+    /// forgiving with valid-JSON-wrong-keys bodies — the old
+    /// `{"invalid": "json", "structure": true}` payload PARSED into
+    /// all-canned-defaults and this test never exercised the fallback path
+    /// it names. PROSE is the shape that errors (the #453/#454-era garbled
+    /// test above pins the same fact), so the inner text is prose here: the
+    /// parse fails, the engine serves the offline fallback, and the
+    /// narration flag stays honest (`recap_used_llm() == false` — the flag
+    /// means "a response parsed", issue #470 option b).
     #[tokio::test]
     async fn generate_recap_handles_malformed_response() {
         use crate::session::RecapInput;
 
-        let malformed = r#"{"invalid": "json", "structure": true}"#;
-        let anthropic_response = format!(
-            r#"{{"content": [{{"type": "text", "text": "{}"}}]}}"#,
-            malformed.replace('"', "\\\"")
-        );
+        let anthropic_response = serde_json::json!({
+            "content": [{ "type": "text",
+                          "text": "Sorry — here is prose, not the JSON recap you asked for." }]
+        })
+        .to_string();
 
         let mock = MockHttpClient::succeeding(&anthropic_response);
         let engine = online_engine(
@@ -5292,7 +5302,14 @@ mod tests {
             instrument_family: String::new(),
             duration_secs: 3600.0,
             practice_mode: crate::session::PracticeMode::default(),
-            phrases: vec![sample_phrase(); 2],
+            // Round 3: the input must CLEAR the thin bar or the engine
+            // short-circuits to the thin-session recap BEFORE any HTTP and
+            // the prose body is never even fetched (a vacuous pass — the
+            // old 2-phrase/3 s input did exactly that). 14 × 1.5 s = 21 s
+            // played ≥ THIN_SESSION_MIN_PLAYED_SECS (20) and 14 ≥ 3
+            // phrases; note 3 phrases alone is NOT enough (4.5 s still
+            // trips the seconds bar).
+            phrases: vec![sample_phrase(); 14],
             tips: vec![],
             score_title: None,
             note_verdicts: Vec::new(),
@@ -5307,6 +5324,13 @@ mod tests {
         assert_eq!(recap.instrument, "piano");
         assert!(!recap.overall_assessment.is_empty());
         assert!(recap.strengths.is_empty() || !recap.strengths[0].is_empty());
+        // The teeth: a malformed body serves the FALLBACK and journals no
+        // narration — a mutant that flags any Ok(body) as "used" dies here,
+        // as does a parser change that starts "accepting" prose.
+        assert!(
+            !engine.recap_used_llm(),
+            "a malformed body must fall back, not count as a fired narration"
+        );
     }
 
     // -----------------------------------------------------------------------

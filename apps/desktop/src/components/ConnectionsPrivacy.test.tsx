@@ -58,6 +58,7 @@ describe("ConnectionsPrivacy", () => {
     useConnectionsStore.setState({
       cloudSyncEnabled: false,
       teacherSharingEnabled: false,
+      dashboardSyncEnabled: false,
     });
   });
 
@@ -88,7 +89,7 @@ describe("ConnectionsPrivacy", () => {
     // REAL opt-in above it: automatic update checks. Count is pinned so a
     // networked toggle can't appear without landing in this test.
     expect(screen.queryByRole("switch", { name: /^App updates/i })).toBeNull();
-    expect(switches.length).toBe(4);
+    expect(switches.length).toBe(5);
 
     // Named, so a regression that flips one on is caught by feature.
     expect(
@@ -109,6 +110,14 @@ describe("ConnectionsPrivacy", () => {
         }) as HTMLInputElement
       ).checked,
     ).toBe(false);
+    // #449 T2: the dashboard projection — off by default, like everything.
+    expect(
+      (
+        screen.getByRole("switch", {
+          name: /Share practice details with your teacher/i,
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
     // #58: automatic update checks — the shipped promise is off-by-default.
     expect(
       (
@@ -125,7 +134,67 @@ describe("ConnectionsPrivacy", () => {
     const s = useConnectionsStore.getState();
     expect(s.cloudSyncEnabled).toBe(false);
     expect(s.teacherSharingEnabled).toBe(false);
+    expect(s.dashboardSyncEnabled).toBe(false);
     expect(useConnectionsStore.getState().autoUpdateCheckEnabled).toBe(false);
+  });
+
+  // #449 T2 AC8: the dashboard-sync disclosure — what leaves, to whom, what
+  // never leaves — with the toggle gated on cloud sync and off by default.
+  it("discloses the teacher-dashboard projection: payload, audience, and the never-leaves list", () => {
+    render(<ConnectionsPrivacy />);
+    const sw = screen.getByRole("switch", {
+      name: /Share practice details with your teacher/i,
+    }) as HTMLInputElement;
+    expect(sw.checked).toBe(false);
+    // Meaningless without cloud sync — disabled until it's on.
+    expect(sw.disabled).toBe(true);
+
+    const row = sw.closest("div.rounded-lg");
+    expect(row).not.toBeNull();
+    const inRow = within(row as HTMLElement);
+    // What leaves: session facts, phrase timings, exercise labels, tool use.
+    expect(
+      inRow.getByText(
+        /minutes of actual playing vs\. minutes the app was open/i,
+      ),
+    ).toBeTruthy();
+    expect(inRow.getByText(/start and end times of each phrase/i)).toBeTruthy();
+    expect(inRow.getByText(/names and scores of exercises/i)).toBeTruthy();
+    expect(inRow.getByText(/metronome on\/off and tempo/i)).toBeTruthy();
+    // Review round 1 MF3: the copy must enumerate EVERYTHING that crosses —
+    // the piece title (the dim_material label), score opens (the piece's
+    // id), and that AI narration was used.
+    expect(inRow.getByText(/title of any piece you practiced/i)).toBeTruthy();
+    expect(inRow.getByText(/when you opened a piece — its id/i)).toBeTruthy();
+    expect(
+      inRow.getByText(/whether the AI coach's narration was used/i),
+    ).toBeTruthy();
+    // To whom.
+    expect(
+      inRow.getByText(/teacher you joined through a classroom code/i),
+    ).toBeTruthy();
+    // What never leaves — the question parents actually ask.
+    expect(
+      inRow.getByText(
+        /never sends your audio recording, the actual notes you played, or your saved exercise recipes and seeds/i,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("the dashboard toggle enables with cloud sync and withdraws when sync turns off", () => {
+    useConnectionsStore.setState({ cloudSyncEnabled: true });
+    render(<ConnectionsPrivacy />);
+    const sw = screen.getByRole("switch", {
+      name: /Share practice details with your teacher/i,
+    }) as HTMLInputElement;
+    expect(sw.disabled).toBe(false);
+
+    fireEvent.click(sw);
+    expect(useConnectionsStore.getState().dashboardSyncEnabled).toBe(true);
+
+    // Withdrawing cloud sync withdraws the projection that rides on it.
+    useConnectionsStore.getState().setCloudSyncEnabled(false);
+    expect(useConnectionsStore.getState().dashboardSyncEnabled).toBe(false);
   });
 
   it("renders the disclosure copy: what is sent, to whom, and the offline reassurance", () => {

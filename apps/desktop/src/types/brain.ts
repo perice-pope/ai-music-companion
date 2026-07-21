@@ -684,6 +684,84 @@ export interface StoredSessionDto {
   recap: SessionRecap;
 }
 
+// ---------------------------------------------------------------------------
+// #449 T2: dashboard sync projection DTOs (device → cloud, doc §2 P1–P4).
+// Mirrors `commands.rs` — these are the ONLY shapes the sync layer reads on
+// the projection path. Privacy is structural: `ExerciseFactRow` has no
+// `spec_json`/`seed`, `PhraseFactDto` has no onsets/pitch curves; the
+// type-level pins in `syncStore.ts` fail compilation if that changes.
+// ---------------------------------------------------------------------------
+
+/** The score practised in a session — the `dim_material` score row's source. */
+export interface ScoreRefDto {
+  score_id: string;
+  title: string;
+}
+
+/** P1: one `fact_session` row's device-side fields. Matches `commands::SessionFactDto`. */
+export interface SessionFactDto {
+  /** Device session id — the cloud idempotency key. */
+  id: string;
+  started_at: string; // RFC 3339
+  ended_at: string; // RFC 3339
+  duration_secs: number;
+  phrase_count: number;
+  instrument: string;
+  practice_mode: string | null;
+  app_version: string | null;
+  played_secs: number | null;
+  note_count: number | null;
+  silence_ratio: number | null;
+  fingerprint: MusicalFingerprint | null;
+  score: ScoreRefDto | null;
+}
+
+/** P2: one THIN `fact_phrase` row. Matches `commands::PhraseFactDto`. */
+export interface PhraseFactDto {
+  phrase_index: number;
+  start_secs: number;
+  end_secs: number;
+  note_count: number;
+  stability: number;
+  tone: ToneDescriptor | null;
+  key_name: string | null;
+}
+
+/**
+ * P4: one `fact_tool_event` row. Matches `commands::ToolEventFactDto`.
+ * Semantics caveat (#470 option b) documented at the projection site in
+ * `syncStore.ts` (`buildFactToolEventRows`).
+ */
+export interface ToolEventFactDto {
+  device_event_id: number;
+  at_secs: number;
+  kind: string;
+  params_json: string;
+}
+
+/** One closed session's P1+P2+P4 payload. Matches `commands::SessionProjectionDto`. */
+export interface SessionProjectionDto {
+  session: SessionFactDto;
+  phrases: PhraseFactDto[];
+  events: ToolEventFactDto[];
+}
+
+/**
+ * P3: one exercise-log row shaped for the projection. Matches
+ * `brain::store::ExerciseFactRow` — which structurally has NO
+ * `spec_json`/`seed` (doc §2 P3: they stay local).
+ */
+export interface ExerciseFactRow {
+  id: number;
+  logged_at: string;
+  source: string;
+  label: string;
+  spec_hash: string;
+  difficulty: number;
+  tonic: number;
+  accuracy: number | null;
+}
+
 /**
  * Coarse, self-reported experience level. Mirrors
  * `brain::store::ExperienceLevel`, which serialises in `snake_case`. Shapes

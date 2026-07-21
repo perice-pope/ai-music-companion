@@ -3,6 +3,10 @@
 // Source of truth for the schema is supabase/migrations/*.sql.
 // NOTE: `learner_model` (migration 0005) was added by hand while the project
 // is paused — regenerate to confirm once the migration is applied.
+// NOTE: the #449 T3 star-schema tables (`dim_material`, `fact_session`,
+// `fact_phrase`, `fact_exercise`, `fact_tool_event` — migration 0006) were
+// added by hand, column-for-column against the migration (a drifted column
+// name here means silent 400s on the T2 projection) — regenerate to confirm.
 
 export type Json =
   | string
@@ -63,6 +67,262 @@ export type Database = {
           {
             foreignKeyName: "assignments_teacher_id_fkey";
             columns: ["teacher_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      // ── #449 T3 star schema (migration 0006), hand-added. ──────────────
+      // Columns cite 0006 by table; deliberate absences are the privacy
+      // contract: fact_exercise has NO spec_json/seed columns, fact_phrase
+      // has NO phrase_json/onsets columns (doc §2 P2/P3, 0006 comments).
+      dim_material: {
+        Row: {
+          created_at: string;
+          kind: string;
+          label: string;
+          material_id: string;
+          score_id: string | null;
+          source: string;
+          spec_hash: string | null;
+        };
+        Insert: {
+          created_at?: string;
+          kind: string;
+          label: string;
+          material_id?: string;
+          score_id?: string | null;
+          source: string;
+          spec_hash?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          kind?: string;
+          label?: string;
+          material_id?: string;
+          score_id?: string | null;
+          source?: string;
+          spec_hash?: string | null;
+        };
+        Relationships: [];
+      };
+      fact_session: {
+        Row: {
+          app_version: string | null;
+          created_at: string;
+          device_session_id: string;
+          duration_secs: number;
+          ended_at: string | null;
+          fingerprint: Json | null;
+          instrument: string | null;
+          note_count: number | null;
+          phrase_count: number;
+          played_secs: number | null;
+          practice_mode: string | null;
+          score_material_id: string | null;
+          session_id: string;
+          silence_ratio: number | null;
+          started_at: string;
+          student_id: string;
+        };
+        Insert: {
+          app_version?: string | null;
+          created_at?: string;
+          device_session_id: string;
+          duration_secs: number;
+          ended_at?: string | null;
+          fingerprint?: Json | null;
+          instrument?: string | null;
+          note_count?: number | null;
+          phrase_count?: number;
+          played_secs?: number | null;
+          practice_mode?: string | null;
+          score_material_id?: string | null;
+          session_id?: string;
+          silence_ratio?: number | null;
+          started_at: string;
+          student_id: string;
+        };
+        Update: {
+          app_version?: string | null;
+          created_at?: string;
+          device_session_id?: string;
+          duration_secs?: number;
+          ended_at?: string | null;
+          fingerprint?: Json | null;
+          instrument?: string | null;
+          note_count?: number | null;
+          phrase_count?: number;
+          played_secs?: number | null;
+          practice_mode?: string | null;
+          score_material_id?: string | null;
+          session_id?: string;
+          silence_ratio?: number | null;
+          started_at?: string;
+          student_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fact_session_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "fact_session_score_material_id_fkey";
+            columns: ["score_material_id"];
+            isOneToOne: false;
+            referencedRelation: "dim_material";
+            referencedColumns: ["material_id"];
+          },
+        ];
+      };
+      fact_phrase: {
+        Row: {
+          end_secs: number;
+          key_name: string | null;
+          note_count: number | null;
+          phrase_index: number;
+          session_id: string;
+          stability: number | null;
+          start_secs: number;
+          tone: Json | null;
+        };
+        Insert: {
+          end_secs: number;
+          key_name?: string | null;
+          note_count?: number | null;
+          phrase_index: number;
+          session_id: string;
+          stability?: number | null;
+          start_secs: number;
+          tone?: Json | null;
+        };
+        Update: {
+          end_secs?: number;
+          key_name?: string | null;
+          note_count?: number | null;
+          phrase_index?: number;
+          session_id?: string;
+          stability?: number | null;
+          start_secs?: number;
+          tone?: Json | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fact_phrase_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "fact_session";
+            referencedColumns: ["session_id"];
+          },
+        ];
+      };
+      fact_exercise: {
+        Row: {
+          accuracy: number | null;
+          created_at: string;
+          device_log_id: number | null;
+          difficulty: number;
+          exercise_id: string;
+          logged_at: string;
+          material_id: string;
+          session_id: string | null;
+          student_id: string;
+          tonic: number;
+        };
+        Insert: {
+          accuracy?: number | null;
+          created_at?: string;
+          device_log_id?: number | null;
+          difficulty: number;
+          exercise_id?: string;
+          logged_at: string;
+          material_id: string;
+          session_id?: string | null;
+          student_id: string;
+          tonic: number;
+        };
+        Update: {
+          accuracy?: number | null;
+          created_at?: string;
+          device_log_id?: number | null;
+          difficulty?: number;
+          exercise_id?: string;
+          logged_at?: string;
+          material_id?: string;
+          session_id?: string | null;
+          student_id?: string;
+          tonic?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fact_exercise_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "fact_exercise_material_id_fkey";
+            columns: ["material_id"];
+            isOneToOne: false;
+            referencedRelation: "dim_material";
+            referencedColumns: ["material_id"];
+          },
+          {
+            foreignKeyName: "fact_exercise_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "fact_session";
+            referencedColumns: ["session_id"];
+          },
+        ];
+      };
+      fact_tool_event: {
+        Row: {
+          at_secs: number;
+          created_at: string;
+          device_event_id: number | null;
+          event_id: string;
+          kind: string;
+          params: Json;
+          session_id: string;
+          student_id: string;
+        };
+        Insert: {
+          at_secs: number;
+          created_at?: string;
+          device_event_id?: number | null;
+          event_id?: string;
+          kind: string;
+          params?: Json;
+          session_id: string;
+          student_id: string;
+        };
+        Update: {
+          at_secs?: number;
+          created_at?: string;
+          device_event_id?: number | null;
+          event_id?: string;
+          kind?: string;
+          params?: Json;
+          session_id?: string;
+          student_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fact_tool_event_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "fact_session";
+            referencedColumns: ["session_id"];
+          },
+          {
+            foreignKeyName: "fact_tool_event_student_id_fkey";
+            columns: ["student_id"];
             isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];

@@ -42,8 +42,8 @@ use brain::session::{
 };
 use brain::stats::PracticeStats;
 use brain::store::{
-    ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession, TasteProfile,
-    LOCAL_TASTE_PROFILE_USER_ID,
+    ExerciseFactRow, ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession,
+    TasteProfile, LOCAL_TASTE_PROFILE_USER_ID,
 };
 use chrono::{DateTime, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
@@ -2405,6 +2405,205 @@ pub fn get_practice_stats_impl(state: &AppState) -> Result<PracticeStatsDto, Com
 }
 
 // ---------------------------------------------------------------------------
+// #449 T2: the dashboard sync projection, device → cloud (doc §2, P1–P4)
+// ---------------------------------------------------------------------------
+//
+// These DTOs are THE shapes the frontend sync layer (`syncStore.ts`,
+// `syncDashboard`) may read on the projection path. They are read-only,
+// shaped here in Rust (house rule: no business logic in the frontend), and
+// they carry exactly the columns of the cloud star schema —
+// `supabase/migrations/0006_teacher_dashboard_star_schema.sql` — nothing
+// more. Privacy is structural: what a type doesn't have, no caller can leak.
+
+/// P1 — the local score practised in a session, for the `dim_material`
+/// score row (0006 `dim_material`: `score_id`, `label`, kind `'score'`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreRefDto {
+    pub score_id: String,
+    /// The piece title — the teacher-facing label (doc §2 P1 "score_id→title").
+    pub title: String,
+}
+
+/// P1 — one `fact_session` row's device-side fields (0006 `fact_session`:
+/// `device_session_id`, `started_at`, `ended_at`, `duration_secs`,
+/// `played_secs`, `note_count`, `silence_ratio`, `phrase_count`,
+/// `instrument`, `practice_mode`, `score_material_id`←[`ScoreRefDto`],
+/// `fingerprint`, `app_version`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionFactDto {
+    /// The `SessionRecorder` `SessionId` — the cloud idempotency key
+    /// (`fact_session.device_session_id`, unique per student).
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    /// Wall clock.
+    pub duration_secs: f64,
+    pub phrase_count: usize,
+    pub instrument: String,
+    /// Session-meta debug fields (`None` on older rows — honest absence).
+    pub practice_mode: Option<String>,
+    pub app_version: Option<String>,
+    /// #449 T1 integrity aggregates — computed once, in Rust, at session
+    /// close; projected verbatim, never re-derived (doc §1b/§2).
+    pub played_secs: Option<f64>,
+    pub note_count: Option<u64>,
+    pub silence_ratio: Option<f64>,
+    /// The evidence-gated fingerprint — already flows on the legacy push.
+    pub fingerprint: Option<brain::fingerprint::MusicalFingerprint>,
+    /// The score practised, when one was and it still exists locally.
+    pub score: Option<ScoreRefDto>,
+}
+
+/// P2 — one THIN `fact_phrase` row (0006 `fact_phrase`: `phrase_index`,
+/// `start_secs`, `end_secs`, `note_count`, `stability`, `tone`, `key_name`).
+///
+/// Deliberately not [`PhraseSummary`]: doc §2 P2, verbatim — "**Not** the
+/// full `phrase_json` — no onsets vector, no pitch curves". This type has
+/// no such fields, so the projection cannot send them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhraseFactDto {
+    pub phrase_index: usize,
+    /// One clock: seconds from session start (the #451 played-time clock).
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub note_count: usize,
+    pub stability: f64,
+    /// Flat descriptor only (five bounded floats).
+    pub tone: Option<tone::ToneDescriptor>,
+    /// Key estimate NAME ("G Mixolydian"); `None` when the evidence gate
+    /// failed — the dashboard must not out-claim the strip (#316).
+    pub key_name: Option<String>,
+}
+
+/// P4 — one `fact_tool_event` row (0006 `fact_tool_event`:
+/// `device_event_id`, `at_secs`, `kind`, `params`). `params_json` is
+/// ids-and-numbers-only by the T1 vocabulary (doc §1a); no content.
+///
+/// SEMANTICS CAVEAT (#470, option b — documented at the projection site on
+/// purpose): a `narration_used {"kind":"recap"}` event means **an LLM
+/// response parsed**, NOT "the shown recap text was LLM-authored". The
+/// recap parser is all-defaults-forgiving, so a valid-JSON-wrong-keys
+/// response still counts as "used" while every user-visible field is a
+/// canned default. Any dashboard reading of this event must say "narration
+/// requested/parsed", never "AI wrote this recap". Tightening the parser is
+/// #470's option (a), out of scope here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolEventFactDto {
+    /// Local `practice_events.id` — the cloud idempotency key
+    /// (`fact_tool_event.device_event_id`, unique per session).
+    pub device_event_id: i64,
+    /// One clock: seconds from session start (doc §1a).
+    pub at_secs: f64,
+    pub kind: String,
+    pub params_json: String,
+}
+
+/// Everything the sync layer needs to project ONE closed session up
+/// (P1 + P2 + P4). P3 (exercises) is session-unlinked locally and rides
+/// [`list_exercise_facts`] with its own watermark.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionProjectionDto {
+    pub session: SessionFactDto,
+    pub phrases: Vec<PhraseFactDto>,
+    pub events: Vec<ToolEventFactDto>,
+}
+
+/// Pure implementation of `get_session_projection`.
+pub fn get_session_projection_impl(
+    state: &AppState,
+    session_id: String,
+) -> Result<SessionProjectionDto, CommandError> {
+    use brain::session::SessionId;
+    let id = SessionId::from_str(&session_id)
+        .map_err(|_| CommandError::Store(brain::store::StoreError::NotFound(session_id)))?;
+    let store = state.session_store.lock_or_recover();
+    let stored = store.load(id)?;
+    let meta = store.session_meta(id)?;
+
+    // The score reference, when the session had one AND it still exists
+    // (deleted score → no material link; honest absence). Prefer the recap's
+    // own judged title, fall back to the library row.
+    let score = meta.score_id.as_ref().and_then(|sid| {
+        stored
+            .recap
+            .score_summary
+            .as_ref()
+            .map(|s| s.score_title.clone())
+            .or_else(|| store.score_title(sid).ok().flatten())
+            .map(|title| ScoreRefDto {
+                score_id: sid.clone(),
+                title,
+            })
+    });
+
+    // Integrity columns come from the persisted sessions row (computed once
+    // at close — doc §1b), via the same summary SELECT the History page uses.
+    let summary = store
+        .list_recent(10_000)?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| CommandError::Store(brain::store::StoreError::NotFound(id.as_str())))?;
+
+    let phrases = store
+        .load_phrases(id)?
+        .into_iter()
+        .map(|p| PhraseFactDto {
+            phrase_index: p.phrase_index,
+            start_secs: p.start_time,
+            end_secs: p.end_time,
+            note_count: p.note_count,
+            stability: p.stability,
+            tone: p.tone,
+            key_name: p.key.as_ref().map(brain::theory::KeyEstimate::name),
+        })
+        .collect();
+
+    let events = store
+        .list_practice_events(&id.as_str())?
+        .into_iter()
+        .map(|e| ToolEventFactDto {
+            device_event_id: e.id,
+            at_secs: e.at_secs,
+            kind: e.kind,
+            params_json: e.params_json,
+        })
+        .collect();
+
+    Ok(SessionProjectionDto {
+        session: SessionFactDto {
+            id: id.as_str(),
+            started_at: stored.started_at,
+            ended_at: stored.ended_at,
+            duration_secs: stored.recap.duration_secs,
+            phrase_count: stored.recap.phrase_count,
+            instrument: stored.recap.instrument.clone(),
+            practice_mode: meta.practice_mode,
+            app_version: meta.app_version,
+            played_secs: summary.played_secs,
+            note_count: summary.note_count,
+            silence_ratio: summary.silence_ratio,
+            fingerprint: stored.recap.fingerprint.clone(),
+            score,
+        },
+        phrases,
+        events,
+    })
+}
+
+/// Pure implementation of `list_exercise_facts` — P3 rows past the
+/// caller's watermark, `spec_json`/`seed` structurally absent (see
+/// [`ExerciseFactRow`]).
+pub fn list_exercise_facts_impl(
+    state: &AppState,
+    after_id: i64,
+) -> Result<Vec<ExerciseFactRow>, CommandError> {
+    Ok(state
+        .session_store
+        .lock_or_recover()
+        .list_exercise_facts_after(after_id)?)
+}
+
+// ---------------------------------------------------------------------------
 // Tauri command wrappers
 // ---------------------------------------------------------------------------
 
@@ -4652,6 +4851,30 @@ pub fn get_session_detail(
 #[tauri::command]
 pub fn get_practice_stats(state: State<'_, AppState>) -> Result<PracticeStatsDto, String> {
     get_practice_stats_impl(state.inner()).map_err(|e| e.to_frontend())
+}
+
+/// #449 T2: read ONE closed session shaped for the dashboard sync
+/// projection (P1 session fact + P2 thin phrases + P4 tool events).
+/// Read-only; the frontend `syncDashboard` is the only intended caller and
+/// only ever calls it behind the signed-in + cloud-sync + dashboard-sync
+/// gates (`connectionsStore`).
+#[tauri::command]
+pub fn get_session_projection(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionProjectionDto, String> {
+    get_session_projection_impl(state.inner(), session_id).map_err(|e| e.to_frontend())
+}
+
+/// #449 T2: read exercise-log rows past `after_id`, shaped for the P3
+/// projection — `spec_json`/`seed` structurally absent (see
+/// [`brain::store::ExerciseFactRow`]).
+#[tauri::command]
+pub fn list_exercise_facts(
+    state: State<'_, AppState>,
+    after_id: i64,
+) -> Result<Vec<ExerciseFactRow>, String> {
+    list_exercise_facts_impl(state.inner(), after_id).map_err(|e| e.to_frontend())
 }
 
 /// Get the student's locally-stored taste profile (genres, artists, goals,
@@ -10261,6 +10484,125 @@ mod tests {
         );
         log_practice_event_best_effort(&s, "score_open", serde_json::json!({"score_id": "y"}));
         assert_eq!(journal_len(&s), 1, "post-end writes journal nothing");
+    }
+
+    // -----------------------------------------------------------------------
+    // #449 T2: the dashboard sync projection readers (spec AC10 / AC4)
+    // -----------------------------------------------------------------------
+
+    /// AC10: `get_session_projection` returns the P1 fact (with the
+    /// close-time integrity aggregates and session meta), the P2 phrases,
+    /// and the P4 events for exactly the closed session. Fails if the
+    /// integrity columns stop flowing (the dashboard would re-derive and
+    /// drift) or events lose their device ids (idempotency key).
+    #[tokio::test]
+    async fn session_projection_carries_integrity_meta_phrases_and_events() {
+        let s = state();
+        let sid = start_session(&s).await;
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({"score_id": "x"}));
+        {
+            let mut guard = s.active_session.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(sample_phrase())
+                .unwrap();
+        }
+        end_practice_session_impl(&s).await.expect("session ends");
+
+        let proj = get_session_projection_impl(&s, sid.clone()).unwrap();
+        assert_eq!(proj.session.id, sid, "device_session_id is the local id");
+        assert_eq!(proj.session.instrument, "Trumpet");
+        assert_eq!(proj.session.practice_mode.as_deref(), Some("Practice"));
+        assert!(proj.session.app_version.is_some());
+        // Integrity: computed once at close (T1), projected verbatim.
+        let played = proj.session.played_secs.expect("played clock persisted");
+        assert!((played - 2.0).abs() < 1e-9, "Σ phrase spans = 2.0");
+        assert_eq!(proj.session.note_count, Some(6));
+        assert!(proj.session.silence_ratio.is_some());
+        assert!(proj.session.score.is_none(), "free play → no material link");
+
+        assert_eq!(proj.phrases.len(), 1);
+        let p = &proj.phrases[0];
+        assert_eq!(
+            (p.phrase_index, p.start_secs, p.end_secs, p.note_count),
+            (0, 0.0, 2.0, 6)
+        );
+        assert!(p.key_name.is_none(), "no key evidence → no key claim");
+
+        assert_eq!(proj.events.len(), 1);
+        assert_eq!(proj.events[0].kind, "score_open");
+        assert!(proj.events[0].device_event_id > 0, "cloud idempotency key");
+    }
+
+    /// AC4 (structural privacy pin, P2): the thin phrase DTO serializes
+    /// EXACTLY the doc-§2 field list — no `phrase_json`, no `onsets`, no
+    /// pitch curves. A field added to `PhraseFactDto` (or renamed) fails
+    /// here before it can widen what crosses on the sync path.
+    #[tokio::test]
+    async fn phrase_fact_dto_is_structurally_thin() {
+        let s = state();
+        let sid = start_session(&s).await;
+        {
+            let mut guard = s.active_session.lock().await;
+            let mut phrase = sample_phrase();
+            phrase.onsets_secs = vec![0.1, 0.5, 0.9]; // present locally…
+            guard
+                .as_mut()
+                .unwrap()
+                .recorder
+                .record_phrase(phrase)
+                .unwrap();
+        }
+        end_practice_session_impl(&s).await.expect("session ends");
+
+        let proj = get_session_projection_impl(&s, sid).unwrap();
+        let json = serde_json::to_value(&proj.phrases[0]).unwrap();
+        let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "end_secs",
+                "key_name",
+                "note_count",
+                "phrase_index",
+                "stability",
+                "start_secs",
+                "tone"
+            ],
+            "…but the projection must not carry onsets/pitch curves (doc §2 P2)"
+        );
+    }
+
+    /// AC10: the P3 reader is watermark-incremental through the command
+    /// layer too, and its rows are the spec_json/seed-free shape (the
+    /// store-level pin covers serialization; this covers the wiring).
+    #[test]
+    fn list_exercise_facts_impl_respects_the_watermark() {
+        let s = state();
+        {
+            let store = s.session_store.lock_or_recover();
+            for tonic in [0u8, 7u8] {
+                store
+                    .log_exercise(&brain::store::ExerciseLogEntry {
+                        source: "opener".to_owned(),
+                        label: "Minor triad, enclosed".to_owned(),
+                        spec_json: "{\"cell\":\"m\"}".to_owned(),
+                        seed: 1,
+                        difficulty: 2,
+                        tonic,
+                        accuracy: None,
+                    })
+                    .unwrap();
+            }
+        }
+        let all = list_exercise_facts_impl(&s, 0).unwrap();
+        assert_eq!(all.len(), 2);
+        let rest = list_exercise_facts_impl(&s, all[0].id).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].tonic, 7);
     }
 
     /// AC5 (the stream): a follow-mode burst of pushes journals NO tempo

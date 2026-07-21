@@ -35,6 +35,18 @@ export interface ConnectionsState {
   teacherSharingEnabled: boolean;
 
   /**
+   * #449 T2: the teacher-dashboard sync projection (doc §2 P1–P4): session
+   * facts + phrase timings + exercise labels/hashes + tool events. Its OWN
+   * opt-in on top of cloud sync — off by default and meaningless unless
+   * cloud sync is also on (same dependency rule as teacher sharing). The
+   * T-enrollment slice will prompt for this at classroom join; until then
+   * it lives in Connections & Privacy like every networked switch. With
+   * this off, the existing session-recap push keeps its behavior and
+   * nothing else leaves the device.
+   */
+  dashboardSyncEnabled: boolean;
+
+  /**
    * #58: automatic update checks (on launch + every few hours). Off by
    * default — the shipped promise is "no update request on launch or in
    * the background" unless the user opts in here. The manual "Check for
@@ -45,11 +57,13 @@ export interface ConnectionsState {
 
   setCloudSyncEnabled: (on: boolean) => void;
   setTeacherSharingEnabled: (on: boolean) => void;
+  setDashboardSyncEnabled: (on: boolean) => void;
   setAutoUpdateCheckEnabled: (on: boolean) => void;
 }
 
 const CLOUD_SYNC_KEY = "ai-music-companion:cloud-sync-enabled";
 const TEACHER_SHARING_KEY = "ai-music-companion:teacher-sharing-enabled";
+const DASHBOARD_SYNC_KEY = "ai-music-companion:dashboard-sync-enabled";
 const AUTO_UPDATE_KEY = "ai-music-companion:auto-update-check-enabled";
 
 /** Read a persisted opt-in flag. Defaults to false (off) for everything. */
@@ -73,14 +87,21 @@ function saveFlag(key: string, on: boolean): void {
 export const useConnectionsStore = create<ConnectionsState>((set) => ({
   cloudSyncEnabled: loadFlag(CLOUD_SYNC_KEY),
   teacherSharingEnabled: loadFlag(TEACHER_SHARING_KEY),
+  dashboardSyncEnabled: loadFlag(DASHBOARD_SYNC_KEY),
   autoUpdateCheckEnabled: loadFlag(AUTO_UPDATE_KEY),
 
   setCloudSyncEnabled: (on) => {
     saveFlag(CLOUD_SYNC_KEY, on);
-    // Turning sync off also withdraws teacher sharing, which depends on it.
+    // Turning sync off also withdraws the features that depend on it:
+    // teacher sharing and the dashboard projection (#449 T2).
     if (!on) {
       saveFlag(TEACHER_SHARING_KEY, false);
-      set({ cloudSyncEnabled: false, teacherSharingEnabled: false });
+      saveFlag(DASHBOARD_SYNC_KEY, false);
+      set({
+        cloudSyncEnabled: false,
+        teacherSharingEnabled: false,
+        dashboardSyncEnabled: false,
+      });
     } else {
       set({ cloudSyncEnabled: true });
     }
@@ -89,6 +110,11 @@ export const useConnectionsStore = create<ConnectionsState>((set) => ({
   setTeacherSharingEnabled: (on) => {
     saveFlag(TEACHER_SHARING_KEY, on);
     set({ teacherSharingEnabled: on });
+  },
+
+  setDashboardSyncEnabled: (on) => {
+    saveFlag(DASHBOARD_SYNC_KEY, on);
+    set({ dashboardSyncEnabled: on });
   },
 
   setAutoUpdateCheckEnabled: (on) => {
