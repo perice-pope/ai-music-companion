@@ -79,6 +79,8 @@ fn main() {
             ai_music_companion::commands::get_sound_mirror,
             ai_music_companion::commands::get_session_history,
             ai_music_companion::commands::get_session_detail,
+            ai_music_companion::commands::get_session_projection,
+            ai_music_companion::commands::list_exercise_facts,
             ai_music_companion::commands::get_practice_stats,
             ai_music_companion::commands::get_taste_profile,
             ai_music_companion::commands::set_taste_profile,

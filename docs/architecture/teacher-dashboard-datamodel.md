@@ -8,9 +8,13 @@ its RLS, and the rollups — landed** in
 [`supabase/migrations/0006_teacher_dashboard_star_schema.sql`](../../supabase/migrations/0006_teacher_dashboard_star_schema.sql)
 (policy tests: `supabase/tests/rls_teacher_dashboard_star.sql`; decisions:
 [`docs/specs/449-t3-cloud-schema.md`](../specs/449-t3-cloud-schema.md)).
-Remaining slices per §Sequencing: T1/T2 (local telemetry + projection) and T4
-(dashboard v1).
-**Date:** 2026-07-19 (T3 landed 2026-07-21)
+**T1 (local telemetry) landed** (#469). **T2 — the projection P1–P4 — landed**
+(spec: [`docs/specs/449-t2-sync-projection.md`](../specs/449-t2-sync-projection.md);
+client: `apps/desktop/src/stores/syncStore.ts` `syncDashboard`, behind the
+`dashboardSyncEnabled` opt-in, disclosed in ConnectionsPrivacy + the
+offline-first enumeration table). P5 rides the pre-existing learner-model
+push, unchanged. Remaining slice per §Sequencing: T4 (dashboard v1).
+**Date:** 2026-07-19 (T3 landed 2026-07-21; T1/T2 landed 2026-07-21)
 
 ---
 

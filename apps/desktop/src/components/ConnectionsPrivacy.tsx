@@ -185,6 +185,13 @@ export default function ConnectionsPrivacy() {
   const setTeacherSharingEnabled = useConnectionsStore(
     (s) => s.setTeacherSharingEnabled,
   );
+  // #449 T2: the dashboard projection's own opt-in (rides on cloud sync).
+  const dashboardSyncEnabled = useConnectionsStore(
+    (s) => s.dashboardSyncEnabled,
+  );
+  const setDashboardSyncEnabled = useConnectionsStore(
+    (s) => s.setDashboardSyncEnabled,
+  );
 
   return (
     <main
@@ -236,6 +243,16 @@ export default function ConnectionsPrivacy() {
             enabled={teacherSharingEnabled && cloudSyncEnabled}
             disabled={!cloudSyncEnabled}
             onChange={setTeacherSharingEnabled}
+          />
+
+          <ToggleRow
+            id="toggle-dashboard-sync"
+            title="Share practice details with your teacher's dashboard"
+            description="Gives a teacher whose classroom you've joined a fuller picture of how you practice. On top of the recaps cloud sync uploads, it sends: session facts (when you practiced, minutes of actual playing vs. minutes the app was open, how many notes were heard), the start and end times of each phrase you played, the names and scores of exercises you worked on (like ‘Minor triad, enclosed, descending’ — the name and your accuracy, never the exercise recipe itself), and which practice tools you used (metronome on/off and tempo, backing band, opener). Only a teacher you joined through a classroom code can see it. It never sends your audio recording, the actual notes you played, or your saved exercise recipes and seeds. Works only when cloud sync is on."
+            whenOff="Your teacher sees only what cloud sync and teacher sharing already allow — session recaps at most. None of the practice details above leave this device."
+            enabled={dashboardSyncEnabled && cloudSyncEnabled}
+            disabled={!cloudSyncEnabled}
+            onChange={setDashboardSyncEnabled}
           />
 
           <ToggleRow

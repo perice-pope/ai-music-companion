@@ -17,6 +17,9 @@ export default function AccountPanel() {
     useAuthStore();
   const sync = useSyncStore();
   const cloudSyncEnabled = useConnectionsStore((s) => s.cloudSyncEnabled);
+  const dashboardSyncEnabled = useConnectionsStore(
+    (s) => s.dashboardSyncEnabled,
+  );
 
   const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
   const [email, setEmail] = useState("");
@@ -36,6 +39,15 @@ export default function AccountPanel() {
   useEffect(() => {
     runSync(userId, cloudSyncEnabled);
   }, [userId, cloudSyncEnabled, runSync]);
+
+  // #449 T2: the dashboard projection rides the SAME trigger (post-session,
+  // never the audio path) behind its OWN additional opt-in. With the toggle
+  // off this is a hard no-op — the legacy push above keeps its behavior and
+  // nothing else leaves the device.
+  const runDashboardSync = sync.syncDashboard;
+  useEffect(() => {
+    void runDashboardSync(userId, cloudSyncEnabled, dashboardSyncEnabled);
+  }, [userId, cloudSyncEnabled, dashboardSyncEnabled, runDashboardSync]);
 
   if (status === "loading") {
     return (

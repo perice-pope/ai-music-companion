@@ -584,6 +584,38 @@ pub struct PracticeEventRow {
     pub params_json: String,
 }
 
+/// #449 T2 (doc §2 P3): one exercise-log row shaped for the dashboard sync
+/// projection — the ONLY exercise shape that may cross the IPC boundary on
+/// the sync path.
+///
+/// PRIVACY, STRUCTURAL: this type has **no `spec_json` and no `seed` field**,
+/// deliberately (doc §2 P3: "spec_json and seed stay local"; migration 0006
+/// `fact_exercise` likewise has no such columns). Do not add them — the
+/// device→cloud privacy contract is enforced by this type's shape, not by a
+/// filter somewhere downstream. `Serialize` exists for the Tauri IPC read;
+/// there is nothing here a dashboard shouldn't see.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExerciseFactRow {
+    /// Local `exercise_log.id` — the cloud idempotency key
+    /// (`fact_exercise.device_log_id`, unique per student) and the
+    /// frontend's incremental-sync watermark.
+    pub id: i64,
+    /// RFC3339 write stamp as stored (treat as unparsed input, like
+    /// [`TimedExerciseLogEntry::logged_at`]).
+    pub logged_at: String,
+    pub source: String,
+    /// The human material name F1 generated — the teacher-facing label.
+    pub label: String,
+    /// The #449 T1 retry key (FNV-1a 64 of `spec_json`, tonic excluded) —
+    /// the material identity that crosses the wire (→ `dim_material`).
+    pub spec_hash: String,
+    pub difficulty: u8,
+    pub tonic: u8,
+    /// Graded accuracy 0..1; `None` = generated but never graded
+    /// (kept: abandonment is a signal — doc §5 F3).
+    pub accuracy: Option<f64>,
+}
+
 /// SQLite-backed store of completed practice sessions.
 pub struct SessionStore {
     conn: Connection,
@@ -1224,6 +1256,51 @@ impl SessionStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// #449 T2 (doc §2 P3): exercise rows shaped for the dashboard sync
+    /// projection — id-keyed and incremental (`WHERE id > after_id`), so the
+    /// frontend's watermark never re-reads (or re-pushes) the whole log.
+    ///
+    /// PRIVACY, STRUCTURAL (doc §2 P3, verbatim): "`spec_json` and `seed`
+    /// stay local — replayability is a device concern, not a dashboard one."
+    /// This query does not SELECT them and [`ExerciseFactRow`] does not have
+    /// the fields, so nothing above this call can leak what it never
+    /// received. Rows whose `spec_hash` is still NULL (a backfill that
+    /// hasn't run) are skipped: the cloud `dim_material` keys on `spec_hash`
+    /// (migration 0006, `dim_material.spec_hash text unique`).
+    pub fn list_exercise_facts_after(
+        &self,
+        after_id: i64,
+    ) -> Result<Vec<ExerciseFactRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, logged_at, source, label, spec_hash, difficulty, tonic, accuracy \
+             FROM exercise_log WHERE id > ?1 AND spec_hash IS NOT NULL ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![after_id], |row| {
+            Ok(ExerciseFactRow {
+                id: row.get(0)?,
+                logged_at: row.get(1)?,
+                source: row.get(2)?,
+                label: row.get(3)?,
+                spec_hash: row.get(4)?,
+                difficulty: row.get::<_, i64>(5)?.clamp(0, 255) as u8,
+                tonic: row.get::<_, i64>(6)?.clamp(0, 255) as u8,
+                accuracy: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// #449 T2: title of a locally-stored score, for the `dim_material`
+    /// score row (doc §2 P1: "`score_id`→title"). `None` when the score was
+    /// deleted — the projection then sends no material link (honest absence).
+    pub fn score_title(&self, score_id: &str) -> Result<Option<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT title FROM scores WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![score_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// #419 S4: keep a named opener recipe. Returns the new row id.
     pub fn save_recipe(
         &self,
@@ -1666,6 +1743,113 @@ mod tests {
             "stamp is the write time, not a constant: {}",
             timed[0].logged_at
         );
+    }
+
+    /// #449 T2 AC10: the projection reader is incremental — `after_id`
+    /// filters in SQL, rows come back id-ascending with the retry key and
+    /// grading state intact. Fails if the watermark filter breaks (rows
+    /// re-surface and would re-push every session) or the hash column is
+    /// dropped from the SELECT.
+    #[test]
+    fn list_exercise_facts_after_respects_the_watermark() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SessionStore::open(&dir.path().join("t.db")).unwrap();
+        let mut e = ExerciseLogEntry {
+            source: "opener".to_owned(),
+            label: "Minor triad, enclosed, descending".to_owned(),
+            spec_json: "{\"cell\":\"minor_triad\"}".to_owned(),
+            seed: 7,
+            difficulty: 2,
+            tonic: 4,
+            accuracy: Some(0.9),
+        };
+        s.log_exercise(&e).unwrap();
+        e.tonic = 9; // same cell, different key — same spec_hash
+        e.accuracy = None;
+        s.log_exercise(&e).unwrap();
+
+        let all = s.list_exercise_facts_after(0).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].id < all[1].id, "id-ascending for the watermark");
+        assert_eq!(
+            all[0].spec_hash,
+            exercise_spec_hash("{\"cell\":\"minor_triad\"}")
+        );
+        assert_eq!(
+            all[0].spec_hash, all[1].spec_hash,
+            "same cell in two keys shares the retry key (RV grouping)"
+        );
+        assert_eq!(all[1].tonic, 9);
+        assert_eq!(
+            all[1].accuracy, None,
+            "ungraded stays None — abandonment is a signal"
+        );
+
+        // The watermark: only rows past `after_id` come back.
+        let rest = s.list_exercise_facts_after(all[0].id).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, all[1].id);
+        assert!(s.list_exercise_facts_after(all[1].id).unwrap().is_empty());
+    }
+
+    /// #449 T2 AC4 (structural privacy pin, Rust side): the projection row
+    /// type serializes WITHOUT `spec_json`/`seed` keys. `ExerciseFactRow`
+    /// deliberately has no such fields — this test pins the wire shape so a
+    /// future "helpful" field addition fails loudly instead of silently
+    /// widening what crosses the IPC boundary on the sync path.
+    #[test]
+    fn exercise_fact_row_never_serializes_spec_json_or_seed() {
+        let row = ExerciseFactRow {
+            id: 1,
+            logged_at: "2026-07-21T00:00:00Z".to_owned(),
+            source: "opener".to_owned(),
+            label: "Minor triad".to_owned(),
+            spec_hash: "abc".to_owned(),
+            difficulty: 2,
+            tonic: 0,
+            accuracy: None,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("spec_json"), "spec_json must never cross");
+        assert!(!obj.contains_key("seed"), "seed must never cross");
+        // Exactly the doc §2 P3 field list — nothing more.
+        let mut keys: Vec<_> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "accuracy",
+                "difficulty",
+                "id",
+                "label",
+                "logged_at",
+                "source",
+                "spec_hash",
+                "tonic"
+            ]
+        );
+    }
+
+    /// #449 T2: the dim_material score-row label source. Present score →
+    /// its title; deleted/unknown score → None (honest absence, never a
+    /// fabricated label).
+    #[test]
+    fn score_title_looks_up_or_honestly_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SessionStore::open(&dir.path().join("t.db")).unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO scores (id, title, source_filename, added_at, music_xml) \
+                 VALUES ('sc-1', 'Haydn Concerto, mvt 1', 'h.xml', '2026-07-21T00:00:00Z', '<x/>')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            s.score_title("sc-1").unwrap().as_deref(),
+            Some("Haydn Concerto, mvt 1")
+        );
+        assert_eq!(s.score_title("gone").unwrap(), None);
     }
 
     fn recap_with(instrument: &str, duration: f64, phrase_count: usize) -> SessionRecap {
