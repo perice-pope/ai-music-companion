@@ -2006,6 +2006,16 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
     match session.recorder.complete() {
         Ok(completed) => {
             let family = instrument_family_for(state, completed.primary_instrument());
+            // #454 S3: the method-book tip THIS session's measured evidence
+            // earned — resolved on the live path from the same phrase set the
+            // recap generators read (same `build_fingerprint`, same evidence
+            // gates), never a store read-back (which would race the save and
+            // speak to the PREVIOUS session). `None` is the calm, common
+            // answer: no crossed bar, no catalog family, no matching entry.
+            let method_book_tip = brain::pedagogy::select_pedagogy(
+                &family,
+                &brain::coaching::build_fingerprint(&completed.all_phrases()),
+            );
             let recap = build_recap(
                 &completed,
                 &*generator,
@@ -2014,6 +2024,7 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                 note_verdicts,
                 family,
                 history_suggestions,
+                method_book_tip,
             )
             .await?;
             // Persist the completed session so practice history, the stats
@@ -2077,6 +2088,7 @@ async fn build_recap(
     note_verdicts: Vec<brain::follower::NoteVerdict>,
     instrument_family: String,
     history_suggestions: Vec<brain::insights::PracticeSuggestion>,
+    method_book_tip: Option<brain::pedagogy::PedagogyEntry>,
 ) -> Result<SessionRecap, CommandError> {
     completed
         .generate_recap_with_context(
@@ -2086,6 +2098,7 @@ async fn build_recap(
             note_verdicts,
             instrument_family,
             history_suggestions,
+            method_book_tip,
         )
         .await
         .map_err(CommandError::from)
@@ -4921,9 +4934,9 @@ pub fn method_book_tip_impl(state: &AppState) -> Option<PedagogyTipDto> {
     let family = instrument_family_for(state, &instrument);
     let entry = brain::pedagogy::select_pedagogy(&family, &fingerprint)?;
     Some(PedagogyTipDto {
+        source_line: entry.source_line(),
         topic: entry.topic,
         guidance: entry.guidance,
-        source_line: format!("{}, {}", entry.source.author, entry.source.title),
     })
 }
 
@@ -5144,6 +5157,7 @@ mod tests {
             verdicts,
             String::new(),
             Vec::new(),
+            None,
         )
         .await
         .expect("recap builds");
@@ -8971,6 +8985,111 @@ mod tests {
         );
     }
 
+    /// #454 S3 AC4: the REAL end-session path resolves the method-book tip
+    /// from THIS session's live evidence — flat trumpet sustains (E1, every
+    /// note ~20 cents under A4) select Schlossberg's long tones — and the
+    /// offline recap carries exactly ONE attributed book line, in
+    /// `areas_to_improve`. Fails if the command layer stops resolving or
+    /// threading the tip, the attribution leaves the copy, the line moves
+    /// lists, or a second book line appears.
+    #[tokio::test]
+    async fn end_session_weaves_attributed_method_book_line() {
+        let mut s = state();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+        {
+            // Three settled phrases (clears #445-6b), every note ~20 cents
+            // flat of A4 (434.95 Hz) — live E1 pitch-sag evidence.
+            let mut guard = s.active_session.lock().await;
+            for _ in 0..3 {
+                let mut p = sample_phrase();
+                p.duration_secs = 7.0;
+                p.pitch_stats.pitches = vec![434.95; 12];
+                guard.as_mut().unwrap().recorder.record_phrase(p).unwrap();
+            }
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        let book_lines: Vec<&String> = recap
+            .areas_to_improve
+            .iter()
+            .filter(|a| a.contains("Schlossberg"))
+            .collect();
+        assert_eq!(
+            book_lines.len(),
+            1,
+            "exactly one book line: {:?}",
+            recap.areas_to_improve
+        );
+        assert!(
+            book_lines[0].contains("(Max Schlossberg, Daily Drills and Technical Studies)"),
+            "the attribution is IN the copy — non-negotiable (#454): {}",
+            book_lines[0]
+        );
+        assert!(
+            !recap
+                .next_session_suggestions
+                .iter()
+                .any(|t| t.contains("Schlossberg")),
+            "the book line's home is areas_to_improve, never the history voice's list: {:?}",
+            recap.next_session_suggestions
+        );
+    }
+
+    /// #454 S3 AC4 (thin): the SAME live deficit on a thin session (one
+    /// short flat phrase) → the #445-6b short form gains NO book line
+    /// through the real path, even though the command layer resolved a tip.
+    /// Fails if the thin gate stops shielding the recap from the append.
+    #[tokio::test]
+    async fn thin_end_session_weaves_no_method_book_line() {
+        let mut s = state();
+        s.recap_generator = Arc::new(LlmRecapGenerator::with_engine(
+            online_engine_with_panicking_client(),
+        ));
+        s.set_coaching_network_policy(false).await;
+
+        start_practice_session_impl(
+            &s,
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            false,
+            None,
+        )
+        .await
+        .expect("start should succeed");
+        {
+            // One 1.5s phrase = thin, but its 12 flat notes still cross E1 —
+            // the tip resolves; the thin recap must ignore it.
+            let mut guard = s.active_session.lock().await;
+            let mut p = sample_phrase();
+            p.pitch_stats.pitches = vec![434.95; 12];
+            guard.as_mut().unwrap().recorder.record_phrase(p).unwrap();
+        }
+        let recap = end_practice_session_impl(&s).await.unwrap();
+        assert_eq!(
+            recap.next_session_suggestions.len(),
+            1,
+            "fixture sanity: the thin short form, single suggestion: {:?}",
+            recap.next_session_suggestions
+        );
+        let rendered = serde_json::to_string(&recap).expect("recap serializes");
+        assert!(
+            !rendered.contains("Schlossberg"),
+            "no book line anywhere on a thin recap: {rendered}"
+        );
+    }
+
     /// #454 S2 AC7/AC8: the method-book-tip command cites its book or stays
     /// silent. Empty store → None; a measured Trumpet session whose only
     /// crossed bar is flat sustains (E1) → the Schlossberg long-tones entry
@@ -9483,6 +9602,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         // Must not panic (no HTTP) and must return the grounded fallback recap.
@@ -9532,6 +9652,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let text_of = |r: &brain::session::SessionRecap| {
             format!(

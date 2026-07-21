@@ -139,6 +139,41 @@ pub struct PedagogyEntry {
     pub triggers: Vec<String>,
 }
 
+impl PedagogyEntry {
+    /// The attribution line for this entry — `"{author}, {title}"`. This is
+    /// the ONE formatter every surface uses (the IPC DTO, the offline recap
+    /// line, the LLM prompt block), so the attribution the player sees can
+    /// never drift between surfaces. Attribution is non-negotiable (#454's
+    /// copyright posture: attributed paraphrase is what keeps in-copyright
+    /// sources legally safe).
+    pub fn source_line(&self) -> String {
+        format!("{}, {}", self.source.author, self.source.title)
+    }
+}
+
+/// #454 S3: render a selected tip as a GROUNDED INPUT block for the recap's
+/// LLM user prompt — the same posture as `insights::history_prompt_block`:
+/// the model may narrate in its own warm voice, but the facts (and the
+/// attribution) come from local selection, and inventing further book
+/// content is forbidden. Empty string when no tip was selected, so the
+/// prompt stays byte-identical to the tipless prompt.
+pub fn tip_prompt_block(tip: Option<&PedagogyEntry>) -> String {
+    let Some(tip) = tip else {
+        return String::new();
+    };
+    format!(
+        "\n\nMethod-book guidance (GROUNDED INPUT — selected locally because this \
+         session's measured evidence matched it; you MAY weave it into the notes in \
+         your own warm voice, but the attribution \"{source}\" MUST stay visible in \
+         the line you write, NEVER invent further book claims, exercise numbers, \
+         page numbers, or quotes beyond what is given, and NEVER cite any book not \
+         named here):\n  - Topic: {topic}\n  - Guidance: {guidance}",
+        source = tip.source_line(),
+        topic = tip.topic,
+        guidance = tip.guidance,
+    )
+}
+
 /// Longest quoted run permitted in `paraphrase-only` guidance, in words.
 /// Anything longer trips [`PedagogyError::VerbatimInParaphraseOnly`].
 pub const MAX_QUOTED_WORDS: usize = 15;

@@ -910,6 +910,13 @@ All text should be written as a teacher would speak — warm, specific, and acti
         // from local analysis. Empty string when the history earned nothing.
         let history_block = crate::insights::history_prompt_block(&input.history_suggestions);
 
+        // #454 S3: the method-book tip this session's measured evidence
+        // earned — same GROUNDED INPUT posture, plus the attribution the
+        // model must keep visible (the #454 copyright posture: attributed
+        // paraphrase, never an unattributed or invented book claim). Empty
+        // string when no evidence bar was crossed.
+        let pedagogy_block = crate::pedagogy::tip_prompt_block(input.method_book_tip.as_ref());
+
         // The student's stated taste, as *context* for framing — never as a
         // performance fact. Joined here at coaching time only (the measured
         // fingerprint above stays the source of truth). Empty string at cold
@@ -940,7 +947,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             - Average intonation tendency: {:.2}\n\
             - Average dynamic control: {:.2}\n\
             {}{}{}{}\n\
-            {}{}{}{}{}\n\n\
+            {}{}{}{}{}{}\n\n\
             Based on this practice session, write encouraging, specific, handwritten-style notes \
             that celebrate what went well and identify clear next steps.{}{}",
             practicing_what,
@@ -957,6 +964,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
             score_block,
             idiom_block,
             history_block,
+            pedagogy_block,
             taste_block,
             if input.score_title.is_some() {
                 " Where it helps, refer to specific measures by number so the \
@@ -1544,6 +1552,18 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                 .to_owned(),
         );
     }
+    // #454 S3: at most ONE method-book line — the entry this session's
+    // measured fingerprint earned (evidence-gated in `pedagogy`). The
+    // guidance ships verbatim (already the founder's attributed-paraphrase
+    // voice); the parenthesized source line guarantees the attribution is in
+    // the copy for every entry. It lands in areas_to_improve because the tip
+    // is a deepened diagnosis of THIS session's measured deficit — the
+    // history voice (trajectory, what to do next time) keeps
+    // next_session_suggestions. Thin sessions returned the short form above,
+    // so a quick touch never gains a book line (#445-6b).
+    if let Some(tip) = &input.method_book_tip {
+        areas.push(format!("{} ({})", tip.guidance, tip.source_line()));
+    }
 
     // --- Next-session suggestions ------------------------------------------
     // Targeted to the weakest measured read, with safe defaults when quiet.
@@ -1918,7 +1938,12 @@ pub fn score_practice_summary(
 /// produced enough evidence to report it honestly. This is the single place
 /// the four measurements are assembled — the recap prompt and the persisted
 /// recap both source their grounded facts from the result.
-fn build_fingerprint(phrases: &[PhraseSummary]) -> MusicalFingerprint {
+///
+/// `pub` since #454 S3: the command layer's live end-session path runs the
+/// pedagogy selection engine over THIS session's evidence, and it must read
+/// the same assembly (same evidence gates) the recap generators read — never
+/// a re-implementation, never a store read-back.
+pub fn build_fingerprint(phrases: &[PhraseSummary]) -> MusicalFingerprint {
     let (key, key_claim) = match aggregate_key(phrases) {
         KeyVerdict::Claimed(est, strength) => (Some(est), Some(strength)),
         KeyVerdict::Unsettled => (None, Some(KeyClaimStrength::Unsettled)),
@@ -2268,6 +2293,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2301,6 +2327,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
@@ -2374,6 +2401,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(prompt.contains("Tone quality:"), "recap prompt names tone");
@@ -3230,6 +3258,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3302,6 +3331,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         }
     }
 
@@ -3321,6 +3351,7 @@ mod tests {
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3391,6 +3422,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let prompt = CoachingEngine::build_recap_user_prompt(&input);
         assert!(
@@ -3526,6 +3558,134 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // #454 S3: the method-book tip in the recap.
+    // -----------------------------------------------------------------
+
+    /// A resolved tip in the shape the command layer threads in — a
+    /// Schlossberg-style paraphrase-only entry, so the assertions pin the
+    /// attribution machinery, not the shipped corpus prose.
+    fn sample_method_book_tip() -> crate::pedagogy::PedagogyEntry {
+        crate::pedagogy::PedagogyEntry {
+            id: "brass-schlossberg-long-tones".to_owned(),
+            family: crate::pedagogy::Family::Brass,
+            topic: "Long tones and pitch stability".to_owned(),
+            source: crate::pedagogy::SourceRef {
+                title: "Daily Drills and Technical Studies".to_owned(),
+                author: "Max Schlossberg".to_owned(),
+                year: 1937,
+                status: crate::pedagogy::SourceStatus::ParaphraseOnly,
+                section: "Long-tone drills (opening section)".to_owned(),
+            },
+            guidance: "There are drills for exactly this in Schlossberg's Daily Drills — \
+                       start the note softly, let it grow, and keep the pitch absolutely level."
+                .to_owned(),
+            quote: None,
+            note: None,
+            triggers: vec!["pitch-sag-sustain".to_owned()],
+        }
+    }
+
+    /// #454 S3 AC1: the offline full recap appends exactly ONE method-book
+    /// line — the guidance verbatim with the formal attribution in the copy
+    /// — to `areas_to_improve` (the deepened-diagnosis home; history keeps
+    /// `next_session_suggestions`), and adds nothing without a tip. Fails
+    /// if the append point disappears, the attribution is dropped, the line
+    /// lands in the wrong list, or a tipless recap grows a book line.
+    #[test]
+    fn offline_recap_appends_attributed_method_book_line() {
+        let mut input = recap_input_with(settled_sample_phrases(), None);
+        input.method_book_tip = Some(sample_method_book_tip());
+        let recap = grounded_offline_recap(&input);
+        let tail = recap
+            .areas_to_improve
+            .last()
+            .expect("a full recap always has an area line");
+        assert!(
+            tail.contains("keep the pitch absolutely level"),
+            "the guidance ships verbatim: {tail}"
+        );
+        assert!(
+            tail.contains("(Max Schlossberg, Daily Drills and Technical Studies)"),
+            "the attribution is IN the copy — non-negotiable (#454): {tail}"
+        );
+        assert_eq!(
+            recap
+                .areas_to_improve
+                .iter()
+                .filter(|a| a.contains("Schlossberg"))
+                .count(),
+            1,
+            "AT MOST ONE book line: {:?}",
+            recap.areas_to_improve
+        );
+
+        // No tip → the same session's areas are exactly one line shorter,
+        // and the suggestions list (the history voice's home) is untouched.
+        let quiet = recap_input_with(settled_sample_phrases(), None);
+        let base = grounded_offline_recap(&quiet);
+        assert_eq!(
+            base.areas_to_improve.len() + 1,
+            recap.areas_to_improve.len(),
+            "the tip adds exactly one area line"
+        );
+        assert_eq!(
+            base.next_session_suggestions, recap.next_session_suggestions,
+            "the book tip never leaks into next_session_suggestions"
+        );
+    }
+
+    /// #454 S3 AC2: a thin session's short form gains NO book line even when
+    /// the command layer resolved a tip — the thin gate fires before any
+    /// weaving (#445-6b). Fails if the append moves above the thin
+    /// early-return.
+    #[test]
+    fn thin_recap_gains_no_method_book_line() {
+        // One 1.5s phrase = thin (below both #445-6b bars).
+        let mut input = recap_input_with(vec![sample_phrase()], None);
+        input.method_book_tip = Some(sample_method_book_tip());
+        assert!(is_thin_session(&input), "fixture must actually be thin");
+        let recap = grounded_offline_recap(&input);
+        let rendered = serde_json::to_string(&recap).expect("recap serializes");
+        assert!(
+            !rendered.contains("Schlossberg"),
+            "no book line anywhere on a thin recap: {rendered}"
+        );
+    }
+
+    /// #454 S3 AC3: the LLM user prompt carries the tip as GROUNDED INPUT —
+    /// marked, guidance AND attribution present, invention of further book
+    /// content forbidden — and no block at all without a tip. Fails if the
+    /// block is dropped, unmarked, loses the attribution, or renders on a
+    /// tipless input.
+    #[test]
+    fn recap_prompt_carries_method_book_tip_as_grounded_input() {
+        let mut input = recap_input_with(vec![sample_phrase()], None);
+        input.method_book_tip = Some(sample_method_book_tip());
+        let prompt = CoachingEngine::build_recap_user_prompt(&input);
+        assert!(
+            prompt.contains("Method-book guidance") && prompt.contains("GROUNDED INPUT"),
+            "the tip rides in as marked grounded input, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("Max Schlossberg, Daily Drills and Technical Studies")
+                && prompt.contains("keep the pitch absolutely level"),
+            "attribution AND guidance travel into the prompt, got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("NEVER invent further book claims")
+                && prompt.contains("NEVER cite any book not named here"),
+            "the prompt forbids inventing book content or citations, got:\n{prompt}"
+        );
+
+        // Silence: no tip → the block is absent entirely.
+        let quiet = recap_input_with(vec![sample_phrase()], None);
+        assert!(
+            !CoachingEngine::build_recap_user_prompt(&quiet).contains("Method-book"),
+            "no pedagogy block when no evidence bar was crossed"
+        );
+    }
+
     #[test]
     fn recap_prompt_omits_taste_and_connections_when_no_profile() {
         // Cold start: groundable signal but NO profile → no taste context, no
@@ -3600,6 +3760,7 @@ mod tests {
             idiom_notes: vec![sample_idiom_match()],
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
         let recap = CoachingEngine::fallback_recap(&input);
         assert_eq!(
@@ -4753,6 +4914,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         // Must NOT panic (no HttpClient call) and must return the fallback.
@@ -4860,6 +5022,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4918,6 +5081,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -4957,6 +5121,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -5000,6 +5165,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         };
 
         let recap = engine.generate_recap(&input).await.unwrap();
@@ -5036,6 +5202,7 @@ mod tests {
             idiom_notes: Vec::new(),
             taste_profile: None,
             history_suggestions: Vec::new(),
+            method_book_tip: None,
         }
     }
 

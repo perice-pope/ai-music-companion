@@ -1423,3 +1423,111 @@ describe("practiceStore — the coaching box (#453 S3)", () => {
     expect(useStore.getState().coachingSuggestion).toEqual(trend);
   });
 });
+
+describe("practiceStore — the method-book tip voice (#454 S3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  const trend = {
+    kind: "trend",
+    text: "Your Eb major rows are sitting at 54% over 6 attempts (last one 2 days ago) — worth a slow pass.",
+    evidence:
+      "key_mastery 3:major: 6 attempts, accuracy EWMA 0.54, last attempt 2d ago",
+  };
+  const schlossberg = {
+    topic: "Long tones and pitch stability",
+    guidance:
+      "There are drills for exactly this in Schlossberg's Daily Drills — start the note softly, let it grow, and keep the pitch absolutely level.",
+    source_line: "Max Schlossberg, Daily Drills and Technical Studies",
+  };
+
+  /** Let the fire-and-forget refresh settle. */
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  // #454 AC8: the SAME refresh point (session start) fetches the tip
+  // alongside history, routed by command name; session end resets the tip
+  // with the rest of the box. Fails if the tip gets its own diverging
+  // refresh cadence or leaks across sessions.
+  it("session start fetches the method-book tip alongside history (#454 S3)", async () => {
+    const useStore = await freshStore();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "start_practice_session") return Promise.resolve("sid");
+      if (cmd === "practice_suggestions") return Promise.resolve([]);
+      if (cmd === "method_book_tip") return Promise.resolve(schlossberg);
+      if (cmd === "end_practice_session") return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    await useStore.getState().startSession("Trumpet");
+    await flush();
+    const calls = mockInvoke.mock.calls.map((c) => c[0]);
+    expect(calls).toContain("practice_suggestions");
+    expect(calls).toContain("method_book_tip");
+    expect(useStore.getState().coachingTip).toEqual(schlossberg);
+    // History said nothing — the history voice stays empty (no filler).
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+
+    // Session end resets the tip voice too.
+    await useStore.getState().endSession();
+    expect(useStore.getState().coachingTip).toBeNull();
+    expect(useStore.getState().coachingQuieted).toBe(false);
+  });
+
+  // #454 AC7: rule 0 for the tip voice — an empty tip result never clears
+  // a shown tip — and ONE dismissal quiets BOTH voices against later
+  // fetches carrying fresh material. Fails if empties clear the tip or a
+  // dismissal only silences one voice.
+  it("the tip voice holds through empty fetches and dismissal quiets both", async () => {
+    const useStore = await freshStore();
+    let tip: unknown = schlossberg;
+    let suggestions: unknown[] = [];
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "practice_suggestions") return Promise.resolve(suggestions);
+      if (cmd === "method_book_tip") return Promise.resolve(tip);
+      return Promise.resolve(null);
+    });
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toEqual(schlossberg);
+
+    // Rule 0: the engine's calm None never clears the shown tip.
+    tip = null;
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toEqual(schlossberg);
+
+    // One dismissal quiets BOTH voices…
+    useStore.getState().dismissCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toBeNull();
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+    // …including against later fetches with fresh material in both.
+    tip = schlossberg;
+    suggestions = [trend];
+    await useStore.getState().refreshCoachingSuggestion();
+    expect(useStore.getState().coachingTip).toBeNull();
+    expect(useStore.getState().coachingSuggestion).toBeNull();
+  });
+
+  // #454 AC7: the seq token guards the tip voice too — a tip resolving
+  // after a session boundary writes nothing into the next session. Fails
+  // if the post-await seq check stops covering the tip.
+  it("a tip resolving after a session boundary writes nothing", async () => {
+    const useStore = await freshStore();
+    let resolveTip: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "practice_suggestions") return Promise.resolve([]);
+      if (cmd === "method_book_tip")
+        return new Promise((res) => {
+          resolveTip = res;
+        });
+      return Promise.resolve(null);
+    });
+    const inflight = useStore.getState().refreshCoachingSuggestion();
+    // The session boundary bumps the token (endSession-tail style).
+    useStore.setState((s) => ({
+      _coachingFetchSeq: s._coachingFetchSeq + 1,
+    }));
+    resolveTip(schlossberg);
+    await inflight;
+    expect(useStore.getState().coachingTip).toBeNull();
+  });
+});
