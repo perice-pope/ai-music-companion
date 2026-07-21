@@ -39,9 +39,10 @@ type ScoreRow = (
 // ---------------------------------------------------------------------------
 
 /// Decode a single summary row from the `sessions` table into a
-/// [`SessionSummary`]. All three list_* methods query the same five
+/// [`SessionSummary`]. All three list_* methods query the same eight
 /// columns in the same order (`id, instrument, started_at,
-/// duration_secs, phrase_count`), so the decode logic lives here once.
+/// duration_secs, phrase_count, played_secs, note_count,
+/// silence_ratio`), so the decode logic lives here once.
 ///
 /// Every malformed field escalates to [`StoreError::CorruptRow`] —
 /// we never silently coerce bad data into a neutral value, because a
@@ -79,6 +80,32 @@ fn decode_summary_row(row: &Row<'_>) -> Result<SessionSummary, StoreError> {
             "invalid phrase_count column for session {id_str}: {e}"
         ))
     })?;
+    // #449 T1 integrity aggregates — NULL (None) on rows persisted before the
+    // v2 migration or before the close-time computation ran: honest absence,
+    // never a fabricated zero (a fake 0.0 silence_ratio would flatter a
+    // walk-away session).
+    let played_secs: Option<f64> = row.get(5).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid played_secs column for session {id_str}: {e}"
+        ))
+    })?;
+    let note_count_raw: Option<i64> = row.get(6).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid note_count column for session {id_str}: {e}"
+        ))
+    })?;
+    let silence_ratio: Option<f64> = row.get(7).map_err(|e| {
+        StoreError::CorruptRow(format!(
+            "invalid silence_ratio column for session {id_str}: {e}"
+        ))
+    })?;
+    let note_count = note_count_raw
+        .map(|n| {
+            u64::try_from(n).map_err(|_| {
+                StoreError::CorruptRow(format!("negative note_count {n} for session {id_str}"))
+            })
+        })
+        .transpose()?;
 
     let id: SessionId = id_str.parse().map_err(|e: uuid::Error| {
         StoreError::CorruptRow(format!("invalid session id {id_str}: {e}"))
@@ -99,6 +126,9 @@ fn decode_summary_row(row: &Row<'_>) -> Result<SessionSummary, StoreError> {
         started_at,
         duration_secs,
         phrase_count,
+        played_secs,
+        note_count,
+        silence_ratio,
     })
 }
 
@@ -184,6 +214,15 @@ pub struct SessionSummary {
     pub duration_secs: f64,
     /// Number of phrases played in the session.
     pub phrase_count: usize,
+    /// #449 T1 (§1b): Σ phrase durations — the #445-6b/#451 played clock,
+    /// persisted at session close. `None` on rows that predate the column
+    /// or the close-time computation (honest absence, never zero).
+    pub played_secs: Option<f64>,
+    /// #449 T1 (§1b): Σ voiced events detected across phrases. `None` as above.
+    pub note_count: Option<u64>,
+    /// #449 T1 (§1b): `1 − played/wall`, clamped to `[0, 1]`; `1.0` when the
+    /// wall clock was zero. `None` as above.
+    pub silence_ratio: Option<f64>,
 }
 
 /// Coarse, self-reported experience level. Deliberately three buckets, not a
@@ -285,7 +324,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     duration_secs REAL NOT NULL,
     phrase_count INTEGER NOT NULL,
     recap_json TEXT NOT NULL,
-    score_id TEXT REFERENCES scores(id) ON DELETE SET NULL
+    score_id TEXT REFERENCES scores(id) ON DELETE SET NULL,
+    played_secs REAL,
+    note_count INTEGER,
+    silence_ratio REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC);
 CREATE TABLE IF NOT EXISTS scores (
@@ -333,9 +375,25 @@ CREATE TABLE IF NOT EXISTS exercise_log (
     seed INTEGER NOT NULL,
     difficulty INTEGER NOT NULL,
     tonic INTEGER NOT NULL,
-    accuracy REAL
+    accuracy REAL,
+    spec_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_log_source ON exercise_log(source);
+-- HOW the student practiced (#449 T1): tool usage during a session.
+-- Append-only, event-sourced, one clock (seconds from session start — the
+-- same clock #451's played-time copy uses). Local-first like everything;
+-- leaves the device only under the T2 enrollment sync opt-in, disclosed
+-- in ConnectionsPrivacy BEFORE it can sync. Until T2 lands, this table
+-- syncs NOTHING.
+CREATE TABLE IF NOT EXISTS practice_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    at_secs REAL NOT NULL,
+    kind TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_practice_events_session
+    ON practice_events(session_id, at_secs);
 -- #419 S4: named opener recipes the player chose to keep. items_json is
 -- the serialized Vec<StarterItem>; parse failures on read are SKIPPED
 -- (a stale row must never break the panel), never surfaced.
@@ -425,14 +483,33 @@ fn add_column_if_missing(
 /// hashes persist in the DB, so `std`'s `DefaultHasher` (unstable across Rust
 /// versions by contract) would silently orphan old rows.
 fn score_content_hash(music_xml: &str) -> String {
+    fnv1a_64_hex(music_xml)
+}
+
+/// 64-bit FNV-1a over a string's bytes, as 16 hex chars — the one hashing
+/// primitive both persisted hash columns share (`scores.content_hash`,
+/// `exercise_log.spec_hash`). See [`score_content_hash`] for why FNV over a
+/// crypto hash or `DefaultHasher`.
+fn fnv1a_64_hex(input: &str) -> String {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = FNV_OFFSET;
-    for byte in music_xml.as_bytes() {
+    for byte in input.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:016x}")
+}
+
+/// #449 T1 (§1c): the exercise retry key — FNV-1a 64 of the row's `spec_json`
+/// bytes as-is. The datamodel doc says "tonic excluded": `spec_json` (a
+/// serialized `VariationSpec`) carries no tonic — tonic is its own column —
+/// so hashing the bytes verbatim already gives the RV grouping (same cell,
+/// different key ⇒ same `spec_hash`, different `tonic`). Stable across
+/// releases by the same argument as [`score_content_hash`]: these hashes
+/// persist in the DB.
+pub fn exercise_spec_hash(spec_json: &str) -> String {
+    fnv1a_64_hex(spec_json)
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +526,62 @@ pub struct SessionMeta {
     pub practice_mode: Option<String>,
     /// Id of the score practised, if any.
     pub score_id: Option<String>,
+}
+
+/// #449 T1 (§1b): the anti-fudge aggregates for one session, computed once,
+/// in Rust, at session close — never re-derived downstream (three dashboards
+/// re-deriving them would drift apart).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SessionIntegrity {
+    /// Σ phrase `(end_time − start_time)` — the #445-6b/#451 played clock.
+    pub played_secs: f64,
+    /// Σ phrase `note_count`: voiced events actually detected.
+    pub note_count: u64,
+    /// `1 − played_secs / wall_secs`, clamped to `[0, 1]`.
+    pub silence_ratio: f64,
+}
+
+/// Compute the session-integrity aggregates from a completed session's
+/// phrases and its wall-clock duration.
+///
+/// Rules (documented once, here, so they can never fork):
+/// - `played_secs` sums each phrase's `(end_time − start_time)`, clamping a
+///   (corrupt) negative span to zero rather than letting it eat real time.
+/// - `note_count` sums the per-phrase voiced counts.
+/// - `silence_ratio` is `1 − played/wall` clamped to `[0, 1]`; a session with
+///   `wall_secs <= 0` reports `1.0` — a zero-length wall has, vacuously, no
+///   played sound, and `1.0` keeps the F1 walk-away flag monotone instead of
+///   producing NaN/negative garbage.
+pub fn session_integrity(phrases: &[PhraseSummary], wall_secs: f64) -> SessionIntegrity {
+    let played_secs: f64 = phrases
+        .iter()
+        .map(|p| (p.end_time - p.start_time).max(0.0))
+        .sum();
+    let note_count: u64 = phrases.iter().map(|p| p.note_count as u64).sum();
+    let silence_ratio = if wall_secs <= 0.0 {
+        1.0
+    } else {
+        (1.0 - played_secs / wall_secs).clamp(0.0, 1.0)
+    };
+    SessionIntegrity {
+        played_secs,
+        note_count,
+        silence_ratio,
+    }
+}
+
+/// One row of the `practice_events` tool-usage journal (#449 T1 §1a), as
+/// stored. `params_json` is opaque here — the event vocabulary lives in the
+/// command layer that writes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PracticeEventRow {
+    pub id: i64,
+    pub session_id: String,
+    /// Seconds from session start (one clock — offsets from
+    /// `sessions.started_at`, range-joinable against `session_phrases`).
+    pub at_secs: f64,
+    pub kind: String,
+    pub params_json: String,
 }
 
 /// SQLite-backed store of completed practice sessions.
@@ -498,6 +631,43 @@ impl SessionStore {
             add_column_if_missing(&self.conn, "sessions", "app_version", "TEXT")?;
             add_column_if_missing(&self.conn, "sessions", "practice_mode", "TEXT")?;
             self.conn.execute_batch("PRAGMA user_version = 1;")?;
+        }
+        if version < 2 {
+            // v2 (#449 T1): the session-integrity aggregates (§1b) and the
+            // exercise retry key (§1c). Fresh DBs already have all four via
+            // SCHEMA; older DBs gain them here. NULL on pre-existing session
+            // rows is honest absence (the close-time computation never ran),
+            // never a fabricated zero.
+            add_column_if_missing(&self.conn, "sessions", "played_secs", "REAL")?;
+            add_column_if_missing(&self.conn, "sessions", "note_count", "INTEGER")?;
+            add_column_if_missing(&self.conn, "sessions", "silence_ratio", "REAL")?;
+            add_column_if_missing(&self.conn, "exercise_log", "spec_hash", "TEXT")?;
+            // Backfill spec_hash in one pass so old rows group with new ones.
+            // Cost: one FNV over each spec_json already in memory — a few ms
+            // even for thousands of rows — and the user_version guard means
+            // this runs exactly once per database.
+            self.backfill_spec_hashes()?;
+            self.conn.execute_batch("PRAGMA user_version = 2;")?;
+        }
+        Ok(())
+    }
+
+    /// Hash any `exercise_log` rows the v2 migration left without a
+    /// `spec_hash`. Only ever touches NULL rows, so repeated calls are
+    /// no-ops (mirrors `ScoreStore::backfill_content_hashes`).
+    fn backfill_spec_hashes(&self) -> Result<(), StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, spec_json FROM exercise_log WHERE spec_hash IS NULL")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        for (id, spec_json) in rows {
+            self.conn.execute(
+                "UPDATE exercise_log SET spec_hash = ?1 WHERE id = ?2",
+                params![exercise_spec_hash(&spec_json), id],
+            )?;
         }
         Ok(())
     }
@@ -577,6 +747,96 @@ impl SessionStore {
             },
         )?;
         Ok(meta)
+    }
+
+    /// #449 T1 (§1b): persist the close-time integrity aggregates onto an
+    /// already-saved session row. Kept separate from [`save`](Self::save) —
+    /// same shape as [`record_session_meta`](Self::record_session_meta):
+    /// best-effort caller, unknown id updates zero rows.
+    pub fn record_session_integrity(
+        &self,
+        id: SessionId,
+        integrity: &SessionIntegrity,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE sessions SET played_secs = ?2, note_count = ?3, silence_ratio = ?4 \
+             WHERE id = ?1",
+            params![
+                id.as_str(),
+                integrity.played_secs,
+                i64::try_from(integrity.note_count).unwrap_or(i64::MAX),
+                integrity.silence_ratio,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// #449 T1 (§1a): append one tool-usage event to the journal.
+    ///
+    /// Append-only — corrections are new events, never UPDATEs (the
+    /// `exercise_log` discipline). The caller supplies `at_secs` already on
+    /// the one session clock (seconds from `sessions.started_at`). This is
+    /// the raw store write; the never-fails wrapper lives in the command
+    /// layer (`log_practice_event_best_effort`), mirroring how
+    /// `log_exercise` / `log_exercise_best_effort` split.
+    pub fn log_practice_event(
+        &self,
+        session_id: &str,
+        at_secs: f64,
+        kind: &str,
+        params_json: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO practice_events (session_id, at_secs, kind, params_json) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, at_secs, kind, params_json],
+        )?;
+        Ok(())
+    }
+
+    /// #449 T1: the journal for one session, in session-clock order (ties
+    /// break on insert order). Read off the hot path only — history surfaces
+    /// and, later, the T2 sync projection.
+    pub fn list_practice_events(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PracticeEventRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, at_secs, kind, params_json \
+             FROM practice_events WHERE session_id = ?1 ORDER BY at_secs, id",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(PracticeEventRow {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                at_secs: row.get(2)?,
+                kind: row.get(3)?,
+                params_json: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// #449 T1: total journal size across all sessions. Same corrupt-count
+    /// escalation as [`count_sessions`](Self::count_sessions).
+    pub fn count_practice_events(&self) -> Result<usize, StoreError> {
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM practice_events", [], |row| row.get(0))?;
+        decode_session_count(count)
+    }
+
+    /// Failure injection for tests ONLY (#449 T1 review MF3): drop the
+    /// `practice_events` table so the next journal write fails, letting the
+    /// desktop crate prove its best-effort writer swallows a real store
+    /// error instead of panicking or surfacing it into the practice loop.
+    /// Compiled only under the `test-support` feature, which only downstream
+    /// dev-dependencies enable — a shipping build cannot contain it.
+    #[cfg(feature = "test-support")]
+    pub fn break_practice_events_for_tests(&self) {
+        self.conn
+            .execute_batch("DROP TABLE IF EXISTS practice_events;")
+            .expect("dropping the journal table in a test fixture");
     }
 
     /// Persist the per-phrase metrics for a session.
@@ -689,7 +949,8 @@ impl SessionStore {
     /// (ordered by `started_at DESC`).
     pub fn list_recent(&self, limit: usize) -> Result<Vec<SessionSummary>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, instrument, started_at, duration_secs, phrase_count \
+            "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
              FROM sessions ORDER BY started_at DESC LIMIT ?1",
         )?;
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
@@ -711,10 +972,12 @@ impl SessionStore {
         instrument: Option<&str>,
     ) -> Result<Vec<SessionSummary>, StoreError> {
         let query = if instrument.is_some() {
-            "SELECT id, instrument, started_at, duration_secs, phrase_count \
+            "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
              FROM sessions WHERE instrument = ?1 ORDER BY started_at DESC"
         } else {
-            "SELECT id, instrument, started_at, duration_secs, phrase_count \
+            "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
              FROM sessions ORDER BY started_at DESC"
         };
 
@@ -743,25 +1006,29 @@ impl SessionStore {
     ) -> Result<Vec<SessionSummary>, StoreError> {
         let (query, start_str, end_str) = match (&start_at, &end_at) {
             (Some(s), Some(e)) => (
-                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
                  FROM sessions WHERE started_at >= ?1 AND started_at < ?2 ORDER BY started_at DESC",
                 Some(s.to_rfc3339()),
                 Some(e.to_rfc3339()),
             ),
             (Some(s), None) => (
-                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
                  FROM sessions WHERE started_at >= ?1 ORDER BY started_at DESC",
                 Some(s.to_rfc3339()),
                 None,
             ),
             (None, Some(e)) => (
-                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
                  FROM sessions WHERE started_at < ?1 ORDER BY started_at DESC",
                 Some(e.to_rfc3339()),
                 None,
             ),
             (None, None) => (
-                "SELECT id, instrument, started_at, duration_secs, phrase_count \
+                "SELECT id, instrument, started_at, duration_secs, phrase_count, \
+                    played_secs, note_count, silence_ratio \
                  FROM sessions ORDER BY started_at DESC",
                 None,
                 None,
@@ -895,7 +1162,7 @@ impl SessionStore {
     /// signal. Append-only; never blocks the practice loop on failure.
     pub fn log_exercise(&self, entry: &ExerciseLogEntry) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO exercise_log              (logged_at, source, label, spec_json, seed, difficulty, tonic, accuracy)              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO exercise_log              (logged_at, source, label, spec_json, seed, difficulty, tonic, accuracy, spec_hash)              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 Utc::now().to_rfc3339(),
                 entry.source,
@@ -905,6 +1172,9 @@ impl SessionStore {
                 i64::from(entry.difficulty),
                 i64::from(entry.tonic),
                 entry.accuracy,
+                // #449 T1: the retry key, written at insert so every new row
+                // groups without a spec_json parse (see exercise_spec_hash).
+                exercise_spec_hash(&entry.spec_json),
             ],
         )?;
         Ok(())
@@ -2690,5 +2960,478 @@ mod tests {
             "re-import must reuse the NEWEST duplicate, not the oldest"
         );
         assert_eq!(store.list().unwrap().len(), 2, "no third entry");
+    }
+
+    // -----------------------------------------------------------------------
+    // #449 T1: practice_events, integrity columns, spec_hash
+    // -----------------------------------------------------------------------
+
+    /// A minimal phrase for integrity fixtures — only the fields
+    /// `session_integrity` and `save_phrases` read are meaningful.
+    fn t1_phrase(idx: usize, start: f64, end: f64, notes: usize) -> PhraseSummary {
+        use crate::phrase::{DynamicsStats, PitchStats};
+        PhraseSummary {
+            phrase_index: idx,
+            start_time: start,
+            end_time: end,
+            duration_secs: end - start,
+            note_count: notes,
+            pitch_stats: PitchStats {
+                mean_hz: 440.0,
+                min_hz: 435.0,
+                max_hz: 445.0,
+                range_cents: 40.0,
+                pitches: vec![440.0; notes.max(1)],
+            },
+            dynamics: DynamicsStats {
+                mean_amplitude: 0.6,
+                min_amplitude: 0.4,
+                max_amplitude: 0.8,
+                dynamic_range: 0.4,
+            },
+            stability: 0.9,
+            score_position: None,
+            tone: None,
+            key: None,
+            onsets_secs: Vec::new(),
+            score_span: None,
+            verdicts: None,
+            score_card: None,
+        }
+    }
+
+    /// A legacy (pre-T1, post-v1) database: sessions with the v1 columns but
+    /// none of the integrity columns, exercise_log without spec_hash, no
+    /// practice_events table, user_version pinned at 1.
+    fn legacy_v1_store() -> SessionStore {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY, instrument TEXT NOT NULL,
+                 started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+                 duration_secs REAL NOT NULL, phrase_count INTEGER NOT NULL,
+                 recap_json TEXT NOT NULL, score_id TEXT,
+                 app_version TEXT, practice_mode TEXT);
+             CREATE TABLE exercise_log (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 logged_at TEXT NOT NULL, source TEXT NOT NULL,
+                 label TEXT NOT NULL, spec_json TEXT NOT NULL,
+                 seed INTEGER NOT NULL, difficulty INTEGER NOT NULL,
+                 tonic INTEGER NOT NULL, accuracy REAL);
+             INSERT INTO sessions VALUES
+                 ('s-old','Trumpet','2026-01-01T00:00:00+00:00',
+                  '2026-01-01T00:30:00+00:00',1800.0,3,'{}',NULL,NULL,NULL);
+             INSERT INTO exercise_log
+                 (logged_at, source, label, spec_json, seed, difficulty, tonic, accuracy)
+                 VALUES ('t0','opener','L','{\"cell\":[0,4,7]}',1,2,5,NULL);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        SessionStore { conn }
+    }
+
+    /// AC1: a legacy DB gains the whole T1 footprint exactly once — the
+    /// practice_events table, the three integrity columns, spec_hash — and
+    /// lands on user_version 2; a second migrate is a no-op. Catches a
+    /// migration that forgets a column, re-runs the ALTERs, or never stamps
+    /// the version (which would re-backfill on every launch).
+    #[test]
+    fn migration_v2_adds_telemetry_schema_to_legacy_db_once() {
+        let store = legacy_v1_store();
+        store.migrate().expect("v2 migration on a legacy DB");
+
+        let cols: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        for c in ["played_secs", "note_count", "silence_ratio"] {
+            assert!(cols.iter().any(|n| n == c), "sessions must gain {c}");
+        }
+        let n: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM practice_events", [], |r| r.get(0))
+            .expect("practice_events table must exist");
+        assert_eq!(n, 0);
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        // Legacy integrity columns stay NULL — honest absence, never zeros.
+        let (played, ratio): (Option<f64>, Option<f64>) = store
+            .conn
+            .query_row(
+                "SELECT played_secs, silence_ratio FROM sessions WHERE id='s-old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((played, ratio), (None, None));
+        store.migrate().expect("second migrate is a no-op");
+    }
+
+    /// AC2: legacy exercise_log rows are backfilled with the FNV of their
+    /// spec_json, and new rows get the hash at insert — so old and new
+    /// attempts of one cell group under ONE key.
+    #[test]
+    fn migration_backfills_spec_hash_and_new_rows_match() {
+        let store = legacy_v1_store();
+        store.migrate().unwrap();
+
+        let old_hash: Option<String> = store
+            .conn
+            .query_row("SELECT spec_hash FROM exercise_log WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            old_hash.as_deref(),
+            Some(exercise_spec_hash("{\"cell\":[0,4,7]}").as_str()),
+            "backfill must hash the stored spec_json bytes as-is"
+        );
+
+        store
+            .log_exercise(&ExerciseLogEntry {
+                source: "opener".to_owned(),
+                label: "L".to_owned(),
+                spec_json: "{\"cell\":[0,4,7]}".to_owned(),
+                seed: 2,
+                difficulty: 2,
+                tonic: 9,
+                accuracy: None,
+            })
+            .unwrap();
+        let new_hash: Option<String> = store
+            .conn
+            .query_row("SELECT spec_hash FROM exercise_log WHERE id=2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            new_hash, old_hash,
+            "a fresh log of the same spec must land in the same group as the backfilled row"
+        );
+    }
+
+    /// F4 (retry-farming): N re-grades of one (spec, tonic) collapse to one
+    /// spec_hash group of size N — the `max_retries` surface needs exactly
+    /// this GROUP BY to work without parsing spec_json per query.
+    #[test]
+    fn retry_farming_groups_by_spec_hash() {
+        let store = SessionStore::in_memory().unwrap();
+        let entry = |spec: &str, tonic: u8| ExerciseLogEntry {
+            source: "explore".to_owned(),
+            label: "L".to_owned(),
+            spec_json: spec.to_owned(),
+            seed: 1,
+            difficulty: 2,
+            tonic,
+            accuracy: Some(0.95),
+        };
+        for _ in 0..5 {
+            store.log_exercise(&entry("{\"cell\":[0,3,7]}", 0)).unwrap();
+        }
+        store.log_exercise(&entry("{\"cell\":[0,4,7]}", 0)).unwrap();
+
+        let max_retries: i64 = store
+            .conn
+            .query_row(
+                "SELECT MAX(cnt) FROM (SELECT COUNT(*) AS cnt FROM exercise_log \
+                 GROUP BY spec_hash, tonic)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            max_retries, 5,
+            "the farmed exercise must dominate the GROUP BY"
+        );
+        let groups: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT spec_hash) FROM exercise_log",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(groups, 2, "distinct material must stay distinct");
+    }
+
+    /// F5 (key-camping): the same cell logged across tonics shares ONE
+    /// spec_hash (spec_json carries no tonic), so the 12-key coverage matrix
+    /// is `GROUP BY spec_hash, tonic` — one hot column exposes the camping.
+    #[test]
+    fn key_camping_shares_spec_hash_across_tonics() {
+        let store = SessionStore::in_memory().unwrap();
+        let entry = |tonic: u8| ExerciseLogEntry {
+            source: "explore".to_owned(),
+            label: "L".to_owned(),
+            spec_json: "{\"cell\":[0,3,7]}".to_owned(),
+            seed: 1,
+            difficulty: 2,
+            tonic,
+            accuracy: Some(0.9),
+        };
+        // Camped: ten attempts in one comfortable key, one stray attempt in
+        // another.
+        for _ in 0..10 {
+            store.log_exercise(&entry(0)).unwrap();
+        }
+        store.log_exercise(&entry(7)).unwrap();
+
+        let hashes: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT spec_hash) FROM exercise_log",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hashes, 1, "one cell = one material row, across every key");
+        let per_tonic: Vec<(i64, i64)> = store
+            .conn
+            .prepare(
+                "SELECT tonic, COUNT(*) FROM exercise_log \
+                 GROUP BY spec_hash, tonic ORDER BY COUNT(*) DESC",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            per_tonic,
+            vec![(0, 10), (7, 1)],
+            "the camped tonic must stand out as the one hot column"
+        );
+    }
+
+    /// F1 (walk-away): zero phrases over a 30-minute wall reads as zero
+    /// played time, zero notes, total silence — and the flags stay
+    /// CONSISTENT with the #445-6b narration gates: zero phrases routes to
+    /// the empty-state path (by `is_thin_session`'s documented contract,
+    /// zero phrases is NOT "thin"), while a sparse near-walk-away session
+    /// that DOES trip the thin gate also reads low on the same persisted
+    /// played clock — the aggregates and the gates never contradict.
+    #[test]
+    fn session_integrity_walk_away_is_all_silence() {
+        let recap_input = |phrases: Vec<PhraseSummary>| crate::session::RecapInput {
+            instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
+            duration_secs: 1800.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases,
+            tips: Vec::new(),
+            score_title: None,
+            note_verdicts: Vec::new(),
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+            history_suggestions: Vec::new(),
+            method_book_tip: None,
+        };
+
+        // The pure walk-away: all silence on the persisted clock…
+        let integrity = session_integrity(&[], 1800.0);
+        assert_eq!(integrity.played_secs, 0.0);
+        assert_eq!(integrity.note_count, 0);
+        assert_eq!(integrity.silence_ratio, 1.0);
+        // …and the empty-state narration path, NOT the thin one (the
+        // documented zero-phrase rule — the founder's voice-reference copy).
+        assert!(
+            !crate::coaching::is_thin_session(&recap_input(Vec::new())),
+            "zero phrases is the empty-state path, never 'thin'"
+        );
+
+        // The near-walk-away (one 10 s phrase in 30 min): thin to the
+        // narration gate, and the SAME story on the persisted aggregates.
+        let sparse = t1_phrase(0, 100.0, 110.0, 4);
+        assert!(
+            crate::coaching::is_thin_session(&recap_input(vec![sparse.clone()])),
+            "a sparse session must trip the thin gate"
+        );
+        let sparse_integrity = session_integrity(&[sparse], 1800.0);
+        assert!(
+            sparse_integrity.played_secs < crate::coaching::THIN_SESSION_MIN_PLAYED_SECS,
+            "the persisted played clock agrees with the thin threshold"
+        );
+        assert!(sparse_integrity.silence_ratio > 0.99);
+    }
+
+    /// The documented edges: zero wall → 1.0 (vacuous silence, not NaN);
+    /// played exceeding wall (clock slop) clamps to 0.0; a normal session
+    /// computes the straight ratio; corrupt negative phrase spans can't eat
+    /// real played time.
+    #[test]
+    fn session_integrity_clamps_and_zero_wall() {
+        assert_eq!(session_integrity(&[], 0.0).silence_ratio, 1.0);
+        assert_eq!(session_integrity(&[], -5.0).silence_ratio, 1.0);
+
+        let over = session_integrity(&[t1_phrase(0, 0.0, 700.0, 100)], 600.0);
+        assert_eq!(
+            over.silence_ratio, 0.0,
+            "played > wall clamps, never negative"
+        );
+
+        let normal = session_integrity(
+            &[t1_phrase(0, 0.0, 30.0, 40), t1_phrase(1, 100.0, 130.0, 50)],
+            600.0,
+        );
+        assert!((normal.played_secs - 60.0).abs() < 1e-9);
+        assert_eq!(normal.note_count, 90);
+        assert!((normal.silence_ratio - 0.9).abs() < 1e-9);
+
+        let corrupt = session_integrity(&[t1_phrase(0, 50.0, 40.0, 5)], 100.0);
+        assert_eq!(
+            corrupt.played_secs, 0.0,
+            "a negative span clamps to zero instead of subtracting"
+        );
+    }
+
+    /// AC7: the close-time aggregates round-trip onto the session row and
+    /// surface on the summary; a row saved without them reads None (honest
+    /// absence), never fabricated zeros.
+    #[test]
+    fn record_session_integrity_round_trips() {
+        let store = SessionStore::in_memory().unwrap();
+        let (with_id, without_id) = (SessionId::new(), SessionId::new());
+        let now = Utc::now();
+        store
+            .save(
+                with_id,
+                now,
+                now + Duration::seconds(600),
+                &recap_with("trumpet", 600.0, 2),
+            )
+            .unwrap();
+        store
+            .save(
+                without_id,
+                now + Duration::seconds(700),
+                now + Duration::seconds(760),
+                &recap_with("trumpet", 60.0, 1),
+            )
+            .unwrap();
+
+        let integrity = session_integrity(
+            &[t1_phrase(0, 0.0, 30.0, 40), t1_phrase(1, 100.0, 130.0, 50)],
+            600.0,
+        );
+        store.record_session_integrity(with_id, &integrity).unwrap();
+
+        let summaries = store.list_recent(10).unwrap();
+        let with = summaries.iter().find(|s| s.id == with_id).unwrap();
+        assert_eq!(with.played_secs, Some(60.0));
+        assert_eq!(with.note_count, Some(90));
+        assert_eq!(with.silence_ratio, Some(0.9));
+        let without = summaries.iter().find(|s| s.id == without_id).unwrap();
+        assert_eq!(
+            (
+                without.played_secs,
+                without.note_count,
+                without.silence_ratio
+            ),
+            (None, None, None),
+            "a session closed before the aggregates ran must read as unknown"
+        );
+    }
+
+    /// AC3 (store half): the journal appends and reads back in session-clock
+    /// order regardless of insert order, scoped to its session.
+    #[test]
+    fn practice_events_roundtrip_in_clock_order() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .log_practice_event("s1", 120.0, "pocket_stop", "{\"bpm\":96.0}")
+            .unwrap();
+        store
+            .log_practice_event("s1", 10.0, "pocket_start", "{\"bpm\":90.0}")
+            .unwrap();
+        store
+            .log_practice_event("s2", 5.0, "band_start", "{}")
+            .unwrap();
+
+        let events = store.list_practice_events("s1").unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            vec!["pocket_start", "pocket_stop"],
+            "one session's journal, ordered by at_secs"
+        );
+        assert_eq!(events[0].at_secs, 10.0);
+        assert_eq!(events[0].params_json, "{\"bpm\":90.0}");
+        assert_eq!(store.count_practice_events().unwrap(), 3);
+    }
+
+    /// F8 (tool-on-with-no-notes): pocket events range-join against phrases
+    /// with near-zero note_count — the "metronome ran, nothing was played
+    /// into it" span is one SQL query over the two local tables.
+    #[test]
+    fn pocket_on_span_with_no_notes_is_joinable() {
+        let store = SessionStore::in_memory().unwrap();
+        let id = SessionId::new();
+        let now = Utc::now();
+        store
+            .save(
+                id,
+                now,
+                now + Duration::seconds(300),
+                &recap_with("trumpet", 300.0, 2),
+            )
+            .unwrap();
+        // Two phrases inside the click's span: one silent-ish, one real.
+        store
+            .save_phrases(
+                id,
+                &[t1_phrase(0, 30.0, 60.0, 0), t1_phrase(1, 70.0, 100.0, 25)],
+            )
+            .unwrap();
+        let sid = id.as_str();
+        store
+            .log_practice_event(&sid, 20.0, "pocket_start", "{\"bpm\":90.0}")
+            .unwrap();
+        store
+            .log_practice_event(&sid, 110.0, "pocket_stop", "{\"bpm\":90.0}")
+            .unwrap();
+
+        // The integrity panel's F8 join: phrases with no voiced notes that
+        // sit inside a pocket_start..pocket_stop window.
+        let silent_in_span: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_phrases p \
+                 JOIN practice_events a ON a.session_id = p.session_id AND a.kind = 'pocket_start' \
+                 JOIN practice_events b ON b.session_id = p.session_id AND b.kind = 'pocket_stop' \
+                 WHERE p.session_id = ?1 AND p.note_count = 0 \
+                   AND p.start_secs >= a.at_secs AND p.end_secs <= b.at_secs",
+                params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            silent_in_span, 1,
+            "exactly the silent phrase inside the click span"
+        );
+    }
+
+    /// AC3 (failure half): the raw store writer DOES surface an Err when the
+    /// journal is unwritable — proving the command layer's `()`-returning
+    /// wrapper has something real to swallow (if this stopped failing, the
+    /// best-effort posture would be untested theater).
+    #[test]
+    fn log_practice_event_err_is_surfaced_to_the_swallowing_caller() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE practice_events;")
+            .unwrap();
+        let result = store.log_practice_event("s1", 1.0, "pocket_start", "{}");
+        assert!(
+            result.is_err(),
+            "an unwritable journal must error at the store seam (the command \
+             layer, not the store, is where best-effort lives)"
+        );
     }
 }

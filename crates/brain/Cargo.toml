@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Test-only failure-injection seams (#449 T1 review MF3). Enabled solely by
+# downstream crates' dev-dependencies (feature unification turns it on for
+# `cargo test`, never for a shipping build). Nothing behind it may be used
+# outside tests.
+test-support = []
+
 [dependencies]
 ears = { path = "../ears" }
 tone = { path = "../tone" }

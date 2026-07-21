@@ -433,6 +433,19 @@ pub trait RecapGenerator: Send + Sync {
     ///
     /// See `docs/architecture/offline-first-and-network-transparency.md`.
     async fn apply_network_policy(&self, _policy: crate::coaching::NetworkPolicy) {}
+
+    /// #449 T1: whether the **last** [`generate_recap`](Self::generate_recap)
+    /// call actually produced its recap from a parsed LLM response — the
+    /// `narration_used {"kind":"recap"}` telemetry fact. Default `false`: a
+    /// generator that never touches the network (mocks, on-device fallbacks)
+    /// can never have "used narration". The networked engine overrides this
+    /// so the journal records only narrations that really fired — offline
+    /// policy, thin-session short-circuit, API failure, and parse-failure
+    /// fallbacks all report `false` (a logged narration that never happened
+    /// would be the exact kind of lie the telemetry exists to prevent).
+    async fn recap_used_llm(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

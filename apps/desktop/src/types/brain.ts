@@ -664,6 +664,16 @@ export interface SessionSummaryDto {
   started_at: string; // RFC 3339
   duration_secs: number;
   phrase_count: number;
+  /**
+   * #449 T1 integrity aggregates, persisted at session close. `null` on
+   * sessions recorded before the columns existed — honest absence; the
+   * History UI (T4-era) shows "unknown", never a fabricated zero.
+   * Optional so pre-T1 fixtures/mocks stay valid (the wire always sends
+   * them, possibly null).
+   */
+  played_secs?: number | null;
+  note_count?: number | null;
+  silence_ratio?: number | null;
 }
 
 /** Full session with recap for detail view. Matches `commands::StoredSessionDto`. */

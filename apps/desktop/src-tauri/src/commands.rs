@@ -119,6 +119,14 @@ pub struct SessionSummaryDto {
     pub started_at: DateTime<Utc>,
     pub duration_secs: f64,
     pub phrase_count: usize,
+    /// #449 T1 (§1b): played-clock seconds persisted at session close.
+    /// `None` on rows that predate the columns — honest absence, so the
+    /// History page can say "unknown" instead of flattering with zeros.
+    pub played_secs: Option<f64>,
+    /// #449 T1 (§1b): voiced events detected. `None` as above.
+    pub note_count: Option<u64>,
+    /// #449 T1 (§1b): 1 − played/wall, clamped. `None` as above.
+    pub silence_ratio: Option<f64>,
 }
 
 impl From<SessionSummary> for SessionSummaryDto {
@@ -129,6 +137,9 @@ impl From<SessionSummary> for SessionSummaryDto {
             started_at: s.started_at,
             duration_secs: s.duration_secs,
             phrase_count: s.phrase_count,
+            played_secs: s.played_secs,
+            note_count: s.note_count,
+            silence_ratio: s.silence_ratio,
         }
     }
 }
@@ -471,6 +482,15 @@ impl RecapGenerator for LlmRecapGenerator {
             engine_arc.lock().await.set_network_policy(policy);
         }
     }
+
+    async fn recap_used_llm(&self) -> bool {
+        // #449 T1: delegate to the engine's own flag — no engine (no API key)
+        // means the grounded offline recap ran, which is never a narration.
+        match &self.engine {
+            Some(engine_arc) => engine_arc.lock().await.recap_used_llm(),
+            None => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +594,71 @@ impl ActiveSession {
             practice_mode,
             score_id: None,
             coaching,
+        }
+    }
+}
+
+/// #449 T1: the telemetry journal's view of the active session — identity
+/// plus the one clock every `practice_events.at_secs` offsets from
+/// (`SessionRecorder::started_at`, the same base `end_practice_session_impl`
+/// uses for `elapsed_secs`; the audio worker's phrase clock starts at
+/// pipeline spin-up a few ms later, so range joins against
+/// `session_phrases` are sound).
+///
+/// Held in its own `std::sync::Mutex` (not the async `active_session` lock)
+/// so *sync* commands (`set_pocket_tempo`) can journal without an await, and
+/// so the writer never contends with the session lock. Lock order where both
+/// std mutexes are needed: telemetry → session_store, never the reverse.
+struct SessionTelemetry {
+    session_id: brain::session::SessionId,
+    started_at: DateTime<Utc>,
+    /// Last effective (clamped) click tempo pushed — tracked on EVERY push
+    /// so `pocket_stop` reports the true final tempo even though the
+    /// journal itself is coalesced.
+    pocket_bpm: Option<f64>,
+    /// Tempo-coalescing state: the last *journaled* tempo and when
+    /// (session-clock seconds). See [`tempo_log_due`].
+    tempo_last_logged_bpm: Option<f64>,
+    tempo_last_logged_at_secs: f64,
+}
+
+impl SessionTelemetry {
+    fn new(session_id: brain::session::SessionId, started_at: DateTime<Utc>) -> Self {
+        Self {
+            session_id,
+            started_at,
+            pocket_bpm: None,
+            tempo_last_logged_bpm: None,
+            tempo_last_logged_at_secs: 0.0,
+        }
+    }
+
+    /// Seconds since session start on the one journal clock.
+    fn at_secs(&self) -> f64 {
+        (Utc::now() - self.started_at).num_milliseconds() as f64 / 1000.0
+    }
+}
+
+/// #449 T1 coalescing gates for `pocket_tempo` rows: a change must be both
+/// big enough and settled long enough to be worth a row. A follow-mode
+/// stream (≈1 Hz, ±2 BPM wobble around a locked pulse) journals nothing;
+/// a genuine ramp journals at most one row per gap window.
+const POCKET_TEMPO_LOG_MIN_DELTA_BPM: f64 = 5.0;
+const POCKET_TEMPO_LOG_MIN_GAP_SECS: f64 = 5.0;
+
+/// The pure coalescing decision (unit-tested in isolation): journal a
+/// `pocket_tempo` row iff the effective tempo moved
+/// ≥ [`POCKET_TEMPO_LOG_MIN_DELTA_BPM`] from the last *journaled* value AND
+/// ≥ [`POCKET_TEMPO_LOG_MIN_GAP_SECS`] have passed since that row. With no
+/// prior row this session (`last_bpm == None`) the first push journals — the
+/// only way a click started before this session's baseline existed (not
+/// reachable today, but the safe default).
+fn tempo_log_due(last_bpm: Option<f64>, last_at_secs: f64, bpm: f64, at_secs: f64) -> bool {
+    match last_bpm {
+        None => true,
+        Some(prev) => {
+            (bpm - prev).abs() >= POCKET_TEMPO_LOG_MIN_DELTA_BPM
+                && (at_secs - last_at_secs) >= POCKET_TEMPO_LOG_MIN_GAP_SECS
         }
     }
 }
@@ -708,6 +793,11 @@ pub struct AppState {
     /// The in-flight free-play exploration (#255), if any. Same locking rules
     /// as `active_lesson`.
     active_explore: Arc<std::sync::Mutex<Option<ExploreState>>>,
+    /// #449 T1: the telemetry journal's session context — `Some` exactly
+    /// while a practice session is active (set on successful start, cleared
+    /// on every end path). No context → no rows, calmly: the writer's
+    /// no-session contract lives here.
+    telemetry: std::sync::Mutex<Option<SessionTelemetry>>,
 }
 
 /// A running follow-me accompaniment.
@@ -840,6 +930,7 @@ impl AppState {
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
             active_explore: Arc::new(std::sync::Mutex::new(None)),
+            telemetry: std::sync::Mutex::new(None),
         };
         state.indexed()
     }
@@ -895,6 +986,7 @@ impl AppState {
             key_override: std::sync::Mutex::new(None),
             active_lesson: std::sync::Mutex::new(None),
             active_explore: Arc::new(std::sync::Mutex::new(None)),
+            telemetry: std::sync::Mutex::new(None),
         }
         .indexed()
     }
@@ -1006,23 +1098,35 @@ impl AppState {
     /// repeatedly (e.g. from both `stop_accompaniment` and session end). The
     /// handle is taken out from under the lock *before* joining so the lock isn't
     /// held across the thread join.
-    pub(crate) fn teardown_accompaniment(&self) {
+    /// Returns whether a band was actually running (#449 T1: the callers
+    /// journal `band_stop` only for a real stop, so a no-op teardown can
+    /// never fabricate an event).
+    pub(crate) fn teardown_accompaniment(&self) -> bool {
         let taken = self.accompaniment.lock_or_recover().take();
-        if let Some(accompaniment) = taken {
-            accompaniment.output.stop();
+        match taken {
+            Some(accompaniment) => {
+                accompaniment.output.stop();
+                true
+            }
+            None => false,
         }
     }
 
     /// #421 S1: stop The Pocket's click if it is playing. Idempotent, like
-    /// the band's teardown; both run at session end.
-    pub(crate) fn teardown_pocket(&self) {
+    /// the band's teardown; both run at session end. Returns whether a click
+    /// was actually running (#449 T1: same fabrication guard as the band's).
+    pub(crate) fn teardown_pocket(&self) -> bool {
         // #445: clear the click gate FIRST so the audio worker stops
         // consulting a dying click's fires. Fail-open by construction:
         // an empty slot gates nothing.
         *self.click_gate.lock_or_recover() = None;
         let taken = self.pocket.lock_or_recover().take();
-        if let Some(pocket) = taken {
-            pocket.output.stop();
+        match taken {
+            Some(pocket) => {
+                pocket.output.stop();
+                true
+            }
+            None => false,
         }
     }
 
@@ -1874,11 +1978,18 @@ pub async fn start_practice_session_impl(
     // end-of-session recap can name the piece and cite measures.
     session.recorder.set_score_title(score_title);
     let session_id = session.recorder.session_id().as_str();
+    // #449 T1: open the telemetry journal for this session — its id plus the
+    // recorder's `started_at`, the one clock every `at_secs` offsets from.
+    // Set only on the success path (an AlreadyActive bounce above must never
+    // clobber the live session's context).
+    let telemetry =
+        SessionTelemetry::new(session.recorder.session_id(), session.recorder.started_at());
     // Starting → Listening is synchronous in PR 1. PR 2 inserts a real
     // pause once audio capture startup is async.
     session.phase = SessionPhase::Listening;
 
     *guard = Some(session);
+    *state.telemetry.lock_or_recover() = Some(telemetry);
     Ok(session_id)
 }
 
@@ -1923,6 +2034,13 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
         session.phase = SessionPhase::Ending;
         guard.take()
     };
+    // #449 T1: the telemetry journal closes with the session — from here on,
+    // tool commands are between-sessions and must journal nothing. Cleared
+    // before any await so a slow recap can't leave a stale context journaling
+    // events into an ended session. (The wrapper's band/click teardown runs
+    // BEFORE this, so their stop events are already in; the recap narration
+    // event below is written directly against the completed session.)
+    *state.telemetry.lock_or_recover() = None;
     // A lesson can't outlive its session: the phrase buffer it grades from is
     // about to be drained, so a surviving lesson would silently mis-grade the
     // NEXT session (#254 review M1). Finalize it — completed drills keep their
@@ -2032,6 +2150,15 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
             // The store can degrade to in-memory at startup (see `open_stores`),
             // and a recap the user is waiting on must never be sunk by a
             // persistence failure — so we log and carry on rather than erroring.
+            //
+            // #449 T1 (§1b): the anti-fudge aggregates, computed ONCE, here,
+            // in Rust, from the completed session's phrases. `wall_secs` uses
+            // the exact derivation `SessionStore::save` uses for
+            // `duration_secs`, so the ratio's denominator can never disagree
+            // with the stored row.
+            let wall_secs =
+                (completed.ended_at - completed.started_at).num_milliseconds() as f64 / 1000.0;
+            let integrity = brain::store::session_integrity(&completed.all_phrases(), wall_secs);
             {
                 let store = state.session_store.lock_or_recover();
                 if let Err(e) = store.save(
@@ -2063,7 +2190,27 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
                     ) {
                         tracing::warn!(error = %e, "could not persist session metadata");
                     }
+                    // #449 T1 (§1b): persist the integrity aggregates on the
+                    // row we just saved — best-effort like everything here.
+                    if let Err(e) = store.record_session_integrity(completed.id, &integrity) {
+                        tracing::warn!(error = %e, "could not persist session integrity");
+                    }
                 }
+            }
+            // #449 T1: journal the recap narration only when the generator's
+            // own flag says an LLM response actually produced it — offline,
+            // thin-session, and failure fallbacks report false, so the
+            // journal can't claim a narration that never fired. Written
+            // directly against the completed session at its closing offset
+            // (the live telemetry context is already closed above).
+            if generator.recap_used_llm().await {
+                write_practice_event(
+                    state,
+                    completed.id,
+                    wall_secs,
+                    "narration_used",
+                    &serde_json::json!({ "kind": "recap" }),
+                );
             }
             Ok(recap)
         }
@@ -2580,9 +2727,16 @@ pub async fn end_practice_session<R: Runtime>(
     // the command lock so this can't interleave with a concurrent start/stop.
     {
         let _cmd = state.accompaniment_cmd_lock.lock().await;
-        state.teardown_accompaniment();
+        // #449 T1: journal the stops the session-end teardown implies — the
+        // telemetry context is still open here (the impl closes it), so the
+        // tool-on spans close honestly at the session boundary.
+        if state.teardown_accompaniment() {
+            log_practice_event_best_effort(&state, "band_stop", serde_json::json!({}));
+        }
         // #421 S1: the click stops with the session, like the band.
-        state.teardown_pocket();
+        if state.teardown_pocket() {
+            note_pocket_stopped(&state);
+        }
     }
     emit_pocket_status(&app, false, 0.0);
     // The key override is session-scoped — reset it so the next session
@@ -2625,9 +2779,14 @@ pub async fn start_accompaniment<R: Runtime>(
     // joined) and off the accompaniment lock — so we never (a) open a second
     // output device while the old one is still live, nor (b) drop-join an
     // `AudioOutput` while holding the std mutex the audio worker locks per frame.
-    state.teardown_accompaniment();
+    if state.teardown_accompaniment() {
+        // #449 T1: a restart is a real stop of the previous band.
+        log_practice_event_best_effort(&state, "band_stop", serde_json::json!({}));
+    }
     // #421 S1: one audio-output owner — the band replaces the click.
-    state.teardown_pocket();
+    if state.teardown_pocket() {
+        note_pocket_stopped(&state);
+    }
     emit_pocket_status(&app, false, 0.0);
 
     // The receiver moves into the render-thread source; the sender lives in the
@@ -2655,6 +2814,13 @@ pub async fn start_accompaniment<R: Runtime>(
     // this assignment never drops a live `AudioOutput` while holding the lock.
     *state.accompaniment.lock_or_recover() = Some(accompaniment);
 
+    // #449 T1: journal the band's birth, noting whether it starts under a
+    // pinned key (the pin itself is a `band_key_pin` event when set).
+    log_practice_event_best_effort(
+        &state,
+        "band_start",
+        serde_json::json!({ "key_pinned": state.current_key_override().is_some() }),
+    );
     emit_accompaniment_status(&app, true);
     Ok(())
 }
@@ -2666,7 +2832,10 @@ pub async fn stop_accompaniment<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _cmd = state.accompaniment_cmd_lock.lock().await;
-    state.teardown_accompaniment();
+    if state.teardown_accompaniment() {
+        // #449 T1: only a real stop is journaled (teardown reports it).
+        log_practice_event_best_effort(&state, "band_stop", serde_json::json!({}));
+    }
     emit_accompaniment_status(&app, false);
     Ok(())
 }
@@ -2683,8 +2852,14 @@ pub async fn start_pocket<R: Runtime>(
     count_in: bool,
 ) -> Result<(), String> {
     let _cmd = state.accompaniment_cmd_lock.lock().await;
-    state.teardown_accompaniment();
-    state.teardown_pocket();
+    // #449 T1: journal what this start displaces — a real band stop and/or a
+    // real stop of the previous click (restart), never a no-op teardown.
+    if state.teardown_accompaniment() {
+        log_practice_event_best_effort(&state, "band_stop", serde_json::json!({}));
+    }
+    if state.teardown_pocket() {
+        note_pocket_stopped(&state);
+    }
     emit_accompaniment_status(&app, false);
 
     let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
@@ -2719,6 +2894,9 @@ pub async fn start_pocket<R: Runtime>(
         output_sample_rate: output.sample_rate(),
     });
     *state.pocket.lock_or_recover() = Some(Pocket { output, tempo_tx });
+    // #449 T1: journal the click's birth at its CLAMPED tempo (played ==
+    // reported == journaled) and reset the tempo-coalescing baseline.
+    note_pocket_started(&state, tempo, count_in);
     emit_pocket_status(&app, true, tempo);
     Ok(())
 }
@@ -2730,7 +2908,10 @@ pub async fn stop_pocket<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _cmd = state.accompaniment_cmd_lock.lock().await;
-    state.teardown_pocket();
+    if state.teardown_pocket() {
+        // #449 T1: a real stop, with the final effective tempo.
+        note_pocket_stopped(&state);
+    }
     emit_pocket_status(&app, false, 0.0);
     Ok(())
 }
@@ -2742,9 +2923,40 @@ pub async fn stop_pocket<R: Runtime>(
 /// number onto the render thread without locks.
 #[tauri::command]
 pub fn set_pocket_tempo(state: State<'_, AppState>, tempo_bpm: f64) -> Result<(), String> {
-    if let Some(pocket) = state.pocket.lock_or_recover().as_mut() {
+    let retimed = if let Some(pocket) = state.pocket.lock_or_recover().as_mut() {
         push_clamped_tempo(&mut pocket.tempo_tx, tempo_bpm);
+        true
+    } else {
+        false
+    };
+    // #449 T1: journal the retime — coalesced (≥5 BPM and ≥5 s from the last
+    // journaled row), at the same CLAMPED value the render thread was fed,
+    // and only when a click actually consumed the push. Off the pocket lock
+    // so the telemetry/session-store locks never nest inside it.
+    if retimed {
+        let (effective, _) = clamp_pocket_params(tempo_bpm, 4);
+        note_pocket_tempo(&state, effective);
     }
+    Ok(())
+}
+
+/// #449 T1: record a Pocket personality change (anchor/follow/handoff) in
+/// the practice_events journal. The mode itself lives in frontend state
+/// (the follow policy is UI orchestration — #421 S2), so the backend can't
+/// observe changes; this command is the journaling seam. It has no effect
+/// on playback. No active session → no row, calmly. Frontend wiring rides
+/// the T2/T4 work (this slice is backend-only; see the spec §4b).
+#[tauri::command]
+pub fn set_pocket_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    match mode.as_str() {
+        "anchor" | "follow" | "handoff" => {}
+        other => {
+            return Err(format!(
+                "pocket mode can be anchor, follow, or handoff — not {other:?}"
+            ))
+        }
+    }
+    log_practice_event_best_effort(&state, "pocket_mode", serde_json::json!({ "mode": mode }));
     Ok(())
 }
 
@@ -2818,6 +3030,14 @@ pub async fn set_accompaniment_key(
     // isn't dropped (it would otherwise see no band yet, then be overwritten).
     let _cmd = state.accompaniment_cmd_lock.lock().await;
     state.set_key_override(tonic, minor);
+    // #449 T1: journal the pin as the user expressed it — the shipped
+    // command speaks (tonic, minor), so that's what the row records
+    // honestly; params_json is additive if the pin ever grows modes.
+    log_practice_event_best_effort(
+        &state,
+        "band_key_pin",
+        serde_json::json!({ "tonic": tonic, "minor": minor }),
+    );
     Ok(())
 }
 
@@ -2849,10 +3069,22 @@ pub async fn get_coaching_tip(
         previous_tips: state.recent_tip_texts(PREVIOUS_TIPS_WINDOW).await,
         score_title: state.active_session_score_title().await,
     };
-    state
+    let tip = state
         .get_coaching_tip(&phrase, &session_ctx)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // #449 T1: `Some` here means a live LLM tip genuinely fired — under the
+    // engine's silence-beats-a-lie contract, offline / rate-limited / failed
+    // calls all return `None` (there is no canned-tip path). Journaled as a
+    // usage fact only; no tip content leaves the coaching flow.
+    if tip.is_some() {
+        log_practice_event_best_effort(
+            &state,
+            "narration_used",
+            serde_json::json!({ "kind": "tip" }),
+        );
+    }
+    Ok(tip)
 }
 
 /// How many recent coaching tips to feed back to the live coach as
@@ -3051,6 +3283,124 @@ fn log_exercise_best_effort(store: &SessionStore, o: ExerciseOutcome<'_>) {
     if let Err(e) = store.log_exercise(&entry) {
         tracing::warn!(error = %e, "exercise log append failed (continuing)");
     }
+}
+
+// ---------------------------------------------------------------------------
+// #449 T1: the practice_events writers. Best-effort, command-layer only
+// (never the audio thread), one clock (seconds from session start). LOCAL
+// ONLY: nothing here syncs until T2's enrollment opt-in + ConnectionsPrivacy
+// rows land — see docs/specs/449-t1-local-telemetry.md.
+// ---------------------------------------------------------------------------
+
+/// The store write shared by every emitter below. One `tracing::warn` on
+/// failure, nothing else — a telemetry failure must never break practice.
+///
+/// NOTE for callers: this takes the `session_store` lock, so it must be
+/// called with that lock NOT held (std mutexes are not reentrant).
+fn write_practice_event(
+    state: &AppState,
+    session_id: brain::session::SessionId,
+    at_secs: f64,
+    kind: &str,
+    params: &serde_json::Value,
+) {
+    let store = state.session_store.lock_or_recover();
+    if let Err(e) =
+        store.log_practice_event(&session_id.as_str(), at_secs, kind, &params.to_string())
+    {
+        tracing::warn!(error = %e, kind, "practice-event append failed (continuing)");
+    }
+}
+
+/// Append one tool-usage event to the journal — best-effort, NEVER blocks or
+/// errors the practice loop (the `log_exercise_best_effort` posture, returns
+/// `()` by construction). **No active session → no row, calmly** — tool use
+/// outside a session (library browsing, opener preview) is not practice
+/// evidence and must not fabricate any.
+fn log_practice_event_best_effort(state: &AppState, kind: &str, params: serde_json::Value) {
+    let (session_id, at_secs) = {
+        let guard = state.telemetry.lock_or_recover();
+        let Some(t) = guard.as_ref() else { return };
+        (t.session_id, t.at_secs())
+    };
+    write_practice_event(state, session_id, at_secs, kind, &params);
+}
+
+/// `pocket_start`: journal the click's birth and reset the tempo-coalescing
+/// baseline to its starting tempo. `mode` is `"anchor"` by backend contract —
+/// every click starts as the strict Anchor; Follow/Handoff retimes arrive
+/// later as `set_pocket_tempo` pushes (and mode *changes* as `pocket_mode`
+/// events via `set_pocket_mode`).
+fn note_pocket_started(state: &AppState, bpm: f64, count_in: bool) {
+    let (session_id, at_secs) = {
+        let mut guard = state.telemetry.lock_or_recover();
+        let Some(t) = guard.as_mut() else { return };
+        let at = t.at_secs();
+        t.pocket_bpm = Some(bpm);
+        t.tempo_last_logged_bpm = Some(bpm);
+        t.tempo_last_logged_at_secs = at;
+        (t.session_id, at)
+    };
+    write_practice_event(
+        state,
+        session_id,
+        at_secs,
+        "pocket_start",
+        &serde_json::json!({ "bpm": bpm, "mode": "anchor", "count_in": count_in }),
+    );
+}
+
+/// `pocket_tempo`, coalesced: the last-known effective tempo is tracked on
+/// EVERY push (so `pocket_stop` reports the truth), but a journal row is
+/// appended only when [`tempo_log_due`] says the change is big enough
+/// (≥ 5 BPM from the last row) and settled enough (≥ 5 s since it). A
+/// follow-mode stream therefore logs few rows — the doc's "coalesce: ≤ 1 row
+/// per settled value".
+fn note_pocket_tempo(state: &AppState, bpm: f64) {
+    let due = {
+        let mut guard = state.telemetry.lock_or_recover();
+        let Some(t) = guard.as_mut() else { return };
+        let at = t.at_secs();
+        t.pocket_bpm = Some(bpm);
+        if tempo_log_due(
+            t.tempo_last_logged_bpm,
+            t.tempo_last_logged_at_secs,
+            bpm,
+            at,
+        ) {
+            t.tempo_last_logged_bpm = Some(bpm);
+            t.tempo_last_logged_at_secs = at;
+            Some((t.session_id, at))
+        } else {
+            None
+        }
+    };
+    if let Some((session_id, at_secs)) = due {
+        write_practice_event(
+            state,
+            session_id,
+            at_secs,
+            "pocket_tempo",
+            &serde_json::json!({ "bpm": bpm }),
+        );
+    }
+}
+
+/// `pocket_stop` with the final effective tempo (the last clamped value the
+/// render thread was fed — start tempo if nothing ever retimed it). Callers
+/// invoke this only when `teardown_pocket` reported a click was actually
+/// running, so a no-op teardown can never fabricate a stop.
+fn note_pocket_stopped(state: &AppState) {
+    let (session_id, at_secs, bpm) = {
+        let guard = state.telemetry.lock_or_recover();
+        let Some(t) = guard.as_ref() else { return };
+        (t.session_id, t.at_secs(), t.pocket_bpm)
+    };
+    let params = match bpm {
+        Some(b) => serde_json::json!({ "bpm": b }),
+        None => serde_json::json!({}),
+    };
+    write_practice_event(state, session_id, at_secs, "pocket_stop", &params);
 }
 
 /// The active explore key signature (for the edit engine's staff-step math).
@@ -3469,6 +3819,16 @@ pub fn opener_impl(
                 },
             );
         }
+        // #449 T1: Begin is a tool moment, journaled alongside the exercise
+        // row (outside the store-lock scope above — the writer takes that
+        // lock itself). The recipe NAME never crosses the IPC boundary (the
+        // frontend loads a recipe into the builder, then Begins), so it's
+        // null until that wire exists; additive params absorb it later.
+        log_practice_event_best_effort(
+            state,
+            "opener_begin",
+            serde_json::json!({ "recipe": null }),
+        );
         *state.active_explore.lock_or_recover() = Some(explore);
     }
     Ok(dto)
@@ -3640,6 +4000,9 @@ pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> 
             },
         );
     }
+    // #449 T1: recall commits like Begin, so it journals like Begin (a
+    // recalled opener has no recipe name either — it replays the last row).
+    log_practice_event_best_effort(state, "opener_begin", serde_json::json!({ "recipe": null }));
     *state.active_explore.lock_or_recover() = Some(explore);
     Ok(dto)
 }
@@ -4744,8 +5107,14 @@ pub fn get_score(state: State<'_, AppState>, id: String) -> Result<LoadedScoreDt
     // `uuid` isn't a direct dependency of this crate, so naming its error
     // type won't resolve, but the inferred error still impls `Display`.
     let score_id: ScoreId = id.parse::<ScoreId>().map_err(|e| e.to_string())?;
-    let score_store = state.score_store.lock_or_recover();
-    let entry = score_store.get(score_id).map_err(|e| e.to_string())?;
+    let entry = {
+        let score_store = state.score_store.lock_or_recover();
+        score_store.get(score_id).map_err(|e| e.to_string())?
+    };
+    // #449 T1: a successful load during a session is "a score is opened for
+    // practice" — the id only, no content. Outside a session (library
+    // browsing) the writer journals nothing, calmly.
+    log_practice_event_best_effort(&state, "score_open", serde_json::json!({ "score_id": id }));
     Ok(LoadedScoreDto {
         music_xml: entry.music_xml.clone(),
         entry: entry.into(),
@@ -9799,5 +10168,439 @@ mod tests {
     async fn recent_tip_texts_empty_with_no_active_session() {
         let s = state();
         assert!(s.recent_tip_texts(5).await.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // #449 T1: practice_events emitters, coalescing, integrity columns
+    // -----------------------------------------------------------------------
+
+    /// The journal for one session as `(kind, params_json)` in clock order —
+    /// the assertion surface every T1 emitter test reads.
+    fn journal(s: &AppState, session_id: &str) -> Vec<(String, String)> {
+        s.session_store
+            .lock_or_recover()
+            .list_practice_events(session_id)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.kind, e.params_json))
+            .collect()
+    }
+
+    /// Total journal rows across all sessions — the "nothing was written
+    /// anywhere" assertion.
+    fn journal_len(s: &AppState) -> usize {
+        s.session_store
+            .lock_or_recover()
+            .count_practice_events()
+            .unwrap()
+    }
+
+    async fn start_session(s: &AppState) -> String {
+        start_practice_session_impl(s, "Trumpet".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .expect("session starts")
+    }
+
+    /// AC5 (the pure gate): a `pocket_tempo` row needs BOTH a ≥5 BPM move
+    /// from the last journaled value AND ≥5 s since it — either alone is a
+    /// wobble, not a settled change. First-ever push logs (no baseline).
+    #[test]
+    fn tempo_log_due_gates_on_delta_and_gap() {
+        assert!(tempo_log_due(None, 0.0, 90.0, 0.0), "no baseline → log");
+        // Big jump, too soon: the follow stream's re-lock burst.
+        assert!(!tempo_log_due(Some(90.0), 10.0, 130.0, 12.0));
+        // Settled long, but a wobble: ±2 BPM around a locked pulse.
+        assert!(!tempo_log_due(Some(90.0), 10.0, 92.0, 200.0));
+        // Both gates pass — this is a real ramp step.
+        assert!(tempo_log_due(Some(90.0), 10.0, 95.0, 15.0));
+        assert!(tempo_log_due(Some(90.0), 10.0, 85.0, 15.0), "downward too");
+        // Boundary: exactly 5 BPM and exactly 5 s both count as settled.
+        assert!(tempo_log_due(Some(90.0), 10.0, 95.0, 15.0));
+        assert!(!tempo_log_due(Some(90.0), 10.0, 94.9, 15.0));
+        assert!(!tempo_log_due(Some(90.0), 10.0, 95.0, 14.9));
+    }
+
+    /// AC3/AC4 (the no-session contract): every writer is a calm no-op with
+    /// no active session — tool use outside practice fabricates no evidence.
+    #[test]
+    fn no_session_emits_no_practice_events() {
+        let s = state();
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({"score_id": "x"}));
+        note_pocket_started(&s, 90.0, true);
+        note_pocket_tempo(&s, 120.0);
+        note_pocket_stopped(&s);
+        assert_eq!(journal_len(&s), 0, "no session → no rows, from any writer");
+    }
+
+    /// AC3: inside a session, rows land under the session's id with a
+    /// non-negative session-clock offset; ending the session closes the
+    /// journal (a straggler write after end journals nothing).
+    #[tokio::test]
+    async fn practice_events_carry_the_session_clock_and_close_with_it() {
+        let s = state();
+        let sid = start_session(&s).await;
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({"score_id": "x"}));
+
+        let events = s
+            .session_store
+            .lock_or_recover()
+            .list_practice_events(&sid)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "score_open");
+        assert!(
+            (0.0..60.0).contains(&events[0].at_secs),
+            "at_secs must be a small offset from session start, got {}",
+            events[0].at_secs
+        );
+
+        end_practice_session_impl(&s).await.expect("session ends");
+        assert!(
+            s.telemetry.lock_or_recover().is_none(),
+            "the telemetry context must close with the session"
+        );
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({"score_id": "y"}));
+        assert_eq!(journal_len(&s), 1, "post-end writes journal nothing");
+    }
+
+    /// AC5 (the stream): a follow-mode burst of pushes journals NO tempo
+    /// rows (the 5 s gate holds even for big jumps); once the gap has
+    /// passed, one settled change journals exactly one row; and the final
+    /// effective tempo still reaches `pocket_stop` untruncated — coalescing
+    /// thins the journal, never the truth.
+    #[tokio::test]
+    async fn pocket_tempo_stream_coalesces_to_few_rows() {
+        let s = state();
+        let sid = start_session(&s).await;
+        note_pocket_started(&s, 90.0, true);
+
+        // The follow stream: ~a dozen pushes in the same instant — wobbles
+        // AND big re-lock jumps. All inside the 5 s gate → zero rows.
+        for bpm in [
+            90.5, 91.0, 89.0, 92.0, 130.0, 60.0, 91.5, 92.5, 93.0, 94.0, 118.0, 90.0,
+        ] {
+            note_pocket_tempo(&s, bpm);
+        }
+        let kinds = |s: &AppState| {
+            journal(s, &sid)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(&s),
+            vec!["pocket_start"],
+            "a rapid stream must coalesce to zero tempo rows"
+        );
+
+        // Rewind the gate as if the last journaled row were long ago, then
+        // one settled change journals exactly once.
+        s.telemetry
+            .lock_or_recover()
+            .as_mut()
+            .expect("session context")
+            .tempo_last_logged_at_secs = -10.0;
+        note_pocket_tempo(&s, 120.0);
+        note_pocket_tempo(&s, 121.0); // immediately after → gated again
+        assert_eq!(kinds(&s), vec!["pocket_start", "pocket_tempo"]);
+
+        // Review round 1 MF1: the delta gate's baseline is the last
+        // JOURNALED value (120), never the last PUSHED one (121). With the
+        // time gate rewound, 125.5 must journal: |125.5 − 120| = 5.5 ≥ 5.
+        // A mutant comparing against the last pushed value stays silent
+        // (|125.5 − 121| = 4.5 < 5) and dies on this assert.
+        s.telemetry
+            .lock_or_recover()
+            .as_mut()
+            .expect("session context")
+            .tempo_last_logged_at_secs = -10.0;
+        note_pocket_tempo(&s, 125.5);
+        assert_eq!(
+            kinds(&s),
+            vec!["pocket_start", "pocket_tempo", "pocket_tempo"],
+            "a ≥5 BPM move from the last JOURNALED row must journal"
+        );
+        assert!(
+            journal(&s, &sid)[2].1.contains("125.5"),
+            "the third row carries the settled tempo: {}",
+            journal(&s, &sid)[2].1
+        );
+
+        note_pocket_tempo(&s, 126.0); // gated wobble — tracked, not journaled
+        note_pocket_stopped(&s);
+        let events = journal(&s, &sid);
+        let (stop_kind, stop_params) = events.last().unwrap();
+        assert_eq!(stop_kind, "pocket_stop");
+        assert!(
+            stop_params.contains("126"),
+            "pocket_stop must report the last EFFECTIVE tempo (126), \
+             not the last journaled one (125.5): {stop_params}"
+        );
+        let start_params = &events[0].1;
+        assert!(
+            start_params.contains("\"mode\":\"anchor\""),
+            "{start_params}"
+        );
+        assert!(start_params.contains("\"count_in\":true"), "{start_params}");
+    }
+
+    /// AC4: Begin journals `opener_begin` inside a session and nothing
+    /// outside one — while the exercise-log row (material evidence) is
+    /// written either way, exactly as before this slice.
+    #[tokio::test]
+    async fn begin_opener_journals_only_in_session() {
+        let s = state();
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 2, 3, 5],
+        }];
+
+        opener_impl(&s, &items, None, None, true).expect("begin outside a session");
+        assert_eq!(journal_len(&s), 0, "no session → no opener_begin row");
+        assert_eq!(
+            s.session_store
+                .lock_or_recover()
+                .list_exercise_log()
+                .unwrap()
+                .len(),
+            1,
+            "the exercise log keeps its row regardless (unchanged behavior)"
+        );
+
+        let sid = start_session(&s).await;
+        opener_impl(&s, &items, None, None, true).expect("begin inside a session");
+        assert_eq!(
+            journal(&s, &sid),
+            vec![("opener_begin".to_owned(), "{\"recipe\":null}".to_owned())]
+        );
+    }
+
+    /// AC4: a successful `get_score` journals `score_open` with the id —
+    /// only inside a session (library browsing journals nothing).
+    #[tokio::test]
+    async fn get_score_journals_score_open_only_in_session() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+        let score_id = {
+            let store = state.score_store.lock_or_recover();
+            store
+                .import(
+                    "Etude".to_owned(),
+                    None,
+                    "etude.musicxml".to_owned(),
+                    "<score-partwise/>".to_owned(),
+                    0,
+                    4,
+                )
+                .unwrap()
+                .id
+                .as_str()
+        };
+
+        get_score(state.clone(), score_id.clone()).expect("load outside a session");
+        assert_eq!(journal_len(state.inner()), 0);
+
+        let sid = start_session(state.inner()).await;
+        get_score(state.clone(), score_id.clone()).expect("load inside a session");
+        let events = journal(state.inner(), &sid);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "score_open");
+        assert!(
+            events[0].1.contains(&score_id),
+            "params must carry the score id: {}",
+            events[0].1
+        );
+    }
+
+    /// AC4: pinning the band's key journals `band_key_pin` with the pin as
+    /// the command speaks it — (tonic, minor) — inside a session only.
+    #[tokio::test]
+    async fn set_accompaniment_key_journals_band_key_pin() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+
+        set_accompaniment_key(state.clone(), 4, true)
+            .await
+            .expect("pin outside a session");
+        assert_eq!(journal_len(state.inner()), 0);
+
+        let sid = start_session(state.inner()).await;
+        set_accompaniment_key(state.clone(), 4, true)
+            .await
+            .expect("pin inside a session");
+        assert_eq!(
+            journal(state.inner(), &sid),
+            vec![(
+                "band_key_pin".to_owned(),
+                "{\"minor\":true,\"tonic\":4}".to_owned()
+            )]
+        );
+    }
+
+    /// AC4 (`pocket_mode` seam): the command validates the vocabulary and
+    /// journals inside a session only. (The frontend wire rides T2/T4 —
+    /// this pins the backend contract it will call into.)
+    #[tokio::test]
+    async fn set_pocket_mode_validates_and_journals() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+
+        assert!(
+            set_pocket_mode(state.clone(), "swing".to_owned()).is_err(),
+            "unknown modes are refused, not journaled"
+        );
+        set_pocket_mode(state.clone(), "follow".to_owned()).expect("valid mode, no session");
+        assert_eq!(journal_len(state.inner()), 0);
+
+        let sid = start_session(state.inner()).await;
+        set_pocket_mode(state.clone(), "follow".to_owned()).expect("valid mode, in session");
+        assert_eq!(
+            journal(state.inner(), &sid),
+            vec![("pocket_mode".to_owned(), "{\"mode\":\"follow\"}".to_owned())]
+        );
+    }
+
+    /// AC4 (narration): a coaching tip that actually surfaced (`Some`)
+    /// journals `narration_used {"kind":"tip"}` — usage fact only, no tip
+    /// content in the row.
+    #[tokio::test]
+    async fn coaching_tip_some_journals_narration_used() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let state = app.state::<AppState>();
+        let sid = start_session(state.inner()).await;
+
+        let tip = get_coaching_tip(state.clone(), sample_phrase(), 60.0, 1)
+            .await
+            .expect("tip command succeeds");
+        assert!(tip.is_some(), "the mock service serves a tip");
+        let events = journal(state.inner(), &sid);
+        assert_eq!(
+            events,
+            vec![("narration_used".to_owned(), "{\"kind\":\"tip\"}".to_owned())],
+            "one usage row, no content"
+        );
+    }
+
+    /// AC7: closing a session with phrases persists the integrity columns
+    /// computed from those phrases — and the mock (non-LLM) recap journals
+    /// NO `narration_used {"kind":"recap"}` row (a narration that never
+    /// fired must never be claimed).
+    #[tokio::test]
+    async fn session_close_persists_integrity_columns() {
+        let s = state();
+        let sid = start_session(&s).await;
+
+        // Two phrases: 30 s + 30 s of played time, 90 voiced notes.
+        let mut a = sample_phrase();
+        a.start_time = 0.0;
+        a.end_time = 30.0;
+        a.note_count = 40;
+        let mut b = sample_phrase();
+        b.phrase_index = 1;
+        b.start_time = 100.0;
+        b.end_time = 130.0;
+        b.note_count = 50;
+        s.phrase_buffer.lock_or_recover().extend([a, b]);
+
+        end_practice_session_impl(&s).await.expect("session ends");
+
+        let summaries = s.session_store.lock_or_recover().list_recent(10).unwrap();
+        let row = summaries
+            .iter()
+            .find(|r| r.id.as_str() == sid)
+            .expect("the closed session persisted");
+        assert_eq!(row.played_secs, Some(60.0), "Σ phrase durations");
+        assert_eq!(row.note_count, Some(90), "Σ voiced notes");
+        // The test session's real wall clock is milliseconds (or exactly 0 —
+        // both happen depending on scheduler timing), so assert the ratio
+        // against the SAME documented rule applied to the persisted wall:
+        // wall <= 0 → 1.0, else 1 − played/wall clamped (here played ≫ wall,
+        // so 0.0). This is exactly what a re-derivation in a dashboard would
+        // compute — the row must agree with it.
+        let expected_ratio = if row.duration_secs <= 0.0 {
+            1.0
+        } else {
+            (1.0 - 60.0 / row.duration_secs).clamp(0.0, 1.0)
+        };
+        assert_eq!(
+            row.silence_ratio,
+            Some(expected_ratio),
+            "the stored ratio must follow the documented wall rule (wall = {})",
+            row.duration_secs
+        );
+        assert!(
+            journal(&s, &sid).iter().all(|(k, _)| k != "narration_used"),
+            "a mock recap is not an LLM narration"
+        );
+    }
+
+    /// Review round 1 MF2: a NO-OP teardown journals nothing. With a live
+    /// session (so the writers COULD write) and neither click nor band
+    /// running, the stop commands must not fabricate `pocket_stop` /
+    /// `band_stop` rows — this pins the teardown bool-return guard. A
+    /// mutant whose teardowns report `true` unconditionally dies here.
+    #[tokio::test]
+    async fn noop_teardown_journals_no_stop_events() {
+        use tauri::test::mock_app;
+        use tauri::Manager;
+
+        let app = mock_app();
+        app.manage(AppState::with_mocks());
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let sid = start_session(state.inner()).await;
+
+        stop_pocket(handle.clone(), state.clone())
+            .await
+            .expect("stopping a silent click is a calm no-op");
+        stop_accompaniment(handle, state.clone())
+            .await
+            .expect("stopping a silent band is a calm no-op");
+
+        let events = journal(state.inner(), &sid);
+        assert!(
+            events.is_empty(),
+            "nothing was running — a no-op teardown must journal no stop: {events:?}"
+        );
+    }
+
+    /// Review round 1 MF3: the best-effort writer survives a genuinely
+    /// broken journal MID-SESSION — it returns calmly (a `.expect()` mutant
+    /// panics here) and the session still closes normally afterwards. The
+    /// store-level half (the `Err` actually exists) is pinned in
+    /// `brain::store::tests::log_practice_event_err_is_surfaced_to_the_swallowing_caller`;
+    /// this is the command-layer swallow, exercised for real.
+    #[tokio::test]
+    async fn best_effort_writer_survives_a_broken_journal() {
+        let s = state();
+        let _sid = start_session(&s).await;
+        s.session_store
+            .lock_or_recover()
+            .break_practice_events_for_tests();
+
+        // Under the mutant this panics; correct code shrugs (one warn).
+        log_practice_event_best_effort(&s, "score_open", serde_json::json!({ "score_id": "x" }));
+
+        let recap = end_practice_session_impl(&s).await;
+        assert!(
+            recap.is_ok(),
+            "a broken journal must never sink the session close: {:?}",
+            recap.err()
+        );
     }
 }
