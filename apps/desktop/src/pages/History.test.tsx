@@ -16,6 +16,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../components/AccountPanel", () => ({
   default: () => <div data-testid="stub-account-panel" />,
 }));
+// ClassroomPanel likewise (#449 enrollment slice) — it has its own tests.
+vi.mock("../components/ClassroomPanel", () => ({
+  default: () => <div data-testid="stub-classroom-panel" />,
+}));
 
 import History from "./History";
 import { useHistoryStore } from "../stores/historyStore";

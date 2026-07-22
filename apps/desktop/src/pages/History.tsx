@@ -5,6 +5,7 @@ import SessionCard from "../components/SessionCard";
 import PastSessionDetail from "../components/PastSessionDetail";
 import PracticeStats from "../components/PracticeStats";
 import AccountPanel from "../components/AccountPanel";
+import ClassroomPanel from "../components/ClassroomPanel";
 
 export default function History() {
   const {
@@ -66,6 +67,9 @@ export default function History() {
         {/* Cloud sync (optional sign-in) */}
         <section className="mb-12">
           <AccountPanel />
+          {/* #449 enrollment: classroom join/leave + the teacher card.
+              Renders nothing signed out. */}
+          <ClassroomPanel />
           <button
             onClick={() => goToConnections()}
             className="mt-3 text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
