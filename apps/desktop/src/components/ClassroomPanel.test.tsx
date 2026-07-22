@@ -164,13 +164,26 @@ describe("ClassroomPanel — the consent screen gates the rpc (AC1)", () => {
   it("shows the full disclosure and makes NO redeem call until accept", async () => {
     signIn();
     await openConsentScreen();
-    // The plain-words disclosure list (T2 surfaces) + the never-list.
+    // The plain-words disclosure list (teacher-visible T2 surfaces) + the
+    // never-list.
     expect(screen.getByText(/Session recaps/)).toBeInTheDocument();
     expect(screen.getByText(/Session facts/)).toBeInTheDocument();
     expect(screen.getByText(/Phrase timings/)).toBeInTheDocument();
     expect(screen.getByText(/Exercises/)).toBeInTheDocument();
-    expect(screen.getByText(/Tools and progress/)).toBeInTheDocument();
+    expect(screen.getByText(/Practice tools/)).toBeInTheDocument();
     expect(screen.getByText(CONSENT_NEVER_LINE)).toBeInTheDocument();
+    // Round 1: exact truth. The bounded claim is about sharing with the
+    // TEACHER (other opt-ins exist), recap NOTES are qualified to the
+    // separate 0003 teacher link, and no key-mastery claim exists — the
+    // learner_model has no teacher RLS policy, so a teacher cannot see it.
+    expect(
+      screen.getByText(/nothing outside this list is ever shared with your/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/only if you also link accounts with your teacher/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/per-key progress/i)).toBeNull();
+    expect(screen.queryByText(/ever leaves your device/i)).toBeNull();
     // No accept, no call.
     expect(rpcCalls).toHaveLength(0);
 
@@ -244,8 +257,12 @@ describe("ClassroomPanel — unknown age runs the age step first (AC3)", () => {
     });
     fireEvent.click(screen.getByTestId("join-code-continue"));
     // Age step, not consent, comes first.
-    expect(screen.getByTestId("age-step")).toBeInTheDocument();
+    const ageStep = screen.getByTestId("age-step");
+    expect(ageStep).toBeInTheDocument();
     expect(screen.queryByTestId("consent-screen")).not.toBeInTheDocument();
+    // Round 1: the age gate is NEUTRAL — no consequence hint (parent/guardian
+    // gate) before the choice; that explanation lives on the consent screen.
+    expect(ageStep.textContent).not.toMatch(/parent|guardian/i);
     fireEvent.click(screen.getByLabelText("Under 13"));
     fireEvent.click(screen.getByTestId("age-continue"));
     await screen.findByTestId("consent-screen");

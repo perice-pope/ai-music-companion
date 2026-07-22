@@ -40,7 +40,7 @@ export const CONSENT_DISCLOSURE_ITEMS: ReadonlyArray<{
 }> = [
   {
     title: "Session recaps",
-    body: "your instrument, practice dates, session length, and the written recap notes.",
+    body: "your instrument, practice dates, and session length. The written recap notes are shared only if you also link accounts with your teacher — a separate invitation you accept, not this classroom code.",
   },
   {
     title: "Session facts",
@@ -55,8 +55,8 @@ export const CONSENT_DISCLOSURE_ITEMS: ReadonlyArray<{
     body: "the names of exercises you worked on (like ‘Minor triad, enclosed, descending’), their difficulty, and your accuracy — never the exercise recipe or seed.",
   },
   {
-    title: "Tools and progress",
-    body: "which practice tools you used (metronome and tempo, backing band, opener, opening a piece and its title, whether AI narration was used) and your per-key progress stats.",
+    title: "Practice tools",
+    body: "which practice tools you used (metronome and tempo, backing band, opener, opening a piece and its title, whether AI narration was used).",
   },
 ];
 
@@ -316,10 +316,12 @@ export default function ClassroomPanel() {
             <p className="text-sm font-medium text-white">
               One quick question first
             </p>
+            {/* Neutral age gate (FTC practice): no consequence hints before
+                the choice — the parent-gate explanation lives on the consent
+                screen itself (UNDER_13_NOTICE). */}
             <p className="mt-1 text-sm text-gray-300">
               How old is the musician using this account? We store only the age
-              group — never a birthdate. Under-13 accounts need a parent or
-              guardian to approve classroom sharing.
+              group — never a birthdate.
             </p>
             <div className="mt-2 space-y-1">
               {(
@@ -380,7 +382,7 @@ export default function ClassroomPanel() {
             <p className="mt-1 text-sm text-gray-300">
               Joining links your account to your teacher&rsquo;s roster. Here is
               the complete list of what your teacher can see — nothing outside
-              this list ever leaves your device:
+              this list is ever shared with your teacher:
             </p>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-gray-300">
               {CONSENT_DISCLOSURE_ITEMS.map((item) => (

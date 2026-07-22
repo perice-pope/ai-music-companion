@@ -192,7 +192,7 @@ closes visibility instantly via RLS.
 | P2 | `session_phrases` — thin rows: `phrase_index`, `start_secs`, `end_secs`, `note_count`, `stability`, `tone` (flat descriptor), key estimate name | per phrase | the cloud table exists (migration 0001) but the client doesn't push it yet; this projection activates it. **Not** the full `phrase_json` — no onsets vector, no pitch curves |
 | P3 | `exercise_log` rows: `logged_at`, `source`, `label`, `spec_hash`, `difficulty`, `tonic`, `accuracy` | per exercise | `label` is the human name F1 generated ("Minor triad, enclosed, descending") — that's the teacher-facing material name. **`spec_json` and `seed` stay local**: replayability is a device concern, not a dashboard one |
 | P4 | `practice_events` rows: `at_secs`, `kind`, `params_json` | per event | small by construction (tempo coalescing); no content |
-| P5 | `learner_model.key_mastery` (existing learner-model push) | rolling | already disclosed; the dashboard reads the EWMA snapshot |
+| P5 | `learner_model.key_mastery` (existing learner-model push) | rolling | already disclosed (rides the taste-profile opt-in). **NOT teacher-visible today (#449 enrollment round 1):** migration 0005 gives `learner_model` self-access RLS only — there is no teacher policy, so a teacher cannot read it, and the enrollment consent screen does not name it. The dashboard slice that adds a teacher policy must add the consent-copy line in the same PR. |
 
 **Privacy notes (the contract, restated where it can't be missed):**
 
@@ -202,7 +202,9 @@ closes visibility instantly via RLS.
 - **Disclosure first.** P2–P4 are new sync surfaces: each lands with its row in the
   offline-first enumeration table + `ConnectionsPrivacy.tsx` in the same PR, opt-in, OFF by
   default. The consent screen a student (or parent, under-13 — COPPA gate from teacher-audit,
-  verbatim) sees at enrollment names all five surfaces in plain words.
+  verbatim) sees at enrollment names the **teacher-visible** surfaces in plain words: P1–P4
+  plus the recap push (recap *notes* qualified to the separate 0003 teacher link). P5 is not
+  named — it is not teacher-visible (see its row note above).
 - **Honest absence.** A student enrolled without sync shows as "practicing offline" on the
   dashboard — a labeled state, never zeros (issue #449 §3). Absence of data is displayed as
   absence, not as failure; same "silence > lies" rule the recap follows.

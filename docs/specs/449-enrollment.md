@@ -86,8 +86,14 @@ issueJoinCode(userId, classroomId)     // rpc, then re-read the row for code+exp
 
 ### Consent screen (the T2 disclosure list, plain words)
 
-Names the five sync surfaces (datamodel doc §2 P1–P5) + the never-list + the
-joining-alone-shares-nothing note + revocation immediacy. Under-13: states a
+Names the **teacher-visible** sync surfaces (datamodel doc §2 P1–P4 + the recap
+push, with recap *notes* qualified to the separate 0003 teacher link — a
+classroom code alone never grants recap-text access; P5 key mastery is NOT
+listed because `learner_model` has no teacher RLS policy and is not
+teacher-visible) + the never-list + the joining-alone-shares-nothing note +
+revocation immediacy. The bounded claim is scoped to the teacher ("nothing
+outside this list is ever shared with your teacher" — other disclosed opt-ins
+exist), and the age step is neutral (no consequence hints before the choice). Under-13: states a
 parent/guardian must complete the step (a student under 13 cannot self-consent),
 requires an explicit guardian acknowledgment checkbox before the accept button
 enables, and redeems with `consent='parent'`. 13+ redeems with
