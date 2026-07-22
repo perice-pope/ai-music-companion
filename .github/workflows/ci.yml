@@ -133,6 +133,57 @@ jobs:
         working-directory: apps/desktop
         run: pnpm build
 
+  dashboard:
+    # #449 T4: the teacher-dashboard web app (apps/dashboard) is a
+    # standalone pnpm project like apps/desktop (no root workspace file —
+    # see docs/specs/449-t4-dashboard.md §3), so it gets its own lane
+    # mirroring the `frontend` job rather than widening that job (whose
+    # name is an established required status check). Lockfile-keyed cache,
+    # frozen install, then the four gates: lint, format, test, build (tsc
+    # runs inside `pnpm build`).
+    name: Dashboard checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-dashboard-${{ hashFiles('apps/dashboard/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-dashboard-
+
+      - name: Install dependencies
+        working-directory: apps/dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: apps/dashboard
+        run: pnpm lint
+
+      - name: Format check
+        working-directory: apps/dashboard
+        run: pnpm format:check
+
+      - name: Test
+        working-directory: apps/dashboard
+        run: pnpm test
+
+      - name: Build
+        working-directory: apps/dashboard
+        run: pnpm build
+
   tauri-rust:
     name: Tauri Rust checks
     runs-on: ubuntu-latest
