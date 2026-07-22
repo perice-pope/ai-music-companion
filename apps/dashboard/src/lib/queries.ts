@@ -254,15 +254,21 @@ export async function getStudentToolEvents(
  * View: v_session_integrity, security_invoker (0006 L725-744) — thresholds
  * live in the view (datamodel §4d verbatim); the teacher's own
  * fact_session/fact_exercise policies gate the rows. The view has no
- * classroom column, so the caller filters to the selected roster's
- * student_ids client-side. Grant: 0006 L744.
+ * classroom column, so classroom relevance is the `.in(student_id, roster)`
+ * filter — applied BEFORE the limit, so a multi-classroom teacher's other
+ * rosters (or their own practice sessions, which RLS also admits) can never
+ * consume the page. The caller keeps its client-side roster filter as a
+ * second belt. Grant: 0006 L744.
  */
 export async function getIntegrityRows(
   client: DashboardClient,
+  rosterStudentIds: string[],
 ): Promise<IntegrityRow[]> {
+  if (rosterStudentIds.length === 0) return [];
   const res = await client
     .from("v_session_integrity")
     .select("*")
+    .in("student_id", rosterStudentIds)
     .order("started_at", { ascending: false })
     .limit(100);
   return unwrap(res);

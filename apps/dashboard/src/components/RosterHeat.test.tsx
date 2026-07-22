@@ -113,6 +113,20 @@ describe("RosterHeat (spec AC2-AC4, AC11)", () => {
     expect(screen.queryByText(/^Synced /)).not.toBeInTheDocument();
   });
 
+  it("colors cells by PLAYED minutes, never wall minutes (the flagship honesty rule)", async () => {
+    // 12 played / 45 wall: the played bucket (5-15 min) is bg-emerald-200;
+    // the wall bucket (>=30 min) would be bg-emerald-600. If anyone wires
+    // heatClass to wall_min, this cell jumps buckets and the test dies.
+    mount({
+      enrollments: [enrollment("s1", "Ava")],
+      v_roster_heat: [heatRow("s1", "2026-07-20", 12, 45)],
+      fact_session: [],
+    });
+    const cell = await screen.findByTitle("12 min played · 45 min open");
+    expect(cell.className).toContain("bg-emerald-200");
+    expect(cell.className).not.toContain("bg-emerald-600");
+  });
+
   it("flagged day cells carry the integrity ring", async () => {
     mount({
       enrollments: [enrollment("s1", "Ava")],

@@ -74,7 +74,7 @@ see is decided by these shipped policies. Citations are to
 | Q6 | `getStudentSessions` | `fact_session` | same as Q5 | 0006 L479 |
 | Q7 | `getStudentExercises` | `fact_exercise` + embedded `dim_material` | `fact_exercise_select_teacher` (0006 L582-589); `dim_material_select_signed_in` (0006 L446-447) | 0006 L567, L434 |
 | Q8 | `getStudentToolEvents` | `fact_tool_event` | `fact_tool_event_select_teacher` (0006 L619-626) | 0006 L605 |
-| Q9 | `getIntegrityRows` | `v_session_integrity` (security_invoker, 0006 L725-744) | underlying: `fact_session_select_teacher`, `fact_exercise` teacher policy (subselects), profiles as Q3 | 0006 L744 |
+| Q9 | `getIntegrityRows` (roster `.in()` before the 100-row limit) | `v_session_integrity` (security_invoker, 0006 L725-744) | underlying: `fact_session_select_teacher`, `fact_exercise` teacher policy (subselects), profiles as Q3 | 0006 L744 |
 | Q10 | `getSessionEvidence` (F8) | `fact_tool_event`, `fact_phrase` | Q8's policy; `fact_phrase_select_teacher` (0006 L538-545) | 0006 L605, L520 |
 
 Deliberately NOT queried: `mv_student_day` / `mv_material_key` (service-role
@@ -88,6 +88,16 @@ classrooms/enrollments — 0006 header L14-18).
 Rule, pinned verbatim in the UI: **"Metrics nominate, humans judge."**
 (teacher-audit's line). Evidence phrasing, never verdicts; the words
 "cheat"/"fake"/"lie" never appear in the app.
+
+Provenance: the vector *directions* are datamodel §5's, verbatim; the
+**numeric bars are T4's** — the datamodel names the metrics but not
+per-vector thresholds, so the numbers below are declared here (and pinned
+in `integrity.ts` + its tests) as this slice's decisions, revisable by
+editing this table. The F1 bar sits **strictly inside** the
+`v_session_integrity` nomination filter (0006 L741-743: `silence_ratio >
+0.8 OR (wall > 600 AND played < 120) OR phrase_count < 3`), so every
+session F1 can flag is already a row the view returned — the chip narrows
+the view's nomination, it never needs rows the view withholds.
 
 | F# | Metric (integrity.ts) | Bar (fires only above) | Calm copy shown |
 |---|---|---|---|
@@ -211,10 +221,27 @@ rate-limit (0006 L310-317 TODO), classroom management UI, scores mirror FK.
 
 ## 10. Risks / open questions
 
-- `v_session_integrity` has no classroom column → client filters by roster
-  ids; fine at classroom scale (≤ ~100 students), revisit if rosters grow.
+- `v_session_integrity` has no classroom column. Classroom relevance is
+  applied server-side as `.in(student_id, roster)` **before** the 100-row
+  page limit (Q9), so a multi-classroom teacher's other rosters — or their
+  own practice sessions, which RLS also admits — can never consume the
+  page; the client-side roster filter stays as a second belt. Known
+  completeness bound: the panel shows at most the 100 most recent evidence
+  rows for the selected roster; older rows fall off the page, not out of
+  the data. Revisit with pagination if a roster outgrows it.
 - F8 needs per-session `fact_tool_event`+`fact_phrase` fetches; bounded to
-  the flagged sessions (integrity panel page, ≤ 50 rows).
+  the flagged sessions (the integrity panel page, ≤ 100 rows — the same
+  Q9 limit), and the evidence ids passed to Q10 are already
+  roster-filtered rows.
+- **F4 structural scope, inherited from 0006:** the view's WHERE
+  (0006 L741-743) nominates on silence/wall-vs-played/phrase-count only —
+  it never filters on retries. A retry-farmer whose sessions are otherwise
+  healthy (low silence, real phrases) therefore never reaches the panel,
+  and the F4 chip can only decorate rows nominated for other reasons.
+  This is the shipped view's shape, not a T4 choice. Named follow-up: a
+  0008 migration extending `v_session_integrity` (or adding a dedicated
+  retry-evidence view) so `max_retries >= 6` nominates on its own; the F4
+  bar and copy here carry over unchanged.
 - Label poisoning on `dim_material` is a recorded v1 trade-off (0006
   L442-445); display-only impact here.
 

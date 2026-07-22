@@ -44,10 +44,12 @@ export function IntegrityPanel({
   const state = useAsync(async () => {
     const roster = await listRoster(client, classroomId);
     const rosterIds = new Set(roster.map((r) => r.student_id));
-    // v_session_integrity has no classroom column (0006 L725-744); RLS has
-    // already scoped rows to this teacher's active students (and their own
-    // sessions) — the roster filter narrows to the selected classroom.
-    const allRows = await getIntegrityRows(client);
+    // v_session_integrity has no classroom column (0006 L725-744): classroom
+    // relevance is the roster `.in()` inside getIntegrityRows, applied before
+    // the row limit. RLS has already scoped rows to this teacher's active
+    // students (and their own sessions); the client-side filter below is the
+    // second belt, and what the roster-scoping test pins.
+    const allRows = await getIntegrityRows(client, [...rosterIds]);
     const rows = allRows.filter((r) => rosterIds.has(r.student_id));
     const heat = await getRosterHeat(client, classroomId, sinceKey);
     const evidence = await getSessionEvidence(
