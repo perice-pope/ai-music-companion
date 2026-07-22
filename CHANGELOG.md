@@ -1,3 +1,9 @@
+## [2.46.0](https://github.com/perice-pope/ai-music-companion/compare/v2.45.0...v2.46.0) (2026-07-22)
+
+### Features
+
+* the row respects the instrument's range — per-profile fold windows, voice exempt ([#471](https://github.com/perice-pope/ai-music-companion/issues/471)-4) ([#476](https://github.com/perice-pope/ai-music-companion/issues/476)) ([7205c25](https://github.com/perice-pope/ai-music-companion/commit/7205c25c95085c0fc8a583ce979d6ed64a5be0db)), closes [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4) [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4)
+
 ## [2.45.0](https://github.com/perice-pope/ai-music-companion/compare/v2.44.1...v2.45.0) (2026-07-22)
 
 ### Features
