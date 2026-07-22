@@ -1,3 +1,16 @@
+## [2.44.0](https://github.com/perice-pope/ai-music-companion/compare/v2.43.0...v2.44.0) (2026-07-22)
+
+### Features
+
+* local practice telemetry — the events journal and session integrity columns ([#449](https://github.com/perice-pope/ai-music-companion/issues/449) T1) ([#469](https://github.com/perice-pope/ai-music-companion/issues/469)) ([ee74e48](https://github.com/perice-pope/ai-music-companion/commit/ee74e48966994adc5558851926b081da87862230))
+* teacher dashboard cloud star schema + RLS rollups ([#449](https://github.com/perice-pope/ai-music-companion/issues/449) T3) ([#467](https://github.com/perice-pope/ai-music-companion/issues/467)) ([af671a9](https://github.com/perice-pope/ai-music-companion/commit/af671a9ed662a850cde4c94541e936e1f5ea4763))
+* teacher-dashboard sync projection, device to cloud ([#449](https://github.com/perice-pope/ai-music-companion/issues/449) T2) ([#473](https://github.com/perice-pope/ai-music-companion/issues/473)) ([f8b7db8](https://github.com/perice-pope/ai-music-companion/commit/f8b7db8c8c34eeb34aca2d131f6307edb82be6cb)), closes [#470](https://github.com/perice-pope/ai-music-companion/issues/470) [#470](https://github.com/perice-pope/ai-music-companion/issues/470) [#470](https://github.com/perice-pope/ai-music-companion/issues/470)
+
+### Bug Fixes
+
+* accidentals never land on noteheads — verified-hoist engraving ([#471](https://github.com/perice-pope/ai-music-companion/issues/471)-1) ([#472](https://github.com/perice-pope/ai-music-companion/issues/472)) ([0cae171](https://github.com/perice-pope/ai-music-companion/commit/0cae171bf80bcd12c3bd613d917d974f10c40d14)), closes [#471-1](https://github.com/perice-pope/ai-music-companion/issues/471-1) [#471-1](https://github.com/perice-pope/ai-music-companion/issues/471-1) [#471-1](https://github.com/perice-pope/ai-music-companion/issues/471-1) [F#5](https://github.com/perice-pope/F/issues/5)
+* **supabase:** explicit grants the 0006 policies presume — real-stack convention ([#449](https://github.com/perice-pope/ai-music-companion/issues/449) T3) ([#468](https://github.com/perice-pope/ai-music-companion/issues/468)) ([8fd1397](https://github.com/perice-pope/ai-music-companion/commit/8fd139790740103ab715364b511380482840ee1a))
+
 ## [2.43.0](https://github.com/perice-pope/ai-music-companion/compare/v2.42.0...v2.43.0) (2026-07-21)
 
 ### Features
