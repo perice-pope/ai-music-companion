@@ -8043,6 +8043,82 @@ mod tests {
         assert_eq!(first.staff, second.staff);
     }
 
+    /// H4 review round 1 MF1a: `session_fold_window` — the resolver every
+    /// async command wrapper trusts — actually follows the live session.
+    /// Idle → default; a Trumpet session → the trumpet's derived window.
+    /// Fails if the resolver stops reading the active session's instrument.
+    #[tokio::test]
+    async fn session_fold_window_follows_the_active_session_instrument() {
+        let s = state();
+        assert_eq!(
+            session_fold_window(&s).await,
+            FoldWindow::default(),
+            "no session → the default window"
+        );
+        start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
+            .await
+            .expect("session starts");
+        assert_eq!(
+            session_fold_window(&s).await,
+            FoldWindow { lo: 52, hi: 84 },
+            "a live Trumpet session resolves the trumpet window"
+        );
+    }
+
+    /// H4 review round 1 MF1a: the voice exemption holds through the LIVE
+    /// resolver too — a Voice session resolves the default window, not a
+    /// derived one. Fails if the family gate is bypassed on the session path.
+    #[tokio::test]
+    async fn session_fold_window_voice_session_keeps_the_default() {
+        let s = state();
+        start_practice_session_impl(&s, "Voice".to_owned(), PracticeMode::Practice, false, None)
+            .await
+            .expect("session starts");
+        assert_eq!(session_fold_window(&s).await, FoldWindow::default());
+    }
+
+    /// H4 review round 1 MF1b: the threading is not trust-based — through
+    /// the REAL `apply_variation_delta` command wrapper (mock Tauri app,
+    /// managed AppState, live Trumpet session), a wide-cell exploration
+    /// comes back with the range notice, proving the wrapper resolved the
+    /// SESSION's window rather than defaulting. Kills the "wrapper passes
+    /// FoldWindow::default()" mutant that the impl-level tests let survive.
+    #[tokio::test]
+    async fn an_active_trumpet_session_constrains_the_wrapper_path() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(state());
+        let s = app.state::<AppState>();
+        start_practice_session_impl(
+            s.inner(),
+            "Trumpet".to_owned(),
+            PracticeMode::Practice,
+            true,
+            None,
+        )
+        .await
+        .expect("session starts");
+        // Seed a wide-cell exploration (span 40 > the trumpet's 32-wide
+        // window — no key can fit).
+        let (explore, _) = brain::coach::start_explore_cell(
+            vec![0, -20, 20],
+            0,
+            &brain::learner::LearnerModel::default(),
+            5,
+            brain::coach::DirectionMode::Forward,
+        );
+        *s.active_explore.lock_or_recover() = Some(explore);
+        // The genuine wire path: the wrapper must resolve the session window.
+        let dto = apply_variation_delta(s.clone(), VariationDelta::ReshuffleRoots)
+            .await
+            .expect("chip applies");
+        assert!(
+            dto.range_notice.is_some(),
+            "a Trumpet session must constrain the wrapper-path render \
+             (fallback surfaced, not silently default-windowed)"
+        );
+    }
+
     // Note on `install_audio_pipeline` coverage: the race-guard
     // (reject install when session was drained during mic init) can't
     // be exercised here without a real mic to build an `AudioPipeline`

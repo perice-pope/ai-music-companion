@@ -1429,6 +1429,33 @@ mod tests {
         }
     }
 
+    /// H4 RNG neutrality that BINDS (review round 1, mutant e): under
+    /// `RandomPerRoot` every segment draws exactly one direction coin, so an
+    /// extra RNG draw anywhere in the windowed fold path — e.g. a coin
+    /// consumed on the cant-fit branch — desyncs every later segment's
+    /// direction and changes the notes. A span-40 cell on the trumpet
+    /// window falls back in ALL 12 keys and must still render byte-equal to
+    /// the unwindowed deal. (The Forward-direction fallback test above
+    /// cannot catch this: with no coins in the stream after the shuffle,
+    /// an extra draw is invisible.)
+    #[test]
+    fn cant_fit_fallback_stays_byte_identical_under_random_directions() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, -20, 20]); // span 40 > the trumpet's 32
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        let windowed = generate_in_window(&spec, 13, TRUMPET);
+        let unwindowed = generate(&spec, 13);
+        assert!(windowed.range_fallback, "span 40 cannot fit any key");
+        assert_eq!(
+            windowed.target_midi, unwindowed.target_midi,
+            "byte-equal notes — the window must consume no randomness"
+        );
+        assert_eq!(windowed.root_order, unwindowed.root_order);
+    }
+
     /// F2's seam: `unfolded_figures` deals the SAME segments as `generate` —
     /// same shuffle, same per-root direction coins, same enclosure — differing
     /// only by the whole-octave register shift. Fails if the two RNG streams
