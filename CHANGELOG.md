@@ -1,3 +1,9 @@
+## [2.47.0](https://github.com/perice-pope/ai-music-companion/compare/v2.46.0...v2.47.0) (2026-07-22)
+
+### Features
+
+* in-app classroom enrollment with plain-words consent ([#449](https://github.com/perice-pope/ai-music-companion/issues/449)) ([#477](https://github.com/perice-pope/ai-music-companion/issues/477)) ([a76a896](https://github.com/perice-pope/ai-music-companion/commit/a76a89632f9ab5899b90658956f7e289fdbbbfcd))
+
 ## [2.46.0](https://github.com/perice-pope/ai-music-companion/compare/v2.45.0...v2.46.0) (2026-07-22)
 
 ### Features
