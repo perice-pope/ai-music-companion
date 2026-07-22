@@ -58,10 +58,18 @@ beforeEach(() => {
   });
 });
 
+/** #471 pt 3: open the panel AND the More options disclosure — the
+ * folded bank is where the legacy bank testids live now (collapsed by
+ * default; the RV-simple face is picker + preview + Begin). */
+const openFull = () => {
+  render(<OpenersPanel />);
+  fireEvent.click(screen.getByTestId("openers-toggle"));
+  fireEvent.click(screen.getByTestId("opener-more-toggle"));
+};
+
 describe("OpenersPanel (#419 S1)", () => {
   it("opens from the invitation and shows the two live bank rows", () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     screen.getByText("Notes");
     screen.getByText("Note sequence");
     // S2a/S2b made the bank live; only My patterns still rests.
@@ -71,8 +79,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("a note tap adds an item and requests a PURE preview", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-note-3"));
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("preview_opener", {
@@ -93,8 +100,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("a sequence preset adds the classic opener as ONE item", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("preview_opener", {
@@ -107,8 +113,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("tapping a chip removes its item and refreshes the preview", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-note-1"));
     fireEvent.click(screen.getByTestId("opener-seq-1-3-5-8"));
     await waitFor(() => screen.getByTestId("opener-chip-1"));
@@ -123,8 +128,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("Begin is disabled while empty, then commits and hands off to explore", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     expect(screen.getByTestId("opener-begin")).toBeDisabled();
 
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
@@ -164,8 +168,7 @@ describe("OpenersPanel (#419 S1)", () => {
       }
       return Promise.resolve(PREVIEW_DTO);
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-note-1"));
     await waitFor(() => screen.getByTestId("opener-chip-0"));
     // Remove the item while its preview is still in flight…
@@ -181,8 +184,7 @@ describe("OpenersPanel (#419 S1)", () => {
 
   it("a calm refusal surfaces in the panel, not a crash", async () => {
     mockInvoke.mockRejectedValue("add a note or two first — then Begin");
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-note-1"));
     await waitFor(() => screen.getByTestId("opener-notice"));
     expect(screen.getByTestId("opener-notice").textContent).toContain(
@@ -193,8 +195,7 @@ describe("OpenersPanel (#419 S1)", () => {
   // ── #419 S2a: the item bank goes live ─────────────────────────────────
 
   it("every bank row sends its SEMANTIC wire shape", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
 
     fireEvent.click(screen.getByTestId("opener-interval-5"));
     await waitFor(() =>
@@ -243,8 +244,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("the resting bank shrank to what actually rests", () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     // S2b took directions live; only My patterns rests now.
     screen.getByText("My patterns");
     expect(screen.queryByText("Pattern directions")).toBeNull();
@@ -256,8 +256,7 @@ describe("OpenersPanel (#419 S1)", () => {
   // ── #419 S2b: direction chips + the captured tonic ────────────────────
 
   it("direction chips are exclusive and re-voice the preview", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     await waitFor(() => screen.getByTestId("opener-chip-0"));
     fireEvent.click(screen.getByTestId("opener-direction-reversed"));
@@ -298,8 +297,7 @@ describe("OpenersPanel (#419 S1)", () => {
         hearing_polyphony: false,
       } as never,
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
@@ -337,8 +335,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("custom entry parses spaces/dashes into ONE note_sequence item", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.change(screen.getByTestId("opener-custom-input"), {
       target: { value: " 1-5, 3 2 " },
     });
@@ -357,8 +354,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("custom junk gets a calm client notice and NOTHING goes over the wire", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.change(screen.getByTestId("opener-custom-input"), {
       target: { value: "do re mi" },
     });
@@ -403,8 +399,7 @@ describe("OpenersPanel (#419 S1)", () => {
         hearing_polyphony: false,
       }) as never;
     usePracticeStore.setState({ perception: withConfidence(0.54) });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-note-1"));
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
@@ -446,8 +441,7 @@ describe("OpenersPanel (#419 S1)", () => {
         hearing_polyphony: false,
       } as never,
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     fireEvent.click(screen.getByTestId("opener-direction-reversed"));
     await waitFor(() =>
@@ -480,8 +474,7 @@ describe("OpenersPanel (#419 S1)", () => {
     // identity; only a monotonic token can order them. The FIRST refresh
     // resolves LAST and must be dropped — preview, tonic, and previewed
     // direction all stay with the newer response.
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     await waitFor(() => screen.getByTestId("opener-chip-0"));
 
@@ -512,8 +505,7 @@ describe("OpenersPanel (#419 S1)", () => {
     // Round-3 review MF1: a preview refresh airborne when Begin resolves
     // must NOT repaint the just-reset builder with a ghost preview and a
     // stale captured tonic.
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     fireEvent.click(screen.getByTestId("opener-seq-1-2-3-5"));
     await waitFor(() => screen.getByTestId("opener-chip-0"));
 
@@ -560,8 +552,7 @@ describe("OpenersPanel (#419 S1)", () => {
           : PREVIEW_DTO,
       ),
     );
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("opener-my-pattern-0"));
     expect(screen.getByTestId("opener-my-pattern-0").textContent).toContain(
       "3×, last in A",
@@ -577,8 +568,7 @@ describe("OpenersPanel (#419 S1)", () => {
   });
 
   it("an empty practice history reads honestly, never hides", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("my-patterns-empty"));
     expect(screen.getByTestId("my-patterns-empty").textContent).toContain(
       "your patterns appear here",
@@ -619,8 +609,7 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
       }
       return Promise.resolve(PREVIEW_DTO);
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     // Empty builder → no save controls at all (AC6: nothing to save).
     expect(screen.queryByTestId("opener-recipe-save")).toBeNull();
     fireEvent.click(screen.getByTestId("opener-note-3"));
@@ -659,8 +648,7 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
       }
       return Promise.resolve(PREVIEW_DTO);
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("opener-recipe-3"));
     fireEvent.click(screen.getByTestId("opener-recipe-3"));
     // AC2: the EXISTING preview command, carrying the recipe's items AND
@@ -692,8 +680,7 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
       }
       return Promise.resolve(PREVIEW_DTO);
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("opener-recipe-delete-3"));
     fireEvent.click(screen.getByTestId("opener-recipe-delete-3"));
     await waitFor(() =>
@@ -715,8 +702,7 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
       }
       return Promise.resolve(PREVIEW_DTO);
     });
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("opener-yesterday"));
     expect(screen.getByTestId("opener-yesterday").textContent).toContain(
       "1-2-3-5 · 12 keys",
@@ -732,8 +718,7 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
   });
 
   it("no opener begun yet → the honest empty chip", async () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     await waitFor(() => screen.getByTestId("opener-yesterday-empty"));
     expect(screen.queryByTestId("opener-yesterday")).toBeNull();
     // And the recipes strip is honestly empty too.
@@ -751,8 +736,7 @@ describe("OpenersPanel (#445 pt 6a — reachable panel + indigo palette)", () =>
   // footer. (The pixel-level reachability is proven by the headless-browser
   // probe in docs/specs/445-openers-fix.md §2/§3.)
   it("the open panel is a bounded, internally-scrollable card", () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     const panel = screen.getByTestId("openers-panel");
     // Bounded height: the card can never exceed the viewport…
     expect(panel.className).toMatch(/\bmax-h-/);
@@ -762,8 +746,7 @@ describe("OpenersPanel (#445 pt 6a — reachable panel + indigo palette)", () =>
   });
 
   it("Begin is pinned as a sticky footer — always reachable", () => {
-    render(<OpenersPanel />);
-    fireEvent.click(screen.getByTestId("openers-toggle"));
+    openFull();
     const begin = screen.getByTestId("opener-begin");
     // Sticky to the bottom of the scroll container: Begin stays on-screen and
     // clickable however tall the bank/preview grows. Un-pinning it (the revert)
@@ -781,5 +764,275 @@ describe("OpenersPanel (#445 pt 6a — reachable panel + indigo palette)", () =>
     fireEvent.click(screen.getByTestId("openers-toggle"));
     // Open: the full builder.
     expect(container.innerHTML).not.toMatch(/teal-/);
+  });
+});
+
+/**
+ * #471 pt 3 — the RV-simple face: a 12-note chromatic picker builds ONE
+ * Notes{offsets} item (tap order = note order, re-based to the first
+ * tap), the grown bank folds behind a collapsed More options disclosure,
+ * and the one-tap strips (My Patterns / Recipes / Yesterday) stay
+ * visible. Chromatic pc math stays BACKEND-side: the picker only sends
+ * semitone offsets on the existing notes wire.
+ */
+describe("OpenersPanel (#471 pt 3 — the RV-simple picker)", () => {
+  it("the picker builds ONE notes item in tap order, re-based to the first tap", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    fireEvent.click(screen.getByTestId("opener-pc-0"));
+    fireEvent.click(screen.getByTestId("opener-pc-7"));
+    // Tap order IS note order; the first tap (button 4) re-bases to 0,
+    // so lower buttons go legally negative — descending openers exist.
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0, -4, 3] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    // ONE item, three notes — never one item per tap.
+    expect(usePracticeStore.getState().openerItems).toHaveLength(1);
+    expect(screen.getByTestId("opener-pc-4").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    // Toggling a lit button OFF removes its note; the rest re-base to
+    // the surviving first tap.
+    fireEvent.click(screen.getByTestId("opener-pc-0"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0, 3] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(screen.getByTestId("opener-pc-0").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    // Removing the FIRST tap re-bases the survivors to the new first:
+    // picks [4, 7] minus 4 leaves [7], whose offset is 0 — a stale base
+    // (still 4) would send [3] instead.
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(screen.getByTestId("opener-pc-4").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(screen.getByTestId("opener-pc-7").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("the picker holds its place in the row while bank items join", async () => {
+    // Round-1 review MF1: a surviving mutant rewrote the in-place update
+    // as remove-then-append-last — every earlier test passed because the
+    // picker item was always alone. Play order is the contract: a tap
+    // after a bank add must update the notes item WHERE IT SITS, and the
+    // bank add (a new array holding the SAME item reference) must not
+    // darken the lit buttons.
+    openFull();
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    // A bank item joins AFTER the picker's item…
+    fireEvent.click(screen.getByTestId("opener-chord-major_triad"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(2),
+    );
+    // …and the picks stay lit (reference-identity coexistence).
+    expect(screen.getByTestId("opener-pc-4").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    // Tapping the picker AGAIN updates its item in place — first, then
+    // the chord — never re-appended to the end.
+    fireEvent.click(screen.getByTestId("opener-pc-7"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toEqual([
+        { type: "notes", offsets: [0, 3] },
+        { type: "chord", kind: "major_triad" },
+      ]),
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "notes", offsets: [0, 3] },
+          { type: "chord", kind: "major_triad" },
+        ],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(screen.getByTestId("opener-pc-7").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("all 12 notes make a 12-tone cell that previews and Begins", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    for (let k = 0; k < 12; k += 1) {
+      fireEvent.click(screen.getByTestId(`opener-pc-${k}`));
+    }
+    const row = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: row }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    await waitFor(() => screen.getByTestId("opener-preview"));
+    // The founder's two gestures: pick notes, go.
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("begin_opener", {
+        items: [{ type: "notes", offsets: row }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    await waitFor(() =>
+      expect(usePracticeStore.getState().explore?.label).toBe(
+        "your opener · 12 keys",
+      ),
+    );
+  });
+
+  it("More options is collapsed by default and folds the whole bank", () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    // Collapsed: none of the folded bank renders…
+    expect(
+      screen.getByTestId("opener-more-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByTestId("opener-note-1")).toBeNull();
+    expect(screen.queryByTestId("opener-seq-1-2-3-5")).toBeNull();
+    expect(screen.queryByTestId("opener-custom-input")).toBeNull();
+    expect(screen.queryByTestId("opener-interval-5")).toBeNull();
+    expect(screen.queryByTestId("opener-chord-major_triad")).toBeNull();
+    expect(screen.queryByTestId("opener-scale-blues")).toBeNull();
+    expect(screen.queryByTestId("opener-enclosure-one_down_one_up")).toBeNull();
+    expect(screen.queryByTestId("opener-direction-reversed")).toBeNull();
+    // …while the RV-simple face is complete: the picker, Begin, and the
+    // one-tap strips (they ARE the RV simplicity).
+    screen.getByTestId("opener-pc-0");
+    screen.getByTestId("opener-pc-11");
+    screen.getByTestId("opener-begin");
+    screen.getByTestId("my-patterns-empty");
+    screen.getByTestId("opener-recipes-empty");
+    screen.getByTestId("opener-yesterday-empty");
+    // One tap opens everything — every legacy control reachable inside.
+    fireEvent.click(screen.getByTestId("opener-more-toggle"));
+    expect(
+      screen.getByTestId("opener-more-toggle").getAttribute("aria-expanded"),
+    ).toBe("true");
+    screen.getByTestId("opener-note-1");
+    screen.getByTestId("opener-note-12");
+    screen.getByTestId("opener-seq-1-2-3-5");
+    screen.getByTestId("opener-custom-input");
+    screen.getByTestId("opener-interval-5");
+    screen.getByTestId("opener-chord-major_triad");
+    screen.getByTestId("opener-scale-blues");
+    screen.getByTestId("opener-enclosure-one_down_one_up");
+    screen.getByTestId("opener-direction-varied");
+  });
+
+  it("the degree mirror grew to 12 — a 12th tap speaks the degree wire", async () => {
+    openFull();
+    fireEvent.click(screen.getByTestId("opener-note-12"));
+    // Degrees stay DIATONIC and semantic — the degree→semitone table
+    // (now 1..=12) lives in brain::starter only.
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [12] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+  });
+
+  it("a picker-built cell saves as a recipe over the notes wire", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns" || cmd === "list_opener_recipes") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve(null);
+      }
+      if (cmd === "save_opener_recipe") {
+        return Promise.resolve({
+          id: 11,
+          name: "My row",
+          items: [{ type: "notes", offsets: [0, 3] }],
+          direction: "forward",
+        });
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    fireEvent.click(screen.getByTestId("opener-pc-7"));
+    await waitFor(() => screen.getByTestId("opener-recipe-save"));
+    fireEvent.change(screen.getByTestId("opener-recipe-name"), {
+      target: { value: "My row" },
+    });
+    fireEvent.click(screen.getByTestId("opener-recipe-save"));
+    // AC6: the picker's cell round-trips through the EXISTING recipe
+    // wire as its re-based notes offsets.
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("save_opener_recipe", {
+        name: "My row",
+        items: [{ type: "notes", offsets: [0, 3] }],
+        direction: "forward",
+      }),
+    );
+    await waitFor(() => screen.getByTestId("opener-recipe-11"));
+    // And tapping the saved row repopulates through the preview path.
+    fireEvent.click(screen.getByTestId("opener-recipe-11"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0, 3] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(usePracticeStore.getState().openerItems).toEqual([
+      { type: "notes", offsets: [0, 3] },
+    ]);
+  });
+
+  it("Begin clears the picker's lit state — no ghost-lit buttons", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-pc-5"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+    fireEvent.click(screen.getByTestId("opener-begin"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    expect(screen.getByTestId("opener-pc-5").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    // Removing the chip clears it too — the picker follows the store.
+    fireEvent.click(screen.getByTestId("opener-pc-2"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+    fireEvent.click(screen.getByTestId("opener-chip-0"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(0),
+    );
+    expect(screen.getByTestId("opener-pc-2").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
   });
 });

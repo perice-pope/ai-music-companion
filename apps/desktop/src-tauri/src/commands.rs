@@ -9877,13 +9877,13 @@ mod tests {
         assert!(err.contains("add a note or two"), "got: {err}");
         let err = opener_impl(
             &state,
-            &[brain::starter::StarterItem::NoteSequence { degrees: vec![9] }],
+            &[brain::starter::StarterItem::NoteSequence { degrees: vec![13] }],
             None,
             None,
             false,
         )
         .unwrap_err();
-        assert!(err.contains("1 to 8"), "got: {err}");
+        assert!(err.contains("1 to 12"), "got: {err}");
         assert!(state.active_explore.lock_or_recover().is_none());
     }
 
@@ -9935,11 +9935,11 @@ mod tests {
         let err = save_opener_recipe_impl(
             &s,
             "Bad degree",
-            &[brain::starter::StarterItem::NoteSequence { degrees: vec![9] }],
+            &[brain::starter::StarterItem::NoteSequence { degrees: vec![13] }],
             "forward",
         )
         .unwrap_err();
-        assert!(err.contains("1 to 8"), "got: {err}");
+        assert!(err.contains("1 to 12"), "got: {err}");
         assert_eq!(list_opener_recipes_impl(&s).len(), 1, "nothing was saved");
     }
 

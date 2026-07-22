@@ -93,7 +93,15 @@ pub enum StarterItem {
     /// root-position major triad arpeggio wherever the row lands.
     Notes { offsets: Vec<i8> },
     /// A scale-degree sequence in the major scale of the cell's key:
-    /// 1..=8 (8 = the octave). "1-2-3-5" is the classic opener.
+    /// 1..=12, where 8 = the octave and 9..=12 keep walking the scale
+    /// into the second octave with the compound-interval reading (9th =
+    /// 14 semitones, 10th = 16, 11th = 17, 12th = 19). "1-2-3-5" is the
+    /// classic opener; "1-2-3-5-8-12" rides the extension (#471 pt 3).
+    ///
+    /// Degrees are DIATONIC — steps of the major scale. The chromatic
+    /// gesture (the panel's simple 12-note picker, the 12-tone row) is
+    /// NOT degrees: it speaks [`StarterItem::Notes`] semitone offsets,
+    /// which already say anything chromatic.
     NoteSequence { degrees: Vec<u8> },
     /// #419 S2a: a major-scale degree interval from the root — number
     /// 2..=8 ("a 3rd", "a 5th") compiles to root + that degree.
@@ -123,7 +131,7 @@ impl std::fmt::Display for StarterError {
         match self {
             StarterError::Empty => write!(f, "add a note or two first — then Begin"),
             StarterError::BadDegree(d) => {
-                write!(f, "scale degrees run 1 to 8 — {d} isn't one")
+                write!(f, "scale degrees run 1 to 12 — {d} isn't one")
             }
             StarterError::BadInterval(n) => {
                 write!(
@@ -139,8 +147,10 @@ impl std::fmt::Display for StarterError {
     }
 }
 
-/// Major-scale semitone offsets for degrees 1..=8.
-const MAJOR_DEGREE_SEMITONES: [i8; 8] = [0, 2, 4, 5, 7, 9, 11, 12];
+/// Major-scale semitone offsets for degrees 1..=12 — one octave plus the
+/// compound extension (9th, 10th, 11th, 12th), the octave-extension
+/// semantics [`StarterItem::NoteSequence`] documents (#471 pt 3).
+const MAJOR_DEGREE_SEMITONES: [i8; 12] = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19];
 
 /// Compile a recipe's items into one composite cell: semitone offsets from
 /// the cell's first note, in play order — the exact wire shape
@@ -153,7 +163,7 @@ pub fn composite_cell(items: &[StarterItem], cap: usize) -> Result<Vec<i8>, Star
             StarterItem::Notes { offsets } => cell.extend_from_slice(offsets),
             StarterItem::NoteSequence { degrees } => {
                 for &d in degrees {
-                    if !(1..=8).contains(&d) {
+                    if !(1..=12).contains(&d) {
                         return Err(StarterError::BadDegree(d));
                     }
                     cell.push(MAJOR_DEGREE_SEMITONES[usize::from(d) - 1]);
@@ -239,17 +249,42 @@ mod tests {
         assert_eq!(cell, vec![0, 4, 7, 12]);
     }
 
-    /// Degree 0 and 9 refuse with the player-facing message naming the
+    /// Degree 0 and 13 refuse with the player-facing message naming the
     /// offender — a silent clamp would quietly reshape the music.
     #[test]
     fn out_of_range_degrees_refuse_by_name() {
         let err =
-            composite_cell(&[StarterItem::NoteSequence { degrees: vec![9] }], 32).unwrap_err();
-        assert_eq!(err, StarterError::BadDegree(9));
-        assert!(err.to_string().contains('9'));
+            composite_cell(&[StarterItem::NoteSequence { degrees: vec![13] }], 32).unwrap_err();
+        assert_eq!(err, StarterError::BadDegree(13));
+        assert!(err.to_string().contains("13"));
+        assert!(err.to_string().contains("1 to 12"));
         let err =
             composite_cell(&[StarterItem::NoteSequence { degrees: vec![0] }], 32).unwrap_err();
         assert_eq!(err, StarterError::BadDegree(0));
+    }
+
+    /// #471 pt 3: degrees 9..=12 keep walking the major scale into the
+    /// second octave — the compound-interval reading (9th = 14, 10th =
+    /// 16, 11th = 17, 12th = 19). The founder's "1-2-3-5-8-12" compiles;
+    /// a wrong table here ships wrong music with every suite green.
+    #[test]
+    fn degrees_extend_through_the_second_octave() {
+        let cell = composite_cell(
+            &[StarterItem::NoteSequence {
+                degrees: vec![8, 9, 10, 11, 12],
+            }],
+            32,
+        )
+        .unwrap();
+        assert_eq!(cell, vec![12, 14, 16, 17, 19]);
+        let cell = composite_cell(
+            &[StarterItem::NoteSequence {
+                degrees: vec![1, 2, 3, 5, 8, 12],
+            }],
+            32,
+        )
+        .unwrap();
+        assert_eq!(cell, vec![0, 2, 4, 7, 12, 19]);
     }
 
     /// An empty recipe refuses calmly (the Begin button's polite no).
