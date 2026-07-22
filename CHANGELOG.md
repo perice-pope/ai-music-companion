@@ -1,3 +1,9 @@
+## [2.45.0](https://github.com/perice-pope/ai-music-companion/compare/v2.44.1...v2.45.0) (2026-07-22)
+
+### Features
+
+* the starter goes RV-simple — 12-note chromatic picker, calculator folded away ([#471](https://github.com/perice-pope/ai-music-companion/issues/471)-3) ([#475](https://github.com/perice-pope/ai-music-companion/issues/475)) ([76d8789](https://github.com/perice-pope/ai-music-companion/commit/76d878983860d344b9099c8c8404c26b7bc26575)), closes [#471-3](https://github.com/perice-pope/ai-music-companion/issues/471-3) [#471-3](https://github.com/perice-pope/ai-music-companion/issues/471-3) [#471-3](https://github.com/perice-pope/ai-music-companion/issues/471-3) [#471-3](https://github.com/perice-pope/ai-music-companion/issues/471-3) [#471-3](https://github.com/perice-pope/ai-music-companion/issues/471-3)
+
 ## [2.44.1](https://github.com/perice-pope/ai-music-companion/compare/v2.44.0...v2.44.1) (2026-07-22)
 
 ### Bug Fixes
