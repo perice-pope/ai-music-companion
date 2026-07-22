@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { usePracticeStore } from "../stores/practiceStore";
 import CellStaff from "./CellStaff";
@@ -11,23 +11,52 @@ import type {
 
 /**
  * #419 S1 — Openers: "start with something in your hands."
- *
- * The RV builder's front door, reborn: compose an opener from the item
- * bank, watch it render live on the RV dot staff, and Begin — the opener
- * becomes the session's exploration (rowed through 12 keys) and hands off
- * into normal listening when you're done. S1 ships the first two bank
- * entries; the rest are visible but resting (the roadmap, honestly).
+ * #471 pt 3 — reborn RV-simple: the default face is twelve note buttons,
+ * the live preview, and Begin (the two-button philosophy — pick notes,
+ * go). The whole grown bank (sequences, intervals, chords, scales,
+ * enclosures, directions, custom entry) folds behind ONE collapsed
+ * "More options" disclosure; My Patterns / Recipes / Yesterday stay
+ * visible — they ARE the one-tap simplicity.
  *
  * #417 rule 0 applies from birth: the preview updates in place; nothing
  * here blinks, slides, or vanishes.
  */
 
 /**
- * Major-scale degree labels for the note buttons. Taps send SEMANTIC
- * degrees over the wire — the degree→semitone table lives in
- * `brain::starter` only (review MF2: no pitch math in the frontend).
+ * #471 pt 3 — the chromatic picker: one button per pitch class relative
+ * to the root ("12-tone rows are the basis of RV"). Button k is k
+ * semitones above the root; labels read musically. Taps build ONE
+ * `Notes{offsets}` item, RE-BASED to the first tap (offsets[i] =
+ * tap[i] − tap[0]) so the first offset is always 0 — the documented
+ * `Notes` convention ("offsets from the cell's first note") — and
+ * lower buttons go legally negative. The alternative (send k raw) was
+ * rejected: the same tapped shape would sound transposed depending on
+ * which button led. The first note you tap is where the row starts.
  */
-const DEGREES = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+const PITCH_CLASSES = [
+  "1",
+  "♭2",
+  "2",
+  "♭3",
+  "3",
+  "4",
+  "♭5",
+  "5",
+  "♭6",
+  "6",
+  "♭7",
+  "7",
+] as const;
+
+/**
+ * Major-scale degree labels for the note buttons (More options). Taps
+ * send SEMANTIC degrees over the wire — the degree→semitone table lives
+ * in `brain::starter` only (review MF2: no pitch math in the frontend).
+ * 1..=12 mirrors the backend's vocabulary: 8 = the octave, 9..=12 the
+ * compound extension (#471 pt 3). Degrees are diatonic; the chromatic
+ * gesture is the picker above, on the `notes` wire.
+ */
+const DEGREES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
 
 /** The classic openers, ready-made. */
 const SEQUENCE_PRESETS: { label: string; degrees: number[] }[] = [
@@ -174,6 +203,13 @@ export default function OpenersPanel() {
   const applyOpenerRecipe = usePracticeStore((s) => s.applyOpenerRecipe);
   const beginOpenerRecall = usePracticeStore((s) => s.beginOpenerRecall);
   const [open, setOpen] = useState(false);
+  // #471 pt 3: the folded bank — collapsed by default (RV-simple face).
+  const [more, setMore] = useState(false);
+  // #471 pt 3: the chromatic picker's taps, in tap order (button values
+  // 0..11). The compiled item lives in openerItems like any other; this
+  // is only which buttons are lit and in what order.
+  const [picks, setPicks] = useState<number[]>([]);
+  const pickerItemRef = useRef<StarterItem | null>(null);
   const [myPatterns, setMyPatterns] = useState<MyPattern[]>([]);
   const [recipes, setRecipes] = useState<SavedRecipe[]>([]);
   const [lastOpener, setLastOpener] = useState<LastOpener | null>(null);
@@ -264,6 +300,48 @@ export default function OpenersPanel() {
   const [customSeq, setCustomSeq] = useState("");
   const [customNotice, setCustomNotice] = useState<string | null>(null);
 
+  // #471 pt 3: the picker's lit state follows the store — when its item
+  // leaves openerItems (chip removed, Begin's reset, a recipe applied,
+  // session end), the buttons go dark. No ghost-lit picker over an
+  // empty builder.
+  useEffect(() => {
+    const current = pickerItemRef.current;
+    if (current && !openerItems.includes(current)) {
+      pickerItemRef.current = null;
+      setPicks([]);
+    }
+  }, [openerItems]);
+
+  // #471 pt 3: tap toggles a pitch class; tap order = note order. The
+  // taps compile to ONE Notes item, re-based to the first tap (see
+  // PITCH_CLASSES), which keeps its position among other items and
+  // rides the existing set-items + pure-preview path.
+  const togglePick = (k: number) => {
+    const next = picks.includes(k)
+      ? picks.filter((p) => p !== k)
+      : [...picks, k];
+    const item: StarterItem | null =
+      next.length > 0
+        ? { type: "notes", offsets: next.map((p) => p - next[0]) }
+        : null;
+    const idx = pickerItemRef.current
+      ? openerItems.indexOf(pickerItemRef.current)
+      : -1;
+    const items = [...openerItems];
+    if (idx >= 0) {
+      if (item) {
+        items[idx] = item;
+      } else {
+        items.splice(idx, 1);
+      }
+    } else if (item) {
+      items.push(item);
+    }
+    pickerItemRef.current = item;
+    setPicks(next);
+    void applyOpenerRecipe(items, openerDirection);
+  };
+
   const addCustom = () => {
     const degrees = parseCustomSequence(customSeq);
     if (!degrees) {
@@ -308,162 +386,215 @@ export default function OpenersPanel() {
         </button>
       </div>
 
-      {/* The bank — S1's two live entries. */}
+      {/* #471 pt 3 — the RV-simple face: twelve notes, tap in order. */}
       <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Notes
+        Pick your notes · tap in order, up to 12
       </p>
       <div className="mt-1 flex flex-wrap gap-1.5">
-        {DEGREES.map((d) => (
-          <button
-            key={d}
-            type="button"
-            data-testid={`opener-note-${d}`}
-            onClick={() =>
-              void addOpenerItem({ type: "note_sequence", degrees: [d] })
-            }
-            className="h-8 w-8 rounded-md bg-indigo-800/60 text-sm font-semibold text-indigo-100 hover:bg-indigo-700"
-          >
-            {d}
-          </button>
-        ))}
+        {PITCH_CLASSES.map((label, k) => {
+          const pos = picks.indexOf(k);
+          return (
+            <button
+              key={label}
+              type="button"
+              data-testid={`opener-pc-${k}`}
+              aria-pressed={pos >= 0}
+              onClick={() => togglePick(k)}
+              className={`relative h-9 w-9 rounded-md text-sm font-semibold ${
+                pos >= 0
+                  ? "bg-indigo-600 text-white"
+                  : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
+              }`}
+            >
+              {label}
+              {pos >= 0 && (
+                <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-300 text-[10px] font-bold text-indigo-950">
+                  {pos + 1}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Note sequence
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {SEQUENCE_PRESETS.map((p) => (
-          <button
-            key={p.label}
-            type="button"
-            data-testid={`opener-seq-${p.label}`}
-            onClick={() =>
-              void addOpenerItem({ type: "note_sequence", degrees: p.degrees })
-            }
-            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {/* Everything the builder grew lives here, folded (#471 pt 3). */}
+      <button
+        type="button"
+        data-testid="opener-more-toggle"
+        aria-expanded={more}
+        onClick={() => setMore((m) => !m)}
+        className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70 hover:text-indigo-100"
+      >
+        More options {more ? "▴" : "▾"}
+      </button>
 
-      {/* #419 S2a: custom sequence — parsed client-side into the SAME
+      {more && (
+        <div data-testid="opener-more">
+          {/* The bank — S1's two live entries. */}
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Notes
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {DEGREES.map((d) => (
+              <button
+                key={d}
+                type="button"
+                data-testid={`opener-note-${d}`}
+                onClick={() =>
+                  void addOpenerItem({ type: "note_sequence", degrees: [d] })
+                }
+                className="h-8 w-8 rounded-md bg-indigo-800/60 text-sm font-semibold text-indigo-100 hover:bg-indigo-700"
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Note sequence
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {SEQUENCE_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                data-testid={`opener-seq-${p.label}`}
+                onClick={() =>
+                  void addOpenerItem({
+                    type: "note_sequence",
+                    degrees: p.degrees,
+                  })
+                }
+                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* #419 S2a: custom sequence — parsed client-side into the SAME
           note_sequence wire shape; degree validity stays the backend's. */}
-      <div className="mt-2 flex gap-1.5">
-        <input
-          type="text"
-          data-testid="opener-custom-input"
-          value={customSeq}
-          onChange={(e) => setCustomSeq(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addCustom();
-          }}
-          placeholder="your own: 1 5 3 2"
-          className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder-gray-500"
-        />
-        <button
-          type="button"
-          data-testid="opener-custom-add"
-          onClick={addCustom}
-          className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-        >
-          Add
-        </button>
-      </div>
+          <div className="mt-2 flex gap-1.5">
+            <input
+              type="text"
+              data-testid="opener-custom-input"
+              value={customSeq}
+              onChange={(e) => setCustomSeq(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addCustom();
+              }}
+              placeholder="your own: 1 5 3 2"
+              className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder-gray-500"
+            />
+            <button
+              type="button"
+              data-testid="opener-custom-add"
+              onClick={addCustom}
+              className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+            >
+              Add
+            </button>
+          </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Intervals
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {INTERVALS.map((iv) => (
-          <button
-            key={iv.number}
-            type="button"
-            data-testid={`opener-interval-${iv.number}`}
-            onClick={() =>
-              void addOpenerItem({ type: "interval", number: iv.number })
-            }
-            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          >
-            {iv.label}
-          </button>
-        ))}
-      </div>
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Intervals
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {INTERVALS.map((iv) => (
+              <button
+                key={iv.number}
+                type="button"
+                data-testid={`opener-interval-${iv.number}`}
+                onClick={() =>
+                  void addOpenerItem({ type: "interval", number: iv.number })
+                }
+                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              >
+                {iv.label}
+              </button>
+            ))}
+          </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Chords
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {CHORDS.map((c) => (
-          <button
-            key={c.kind}
-            type="button"
-            data-testid={`opener-chord-${c.kind}`}
-            onClick={() => void addOpenerItem({ type: "chord", kind: c.kind })}
-            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Chords
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {CHORDS.map((c) => (
+              <button
+                key={c.kind}
+                type="button"
+                data-testid={`opener-chord-${c.kind}`}
+                onClick={() =>
+                  void addOpenerItem({ type: "chord", kind: c.kind })
+                }
+                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Scales
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {SCALES.map((sc) => (
-          <button
-            key={sc.kind}
-            type="button"
-            data-testid={`opener-scale-${sc.kind}`}
-            onClick={() => void addOpenerItem({ type: "scale", kind: sc.kind })}
-            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          >
-            {sc.label}
-          </button>
-        ))}
-      </div>
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Scales
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {SCALES.map((sc) => (
+              <button
+                key={sc.kind}
+                type="button"
+                data-testid={`opener-scale-${sc.kind}`}
+                onClick={() =>
+                  void addOpenerItem({ type: "scale", kind: sc.kind })
+                }
+                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              >
+                {sc.label}
+              </button>
+            ))}
+          </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Enclosures
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {ENCLOSURES.map((en) => (
-          <button
-            key={en.style}
-            type="button"
-            data-testid={`opener-enclosure-${en.style}`}
-            onClick={() =>
-              void addOpenerItem({ type: "enclosure", style: en.style })
-            }
-            className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          >
-            {en.label}
-          </button>
-        ))}
-      </div>
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Enclosures
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {ENCLOSURES.map((en) => (
+              <button
+                key={en.style}
+                type="button"
+                data-testid={`opener-enclosure-${en.style}`}
+                onClick={() =>
+                  void addOpenerItem({ type: "enclosure", style: en.style })
+                }
+                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              >
+                {en.label}
+              </button>
+            ))}
+          </div>
 
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Pattern direction
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {DIRECTIONS.map((d) => (
-          <button
-            key={d.value}
-            type="button"
-            data-testid={`opener-direction-${d.value}`}
-            aria-pressed={openerDirection === d.value}
-            onClick={() => setOpenerDirection(d.value)}
-            className={`rounded-md px-2.5 py-1 text-sm ${
-              openerDirection === d.value
-                ? "bg-indigo-600 font-semibold text-white"
-                : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
-            }`}
-          >
-            {d.label}
-          </button>
-        ))}
-      </div>
+          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+            Pattern direction
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {DIRECTIONS.map((d) => (
+              <button
+                key={d.value}
+                type="button"
+                data-testid={`opener-direction-${d.value}`}
+                aria-pressed={openerDirection === d.value}
+                onClick={() => setOpenerDirection(d.value)}
+                className={`rounded-md px-2.5 py-1 text-sm ${
+                  openerDirection === d.value
+                    ? "bg-indigo-600 font-semibold text-white"
+                    : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* #419 S3: the bank's last entry, live — YOUR patterns. */}
       <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
