@@ -264,6 +264,18 @@ export default function ConnectionsPrivacy() {
             onChange={setAutoUpdateCheckEnabled}
           />
 
+          {/* #449 enrollment slice: join/leave calls are user-initiated
+              (explicit buttons + the in-app consent screen), so this is a
+              disclosure row, not a toggle — a switch here wouldn't gate
+              anything real (dark pattern). What a teacher can SEE is governed
+              by the sync toggles above. */}
+          <InfoRow
+            testId="info-classroom-enrollment"
+            title="Classroom enrollment"
+            description="Joining a teacher's classroom sends the join code you type, your consent choice (you, or a parent/guardian for under-13), and your age group (never a birthdate) to the app's cloud service, which records the enrollment. Leaving a classroom sends the revoke, which cuts off your teacher's view immediately. For teachers: creating a classroom sends its name, and issuing a join code asks the server to mint one. Every call requires signing in and happens only when you press the button — enrollment itself shares no practice data; what a teacher can see is controlled by the sync switches above."
+            whenIdle="Nothing is sent. Enrollment calls happen only when you ask — joining, leaving, or issuing a code — never in the background."
+          />
+
           <InfoRow
             testId="info-app-updates"
             title="App updates"

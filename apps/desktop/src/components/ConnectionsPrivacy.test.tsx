@@ -181,6 +181,33 @@ describe("ConnectionsPrivacy", () => {
     ).toBeTruthy();
   });
 
+  // #449 enrollment slice AC8: the join/leave calls are disclosed — as an
+  // info row (user-initiated behind explicit buttons + the consent screen),
+  // NOT a toggle, so the off-by-default switch-count pin above stays 5.
+  it("discloses classroom enrollment (join/leave) as an info row without adding a toggle", () => {
+    render(<ConnectionsPrivacy />);
+
+    const row = screen.getByTestId("info-classroom-enrollment");
+    const inRow = within(row);
+    // What leaves, in plain words: the code, the consent choice, the age group.
+    expect(inRow.getByText(/join code you type/i)).toBeTruthy();
+    expect(inRow.getByText(/parent\/guardian for under-13/i)).toBeTruthy();
+    expect(inRow.getByText(/never a birthdate/i)).toBeTruthy();
+    // Leaving is a disclosed call too, with its consequence stated.
+    expect(
+      inRow.getByText(/Leaving a classroom sends the revoke/i),
+    ).toBeTruthy();
+    // Enrollment links accounts; it shares no practice data by itself.
+    expect(
+      inRow.getByText(/enrollment itself shares no practice data/i),
+    ).toBeTruthy();
+    // User-initiated, never in the background.
+    expect(inRow.getByText(/never in the background/i)).toBeTruthy();
+    // No switch in this row — a switch that gated nothing would be a dark
+    // pattern; the count-5 pin in the defaults test enforces the global count.
+    expect(inRow.queryByRole("switch")).toBeNull();
+  });
+
   it("the dashboard toggle enables with cloud sync and withdraws when sync turns off", () => {
     useConnectionsStore.setState({ cloudSyncEnabled: true });
     render(<ConnectionsPrivacy />);

@@ -329,6 +329,107 @@ export type Database = {
           },
         ];
       };
+      // ── #449 enrollment slice (migration 0006), hand-added column-for-column
+      // against `create table public.classrooms` / `public.enrollments` —
+      // regenerate to confirm. RLS: classrooms are owner-select-only (the row
+      // carries the live join code); enrollments are visible to their student
+      // and the owning teacher.
+      classrooms: {
+        Row: {
+          created_at: string;
+          id: string;
+          join_code: string | null;
+          join_code_expires_at: string | null;
+          name: string;
+          teacher_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          join_code?: string | null;
+          join_code_expires_at?: string | null;
+          name: string;
+          teacher_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          join_code?: string | null;
+          join_code_expires_at?: string | null;
+          name?: string;
+          teacher_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "classrooms_teacher_id_fkey";
+            columns: ["teacher_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      enrollments: {
+        Row: {
+          classroom_id: string;
+          consent: string | null;
+          consented_at: string | null;
+          consenting_adult_id: string | null;
+          created_at: string;
+          id: string;
+          joined_via_code_at: string | null;
+          revoked_at: string | null;
+          status: string;
+          student_id: string;
+        };
+        Insert: {
+          classroom_id: string;
+          consent?: string | null;
+          consented_at?: string | null;
+          consenting_adult_id?: string | null;
+          created_at?: string;
+          id?: string;
+          joined_via_code_at?: string | null;
+          revoked_at?: string | null;
+          status?: string;
+          student_id: string;
+        };
+        Update: {
+          classroom_id?: string;
+          consent?: string | null;
+          consented_at?: string | null;
+          consenting_adult_id?: string | null;
+          created_at?: string;
+          id?: string;
+          joined_via_code_at?: string | null;
+          revoked_at?: string | null;
+          status?: string;
+          student_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "enrollments_classroom_id_fkey";
+            columns: ["classroom_id"];
+            isOneToOne: false;
+            referencedRelation: "classrooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "enrollments_student_id_fkey";
+            columns: ["student_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "enrollments_consenting_adult_id_fkey";
+            columns: ["consenting_adult_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       profiles: {
         Row: {
           age_tier: string | null;
@@ -562,7 +663,18 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      // #449 enrollment slice: the two SECURITY DEFINER RPCs from migration
+      // 0006 (hand-added — regenerate to confirm). `p_ttl` is a Postgres
+      // interval; the client omits it and takes the server default (7 days,
+      // clamped ≤ 30 server-side).
+      issue_join_code: {
+        Args: { p_classroom_id: string; p_ttl?: unknown };
+        Returns: string;
+      };
+      redeem_join_code: {
+        Args: { p_code: string; p_consent: string };
+        Returns: string;
+      };
     };
     Enums: {
       [_ in never]: never;
