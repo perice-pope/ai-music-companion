@@ -1,3 +1,9 @@
+## [2.48.0](https://github.com/perice-pope/ai-music-companion/compare/v2.47.0...v2.48.0) (2026-07-22)
+
+### Features
+
+* the teacher dashboard — roster heat, drill-down, integrity panel ([#449](https://github.com/perice-pope/ai-music-companion/issues/449) T4) ([#478](https://github.com/perice-pope/ai-music-companion/issues/478)) ([31ffe83](https://github.com/perice-pope/ai-music-companion/commit/31ffe833e71973617190c73d8586be815dafb273)), closes [#451](https://github.com/perice-pope/ai-music-companion/issues/451)
+
 ## [2.47.0](https://github.com/perice-pope/ai-music-companion/compare/v2.46.0...v2.47.0) (2026-07-22)
 
 ### Features
