@@ -19,11 +19,14 @@ use crate::learner::{
 };
 use crate::score::{KeyMode, KeySignature, Measure, ScoreModel, ScoreNote, TimeSignature};
 pub use variations::DirectionMode;
+/// #471-4: the per-instrument register window — a generation parameter the
+/// desktop layer resolves from the session instrument (Voice → default).
+pub use variations::FoldWindow;
 pub use variations::GeneratedSequence;
 pub use variations::VariationSpec;
 
 use variations::{
-    generate, unfolded_figures, ArpeggioPattern, ChordModifier, ChordType, Enclosure,
+    generate_in_window, unfolded_figures, ArpeggioPattern, ChordModifier, ChordType, Enclosure,
     IntervalModifier, ProgressionStep, RhythmSpec, ScaleModifier, ScalePattern, ScaleType,
 };
 
@@ -367,12 +370,18 @@ fn drill_seed(lesson_seed: u64, index: u8) -> u64 {
         .wrapping_add(u64::from(index))
 }
 
-fn build_drill(lesson: &LessonSpec, index: u8, difficulty: u8, tonic: u8) -> Option<Drill> {
+fn build_drill(
+    lesson: &LessonSpec,
+    index: u8,
+    difficulty: u8,
+    tonic: u8,
+    window: FoldWindow,
+) -> Option<Drill> {
     let count = lesson.drill_count.clamp(3, 4);
     let kind = kind_at(index, count)?;
     let d = difficulty.min(MAX_DIFFICULTY);
     let (spec, mode) = spec_for(kind, d, tonic, lesson.polyphonic);
-    let mut sequence = generate(&spec, drill_seed(lesson.seed, index));
+    let mut sequence = generate_in_window(&spec, drill_seed(lesson.seed, index), window);
     // The label rides everywhere the drill shows (header, recap, score
     // title) — respell it to the engraved signature so no surface can say
     // "C#" over flats (#335).
@@ -389,14 +398,25 @@ fn build_drill(lesson: &LessonSpec, index: u8, difficulty: u8, tonic: u8) -> Opt
 }
 
 /// Build drill 0 from the lesson spec + current learner state. Deterministic
-/// for a fixed `(LessonSpec, LearnerModel)`.
+/// for a fixed `(LessonSpec, LearnerModel)`. Default fold window —
+/// session-instrument-aware callers use [`build_first_windowed`] (#471-4).
 pub fn build_first(lesson: &LessonSpec, model: &LearnerModel) -> Drill {
+    build_first_windowed(lesson, model, FoldWindow::default())
+}
+
+/// [`build_first`] folding toward the session instrument's window (#471-4).
+pub fn build_first_windowed(
+    lesson: &LessonSpec,
+    model: &LearnerModel,
+    window: FoldWindow,
+) -> Drill {
     let tonic = pick_tonic(model, lesson.seed);
     build_drill(
         lesson,
         0,
         lesson.start_difficulty.min(MAX_DIFFICULTY),
         tonic,
+        window,
     )
     .expect("index 0 always exists in a 3..=4 drill routine")
 }
@@ -415,10 +435,21 @@ pub fn next_difficulty(current: u8, accuracy: f32, t: &RampThresholds) -> u8 {
 }
 
 /// Grade the completed drill and build the next one — or `None` when the
-/// routine is done.
+/// routine is done. Default fold window — session-instrument-aware callers
+/// use [`advance_windowed`] (#471-4).
 pub fn advance(prev: &Drill, score: &DrillScore, lesson: &LessonSpec) -> Option<Drill> {
+    advance_windowed(prev, score, lesson, FoldWindow::default())
+}
+
+/// [`advance`] folding toward the session instrument's window (#471-4).
+pub fn advance_windowed(
+    prev: &Drill,
+    score: &DrillScore,
+    lesson: &LessonSpec,
+    window: FoldWindow,
+) -> Option<Drill> {
     let difficulty = next_difficulty(prev.difficulty, score.accuracy, &RampThresholds::default());
-    build_drill(lesson, prev.index + 1, difficulty, prev.tonic)
+    build_drill(lesson, prev.index + 1, difficulty, prev.tonic, window)
 }
 
 // ---------------------------------------------------------------------------
@@ -944,12 +975,24 @@ fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
 
 /// Seed an exploration from the live key at the learner's difficulty and
 /// generate its first rep. Deterministic for a fixed `(tonic, mode, model,
-/// seed)`.
+/// seed)`. Default fold window — session-instrument-aware callers use
+/// [`start_explore_windowed`] (#471-4).
 pub fn start_explore(
     tonic: u8,
     mode: &str,
     model: &LearnerModel,
     seed: u64,
+) -> (ExploreState, GeneratedSequence) {
+    start_explore_windowed(tonic, mode, model, seed, FoldWindow::default())
+}
+
+/// [`start_explore`] folding toward the session instrument's window (#471-4).
+pub fn start_explore_windowed(
+    tonic: u8,
+    mode: &str,
+    model: &LearnerModel,
+    seed: u64,
+    window: FoldWindow,
 ) -> (ExploreState, GeneratedSequence) {
     let difficulty = model.difficulty.min(MAX_DIFFICULTY);
     let (mut spec, _) = spec_for(DrillKind::WarmupScale, difficulty, tonic, false);
@@ -957,7 +1000,7 @@ pub fn start_explore(
         // Explore the sound the player is actually in, not the ladder default.
         m.scale = scale;
     }
-    let sequence = generate(&spec, seed);
+    let sequence = generate_in_window(&spec, seed, window);
     (
         ExploreState {
             spec,
@@ -1036,10 +1079,22 @@ const EXPLORE_SCALES: [ScaleType; 6] = [
 
 /// Apply a tapped delta and generate the next rep. Pure; the seed always
 /// advances so every rep is fresh (that's what makes `ReshuffleRoots` — an
-/// otherwise spec-identical delta — actually reshuffle).
+/// otherwise spec-identical delta — actually reshuffle). Default fold
+/// window — session-instrument-aware callers use
+/// [`apply_explore_delta_windowed`] (#471-4).
 pub fn apply_explore_delta(
     state: &ExploreState,
     delta: &VariationDelta,
+) -> (ExploreState, GeneratedSequence) {
+    apply_explore_delta_windowed(state, delta, FoldWindow::default())
+}
+
+/// [`apply_explore_delta`] folding toward the session instrument's window
+/// (#471-4).
+pub fn apply_explore_delta_windowed(
+    state: &ExploreState,
+    delta: &VariationDelta,
+    window: FoldWindow,
 ) -> (ExploreState, GeneratedSequence) {
     let mut next = state.clone();
     // Chips are undo-able steps too (#292 review M5): snapshot before acting.
@@ -1155,7 +1210,7 @@ pub fn apply_explore_delta(
             };
         }
     }
-    let sequence = generate(&next.spec, next.seed);
+    let sequence = generate_in_window(&next.spec, next.seed, window);
     (next, sequence)
 }
 
@@ -1297,6 +1352,17 @@ pub fn start_explore_progression(
     model: &LearnerModel,
     seed: u64,
 ) -> (ExploreState, GeneratedSequence) {
+    start_explore_progression_windowed(chords, model, seed, FoldWindow::default())
+}
+
+/// [`start_explore_progression`] folding toward the session instrument's
+/// window (#471-4).
+pub fn start_explore_progression_windowed(
+    chords: &[(u8, theory::ChordQuality)],
+    model: &LearnerModel,
+    seed: u64,
+    window: FoldWindow,
+) -> (ExploreState, GeneratedSequence) {
     let anchor = chords.first().map(|&(pc, _)| pc % 12).unwrap_or(0);
     let steps: Vec<ProgressionStep> = chords
         .iter()
@@ -1323,7 +1389,7 @@ pub fn start_explore_progression(
         state.spec.roots = roots_for(anchor, LIFT_MIN_ROOTS);
         state.spec.randomize_roots = true; // the RV shuffle, from the start
     }
-    let mut sequence = generate(&state.spec, state.seed);
+    let mut sequence = generate_in_window(&state.spec, state.seed, window);
     // #335 (review MF1): respell_label only fixes a label's LEADING note
     // token — useless for "your progression · D#m7 → …". Build the whole
     // label here, every chord name spelled per the engraved signature, so
@@ -1347,6 +1413,18 @@ pub fn start_explore_chord(
     model: &LearnerModel,
     seed: u64,
 ) -> (ExploreState, GeneratedSequence) {
+    start_explore_chord_windowed(root_pc, quality, model, seed, FoldWindow::default())
+}
+
+/// [`start_explore_chord`] folding toward the session instrument's window
+/// (#471-4).
+pub fn start_explore_chord_windowed(
+    root_pc: u8,
+    quality: theory::ChordQuality,
+    model: &LearnerModel,
+    seed: u64,
+    window: FoldWindow,
+) -> (ExploreState, GeneratedSequence) {
     let chord = practice_chord_type(quality);
     // Mode label drives the key signature (a dominant rows mixolydian-
     // spelled, #277) and the recap wording.
@@ -1366,7 +1444,7 @@ pub fn start_explore_chord(
         state.spec.roots = roots_for(root_pc % 12, LIFT_MIN_ROOTS);
         state.spec.randomize_roots = true; // the RV shuffle, from the start
     }
-    let mut sequence = generate(&state.spec, state.seed);
+    let mut sequence = generate_in_window(&state.spec, state.seed, window);
     // #335 discipline, same as build_drill: the label rides everywhere the
     // row shows — respell it to the chord family's signature so a Bb
     // dominant never reads "A#".
@@ -1384,6 +1462,19 @@ pub fn start_explore_cell(
     seed: u64,
     direction: DirectionMode,
 ) -> (ExploreState, GeneratedSequence) {
+    start_explore_cell_windowed(cell, tonic, model, seed, direction, FoldWindow::default())
+}
+
+/// [`start_explore_cell`] folding toward the session instrument's window
+/// (#471-4).
+pub fn start_explore_cell_windowed(
+    cell: Vec<i8>,
+    tonic: u8,
+    model: &LearnerModel,
+    seed: u64,
+    direction: DirectionMode,
+    window: FoldWindow,
+) -> (ExploreState, GeneratedSequence) {
     let (mut state, _) = start_explore(tonic, "major", model, seed);
     state.spec.cell = Some(cell);
     state.spec.enclosure = None;
@@ -1394,7 +1485,7 @@ pub fn start_explore_cell(
         state.spec.roots = roots_for(tonic, LIFT_MIN_ROOTS);
         state.spec.randomize_roots = true; // the RV shuffle, from the start
     }
-    let sequence = generate(&state.spec, state.seed);
+    let sequence = generate_in_window(&state.spec, state.seed, window);
     (state, sequence)
 }
 
@@ -1492,6 +1583,19 @@ pub fn edit_explore_note(
     index: usize,
     edit: &NoteEdit,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
+    edit_explore_note_windowed(state, index, edit, FoldWindow::default())
+}
+
+/// [`edit_explore_note`] rendering under the session instrument's window
+/// (#471-4). The window shapes only WHERE the row renders: the bake reads
+/// [`unfolded_figures`] — the pre-fold truth — so no window can ever smuggle
+/// a register shift into the player's cell (#471-2 F2 invariant).
+pub fn edit_explore_note_windowed(
+    state: &ExploreState,
+    index: usize,
+    edit: &NoteEdit,
+    window: FoldWindow,
+) -> Result<(ExploreState, GeneratedSequence), String> {
     // #349 T4a review M2: a stacked chord row has no melodic cell to bake —
     // dragging one dot would flatten the block into a one-note melody and
     // silently drop the chord grading. Refuse calmly; the lane is the edit
@@ -1509,7 +1613,7 @@ pub fn edit_explore_note(
     {
         return Err("this row is a progression — lift a new one to change it".to_owned());
     }
-    let seq = generate(&state.spec, state.seed);
+    let seq = generate_in_window(&state.spec, state.seed, window);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
     }
@@ -1597,7 +1701,7 @@ pub fn edit_explore_note(
     next.spec.cell = Some(offsets);
     next.spec.direction = DirectionMode::Forward;
     next.spec.enclosure = None;
-    let seq = generate(&next.spec, next.seed);
+    let seq = generate_in_window(&next.spec, next.seed, window);
     Ok((next, seq))
 }
 
@@ -1613,7 +1717,22 @@ pub fn resume_explore_spec(
     difficulty: u8,
     seed: u64,
 ) -> (ExploreState, GeneratedSequence) {
-    let sequence = generate(&spec, seed);
+    resume_explore_spec_windowed(spec, tonic, difficulty, seed, FoldWindow::default())
+}
+
+/// [`resume_explore_spec`] rendering under the session instrument's window
+/// (#471-4). The stored artifact stays instrument-agnostic (spec + seed —
+/// the #419 stored-seed law); the window is TODAY'S session's, resolved at
+/// replay time, so the same recall renders identically for the same
+/// instrument and honestly re-registers for a different one.
+pub fn resume_explore_spec_windowed(
+    spec: VariationSpec,
+    tonic: u8,
+    difficulty: u8,
+    seed: u64,
+    window: FoldWindow,
+) -> (ExploreState, GeneratedSequence) {
+    let sequence = generate_in_window(&spec, seed, window);
     (
         ExploreState {
             spec,
@@ -1632,6 +1751,15 @@ pub fn resume_explore_spec(
 pub fn undo_explore_edit(
     state: &ExploreState,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
+    undo_explore_edit_windowed(state, FoldWindow::default())
+}
+
+/// [`undo_explore_edit`] rendering under the session instrument's window
+/// (#471-4).
+pub fn undo_explore_edit_windowed(
+    state: &ExploreState,
+    window: FoldWindow,
+) -> Result<(ExploreState, GeneratedSequence), String> {
     let mut next = state.clone();
     let snap = next
         .history
@@ -1640,7 +1768,7 @@ pub fn undo_explore_edit(
     next.spec = snap.spec;
     next.seed = snap.seed;
     next.difficulty = snap.difficulty;
-    let seq = generate(&next.spec, next.seed);
+    let seq = generate_in_window(&next.spec, next.seed, window);
     Ok((next, seq))
 }
 
@@ -1648,6 +1776,7 @@ pub fn undo_explore_edit(
 mod tests {
     use super::*;
     use crate::learner::Mastery;
+    use variations::generate;
 
     fn lesson(seed: u64) -> LessonSpec {
         LessonSpec {
@@ -1848,7 +1977,7 @@ mod tests {
             ..lesson(9)
         };
         for difficulty in [0u8, 5, 7] {
-            let stacked = build_drill(&poly, 1, difficulty, 0).unwrap();
+            let stacked = build_drill(&poly, 1, difficulty, 0, FoldWindow::default()).unwrap();
             assert_eq!(stacked.kind, DrillKind::ArpeggioEnclosure);
             assert!(
                 !stacked.sequence.chord_targets.is_empty(),
@@ -1867,7 +1996,7 @@ mod tests {
                 );
             }
 
-            let melodic = build_drill(&lesson(9), 1, difficulty, 0).unwrap();
+            let melodic = build_drill(&lesson(9), 1, difficulty, 0, FoldWindow::default()).unwrap();
             assert!(melodic.sequence.chord_targets.is_empty());
             assert!(melodic
                 .sequence
@@ -2191,7 +2320,7 @@ mod tests {
     fn mastery_scale_maps_material_to_a_real_scale() {
         let spec = lesson(7);
         let scale_of = |index: u8, difficulty: u8| {
-            mastery_scale(&build_drill(&spec, index, difficulty, 2).unwrap())
+            mastery_scale(&build_drill(&spec, index, difficulty, 2, FoldWindow::default()).unwrap())
         };
         assert_eq!(scale_of(0, 0), "major", "beginner warmup scale");
         assert_eq!(scale_of(0, 5), "dorian", "warmup names its ladder scale");
@@ -2394,7 +2523,7 @@ mod tests {
     fn c_sharp_major_drill_headers_say_db() {
         let spec = lesson(7);
         // Difficulty 0 warmup: major scale, single unshuffled root = the tonic.
-        let drill = build_drill(&spec, 0, 0, 1).unwrap();
+        let drill = build_drill(&spec, 0, 0, 1, FoldWindow::default()).unwrap();
         assert_eq!(key_signature_for(1, &drill.mode).fifths, -5);
         assert!(
             drill.sequence.label.starts_with("Db "),
@@ -2427,7 +2556,8 @@ mod tests {
         for tonic in 0u8..12 {
             // d=0 (major warmup) and d=7 (melodic-minor, 10 shuffled roots).
             for difficulty in [0u8, 7] {
-                let drill = build_drill(&lesson(3), 0, difficulty, tonic).unwrap();
+                let drill =
+                    build_drill(&lesson(3), 0, difficulty, tonic, FoldWindow::default()).unwrap();
                 let fifths = key_signature_for(tonic, &drill.mode).fifths;
                 let first_pc = drill.sequence.root_order[0] % 12;
                 let head = drill.sequence.label.split(' ').next().unwrap();
@@ -3071,5 +3201,39 @@ mod tests {
             lifted.is_none() || lifted.unwrap().0.len() < 3,
             "the lift merges repeats — the two seams are deliberately different"
         );
+    }
+
+    /// #471-4 AC5 — the stored-seed law under windows: recall re-renders the
+    /// STORED (spec, seed) under the session's window, so the same instrument
+    /// replays bit-identically on every recall, and the window itself lives
+    /// in no stored artifact (the spec the log would persist is untouched).
+    /// Fails if the window leaks into the spec or perturbs determinism.
+    #[test]
+    fn recall_replays_identically_under_the_same_window() {
+        let trumpet = FoldWindow { lo: 52, hi: 84 };
+        let model = LearnerModel::default();
+        let (state, first) = start_explore_cell_windowed(
+            vec![0, 21, 10, 5],
+            3,
+            &model,
+            77,
+            DirectionMode::Forward,
+            trumpet,
+        );
+        // The stored artifact is instrument-agnostic: byte-equal to what the
+        // default-window path would have stored.
+        let (unwindowed_state, _) =
+            start_explore_cell(vec![0, 21, 10, 5], 3, &model, 77, DirectionMode::Forward);
+        assert_eq!(state.spec, unwindowed_state.spec, "no window in the spec");
+        for _ in 0..2 {
+            let (_, replay) = resume_explore_spec_windowed(
+                state.spec.clone(),
+                state.tonic,
+                state.difficulty,
+                state.seed,
+                trumpet,
+            );
+            assert_eq!(replay, first, "same instrument → bit-identical recall");
+        }
     }
 }

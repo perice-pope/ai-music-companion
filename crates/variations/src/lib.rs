@@ -27,14 +27,38 @@ use serde::{Deserialize, Serialize};
 /// Comfort window the generator folds figures toward (C2..=C7). This is a
 /// register PREFERENCE, not truth (#471-2): a figure wider than the window
 /// pokes past it rather than ever bending an interval — the only hard pitch
-/// bound is physical MIDI 0..=127. #471-4 (H4) will narrow this per
-/// instrument through [`fold_into_window`], under the same rule.
+/// bound is physical MIDI 0..=127. #471-4 (H4) narrows this per instrument
+/// through [`generate_in_window`], under the same rule; this pair stays the
+/// DEFAULT (and the voice-exemption) window.
 pub const MIDI_MIN: u8 = 36;
 /// See [`MIDI_MIN`].
 pub const MIDI_MAX: u8 = 96;
 /// The RV grid's fixed meter: cells are placed ONE PER MEASURE of this size
 /// (founder rule, 2026-07-08) — every root's figure starts on a barline.
 pub const BEATS_PER_MEASURE: u8 = 4;
+
+/// #471-4 (H4): the register window [`generate_in_window`] folds toward — a
+/// **generation parameter alongside the seed**, never part of
+/// [`VariationSpec`] (stored specs must replay under any instrument). The
+/// default is the comfort window ([`MIDI_MIN`]..[`MIDI_MAX`]); the desktop
+/// layer derives per-instrument windows from `profiles/*.json` (Voice is
+/// exempt by founder rule and keeps the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldWindow {
+    /// Lowest comfortable MIDI note (inclusive).
+    pub lo: u8,
+    /// Highest comfortable MIDI note (inclusive).
+    pub hi: u8,
+}
+
+impl Default for FoldWindow {
+    fn default() -> Self {
+        Self {
+            lo: MIDI_MIN,
+            hi: MIDI_MAX,
+        }
+    }
+}
 
 /// How a scale figure walks its degrees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +292,12 @@ pub struct GeneratedSequence {
     /// The roots in PLAY order (post-shuffle) — RV's signature randomized key
     /// sequence, surfaced so the UI can render it as the brand's colored cells.
     pub root_order: Vec<u8>,
+    /// #471-4: true when at least one segment's figure was wider than the
+    /// requested instrument window and was dealt in the DEFAULT window
+    /// instead (the cant-fit fallback — never a clamp). Always false under
+    /// the default window. Additive on the wire — old sequences parse.
+    #[serde(default)]
+    pub range_fallback: bool,
     /// e.g. `"G Dorian · up-down · 12 roots, random order · 80 BPM"`.
     pub label: String,
     pub tempo_bpm: f64,
@@ -310,9 +340,28 @@ impl Xorshift64 {
 }
 
 /// Generate a variation. Pure and deterministic: the same `(spec, seed)` always
-/// produces the same sequence.
+/// produces the same sequence. Folds toward the DEFAULT comfort window —
+/// the voice/unknown-instrument path; session-instrument-aware callers use
+/// [`generate_in_window`] (#471-4).
 pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
+    generate_in_window(spec, seed, FoldWindow::default())
+}
+
+/// [`generate`] with an explicit register window (#471-4, H4): every
+/// segment's figure folds toward the session instrument's window under the
+/// H2 rule — whole-octave shifts only, **never a clamp**. A figure wider
+/// than the window falls back to the default window for that segment
+/// (marked in [`GeneratedSequence::range_fallback`]) rather than ever
+/// bending an interval. The window is a generation parameter alongside
+/// `seed`: it never consumes randomness, so the same `(spec, seed)` deals
+/// the same shuffle/directions under every window.
+pub fn generate_in_window(
+    spec: &VariationSpec,
+    seed: u64,
+    window: FoldWindow,
+) -> GeneratedSequence {
     let mut rng = Xorshift64::new(seed);
+    let mut range_fallback = false;
 
     // 1. Root order — RV's shuffle keeps the first root fixed and permutes the
     //    rest (seeded Fisher–Yates).
@@ -344,7 +393,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
                     },
                     step_root,
                 );
-                fold_into_range(&mut tones);
+                fold_toward(&mut tones, window, &mut range_fallback);
                 tones.sort_unstable();
                 tones.dedup();
                 let group = (segment * steps.len() + step_idx) as u32;
@@ -374,7 +423,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         // enclosure describe melodic order; a simultaneity has none.
         if let Some(c) = stacked_chord {
             let mut tones = chord_tones(c, i16::from(root));
-            fold_into_range(&mut tones);
+            fold_toward(&mut tones, window, &mut range_fallback);
             tones.sort_unstable();
             tones.dedup(); // guard duplicate template tones (fold no longer
                            // collides tones — it never clamps, #471-2)
@@ -409,7 +458,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         let reversed = segment_reversed(spec, &mut rng);
         let mut figure = realized_figure(spec, root, reversed);
 
-        fold_into_range(&mut figure);
+        fold_toward(&mut figure, window, &mut range_fallback);
 
         for m in &figure {
             notes.push(GeneratedNote {
@@ -443,6 +492,7 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
         target_midi,
         chord_targets,
         root_order: roots,
+        range_fallback,
         label,
         tempo_bpm: spec.rhythm.tempo_bpm,
         beats_per_measure: BEATS_PER_MEASURE,
@@ -668,8 +718,8 @@ fn figure_for(spec: &VariationSpec, root: u8) -> Vec<i16> {
 /// hostile wire only; every UI-constructible cell spans ≤ 72 and is proven in
 /// tests to always fit) is a loud validation panic, never a clamp.
 ///
-/// `lo..=hi` is the comfort window — `MIDI_MIN..=MIDI_MAX` today; #471-4 (H4)
-/// plugs per-instrument windows in here.
+/// `lo..=hi` is the comfort window — `MIDI_MIN..=MIDI_MAX` by default;
+/// #471-4 (H4) plugs per-instrument windows in through [`generate_in_window`].
 pub fn fold_into_window(figure: &mut [i16], lo: u8, hi: u8) {
     if figure.is_empty() {
         return;
@@ -714,6 +764,39 @@ pub fn fold_into_window(figure: &mut [i16], lo: u8, hi: u8) {
 /// [`fold_into_window`] with the default comfort window.
 fn fold_into_range(figure: &mut [i16]) {
     fold_into_window(figure, MIDI_MIN, MIDI_MAX);
+}
+
+/// #471-4: fold one segment toward the requested window, with the cant-fit
+/// fallback. A figure FITS the window iff some whole-octave shift lands it
+/// entirely inside — that needs more than span ≤ width: the shift is
+/// quantized to octaves, so the interval `[lo−min, hi−max]` must contain a
+/// multiple of 12 (guaranteed for every key only when width − span ≥ 11;
+/// narrower headroom fits some keys and not others). A fitting figure folds
+/// INTO the window (the fold minimizes overflow, so it lands fully inside —
+/// the instrument only gets notes it can play). A figure that can't fit
+/// falls back to the DEFAULT window's exact placement for THAT segment —
+/// the same honest deal H2 ships, never a per-note clamp — and flags
+/// `fallback` so the surface can say so calmly. Under the default window
+/// both branches are the legacy fold and the flag never sets.
+fn fold_toward(figure: &mut [i16], window: FoldWindow, fallback: &mut bool) {
+    if figure.is_empty() {
+        return;
+    }
+    let (min, max) = figure
+        .iter()
+        .fold((i16::MAX, i16::MIN), |(a, b), &m| (a.min(m), b.max(m)));
+    let (lo, hi) = (i16::from(window.lo), i16::from(window.hi.max(window.lo)));
+    // Smallest whole-octave shift lifting the figure's bottom to (or above)
+    // the window floor; the figure fits iff its top then clears the ceiling.
+    let k0 = (lo - min + 11).div_euclid(12);
+    if max + 12 * k0 <= hi {
+        fold_into_window(figure, window.lo, window.hi);
+    } else {
+        if window != FoldWindow::default() {
+            *fallback = true;
+        }
+        fold_into_range(figure);
+    }
 }
 
 /// Human description of the drill, e.g.
@@ -1197,6 +1280,180 @@ mod tests {
             vec![83, 85, 87, 88, 90, 92, 94, 95],
             "the legacy -12 placement, not a deeper re-centering"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #471-4 H4 — per-instrument fold windows. The window is a generation
+    // parameter alongside the seed: it narrows WHERE a figure lands, never
+    // WHAT it is (the H2 delta-exactness invariant holds under every window),
+    // and a cant-fit figure falls back to the default window — never a clamp.
+    // -----------------------------------------------------------------------
+
+    /// The trumpet's profile-derived window (E3..C6) — see
+    /// `docs/specs/471-h4-instrument-ranges.md` §3.
+    const TRUMPET: FoldWindow = FoldWindow { lo: 52, hi: 84 };
+
+    /// H4 AC2: a wide cell (span 21 — every key provably fits a 32-wide
+    /// window, since 32 − 21 ≥ 11 always leaves an octave shift inside)
+    /// deals entirely INSIDE the trumpet window in all 12 keys, with the
+    /// exact interval sequence in every key — the H2 invariant under a
+    /// narrower window. Fails if the fold ever hands a trumpet a note it
+    /// can't play, or bends an interval to avoid doing so.
+    #[test]
+    fn a_wide_cell_folds_inside_the_trumpet_window_in_all_12_keys() {
+        let cell: Vec<i8> = vec![0, 21, 10, 5]; // span 21
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(cell.clone());
+        spec.roots = chromatic_roots();
+        let seq = generate_in_window(&spec, 5, TRUMPET);
+        assert!(!seq.range_fallback, "span 21 fits the trumpet in every key");
+        assert!(
+            seq.target_midi
+                .iter()
+                .all(|&m| (TRUMPET.lo..=TRUMPET.hi).contains(&m)),
+            "every note must be playable on the instrument: {:?}",
+            seq.target_midi
+        );
+        let expected = expected_deltas(&cell, false, None);
+        for (root, seg) in seq
+            .root_order
+            .iter()
+            .zip(seq.target_midi.chunks(cell.len()))
+        {
+            assert_eq!(delta_seq(seg), expected, "root {root} must be delta-exact");
+        }
+    }
+
+    /// H4 fit-is-per-key pin: octave shifts are quantized, so a span-30
+    /// figure fits a 32-wide window only in the keys where a multiple of 12
+    /// lands in the 2-semitone slack. Segments that fit stay inside the
+    /// window; segments that can't take the default window's placement —
+    /// and EVERY segment stays delta-exact. Fails if the cant-fit check
+    /// wrongly reasons from span alone (letting notes leak outside the
+    /// instrument's range) or the fallback bends an interval.
+    #[test]
+    fn fit_is_judged_per_key_and_never_bends_an_interval() {
+        let cell: Vec<i8> = vec![0, 30, 15, 7]; // span 30, slack 2
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(cell.clone());
+        spec.roots = chromatic_roots();
+        let seq = generate_in_window(&spec, 5, TRUMPET);
+        let unwindowed = generate(&spec, 5);
+        assert!(
+            seq.range_fallback,
+            "some keys cannot fit — must be surfaced"
+        );
+        let expected = expected_deltas(&cell, false, None);
+        let mut in_window = 0;
+        for (i, seg) in seq.target_midi.chunks(cell.len()).enumerate() {
+            assert_eq!(delta_seq(seg), expected, "segment {i} must be delta-exact");
+            if seg.iter().all(|&m| (TRUMPET.lo..=TRUMPET.hi).contains(&m)) {
+                in_window += 1;
+            } else {
+                assert_eq!(
+                    seg,
+                    &unwindowed.target_midi[i * cell.len()..(i + 1) * cell.len()],
+                    "a cant-fit segment takes the default window's exact placement"
+                );
+            }
+        }
+        assert!(
+            in_window > 0,
+            "keys whose phase fits must still deal inside the window"
+        );
+    }
+
+    /// H4 AC3 (the voice exemption's engine half): generating under the
+    /// DEFAULT window is byte-identical to `generate` — same notes, same
+    /// order, `range_fallback` never set. Fails if the H4 seam perturbs any
+    /// default-window output (voice, unknown instrument, and every stored
+    /// replay with no session).
+    #[test]
+    fn default_window_generation_is_byte_identical_to_generate() {
+        let mut specs = vec![base_spec()];
+        let mut wide = base_spec();
+        wide.scale = None;
+        wide.cell = Some(vec![0, 36, -36, 24, -24]); // span 72 — pokes past 36..96
+        wide.roots = chromatic_roots();
+        wide.randomize_roots = true;
+        wide.direction = DirectionMode::RandomPerRoot;
+        wide.enclosure = Some(Enclosure::OneDownOneUp);
+        specs.push(wide);
+        specs.push(stacked_spec(ChordType::Dominant7, 1));
+        for spec in &specs {
+            for seed in [0, 7, 42] {
+                let windowed = generate_in_window(spec, seed, FoldWindow::default());
+                assert_eq!(windowed, generate(spec, seed), "seed {seed}");
+                assert!(
+                    !windowed.range_fallback,
+                    "default window is never a fallback"
+                );
+            }
+        }
+    }
+
+    /// H4 AC4: a figure wider than the instrument window (span 40 > 32)
+    /// cannot fit under any whole-octave shift — it falls back to the
+    /// DEFAULT window's exact placement (byte-identical notes to the
+    /// unwindowed deal, delta-exact in all 12 keys, same shuffle) and marks
+    /// `range_fallback`. Fails if the cant-fit path clamps, re-rolls the
+    /// RNG, or stays silent about leaving the instrument's range.
+    #[test]
+    fn an_unfittable_figure_falls_back_to_the_default_window_without_clamping() {
+        let cell: Vec<i8> = vec![0, -20, 20]; // span 40
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(cell.clone());
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        let on_trumpet = generate_in_window(&spec, 9, TRUMPET);
+        let unwindowed = generate(&spec, 9);
+        assert!(on_trumpet.range_fallback, "the fallback must be surfaced");
+        assert_eq!(
+            on_trumpet.target_midi, unwindowed.target_midi,
+            "fallback = the default window's exact placement, not a clamp"
+        );
+        assert_eq!(
+            on_trumpet.root_order, unwindowed.root_order,
+            "the window must never consume randomness"
+        );
+        let expected = expected_deltas(&cell, false, None);
+        for seg in on_trumpet.target_midi.chunks(cell.len()) {
+            assert_eq!(
+                delta_seq(seg),
+                expected,
+                "delta-exact even when falling back"
+            );
+        }
+    }
+
+    /// H4 RNG neutrality that BINDS (review round 1, mutant e): under
+    /// `RandomPerRoot` every segment draws exactly one direction coin, so an
+    /// extra RNG draw anywhere in the windowed fold path — e.g. a coin
+    /// consumed on the cant-fit branch — desyncs every later segment's
+    /// direction and changes the notes. A span-40 cell on the trumpet
+    /// window falls back in ALL 12 keys and must still render byte-equal to
+    /// the unwindowed deal. (The Forward-direction fallback test above
+    /// cannot catch this: with no coins in the stream after the shuffle,
+    /// an extra draw is invisible.)
+    #[test]
+    fn cant_fit_fallback_stays_byte_identical_under_random_directions() {
+        let mut spec = base_spec();
+        spec.scale = None;
+        spec.cell = Some(vec![0, -20, 20]); // span 40 > the trumpet's 32
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        let windowed = generate_in_window(&spec, 13, TRUMPET);
+        let unwindowed = generate(&spec, 13);
+        assert!(windowed.range_fallback, "span 40 cannot fit any key");
+        assert_eq!(
+            windowed.target_midi, unwindowed.target_midi,
+            "byte-equal notes — the window must consume no randomness"
+        );
+        assert_eq!(windowed.root_order, unwindowed.root_order);
     }
 
     /// F2's seam: `unfolded_figures` deals the SAME segments as `generate` —

@@ -1513,7 +1513,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         rootPc,
         quality,
       });
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // The backend's message is written for the player — show it.
       set({ exploreNotice: String(err) });
@@ -1744,7 +1744,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         tonic,
         mode,
       });
-      set({ explore: dto });
+      set({ explore: dto, exploreNotice: dto.range_notice });
       // #453 S3: explore begin writes an exercise-log row backend-side —
       // the cheap hook to let the coaching box catch up with the history.
       void get().refreshCoachingSuggestion();
@@ -1872,7 +1872,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // lifted lick lands on — and the builder resets for next time.
       set((s) => ({
         explore: dto,
-        exploreNotice: null,
+        // #471-4: surface the backend's calm range honesty (null when fits).
+        exploreNotice: dto.range_notice,
         openerItems: [],
         openerPreview: null,
         openerNotice: null,
@@ -1902,7 +1903,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       // session's exploration and the builder resets.
       set((s) => ({
         explore: dto,
-        exploreNotice: null,
+        // #471-4: surface the backend's calm range honesty (null when fits).
+        exploreNotice: dto.range_notice,
         openerItems: [],
         openerPreview: null,
         openerNotice: null,
@@ -1922,7 +1924,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("explore_last_phrase", {});
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // The backend's message is written for the player — show it.
       set({ exploreNotice: String(err) });
@@ -1935,7 +1937,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("explore_progression", {});
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // The backend's message is written for the player — show it.
       set({ exploreNotice: String(err) });
@@ -1957,7 +1959,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       });
       // The exploration takes the stage IN the running session — same view
       // swap as "work on my last lick"; "Back to listening" returns.
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // Calm refusal (rest-only measure, too busy, …) — written for the
       // player by the backend; show it without leaving the score.
@@ -1971,7 +1973,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("apply_variation_delta", { delta });
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // A failed mutation keeps the current rep on screen — visibly.
       set({ exploreNotice: String(err) });
@@ -1987,7 +1989,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         index,
         edit,
       });
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       // A refused edit keeps the current rep — and TELLS the player why
       // ("that's as far as this note can go"), never a silent dead tap.
@@ -2001,7 +2003,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }
     try {
       const dto = await invoke<ExploreDto>("undo_explore_edit", {});
-      set({ explore: dto, exploreNotice: null });
+      set({ explore: dto, exploreNotice: dto.range_notice });
     } catch (err) {
       set({ exploreNotice: String(err) });
     }

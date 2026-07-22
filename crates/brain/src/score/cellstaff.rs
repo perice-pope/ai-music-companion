@@ -208,6 +208,7 @@ mod tests {
                 .collect(),
             target_midi: midis.to_vec(),
             root_order: vec![midis.first().copied().unwrap_or(60)],
+            range_fallback: false,
             label: "test".to_owned(),
             tempo_bpm: 100.0,
             beats_per_measure: 4,
