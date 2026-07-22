@@ -1,3 +1,9 @@
+## [2.44.1](https://github.com/perice-pope/ai-music-companion/compare/v2.44.0...v2.44.1) (2026-07-22)
+
+### Bug Fixes
+
+* the cell transposes exactly in all 12 keys — never emit a wrong interval ([#471](https://github.com/perice-pope/ai-music-companion/issues/471)-2) ([#474](https://github.com/perice-pope/ai-music-companion/issues/474)) ([78b5ce8](https://github.com/perice-pope/ai-music-companion/commit/78b5ce8ff7b991cd953363daaba7141ace9fc120)), closes [#471-2](https://github.com/perice-pope/ai-music-companion/issues/471-2) [#471-2](https://github.com/perice-pope/ai-music-companion/issues/471-2) [#471-2](https://github.com/perice-pope/ai-music-companion/issues/471-2) [#471-2](https://github.com/perice-pope/ai-music-companion/issues/471-2) [#335](https://github.com/perice-pope/ai-music-companion/issues/335)
+
 ## [2.44.0](https://github.com/perice-pope/ai-music-companion/compare/v2.43.0...v2.44.0) (2026-07-22)
 
 ### Features
