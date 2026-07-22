@@ -355,7 +355,11 @@ pub fn generate(spec: &VariationSpec, seed: u64) -> GeneratedSequence {
 /// bending an interval. The window is a generation parameter alongside
 /// `seed`: it never consumes randomness, so the same `(spec, seed)` deals
 /// the same shuffle/directions under every window.
-pub fn generate_in_window(spec: &VariationSpec, seed: u64, window: FoldWindow) -> GeneratedSequence {
+pub fn generate_in_window(
+    spec: &VariationSpec,
+    seed: u64,
+    window: FoldWindow,
+) -> GeneratedSequence {
     let mut rng = Xorshift64::new(seed);
     let mut range_fallback = false;
 
@@ -1337,7 +1341,10 @@ mod tests {
         spec.roots = chromatic_roots();
         let seq = generate_in_window(&spec, 5, TRUMPET);
         let unwindowed = generate(&spec, 5);
-        assert!(seq.range_fallback, "some keys cannot fit — must be surfaced");
+        assert!(
+            seq.range_fallback,
+            "some keys cannot fit — must be surfaced"
+        );
         let expected = expected_deltas(&cell, false, None);
         let mut in_window = 0;
         for (i, seg) in seq.target_midi.chunks(cell.len()).enumerate() {
@@ -1379,7 +1386,10 @@ mod tests {
             for seed in [0, 7, 42] {
                 let windowed = generate_in_window(spec, seed, FoldWindow::default());
                 assert_eq!(windowed, generate(spec, seed), "seed {seed}");
-                assert!(!windowed.range_fallback, "default window is never a fallback");
+                assert!(
+                    !windowed.range_fallback,
+                    "default window is never a fallback"
+                );
             }
         }
     }
@@ -1411,7 +1421,11 @@ mod tests {
         );
         let expected = expected_deltas(&cell, false, None);
         for seg in on_trumpet.target_midi.chunks(cell.len()) {
-            assert_eq!(delta_seq(seg), expected, "delta-exact even when falling back");
+            assert_eq!(
+                delta_seq(seg),
+                expected,
+                "delta-exact even when falling back"
+            );
         }
     }
 

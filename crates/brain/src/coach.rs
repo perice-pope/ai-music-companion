@@ -2556,7 +2556,8 @@ mod tests {
         for tonic in 0u8..12 {
             // d=0 (major warmup) and d=7 (melodic-minor, 10 shuffled roots).
             for difficulty in [0u8, 7] {
-                let drill = build_drill(&lesson(3), 0, difficulty, tonic, FoldWindow::default()).unwrap();
+                let drill =
+                    build_drill(&lesson(3), 0, difficulty, tonic, FoldWindow::default()).unwrap();
                 let fifths = key_signature_for(tonic, &drill.mode).fifths;
                 let first_pc = drill.sequence.root_order[0] % 12;
                 let head = drill.sequence.label.split(' ').next().unwrap();

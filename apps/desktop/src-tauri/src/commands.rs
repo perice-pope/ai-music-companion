@@ -20,9 +20,9 @@ use brain::accompaniment::{
     AccompanimentSynthSource,
 };
 use brain::coach::{
-    advance, apply_explore_delta, build_first, finish_lesson, played_notes_from_pitch_track,
-    score_drill, sequence_to_score_model, start_explore, ChipSpec, Drill, DrillScore, ExploreState,
-    LessonRecap, LessonSpec, VariationDelta,
+    advance_windowed, apply_explore_delta_windowed, build_first_windowed, finish_lesson,
+    played_notes_from_pitch_track, score_drill, sequence_to_score_model, start_explore_windowed,
+    ChipSpec, Drill, DrillScore, ExploreState, FoldWindow, LessonRecap, LessonSpec, VariationDelta,
 };
 use brain::coaching::{
     grounded_offline_recap, CoachingCategory, CoachingConfig, CoachingEngine, CoachingSeverity,
@@ -2263,6 +2263,61 @@ fn instrument_family_for(state: &AppState, name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// #471-4: an instrument profile's frequency range as a MIDI fold window.
+/// `midi = 12·log2(hz/440) + 69`; each boundary snaps to the nearest note
+/// when within 0.05 semitones (5 cents) — profiles store note frequencies
+/// rounded to whole Hz, and blind inward rounding would steal real boundary
+/// notes (165 Hz IS the trumpet's low E3, midi 52.02) — otherwise rounds
+/// INWARD (lo ceils, hi floors: the window never claims a note the profile
+/// doesn't cover). Intersected with physical MIDI 0..=127. `None` when the
+/// range is degenerate or non-finite — callers fall back to the default
+/// window. Full table: `docs/specs/471-h4-instrument-ranges.md` §3.
+fn fold_window_from_hz(freq_min_hz: f64, freq_max_hz: f64) -> Option<FoldWindow> {
+    const SNAP_SEMITONES: f64 = 0.05;
+    let midi_of = |hz: f64| 12.0 * (hz / 440.0).log2() + 69.0;
+    let bound = |hz: f64, inward_up: bool| -> Option<f64> {
+        let m = midi_of(hz);
+        if !m.is_finite() {
+            return None;
+        }
+        let nearest = m.round();
+        Some(if (m - nearest).abs() <= SNAP_SEMITONES {
+            nearest
+        } else if inward_up {
+            m.ceil()
+        } else {
+            m.floor()
+        })
+    };
+    let lo = bound(freq_min_hz, true)?.clamp(0.0, 127.0) as u8;
+    let hi = bound(freq_max_hz, false)?.clamp(0.0, 127.0) as u8;
+    (lo <= hi).then_some(FoldWindow { lo, hi })
+}
+
+/// #471-4: the fold window for a named instrument. **Voice-family
+/// instruments are EXEMPT by founder rule** ("not vocals tho, leave that
+/// be") and keep the default window, short-circuiting before any Hz math;
+/// unknown names and degenerate ranges also resolve to the default.
+fn fold_window_for(state: &AppState, name: &str) -> FoldWindow {
+    state
+        .instruments
+        .iter()
+        .find(|i| i.name == name)
+        .filter(|i| i.family != "Voice")
+        .and_then(|i| fold_window_from_hz(i.freq_min_hz, i.freq_max_hz))
+        .unwrap_or_default()
+}
+
+/// #471-4: the ACTIVE session's fold window — the one every practice-material
+/// `generate` folds toward. No session (or an unknown/Voice instrument) →
+/// the default window, exactly today's behavior.
+async fn session_fold_window(state: &AppState) -> FoldWindow {
+    match state.active_session_instrument().await {
+        Some(name) => fold_window_for(state, &name),
+        None => FoldWindow::default(),
+    }
+}
+
 /// A session can be in this state for ~this long before we stop assuming the
 /// user simply didn't get started. Past it, a zero-phrase session more likely
 /// means "we heard you but couldn't pick out phrases" than "you didn't play".
@@ -3372,6 +3427,11 @@ pub struct ExploreDto {
     pub staff: brain::score::cellstaff::CellStaffView,
     /// Whether an edit can be undone (#292 slice 3).
     pub can_undo: bool,
+    /// #471-4: a calm sentence when the dealt row was wider than the session
+    /// instrument's range and fell back to the full window (never a clamp —
+    /// the pattern stays exact). `None` when everything fits. Surfaces
+    /// through the existing exploreNotice channel; additive on the wire.
+    pub range_notice: Option<String>,
 }
 
 /// Assemble the ExploreDto every explore command returns.
@@ -3434,6 +3494,13 @@ fn explore_dto(explore: &ExploreState, seq: &brain::coach::GeneratedSequence) ->
             &brain::coach::explore_material(&explore.spec),
         ),
         can_undo: !explore.history.is_empty(),
+        // #471-4 honesty: the row left the instrument's range rather than
+        // bend the pattern — say so calmly, never silently.
+        range_notice: seq.range_fallback.then(|| {
+            "that pattern reaches past your instrument's range — dealing it in the full window \
+             instead"
+                .to_owned()
+        }),
     }
 }
 
@@ -3630,6 +3697,7 @@ pub fn start_explore_variation_impl(
     tonic: u8,
     mode: &str,
     seed: u64,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let model = state
         .session_store
@@ -3637,7 +3705,7 @@ pub fn start_explore_variation_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let (explore, seq) = start_explore(tonic, mode, &model, seed);
+    let (explore, seq) = start_explore_windowed(tonic, mode, &model, seed, window);
     let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
@@ -3659,7 +3727,7 @@ pub fn start_explore_variation_impl(
 }
 
 #[tauri::command]
-pub fn start_explore_variation(
+pub async fn start_explore_variation(
     state: State<'_, AppState>,
     tonic: u8,
     mode: String,
@@ -3668,7 +3736,8 @@ pub fn start_explore_variation(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(1);
-    start_explore_variation_impl(&state, tonic, &mode, seed)
+    let window = session_fold_window(&state).await;
+    start_explore_variation_impl(&state, tonic, &mode, seed, window)
 }
 
 /// Apply a tapped chip's delta to the in-flight exploration and return the
@@ -3676,12 +3745,13 @@ pub fn start_explore_variation(
 pub fn apply_variation_delta_impl(
     state: &AppState,
     delta: VariationDelta,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
-    let (next, seq) = apply_explore_delta(current, &delta);
+    let (next, seq) = apply_explore_delta_windowed(current, &delta, window);
     let dto = explore_dto(&next, &seq);
     {
         let store = state.session_store.lock_or_recover();
@@ -3703,11 +3773,12 @@ pub fn apply_variation_delta_impl(
 }
 
 #[tauri::command]
-pub fn apply_variation_delta(
+pub async fn apply_variation_delta(
     state: State<'_, AppState>,
     delta: VariationDelta,
 ) -> Result<ExploreDto, String> {
-    apply_variation_delta_impl(&state, delta)
+    let window = session_fold_window(&state).await;
+    apply_variation_delta_impl(&state, delta, window)
 }
 
 /// The Learner Model as a JSON blob for cloud sync (`null` on cold start).
@@ -3808,7 +3879,11 @@ pub fn get_sound_mirror(state: State<'_, AppState>) -> Result<SoundMirrorDto, St
 /// #285 — the flagship RV loop: lift the player's most recent worth-lifting
 /// phrase as a cell and row it through the keys at their difficulty. Errors
 /// calmly when nothing liftable has been played yet.
-pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
+pub fn explore_last_phrase_impl(
+    state: &AppState,
+    seed: u64,
+    window: FoldWindow,
+) -> Result<ExploreDto, String> {
     let model = state
         .session_store
         .lock_or_recover()
@@ -3827,12 +3902,13 @@ pub fn explore_last_phrase_impl(state: &AppState, seed: u64) -> Result<ExploreDt
     };
     let (cell, first_midi) =
         lifted.ok_or_else(|| "play a little phrase first — then I can lift it".to_owned())?;
-    let (explore, seq) = brain::coach::start_explore_cell(
+    let (explore, seq) = brain::coach::start_explore_cell_windowed(
         cell,
         first_midi % 12,
         &model,
         seed,
         brain::coach::DirectionMode::Forward,
+        window,
     );
     let dto = explore_dto(&explore, &seq);
     {
@@ -3862,6 +3938,7 @@ pub fn explore_measure_impl(
     score_id: &str,
     measure_number: usize,
     seed: u64,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let id: ScoreId = score_id
         .parse()
@@ -3922,12 +3999,13 @@ pub fn explore_measure_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let (explore, seq) = brain::coach::start_explore_cell(
+    let (explore, seq) = brain::coach::start_explore_cell_windowed(
         cell,
         first % 12,
         &learner,
         seed,
         brain::coach::DirectionMode::Forward,
+        window,
     );
     let dto = explore_dto(&explore, &seq);
     {
@@ -3960,6 +4038,7 @@ pub fn opener_impl(
     tonic: Option<u8>,
     direction: Option<&str>,
     commit: bool,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let cell = brain::starter::composite_cell(items, brain::coach::LIFT_MAX_NOTES)
         .map_err(|e| e.to_string())?;
@@ -3994,7 +4073,8 @@ pub fn opener_impl(
         .unwrap_or_default();
     // Openers speak in abstract degrees, so the row starts from C and
     // travels the 12 keys from there (S1 simplification, noted in #419).
-    let (explore, seq) = brain::coach::start_explore_cell(cell, tonic, &model, seed, direction);
+    let (explore, seq) =
+        brain::coach::start_explore_cell_windowed(cell, tonic, &model, seed, direction, window);
     let dto = explore_dto(&explore, &seq);
     if commit {
         {
@@ -4029,24 +4109,26 @@ pub fn opener_impl(
 
 /// #419 S1: live preview of the opener being built — pure, no session state.
 #[tauri::command]
-pub fn preview_opener(
+pub async fn preview_opener(
     state: State<'_, AppState>,
     items: Vec<brain::starter::StarterItem>,
     tonic: Option<u8>,
     direction: Option<String>,
 ) -> Result<ExploreDto, String> {
-    opener_impl(&state, &items, tonic, direction.as_deref(), false)
+    let window = session_fold_window(&state).await;
+    opener_impl(&state, &items, tonic, direction.as_deref(), false, window)
 }
 
 /// #419 S1: Begin — the built opener becomes the session's exploration.
 #[tauri::command]
-pub fn begin_opener(
+pub async fn begin_opener(
     state: State<'_, AppState>,
     items: Vec<brain::starter::StarterItem>,
     tonic: Option<u8>,
     direction: Option<String>,
 ) -> Result<ExploreDto, String> {
-    opener_impl(&state, &items, tonic, direction.as_deref(), true)
+    let window = session_fold_window(&state).await;
+    opener_impl(&state, &items, tonic, direction.as_deref(), true, window)
 }
 
 /// #419 S4: one saved opener recipe on the wire.
@@ -4168,15 +4250,25 @@ pub fn recall_last_opener_impl(state: &AppState) -> Option<LastOpenerDto> {
 /// rhythm, cell, direction) re-rendered under the stored seed; today's
 /// learner model touches nothing. Commits like `begin_opener` (fresh
 /// log row carrying the same seed and spec, so recall chains).
-pub fn begin_opener_recall_impl(state: &AppState) -> Result<ExploreDto, String> {
+pub fn begin_opener_recall_impl(
+    state: &AppState,
+    window: FoldWindow,
+) -> Result<ExploreDto, String> {
     let (row, spec) = last_opener_row(state)
         .ok_or_else(|| "no opener to recall yet — begin one first".to_string())?;
     // Review MF2: replay the STORED spec wholesale — roots, rhythm, and
     // all. Rebuilding through start_explore_cell would let today's
     // learner difficulty retune yesterday's opener (tempo, root count)
-    // under a chip that promises "exactly".
-    let (explore, seq) =
-        brain::coach::resume_explore_spec(spec, row.tonic % 12, row.difficulty, row.seed);
+    // under a chip that promises "exactly". The fold window is the SESSION's
+    // (#471-4): the stored artifact stays instrument-agnostic, so the same
+    // instrument replays bit-identically and a different one re-registers.
+    let (explore, seq) = brain::coach::resume_explore_spec_windowed(
+        spec,
+        row.tonic % 12,
+        row.difficulty,
+        row.seed,
+        window,
+    );
     let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
@@ -4240,13 +4332,14 @@ pub fn recall_last_opener(state: State<'_, AppState>) -> Option<LastOpenerDto> {
 
 /// #419 S4: replay yesterday's opener exactly (stored seed — spec §2).
 #[tauri::command]
-pub fn begin_opener_recall(state: State<'_, AppState>) -> Result<ExploreDto, String> {
-    begin_opener_recall_impl(&state)
+pub async fn begin_opener_recall(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    let window = session_fold_window(&state).await;
+    begin_opener_recall_impl(&state, window)
 }
 
 /// #337 S5: row one measure of a stored score through 12 keys.
 #[tauri::command]
-pub fn explore_measure(
+pub async fn explore_measure(
     state: State<'_, AppState>,
     score_id: String,
     measure_number: usize,
@@ -4255,7 +4348,8 @@ pub fn explore_measure(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(42);
-    explore_measure_impl(&state, &score_id, measure_number, seed)
+    let window = session_fold_window(&state).await;
+    explore_measure_impl(&state, &score_id, measure_number, seed, window)
 }
 
 /// #349 T4a — the jam lane's RV bridge: row a chord the room played
@@ -4266,6 +4360,7 @@ pub fn explore_chord_impl(
     root_pc: u8,
     quality: brain::theory::ChordQuality,
     seed: u64,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let model = state
         .session_store
@@ -4273,7 +4368,8 @@ pub fn explore_chord_impl(
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let (explore, seq) = brain::coach::start_explore_chord(root_pc % 12, quality, &model, seed);
+    let (explore, seq) =
+        brain::coach::start_explore_chord_windowed(root_pc % 12, quality, &model, seed, window);
     let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
@@ -4295,7 +4391,7 @@ pub fn explore_chord_impl(
 }
 
 #[tauri::command]
-pub fn explore_chord(
+pub async fn explore_chord(
     state: State<'_, AppState>,
     root_pc: u8,
     quality: brain::theory::ChordQuality,
@@ -4304,14 +4400,19 @@ pub fn explore_chord(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(7);
-    explore_chord_impl(&state, root_pc, quality, seed)
+    let window = session_fold_window(&state).await;
+    explore_chord_impl(&state, root_pc, quality, seed, window)
 }
 
 /// #349 T3c — "work on my last progression": lift the chart's trailing
 /// chord sequence (consecutive duplicates collapsed, unresolved stretches
 /// skipped) and row it through 12 keys as stacked cells. Same live view
 /// swap as the lick lift; refuses calmly under two distinct chords.
-pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDto, String> {
+pub fn explore_progression_impl(
+    state: &AppState,
+    seed: u64,
+    window: FoldWindow,
+) -> Result<ExploreDto, String> {
     /// The most recent chords worth rowing — a phrase of harmony, not a set.
     const MAX_PROGRESSION_CHORDS: usize = 4;
     let chords: Vec<(u8, brain::theory::ChordQuality)> = {
@@ -4336,7 +4437,8 @@ pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDt
         .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let (explore, seq) = brain::coach::start_explore_progression(&chords, &model, seed);
+    let (explore, seq) =
+        brain::coach::start_explore_progression_windowed(&chords, &model, seed, window);
     let dto = explore_dto(&explore, &seq);
     {
         let store = state.session_store.lock_or_recover();
@@ -4358,12 +4460,13 @@ pub fn explore_progression_impl(state: &AppState, seed: u64) -> Result<ExploreDt
 }
 
 #[tauri::command]
-pub fn explore_progression(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+pub async fn explore_progression(state: State<'_, AppState>) -> Result<ExploreDto, String> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(11);
-    explore_progression_impl(&state, seed)
+    let window = session_fold_window(&state).await;
+    explore_progression_impl(&state, seed, window)
 }
 
 /// #349 T4a — the session's chord chart so far: the timed label sequence
@@ -4376,12 +4479,13 @@ pub fn session_chord_chart(
 }
 
 #[tauri::command]
-pub fn explore_last_phrase(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+pub async fn explore_last_phrase(state: State<'_, AppState>) -> Result<ExploreDto, String> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(1);
-    explore_last_phrase_impl(&state, seed)
+    let window = session_fold_window(&state).await;
+    explore_last_phrase_impl(&state, seed, window)
 }
 
 /// Apply a semantic note edit (#292 slice 3) to the in-flight exploration —
@@ -4391,6 +4495,7 @@ pub fn edit_explore_note_impl(
     state: &AppState,
     index: usize,
     edit: brain::coach::NoteEdit,
+    window: FoldWindow,
 ) -> Result<ExploreDto, String> {
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
@@ -4399,36 +4504,38 @@ pub fn edit_explore_note_impl(
     // The gesture's key derivation lives with the edit engine now (#471-2
     // F3): it speaks each edited segment's own signature — the one the
     // staff draws for that bar.
-    let (next, seq) = brain::coach::edit_explore_note(current, index, &edit)?;
+    let (next, seq) = brain::coach::edit_explore_note_windowed(current, index, &edit, window)?;
     let dto = explore_dto(&next, &seq);
     *guard = Some(next);
     Ok(dto)
 }
 
 #[tauri::command]
-pub fn edit_explore_note(
+pub async fn edit_explore_note(
     state: State<'_, AppState>,
     index: usize,
     edit: brain::coach::NoteEdit,
 ) -> Result<ExploreDto, String> {
-    edit_explore_note_impl(&state, index, edit)
+    let window = session_fold_window(&state).await;
+    edit_explore_note_impl(&state, index, edit, window)
 }
 
 /// Undo the most recent explore edit — restores the exact prior rep.
-pub fn undo_explore_edit_impl(state: &AppState) -> Result<ExploreDto, String> {
+pub fn undo_explore_edit_impl(state: &AppState, window: FoldWindow) -> Result<ExploreDto, String> {
     let mut guard = state.active_explore.lock_or_recover();
     let current = guard
         .as_ref()
         .ok_or_else(|| "nothing is being explored — start a variation first".to_owned())?;
-    let (next, seq) = brain::coach::undo_explore_edit(current)?;
+    let (next, seq) = brain::coach::undo_explore_edit_windowed(current, window)?;
     let dto = explore_dto(&next, &seq);
     *guard = Some(next);
     Ok(dto)
 }
 
 #[tauri::command]
-pub fn undo_explore_edit(state: State<'_, AppState>) -> Result<ExploreDto, String> {
-    undo_explore_edit_impl(&state)
+pub async fn undo_explore_edit(state: State<'_, AppState>) -> Result<ExploreDto, String> {
+    let window = session_fold_window(&state).await;
+    undo_explore_edit_impl(&state, window)
 }
 
 /// Stop exploring (nothing persisted).
@@ -4559,6 +4666,7 @@ pub fn start_lesson_impl(
     seed: u64,
     polyphonic: bool,
     grand_staff: bool,
+    window: FoldWindow,
 ) -> Result<LessonStepDto, CommandError> {
     if state.active_lesson.lock_or_recover().is_some() {
         return Err(CommandError::LessonActive);
@@ -4576,7 +4684,7 @@ pub fn start_lesson_impl(
         polyphonic,
         grand_staff,
     };
-    let first = build_first(&spec, &model);
+    let first = build_first_windowed(&spec, &model, window);
     let dto = drill_dto(&first, spec.drill_count, spec.grand_staff);
     let phrase_mark = state.phrase_buffer.lock_or_recover().len();
     let chord_mark = state.chord_buffer.lock_or_recover().len();
@@ -4601,6 +4709,7 @@ pub fn start_lesson_impl(
 pub fn submit_drill_impl(
     state: &AppState,
     now_epoch_secs: i64,
+    window: FoldWindow,
 ) -> Result<LessonStepDto, CommandError> {
     let mut lesson_guard = state.active_lesson.lock_or_recover();
     let lesson = lesson_guard.as_mut().ok_or(CommandError::NotActive)?;
@@ -4669,7 +4778,7 @@ pub fn submit_drill_impl(
         );
     }
 
-    match advance(&lesson.current, &score, &lesson.spec) {
+    match advance_windowed(&lesson.current, &score, &lesson.spec, window) {
         Some(next) => {
             let dto = drill_dto(&next, lesson.spec.drill_count, lesson.spec.grand_staff);
             let completed = std::mem::replace(&mut lesson.current, next);
@@ -4755,7 +4864,8 @@ pub async fn start_lesson(
         Some(name) => lesson_instrument_traits(&state, &name),
         None => (false, false),
     };
-    start_lesson_impl(&state, seed, polyphonic, grand_staff).map_err(|e| e.to_frontend())
+    let window = session_fold_window(&state).await;
+    start_lesson_impl(&state, seed, polyphonic, grand_staff, window).map_err(|e| e.to_frontend())
 }
 
 /// #417-3: how the session instrument shapes its lesson. Polyphonic dealing
@@ -4773,12 +4883,13 @@ fn lesson_instrument_traits(state: &AppState, name: &str) -> (bool, bool) {
 
 /// Grade the just-played drill and step the lesson.
 #[tauri::command]
-pub fn submit_drill(state: State<'_, AppState>) -> Result<LessonStepDto, String> {
+pub async fn submit_drill(state: State<'_, AppState>) -> Result<LessonStepDto, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    submit_drill_impl(&state, now).map_err(|e| e.to_frontend())
+    let window = session_fold_window(&state).await;
+    submit_drill_impl(&state, now, window).map_err(|e| e.to_frontend())
 }
 
 /// Abandon the in-flight lesson.
@@ -5777,7 +5888,8 @@ mod tests {
         let entry = s
             .import_midi("bridge.mid".to_string(), build_test_midi(Some("Bridge")))
             .expect("import fixture");
-        let dto = explore_measure_impl(&s, &entry.id.to_string(), 1, 7).expect("measure 1 rows");
+        let dto = explore_measure_impl(&s, &entry.id.to_string(), 1, 7, FoldWindow::default())
+            .expect("measure 1 rows");
         assert!(
             !dto.staff.notes.is_empty(),
             "the exploration renders on the staff"
@@ -5819,9 +5931,11 @@ mod tests {
         assert_eq!(log.last().unwrap().source, "measure_bridge");
 
         // Calm refusals: a measure the piece doesn't have, and a bad id.
-        let err = explore_measure_impl(&s, &entry.id.to_string(), 99, 7).unwrap_err();
+        let err = explore_measure_impl(&s, &entry.id.to_string(), 99, 7, FoldWindow::default())
+            .unwrap_err();
         assert!(err.contains("isn't in this piece"), "got: {err}");
-        let err = explore_measure_impl(&s, "not-a-real-id", 1, 7).unwrap_err();
+        let err =
+            explore_measure_impl(&s, "not-a-real-id", 1, 7, FoldWindow::default()).unwrap_err();
         assert!(err.contains("isn't in the library"), "got: {err}");
     }
 
@@ -5958,13 +6072,14 @@ mod tests {
     #[test]
     fn keyboard_lesson_drills_render_a_grand_staff() {
         let s = state();
-        let step = start_lesson_impl(&s, 42, true, true).expect("keyboard lesson starts");
+        let step = start_lesson_impl(&s, 42, true, true, FoldWindow::default())
+            .expect("keyboard lesson starts");
         let xml = &step.drill.as_ref().unwrap().music_xml;
         assert!(xml.contains("<staves>2</staves>"), "first drill: staves");
         assert!(xml.contains("<staff>"), "first drill: per-note staff");
 
         play_current_drill_perfectly(&s);
-        let next = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+        let next = submit_drill_impl(&s, 1_000, FoldWindow::default()).expect("submit succeeds");
         let drill = next
             .drill
             .as_ref()
@@ -5976,7 +6091,8 @@ mod tests {
         );
 
         let s2 = state();
-        let step2 = start_lesson_impl(&s2, 42, false, false).expect("melodic lesson starts");
+        let step2 = start_lesson_impl(&s2, 42, false, false, FoldWindow::default())
+            .expect("melodic lesson starts");
         let xml2 = &step2.drill.as_ref().unwrap().music_xml;
         assert!(!xml2.contains("<staves>"), "melodic: no staves");
         assert!(!xml2.contains("<staff>"), "melodic: no staff elements");
@@ -5991,7 +6107,8 @@ mod tests {
     #[test]
     fn a_polyphonic_lesson_deals_and_grades_chord_drills() {
         let s = state();
-        let mut last = start_lesson_impl(&s, 42, true, true).expect("lesson starts");
+        let mut last =
+            start_lesson_impl(&s, 42, true, true, FoldWindow::default()).expect("lesson starts");
         let mut saw_chord_drill = false;
         let mut steps = 0;
         while last.drill.is_some() {
@@ -6020,7 +6137,7 @@ mod tests {
                 // An empty room must not grade: no chords heard, no onsets.
                 assert!(
                     matches!(
-                        submit_drill_impl(&s, 1_000),
+                        submit_drill_impl(&s, 1_000, FoldWindow::default()),
                         Err(CommandError::DrillNotHeard)
                     ),
                     "silence on a chord drill must be a calm 'not yet'"
@@ -6037,7 +6154,7 @@ mod tests {
                     buf.observe(None);
                 }
             }
-            last = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+            last = submit_drill_impl(&s, 1_000, FoldWindow::default()).expect("submit succeeds");
             let score = last.score.as_ref().expect("score present");
             assert!(
                 score.accuracy > 0.99,
@@ -6062,7 +6179,8 @@ mod tests {
     #[test]
     fn lesson_lifecycle_grades_ramps_and_persists() {
         let s = state();
-        let step0 = start_lesson_impl(&s, 42, false, false).expect("lesson starts");
+        let step0 =
+            start_lesson_impl(&s, 42, false, false, FoldWindow::default()).expect("lesson starts");
         let drill0 = step0.drill.as_ref().expect("drill 0 present");
         assert_eq!(drill0.index, 0);
         assert!(drill0.music_xml.contains("<score-partwise"));
@@ -6089,7 +6207,7 @@ mod tests {
             phrase.onsets_secs = vec![0.0; target.len()];
             s.phrase_buffer.lock().unwrap().push(phrase);
 
-            last = submit_drill_impl(&s, 1_000).expect("submit succeeds");
+            last = submit_drill_impl(&s, 1_000, FoldWindow::default()).expect("submit succeeds");
             let score = last.score.as_ref().expect("every submit carries a score");
             assert!(
                 score.accuracy > 0.99,
@@ -6115,7 +6233,7 @@ mod tests {
             .expect("model persisted");
         assert!(!model.key_mastery.is_empty());
         assert_eq!(model.difficulty, recap.end_difficulty);
-        let again = start_lesson_impl(&s, 43, false, false).unwrap();
+        let again = start_lesson_impl(&s, 43, false, false, FoldWindow::default()).unwrap();
         assert_eq!(
             again.drill.unwrap().difficulty,
             recap.end_difficulty,
@@ -6128,11 +6246,11 @@ mod tests {
     #[test]
     fn submit_without_lesson_errs_and_end_abandons() {
         let s = state();
-        assert!(submit_drill_impl(&s, 0).is_err());
-        start_lesson_impl(&s, 1, false, false).unwrap();
+        assert!(submit_drill_impl(&s, 0, FoldWindow::default()).is_err());
+        start_lesson_impl(&s, 1, false, false, FoldWindow::default()).unwrap();
         end_lesson_impl(&s, 10);
         assert!(
-            submit_drill_impl(&s, 0).is_err(),
+            submit_drill_impl(&s, 0, FoldWindow::default()).is_err(),
             "abandoned lesson is gone"
         );
         // Zero completed drills → nothing persisted (spec #254 §6).
@@ -6171,9 +6289,9 @@ mod tests {
     #[test]
     fn early_end_persists_completed_drills_only() {
         let s = state();
-        start_lesson_impl(&s, 2, false, false).unwrap();
+        start_lesson_impl(&s, 2, false, false, FoldWindow::default()).unwrap();
         play_current_drill_perfectly(&s);
-        let step = submit_drill_impl(&s, 100).unwrap();
+        let step = submit_drill_impl(&s, 100, FoldWindow::default()).unwrap();
         assert!(step.drill.is_some(), "one drill done, lesson continues");
 
         end_lesson_impl(&s, 200);
@@ -6199,9 +6317,9 @@ mod tests {
     #[test]
     fn drill_grading_is_isolated_to_its_own_phrase_window() {
         let s = state();
-        start_lesson_impl(&s, 3, false, false).unwrap();
+        start_lesson_impl(&s, 3, false, false, FoldWindow::default()).unwrap();
         play_current_drill_perfectly(&s);
-        let step1 = submit_drill_impl(&s, 100).unwrap();
+        let step1 = submit_drill_impl(&s, 100, FoldWindow::default()).unwrap();
         assert!(step1.score.unwrap().accuracy > 0.99);
 
         // Drill 1: play only clearly WRONG material (a cluster far from any
@@ -6211,7 +6329,7 @@ mod tests {
         wrong.pitch_stats.pitches = std::iter::repeat_n(8_000.0, 40).collect();
         wrong.onsets_secs = vec![0.0; 4];
         s.phrase_buffer.lock().unwrap().push(wrong);
-        let step2 = submit_drill_impl(&s, 200).unwrap();
+        let step2 = submit_drill_impl(&s, 200, FoldWindow::default()).unwrap();
         assert!(
             step2.score.unwrap().accuracy < 0.2,
             "drill 1 must be graded ONLY on its own (wrong) take, not inherit drill 0's notes"
@@ -6225,13 +6343,13 @@ mod tests {
     #[test]
     fn heard_but_imperfect_takes_still_grade() {
         let s = state();
-        start_lesson_impl(&s, 12, false, false).unwrap();
+        start_lesson_impl(&s, 12, false, false, FoldWindow::default()).unwrap();
         // Unpitched noise WITH onsets: grades (0%), never DrillNotHeard.
         let mut claps = sample_phrase();
         claps.pitch_stats.pitches = Vec::new();
         claps.onsets_secs = vec![0.1, 0.4, 0.8];
         s.phrase_buffer.lock().unwrap().push(claps);
-        let step = submit_drill_impl(&s, 100).unwrap();
+        let step = submit_drill_impl(&s, 100, FoldWindow::default()).unwrap();
         assert_eq!(step.score.unwrap().accuracy, 0.0, "heard noise grades 0");
 
         // Pitched legato with ZERO detected onsets: also grades.
@@ -6240,7 +6358,7 @@ mod tests {
         legato.onsets_secs = Vec::new();
         s.phrase_buffer.lock().unwrap().push(legato);
         assert!(
-            submit_drill_impl(&s, 200).is_ok(),
+            submit_drill_impl(&s, 200, FoldWindow::default()).is_ok(),
             "a legato singer must not be trapped in not-yet"
         );
     }
@@ -6251,14 +6369,21 @@ mod tests {
     #[test]
     fn eager_submit_before_any_phrase_is_a_calm_not_yet() {
         let s = state();
-        start_lesson_impl(&s, 12, false, false).unwrap();
+        start_lesson_impl(&s, 12, false, false, FoldWindow::default()).unwrap();
         assert!(matches!(
-            submit_drill_impl(&s, 100),
+            submit_drill_impl(&s, 100, FoldWindow::default()),
             Err(CommandError::DrillNotHeard)
         ));
         // Still live: playing and resubmitting works.
         play_current_drill_perfectly(&s);
-        assert!(submit_drill_impl(&s, 200).unwrap().score.unwrap().accuracy > 0.99);
+        assert!(
+            submit_drill_impl(&s, 200, FoldWindow::default())
+                .unwrap()
+                .score
+                .unwrap()
+                .accuracy
+                > 0.99
+        );
     }
 
     /// Self-improvement (#252): every dealt exercise leaves EVIDENCE — a
@@ -6269,12 +6394,13 @@ mod tests {
     fn exercises_leave_evidence_in_the_log() {
         let s = state();
         // A graded lesson drill…
-        start_lesson_impl(&s, 12, false, false).unwrap();
+        start_lesson_impl(&s, 12, false, false, FoldWindow::default()).unwrap();
         play_current_drill_perfectly(&s);
-        submit_drill_impl(&s, 100).unwrap();
+        submit_drill_impl(&s, 100, FoldWindow::default()).unwrap();
         // …an explore deal + a chip…
-        start_explore_variation_impl(&s, 7, "dorian", 42).unwrap();
-        apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
+        start_explore_variation_impl(&s, 7, "dorian", 42, FoldWindow::default()).unwrap();
+        apply_variation_delta_impl(&s, VariationDelta::ToggleDirection, FoldWindow::default())
+            .unwrap();
 
         let log = s.session_store.lock().unwrap().list_exercise_log().unwrap();
         let sources: Vec<&str> = log.iter().map(|e| e.source.as_str()).collect();
@@ -6357,7 +6483,7 @@ mod tests {
     fn last_phrase_lifts_into_an_editable_row() {
         let s = state();
         assert!(
-            explore_last_phrase_impl(&s, 42).is_err(),
+            explore_last_phrase_impl(&s, 42, FoldWindow::default()).is_err(),
             "nothing played yet → calm error"
         );
         // A clear 5-note lick: D F E A D (each held long enough to collapse).
@@ -6371,7 +6497,7 @@ mod tests {
             .collect();
         s.phrase_buffer.lock().unwrap().push(phrase);
 
-        let dto = explore_last_phrase_impl(&s, 42).unwrap();
+        let dto = explore_last_phrase_impl(&s, 42, FoldWindow::default()).unwrap();
         assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
         assert!(!dto.root_pitch_classes.is_empty());
         assert!(!dto.staff.notes.is_empty());
@@ -6397,8 +6523,13 @@ mod tests {
         );
         // And it's immediately editable (#292): the correction UX this loop
         // was built for.
-        let edited =
-            edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
+        let edited = edit_explore_note_impl(
+            &s,
+            0,
+            brain::coach::NoteEdit::Octaves { by: 1 },
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert!(edited.can_undo);
     }
 
@@ -6452,7 +6583,7 @@ mod tests {
         // …and the lift path still lifts it (the AC's second half).
         let s = state();
         s.phrase_buffer.lock().unwrap().push(scrubbed);
-        let dto = explore_last_phrase_impl(&s, 42).unwrap();
+        let dto = explore_last_phrase_impl(&s, 42, FoldWindow::default()).unwrap();
         assert!(dto.label.contains("5-note cell"), "got {}", dto.label);
     }
 
@@ -6521,7 +6652,7 @@ mod tests {
     fn the_charts_trailing_chords_lift_as_a_progression() {
         let s = state();
         assert!(
-            explore_progression_impl(&s, 42)
+            explore_progression_impl(&s, 42, FoldWindow::default())
                 .unwrap_err()
                 .contains("play a couple of chords"),
             "empty chart → calm refusal"
@@ -6553,7 +6684,7 @@ mod tests {
             chart.observe(&snap(7, brain::theory::ChordQuality::Dom7, "G7"), 3.0);
             chart.observe(&snap(0, brain::theory::ChordQuality::Maj7, "Cmaj7"), 4.0);
         }
-        let dto = explore_progression_impl(&s, 42).unwrap();
+        let dto = explore_progression_impl(&s, 42, FoldWindow::default()).unwrap();
         assert!(
             dto.label.contains("Dm7") && dto.label.contains("G7") && dto.label.contains("Cmaj7"),
             "label: {}",
@@ -6608,7 +6739,7 @@ mod tests {
             chart.observe(&snap(5, Q::Maj), 1.0);
             chart.observe(&snap(0, Q::Maj), 2.0);
         }
-        let dto = explore_progression_impl(&s, 42).unwrap();
+        let dto = explore_progression_impl(&s, 42, FoldWindow::default()).unwrap();
         let steps = s
             .active_explore
             .lock()
@@ -6630,7 +6761,7 @@ mod tests {
                 chart.observe(&snap(*pc, Q::Maj), i as f64);
             }
         }
-        explore_progression_impl(&s, 42).unwrap();
+        explore_progression_impl(&s, 42, FoldWindow::default()).unwrap();
         let steps = s
             .active_explore
             .lock()
@@ -6658,16 +6789,22 @@ mod tests {
             chart.observe(&snap(8, Q::Dom7), 1.0); // Ab7
             chart.observe(&snap(1, Q::Maj7), 2.0); // Dbmaj7
         }
-        let dto = explore_progression_impl(&s, 42).unwrap();
+        let dto = explore_progression_impl(&s, 42, FoldWindow::default()).unwrap();
         assert!(dto.label.contains("Ebm7"), "lift label: {}", dto.label);
-        let bumped =
-            apply_variation_delta_impl(&s, VariationDelta::BumpDifficulty { by: 1 }).unwrap();
+        let bumped = apply_variation_delta_impl(
+            &s,
+            VariationDelta::BumpDifficulty { by: 1 },
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert!(
             bumped.label.contains("Ebm7") && !bumped.label.contains('#'),
             "the label stays flat through a chip tap: {}",
             bumped.label
         );
-        let shuffled = apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots).unwrap();
+        let shuffled =
+            apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots, FoldWindow::default())
+                .unwrap();
         assert!(
             !shuffled.label.contains('#'),
             "…and through a reshuffle: {}",
@@ -6683,7 +6820,7 @@ mod tests {
             chart.observe(&snap(2, Q::Min7), 2.0);
         }
         assert!(
-            explore_progression_impl(&s, 42)
+            explore_progression_impl(&s, 42, FoldWindow::default())
                 .unwrap_err()
                 .contains("play a couple of chords"),
             "one distinct chord refuses"
@@ -6698,7 +6835,14 @@ mod tests {
     #[test]
     fn a_tapped_jam_chord_rows_as_stacked_cells() {
         let s = state();
-        let dto = explore_chord_impl(&s, 10, brain::theory::ChordQuality::Dom13, 42).unwrap();
+        let dto = explore_chord_impl(
+            &s,
+            10,
+            brain::theory::ChordQuality::Dom13,
+            42,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert!(
             dto.label.contains("block chords"),
             "deals blocks: {}",
@@ -6741,7 +6885,14 @@ mod tests {
     #[test]
     fn a_tapped_minor_chord_engraves_flat_side() {
         let s = state();
-        let dto = explore_chord_impl(&s, 0, brain::theory::ChordQuality::Min7, 42).unwrap();
+        let dto = explore_chord_impl(
+            &s,
+            0,
+            brain::theory::ChordQuality::Min7,
+            42,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert!(
             dto.staff.fifths < 0,
             "C minor 7 must engrave under flats, got fifths={}",
@@ -6763,34 +6914,45 @@ mod tests {
     fn explore_lifecycle_starts_mutates_and_guards() {
         let s = state();
         assert!(
-            apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots).is_err(),
+            apply_variation_delta_impl(&s, VariationDelta::ReshuffleRoots, FoldWindow::default())
+                .is_err(),
             "no exploration yet → calm error"
         );
 
-        let dto = start_explore_variation_impl(&s, 7, "Dorian", 42).unwrap();
+        let dto = start_explore_variation_impl(&s, 7, "Dorian", 42, FoldWindow::default()).unwrap();
         assert!(dto.label.contains("Dorian"), "got {}", dto.label);
         assert!(dto.music_xml.contains("<score-partwise"));
         assert_eq!(dto.chips.len(), 5, "the stable five (#445-4)");
         assert!(!dto.root_pitch_classes.is_empty());
 
-        let next = apply_variation_delta_impl(&s, VariationDelta::ToggleDirection).unwrap();
+        let next =
+            apply_variation_delta_impl(&s, VariationDelta::ToggleDirection, FoldWindow::default())
+                .unwrap();
         assert_ne!(next.music_xml, dto.music_xml, "a delta produces a new rep");
         assert_eq!(next.chips.len(), 5);
 
         // #292 slice 3: chips and edits are both undo-able steps; an edit
         // bakes the cell and undo restores the exact prior rep.
         assert!(next.can_undo, "the chip itself is an undo-able step");
-        let edited =
-            edit_explore_note_impl(&s, 0, brain::coach::NoteEdit::Octaves { by: 1 }).unwrap();
+        let edited = edit_explore_note_impl(
+            &s,
+            0,
+            brain::coach::NoteEdit::Octaves { by: 1 },
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert!(edited.can_undo);
         assert_ne!(edited.staff, next.staff, "the edit changes the staff");
-        let undone = undo_explore_edit_impl(&s).unwrap();
+        let undone = undo_explore_edit_impl(&s, FoldWindow::default()).unwrap();
         assert_eq!(undone.staff, next.staff, "undo restores the prior rep");
         // One more undo steps back over the CHIP to the very first rep…
-        let back_to_start = undo_explore_edit_impl(&s).unwrap();
+        let back_to_start = undo_explore_edit_impl(&s, FoldWindow::default()).unwrap();
         assert_eq!(back_to_start.staff, dto.staff, "chips are undo-able too");
         // …and only then is history exhausted.
-        assert!(undo_explore_edit_impl(&s).is_err(), "history exhausted");
+        assert!(
+            undo_explore_edit_impl(&s, FoldWindow::default()).is_err(),
+            "history exhausted"
+        );
     }
 
     /// #335 at the explore surface: a C#-major exploration engraves 5 flats,
@@ -6799,7 +6961,7 @@ mod tests {
     #[test]
     fn explore_label_speaks_the_signature_spelling() {
         let s = state();
-        let dto = start_explore_variation_impl(&s, 1, "major", 42).unwrap();
+        let dto = start_explore_variation_impl(&s, 1, "major", 42, FoldWindow::default()).unwrap();
         assert!(
             dto.music_xml.contains("<fifths>-5</fifths>"),
             "pc-1 major engraves the conventional Db signature"
@@ -6879,9 +7041,9 @@ mod tests {
     #[test]
     fn double_start_lesson_is_refused() {
         let s = state();
-        start_lesson_impl(&s, 4, false, false).unwrap();
+        start_lesson_impl(&s, 4, false, false, FoldWindow::default()).unwrap();
         assert!(matches!(
-            start_lesson_impl(&s, 5, false, false),
+            start_lesson_impl(&s, 5, false, false, FoldWindow::default()),
             Err(CommandError::LessonActive)
         ));
     }
@@ -6896,9 +7058,9 @@ mod tests {
         start_practice_session_impl(&s, "Trumpet".to_owned(), PracticeMode::Practice, true, None)
             .await
             .expect("session starts");
-        start_lesson_impl(&s, 6, false, false).unwrap();
+        start_lesson_impl(&s, 6, false, false, FoldWindow::default()).unwrap();
         play_current_drill_perfectly(&s);
-        submit_drill_impl(&s, 100).unwrap();
+        submit_drill_impl(&s, 100, FoldWindow::default()).unwrap();
 
         end_practice_session_impl(&s).await.expect("session ends");
         assert!(
@@ -7760,6 +7922,125 @@ mod tests {
     fn detector_profile_for_unknown_instrument_returns_none() {
         let s = state();
         assert!(s.detector_profile_for("Kazoo").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // #471-4 H4 — per-instrument fold windows (profile → MIDI derivation,
+    // the voice exemption, and the wire's honesty about fallbacks). Table:
+    // docs/specs/471-h4-instrument-ranges.md §3.
+    // -----------------------------------------------------------------------
+
+    /// H4 AC1: the trumpet window derives from its profile (165–1047 Hz) as
+    /// exactly E3..C6 — the 5-cent snap recovers the low E that 165.0's
+    /// integer rounding pushed to midi 52.02, and the top C holds. The rest
+    /// of the catalog is pinned so a profile edit re-derives consciously.
+    #[test]
+    fn trumpet_window_derives_from_its_profile() {
+        let s = state();
+        assert_eq!(
+            fold_window_for(&s, "Trumpet"),
+            FoldWindow { lo: 52, hi: 84 }
+        );
+        // The full shipped-catalog table (voice excluded — its own pin below).
+        for (name, lo, hi) in [
+            ("Cello", 36, 83),
+            ("Clarinet", 50, 91),
+            ("Flute", 60, 96),
+            ("French Horn", 41, 81),
+            ("Guitar", 40, 88),
+            ("Piano", 22, 108),
+            ("Trombone", 34, 74),
+            ("Violin", 55, 103),
+        ] {
+            assert_eq!(fold_window_for(&s, name), FoldWindow { lo, hi }, "{name}");
+        }
+    }
+
+    /// H4 voice exemption (founder: "not vocals tho, leave that be"): Voice
+    /// resolves to the DEFAULT window even though its profile carries a
+    /// narrower frequency range — the family gate short-circuits before any
+    /// Hz math. Fails if a refactor starts constraining singers.
+    #[test]
+    fn voice_is_exempt_from_range_windows() {
+        let s = state();
+        assert_eq!(fold_window_for(&s, "Voice"), FoldWindow::default());
+        // The exemption is the FAMILY gate, not a degenerate range: the
+        // same numbers under a non-voice family would derive a real window.
+        assert_eq!(
+            fold_window_from_hz(82.0, 1047.0),
+            Some(FoldWindow { lo: 40, hi: 84 })
+        );
+    }
+
+    /// H4: unknown instruments (and degenerate/hostile ranges) resolve to
+    /// the default window — never a crash, never a made-up range.
+    #[test]
+    fn unknown_instrument_gets_the_default_window() {
+        let s = state();
+        assert_eq!(fold_window_for(&s, "Kazoo"), FoldWindow::default());
+        assert_eq!(
+            fold_window_from_hz(0.0, 440.0),
+            None,
+            "log2(0) is not a window"
+        );
+        assert_eq!(fold_window_from_hz(880.0, 440.0), None, "inverted range");
+    }
+
+    /// H4 AC4 (wire half): a row that can't fit the session instrument is
+    /// dealt in the full window AND says so — the ExploreDto carries the
+    /// calm range notice; a fitting row carries none. Fails if the fallback
+    /// goes silent (display dishonesty) or a fitting row nags.
+    #[test]
+    fn cant_fit_fallback_surfaces_the_calm_range_notice() {
+        let s = state();
+        let trumpet = fold_window_for(&s, "Trumpet");
+        let model = brain::learner::LearnerModel::default();
+        // Span 40 > the trumpet's 32-wide window: no key can fit.
+        let (wide_state, wide_seq) = brain::coach::start_explore_cell_windowed(
+            vec![0, -20, 20],
+            0,
+            &model,
+            5,
+            brain::coach::DirectionMode::Forward,
+            trumpet,
+        );
+        let dto = explore_dto(&wide_state, &wide_seq);
+        let notice = dto.range_notice.expect("the fallback must be surfaced");
+        assert!(notice.contains("range"), "got: {notice}");
+        // A narrow cell fits every key: in-window notes, no notice.
+        let (fit_state, fit_seq) = brain::coach::start_explore_cell_windowed(
+            vec![0, 4, 7],
+            0,
+            &model,
+            5,
+            brain::coach::DirectionMode::Forward,
+            trumpet,
+        );
+        assert!(fit_seq
+            .target_midi
+            .iter()
+            .all(|&m| (trumpet.lo..=trumpet.hi).contains(&m)));
+        assert_eq!(explore_dto(&fit_state, &fit_seq).range_notice, None);
+    }
+
+    /// H4 AC5: recall through the WIRE replays the stored opener
+    /// bit-identically under the same instrument window, twice over — the
+    /// stored artifact stays instrument-agnostic and the session window
+    /// re-registers it deterministically at replay time.
+    #[test]
+    fn stored_seed_recall_replays_identically_under_the_same_window() {
+        let s = state();
+        let trumpet = fold_window_for(&s, "Trumpet");
+        let items = vec![brain::starter::StarterItem::NoteSequence {
+            degrees: vec![1, 3, 5, 8],
+        }];
+        let begun = opener_impl(&s, &items, Some(2), Some("forward"), true, trumpet)
+            .expect("opener begins");
+        let first = begin_opener_recall_impl(&s, trumpet).expect("recall replays");
+        let second = begin_opener_recall_impl(&s, trumpet).expect("recall chains");
+        assert_eq!(first.music_xml, begun.music_xml, "recall = the begun rep");
+        assert_eq!(first.music_xml, second.music_xml, "recall is stable");
+        assert_eq!(first.staff, second.staff);
     }
 
     // Note on `install_audio_pipeline` coverage: the race-guard
@@ -9753,7 +10034,8 @@ mod tests {
             degrees: vec![1, 2, 3, 5],
         }];
 
-        let preview = opener_impl(&state, &items, None, None, false).expect("preview compiles");
+        let preview = opener_impl(&state, &items, None, None, false, FoldWindow::default())
+            .expect("preview compiles");
         assert!(state.active_explore.lock_or_recover().is_none());
         // Review MF4: preview fires on EVERY tap and must not touch the
         // exercise log either — S3's My Patterns reads that log, and a
@@ -9768,7 +10050,8 @@ mod tests {
             "a pure preview must not write the exercise log"
         );
 
-        let begun = opener_impl(&state, &items, None, None, true).expect("begin compiles");
+        let begun = opener_impl(&state, &items, None, None, true, FoldWindow::default())
+            .expect("begin compiles");
         assert!(state.active_explore.lock_or_recover().is_some());
         let log = state
             .session_store
@@ -9791,18 +10074,35 @@ mod tests {
         let items = vec![brain::starter::StarterItem::NoteSequence {
             degrees: vec![1, 2, 3, 5],
         }];
-        let in_a = opener_impl(&state, &items, Some(9), None, false).unwrap();
-        let in_c = opener_impl(&state, &items, None, None, false).unwrap();
+        let in_a =
+            opener_impl(&state, &items, Some(9), None, false, FoldWindow::default()).unwrap();
+        let in_c = opener_impl(&state, &items, None, None, false, FoldWindow::default()).unwrap();
         assert_ne!(in_a.music_xml, in_c.music_xml, "A row differs from C row");
         assert_eq!(in_a.root_pitch_classes.first(), Some(&9u8), "starts in A");
         assert_eq!(in_c.root_pitch_classes.first(), Some(&0u8), "defaults to C");
         // Wild wire tonic folds instead of panicking (AC edge).
-        let folded = opener_impl(&state, &items, Some(120 + 9), None, false).unwrap();
+        let folded = opener_impl(
+            &state,
+            &items,
+            Some(120 + 9),
+            None,
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert_eq!(folded.music_xml, in_a.music_xml, "120+9 folds to A");
         // Determinism: preview IS the exercise, with the new params too.
         // Round-3 review MF2: begin with the UNFOLDED value — the log row
         // is the fold's only observable seam (music_xml folds internally).
-        let begun = opener_impl(&state, &items, Some(120 + 9), None, true).unwrap();
+        let begun = opener_impl(
+            &state,
+            &items,
+            Some(120 + 9),
+            None,
+            true,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert_eq!(in_a.music_xml, begun.music_xml);
         // Review MF4: the exercise-log row records the LIVE tonic — the
         // % 12 fold's only observable seam, and what S4 recall will read.
@@ -9824,13 +10124,30 @@ mod tests {
         let items = vec![brain::starter::StarterItem::NoteSequence {
             degrees: vec![1, 2, 3, 5],
         }];
-        let forward = opener_impl(&state, &items, None, Some("forward"), false).unwrap();
-        let default = opener_impl(&state, &items, None, None, false).unwrap();
+        let forward = opener_impl(
+            &state,
+            &items,
+            None,
+            Some("forward"),
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap();
+        let default =
+            opener_impl(&state, &items, None, None, false, FoldWindow::default()).unwrap();
         assert_eq!(
             forward.music_xml, default.music_xml,
             "forward IS the default"
         );
-        let reversed = opener_impl(&state, &items, None, Some("reversed"), false).unwrap();
+        let reversed = opener_impl(
+            &state,
+            &items,
+            None,
+            Some("reversed"),
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert_ne!(reversed.music_xml, forward.music_xml);
         // Review MF3: "reversed" must BE the reversal — the first root
         // segment's pitch steps read backwards, not merely differently.
@@ -9851,8 +10168,24 @@ mod tests {
             rev_expected,
             "reversed is the reversal of forward's first segment"
         );
-        let varied_a = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
-        let varied_b = opener_impl(&state, &items, None, Some("varied"), false).unwrap();
+        let varied_a = opener_impl(
+            &state,
+            &items,
+            None,
+            Some("varied"),
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap();
+        let varied_b = opener_impl(
+            &state,
+            &items,
+            None,
+            Some("varied"),
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap();
         assert_eq!(
             varied_a.music_xml, varied_b.music_xml,
             "varied is seed-stable"
@@ -9861,7 +10194,15 @@ mod tests {
             varied_a.music_xml, forward.music_xml,
             "varied differs from forward (AC3)"
         );
-        let err = opener_impl(&state, &items, None, Some("sideways"), false).unwrap_err();
+        let err = opener_impl(
+            &state,
+            &items,
+            None,
+            Some("sideways"),
+            false,
+            FoldWindow::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("forward, reversed, or varied"), "got: {err}");
         assert!(
             state.active_explore.lock_or_recover().is_none(),
@@ -9873,7 +10214,7 @@ mod tests {
     #[test]
     fn opener_refuses_calmly_on_empty_and_bad_degrees() {
         let state = AppState::with_mocks();
-        let err = opener_impl(&state, &[], None, None, false).unwrap_err();
+        let err = opener_impl(&state, &[], None, None, false, FoldWindow::default()).unwrap_err();
         assert!(err.contains("add a note or two"), "got: {err}");
         let err = opener_impl(
             &state,
@@ -9881,6 +10222,7 @@ mod tests {
             None,
             None,
             false,
+            FoldWindow::default(),
         )
         .unwrap_err();
         assert!(err.contains("1 to 8"), "got: {err}");
@@ -9988,7 +10330,7 @@ mod tests {
             None,
             "an unparsable opener row offers nothing"
         );
-        let err = begin_opener_recall_impl(&s).unwrap_err();
+        let err = begin_opener_recall_impl(&s, FoldWindow::default()).unwrap_err();
         assert!(err.contains("no opener to recall"), "got: {err}");
         assert!(s.active_explore.lock_or_recover().is_none());
     }
@@ -10048,7 +10390,7 @@ mod tests {
                 accuracy: None,
             })
             .unwrap();
-        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        let replay = begin_opener_recall_impl(&s, FoldWindow::default()).expect("recall replays");
         assert_eq!(
             replay.music_xml, original_xml,
             "recall follows the STORED seed"
@@ -10078,7 +10420,7 @@ mod tests {
         let items = vec![brain::starter::StarterItem::NoteSequence {
             degrees: vec![1, 2, 3, 5],
         }];
-        let begun = opener_impl(&s, &items, None, None, true).unwrap();
+        let begun = opener_impl(&s, &items, None, None, true, FoldWindow::default()).unwrap();
         // The player got better overnight: the adaptive difficulty moves.
         let mut model = s
             .session_store
@@ -10091,7 +10433,7 @@ mod tests {
             .lock_or_recover()
             .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &model)
             .unwrap();
-        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        let replay = begin_opener_recall_impl(&s, FoldWindow::default()).expect("recall replays");
         assert_eq!(
             replay.music_xml, begun.music_xml,
             "a drifted difficulty must not retune the replay"
@@ -10107,8 +10449,16 @@ mod tests {
         let items = vec![brain::starter::StarterItem::NoteSequence {
             degrees: vec![1, 2, 3, 5],
         }];
-        let begun = opener_impl(&s, &items, None, Some("reversed"), true).unwrap();
-        let replay = begin_opener_recall_impl(&s).expect("recall replays");
+        let begun = opener_impl(
+            &s,
+            &items,
+            None,
+            Some("reversed"),
+            true,
+            FoldWindow::default(),
+        )
+        .unwrap();
+        let replay = begin_opener_recall_impl(&s, FoldWindow::default()).expect("recall replays");
         assert_eq!(
             replay.music_xml, begun.music_xml,
             "recall IS the begun opener, reversal included"
@@ -10692,7 +11042,8 @@ mod tests {
             degrees: vec![1, 2, 3, 5],
         }];
 
-        opener_impl(&s, &items, None, None, true).expect("begin outside a session");
+        opener_impl(&s, &items, None, None, true, FoldWindow::default())
+            .expect("begin outside a session");
         assert_eq!(journal_len(&s), 0, "no session → no opener_begin row");
         assert_eq!(
             s.session_store
@@ -10705,7 +11056,8 @@ mod tests {
         );
 
         let sid = start_session(&s).await;
-        opener_impl(&s, &items, None, None, true).expect("begin inside a session");
+        opener_impl(&s, &items, None, None, true, FoldWindow::default())
+            .expect("begin inside a session");
         assert_eq!(
             journal(&s, &sid),
             vec![("opener_begin".to_owned(), "{\"recipe\":null}".to_owned())]
