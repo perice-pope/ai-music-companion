@@ -809,6 +809,72 @@ describe("OpenersPanel (#471 pt 3 — the RV-simple picker)", () => {
     expect(screen.getByTestId("opener-pc-0").getAttribute("aria-pressed")).toBe(
       "false",
     );
+    // Removing the FIRST tap re-bases the survivors to the new first:
+    // picks [4, 7] minus 4 leaves [7], whose offset is 0 — a stale base
+    // (still 4) would send [3] instead.
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(screen.getByTestId("opener-pc-4").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(screen.getByTestId("opener-pc-7").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("the picker holds its place in the row while bank items join", async () => {
+    // Round-1 review MF1: a surviving mutant rewrote the in-place update
+    // as remove-then-append-last — every earlier test passed because the
+    // picker item was always alone. Play order is the contract: a tap
+    // after a bank add must update the notes item WHERE IT SITS, and the
+    // bank add (a new array holding the SAME item reference) must not
+    // darken the lit buttons.
+    openFull();
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "notes", offsets: [0] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    // A bank item joins AFTER the picker's item…
+    fireEvent.click(screen.getByTestId("opener-chord-major_triad"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toHaveLength(2),
+    );
+    // …and the picks stay lit (reference-identity coexistence).
+    expect(screen.getByTestId("opener-pc-4").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    // Tapping the picker AGAIN updates its item in place — first, then
+    // the chord — never re-appended to the end.
+    fireEvent.click(screen.getByTestId("opener-pc-7"));
+    await waitFor(() =>
+      expect(usePracticeStore.getState().openerItems).toEqual([
+        { type: "notes", offsets: [0, 3] },
+        { type: "chord", kind: "major_triad" },
+      ]),
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [
+          { type: "notes", offsets: [0, 3] },
+          { type: "chord", kind: "major_triad" },
+        ],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(screen.getByTestId("opener-pc-7").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
   });
 
   it("all 12 notes make a 12-tone cell that previews and Begins", async () => {

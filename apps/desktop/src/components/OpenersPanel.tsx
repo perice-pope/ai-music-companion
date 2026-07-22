@@ -408,7 +408,12 @@ export default function OpenersPanel() {
             >
               {label}
               {pos >= 0 && (
-                <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-300 text-[10px] font-bold text-indigo-950">
+                <span
+                  // Visual order badge only — without aria-hidden, screen
+                  // readers read "♭3 2" as if both were the note's name.
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-300 text-[10px] font-bold text-indigo-950"
+                >
                   {pos + 1}
                 </span>
               )}
