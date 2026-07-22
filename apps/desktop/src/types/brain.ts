@@ -232,6 +232,13 @@ export interface ExploreDto {
   root_names: string[];
   staff: CellStaffViewDto;
   can_undo: boolean;
+  /**
+   * #471-4: a calm sentence when the dealt row was wider than the session
+   * instrument's range and fell back to the full register window (the
+   * pattern itself stays exact — never clamped). `null` when everything
+   * fits the instrument.
+   */
+  range_notice: string | null;
 }
 
 /** A semantic note-edit gesture. Mirrors `brain::coach::NoteEdit` — the

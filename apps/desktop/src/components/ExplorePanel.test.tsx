@@ -13,6 +13,7 @@ vi.mock("./CellStaff", () => ({
 }));
 
 const dto: ExploreDto = {
+  range_notice: null,
   label: "G Dorian · up-down · 3 roots · 60 BPM",
   music_xml: "<score-partwise/>",
   chips: [
