@@ -102,7 +102,7 @@ fn main() {
                 let chips = suggest_chips(&state);
                 assert_eq!(chips.len(), 5, "the stable five (#445-4)");
                 let key = brain::coach::key_signature_for(state.tonic, "major");
-                let staff = cell_staff_view(&seq, key);
+                let staff = cell_staff_view(&seq, key, "major");
                 assert_eq!(staff.notes.len(), seq.target_midi.len());
                 assert!(staff.notes.iter().all(|n| (-30..=40).contains(&n.step)));
             }
