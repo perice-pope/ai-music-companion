@@ -1,3 +1,9 @@
+## [2.48.1](https://github.com/perice-pope/ai-music-companion/compare/v2.48.0...v2.48.1) (2026-07-25)
+
+### Bug Fixes
+
+* user-facing panics degrade gracefully — recap comparison and startup catalog ([#364](https://github.com/perice-pope/ai-music-companion/issues/364)) ([#484](https://github.com/perice-pope/ai-music-companion/issues/484)) ([a79809c](https://github.com/perice-pope/ai-music-companion/commit/a79809c5e1be2017afe3392885a3e6ad71514ca1)), closes [#137](https://github.com/perice-pope/ai-music-companion/issues/137)
+
 ## [2.48.0](https://github.com/perice-pope/ai-music-companion/compare/v2.47.0...v2.48.0) (2026-07-22)
 
 ### Features
