@@ -1,3 +1,9 @@
+## [2.49.0](https://github.com/perice-pope/ai-music-companion/compare/v2.48.1...v2.49.0) (2026-07-25)
+
+### Features
+
+* **brain:** the streak's pure heart — LocalDay + exact daily-completion math ([#257](https://github.com/perice-pope/ai-music-companion/issues/257) S1) ([#485](https://github.com/perice-pope/ai-music-companion/issues/485)) ([f7c7d4f](https://github.com/perice-pope/ai-music-companion/commit/f7c7d4f845c15c07bf5b3357638598c588ddac18))
+
 ## [2.48.1](https://github.com/perice-pope/ai-music-companion/compare/v2.48.0...v2.48.1) (2026-07-25)
 
 ### Bug Fixes
