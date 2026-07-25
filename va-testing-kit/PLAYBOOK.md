@@ -172,8 +172,9 @@ lesson sheet — run 4+ lessons across different keys and report ANY render erro
 key name (or happily report none).
 
 **RUN 5 — "The stranger test" (installer, ~15 min).** The INSTALLER smoke section below, exactly
-as written — download from the public site like a stranger, right-click-open, quick pass. This is
-the pilot launch gate: a failure here is a SHIP BLOCKER headline.
+as written — download from the public site like a stranger, get past Gatekeeper (the smoke
+section's step 2 has the current per-macOS-version path), quick pass. This is the pilot
+launch gate: a failure here is a SHIP BLOCKER headline.
 **Always download a FRESH installer at the start of Run 5** — delete any previously downloaded
 copy first. (2026-07-16 lesson: a stale DMG made two already-fixed bugs look alive.)
 
@@ -427,9 +428,19 @@ plus a download.
 
 1. **Download like a stranger:** open https://perice-pope.github.io/ai-music-companion-pitch/ in a
    browser, scroll to Download, click **Download for macOS**. Note anything scary the browser says.
-2. **Install & first launch:** open the .dmg, drag the app to Applications, then — important —
-   **right-click the app → Open** (double-clicking will be blocked; the site says so — did YOU
-   find that instruction where you needed it?). Approve the microphone prompt.
+2. **Install & first launch:** open the .dmg, drag the app to Applications, then get past
+   Gatekeeper (the app is unsigned until we're notarized, so a warning is expected):
+   - Try **right-click the app → Open** first. On older macOS a dialog with an **Open** button
+     appears — click it, done.
+   - On macOS 15 (Sequoia) and newer the dialog often says *"Apple could not verify… free of
+     malware"* with only **Done** and **Move to Trash** — no Open. That's normal, not a new bug.
+     The path is: click **Done** (NOT Move to Trash) → open **System Settings → Privacy &
+     Security** → scroll down to *"AI Music Companion" was blocked…* → click **Open Anyway** →
+     approve with your Mac password / Touch ID when asked.
+   - Report WHICH path your Mac needed, and whether the download site's instructions matched
+     what you actually saw (did you find the help where you needed it?).
+
+   Then approve the microphone prompt.
 3. **Does the packaged app actually work?** Quick pass, no deep testing: pick Voice → start a
    session → hum — does the pitch meter move? Play steadily — does a reveal appear? Drag in
    **sample-score-c-major-scale.musicxml** — does it render, does the cursor follow? Drag in
@@ -557,7 +568,8 @@ Write a Markdown report to `/tmp/amc_feedback_body.md` using her actual words:
 - Helpful & specific vs generic: <answer>
 
 ### Installer smoke test (only when run)
-- Download + right-click-Open flow worked as the site describes: <answer>
+- Download + Gatekeeper bypass worked (which path: right-click→Open, or System Settings →
+  Privacy & Security → Open Anyway?) and the site's instructions matched what your Mac showed: <answer>
 - Packaged app: mic / reveals / score+cursor / .wav each worked: <answer>
 - Packaged `import feedback` log lines (paste from the app.log grep, newest lines only, or
   "grep printed nothing"): <paste>
