@@ -876,8 +876,8 @@ impl AppState {
     /// Resolves profiles via env override → workspace walk (see
     /// [`locate_profiles_dir`]). For a *packaged* build, prefer
     /// [`AppState::new_with_app_handle`], which also checks the bundled
-    /// resource directory — a bare `new()` in an installed app would fail
-    /// to find profiles and panic (the bug behind #112).
+    /// resource directory — a bare `new()` in an installed app finds no
+    /// profiles and degrades to the explained-empty selector (#112, #364).
     pub fn new() -> Self {
         Self::build(None)
     }
@@ -1503,10 +1503,19 @@ impl AppState {
     /// startup load failure when there is one (#364) — the selector
     /// screen renders the message where the grid would be.
     pub fn list_instruments(&self) -> Result<Vec<InstrumentInfo>, String> {
-        match &self.catalog_error {
-            Some(reason) => Err(reason.clone()),
-            None => Ok((*self.instruments).clone()),
+        if let Some(reason) = &self.catalog_error {
+            return Err(reason.clone());
         }
+        // Structural guard, not just convention: an empty catalog must never
+        // reach the UI as `Ok([])` — the selector renders that as a silent
+        // empty grid, the exact no-feedback state the old panic existed to
+        // prevent. Holds even if the degraded-load wiring in `build` regresses.
+        if self.instruments.is_empty() {
+            return Err("no instrument profiles are loaded. Reinstalling the app \
+                 should restore them; set AI_MUSIC_COMPANION_PROFILES_DIR to override."
+                .to_string());
+        }
+        Ok((*self.instruments).clone())
     }
 
     /// Count of instruments in the catalog. Tests use this to assert
@@ -7894,6 +7903,23 @@ mod tests {
         assert!(
             err.contains("/bundle/profiles"),
             "IPC error must carry the load failure verbatim: {err}"
+        );
+    }
+
+    /// #364 structural guard: an empty catalog errs even when no load
+    /// failure was recorded. `Ok([])` renders as a silent empty grid — the
+    /// exact no-feedback state the old startup panic existed to prevent —
+    /// so it must be unreachable regardless of how the state got here
+    /// (e.g. a future regression in `build`'s degraded-load wiring).
+    #[test]
+    fn empty_catalog_errs_even_without_recorded_failure() {
+        let mut s = AppState::with_mocks();
+        s.instruments = Arc::new(Vec::new());
+        s.catalog_error = None;
+        let err = list_instruments_impl(&s).expect_err("empty catalog must never be Ok([])");
+        assert!(
+            err.contains("no instrument profiles are loaded"),
+            "error must explain the empty grid: {err}"
         );
     }
 
