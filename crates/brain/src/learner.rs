@@ -316,17 +316,20 @@ pub fn apply_daily_completion(m: &LearnerModel, day: LocalDay, score: f32) -> Le
             next.last_warmup = warmup(score);
         }
         Some(last) if day.0 == last.0 => {
-            // Same-day repeat: never advances the chain, only keeps the best
-            // score of the day. A prior warmup from another day (possible in a
-            // blob merged from sync) doesn't cap today's score.
-            let prior = next
-                .last_warmup
-                .as_ref()
-                .filter(|w| w.day == day)
-                .map_or(0.0, |w| if w.score.is_nan() { 0.0 } else { w.score });
-            next.last_warmup = warmup(score.max(prior));
+            // Same-day repeat: never advances the chain, only raises the day's
+            // recorded score to the best attempt. The existing record is
+            // updated in place so its `extra` fields survive (F2 invariant);
+            // a prior warmup from another day (possible in a blob merged from
+            // sync) doesn't cap today's score and is superseded wholesale.
+            match next.last_warmup.as_mut().filter(|w| w.day == day) {
+                Some(w) => {
+                    let prior = if w.score.is_nan() { 0.0 } else { w.score };
+                    w.score = score.max(prior);
+                }
+                None => next.last_warmup = warmup(score),
+            }
         }
-        Some(last) if day.0 == last.0 + 1 => {
+        Some(last) if day.0 == last.0.saturating_add(1) => {
             next.streak.count = next.streak.count.saturating_add(1);
             next.streak.last_completed_local_day = Some(day);
             next.last_warmup = warmup(score);
@@ -952,6 +955,52 @@ mod tests {
         let reloaded: LearnerModel = serde_json::from_str(&stored).unwrap();
         let m2 = apply_daily_completion(&reloaded, LocalDay(70), 0.3);
         assert!((m2.last_warmup.as_ref().unwrap().score - 0.9).abs() < 1e-6);
+    }
+
+    /// F2 invariant (review MF2): a same-day retry updates the existing
+    /// warmup record in place — unknown per-entry fields written by a newer
+    /// build survive, exactly as they do for `Collected` and `Mastery`.
+    /// Fails if the same-day arm rebuilds the record and strips `extra`.
+    #[test]
+    fn same_day_retry_preserves_warmup_extra_fields() {
+        let mut m0 = streaked(2, 100);
+        m0.last_warmup
+            .as_mut()
+            .unwrap()
+            .extra
+            .insert("attempts".into(), serde_json::json!(3));
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.9);
+        let w = m1.last_warmup.as_ref().unwrap();
+        assert_eq!(w.extra["attempts"], 3, "newer-build data must survive");
+        assert!((w.score - 0.9).abs() < 1e-6);
+    }
+
+    /// Merged-blob shape: the streak says today is already completed but no
+    /// warmup record exists. The retry records today's score without touching
+    /// the chain. Fails if the same-day arm assumes a record is present.
+    #[test]
+    fn same_day_without_warmup_record_records_score_only() {
+        let mut m0 = streaked(4, 100);
+        m0.last_warmup = None;
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.7);
+        assert_eq!(m1.streak.count, 4);
+        assert_eq!(m1.streak.last_completed_local_day, Some(LocalDay(100)));
+        let w = m1.last_warmup.as_ref().expect("today's score recorded");
+        assert_eq!(w.day, LocalDay(100));
+        assert!((w.score - 0.7).abs() < 1e-6);
+    }
+
+    /// Edge (review MF1): a blob holding `LocalDay(i64::MAX)` — user-editable
+    /// local storage — must not panic the consecutive-day guard in debug
+    /// builds. Earlier days classify as backward; the same day stays
+    /// idempotent.
+    #[test]
+    fn extreme_day_ordinal_does_not_overflow() {
+        let m0 = streaked(4, i64::MAX);
+        let m1 = apply_daily_completion(&m0, LocalDay(5), 1.0);
+        assert_eq!(m1, m0, "an earlier day is backward input — untouched");
+        let m2 = apply_daily_completion(&m0, LocalDay(i64::MAX), 0.9);
+        assert_eq!(m2.streak.count, 4, "same extreme day stays idempotent");
     }
 
     /// A `last_warmup` from a *different* day (a blob merged from sync) does
