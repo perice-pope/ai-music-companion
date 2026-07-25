@@ -8,10 +8,10 @@
 //!
 //! Today the blob carries the **collection** (unlocked reveals, #253 S3),
 //! **per-key mastery** and the **adaptive difficulty step** (both for the
-//! guided coach, #254). Streaks and the sound profile land in later slices —
-//! the blob is forward-compatible by construction (`version` field + unknown
-//! fields at both the top level and inside entries are preserved on a
-//! read→write roundtrip), so those additions need no migration of stored rows.
+//! guided coach, #254), the **sound profile** (#258), and the **daily streak**
+//! (#257). The blob is forward-compatible by construction (`version` field +
+//! unknown fields at both the top level and inside entries are preserved on a
+//! read→write roundtrip), so additions need no migration of stored rows.
 
 use std::collections::BTreeMap;
 
@@ -75,6 +75,53 @@ pub struct Mastery {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A calendar day in the user's local timezone, expressed as the count of days
+/// since the Unix epoch (1970-01-01) *in that timezone*. The instant → LocalDay
+/// conversion happens exactly once, at the IPC/command boundary, using the OS
+/// local offset (#257 S3). The pure core only ever sees this ordinal — so every
+/// streak transition is deterministic and needs no clock and no tz database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LocalDay(pub i64);
+
+/// The daily-warmup streak (#257): how many consecutive local days the warmup
+/// has been completed, and the last day that counted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Streak {
+    /// Consecutive completed days. `0` until the first-ever completion.
+    #[serde(default)]
+    pub count: u32,
+    /// The most recent local day a completion counted toward the streak.
+    /// `None` until the first-ever completion.
+    #[serde(default)]
+    pub last_completed_local_day: Option<LocalDay>,
+    /// Forward-compatibility, same contract as [`LearnerModel::extra`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for Streak {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            last_completed_local_day: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+}
+
+/// The most recent daily-warmup result (#257), read by the home surface and
+/// by the same-day idempotency rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DailyWarmup {
+    /// The day this result is for.
+    pub day: LocalDay,
+    /// Best score recorded for that day, clamped to `0.0..=1.0`.
+    pub score: f32,
+    /// Forward-compatibility, same contract as [`LearnerModel::extra`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
 /// One drill's outcome, as the coach reports it (#254): which key/scale it
 /// trained and the 0..1 accuracy achieved against the drill's exact target.
 ///
@@ -116,6 +163,14 @@ pub struct LearnerModel {
     /// `difficulty`.
     #[serde(default)]
     pub key_mastery: BTreeMap<String, Mastery>,
+    /// The daily-warmup streak (#257), advanced by [`apply_daily_completion`].
+    /// Additive: blobs from before this field existed load as the zero streak.
+    #[serde(default)]
+    pub streak: Streak,
+    /// The most recent daily-warmup result (#257). Additive; `None` until the
+    /// first-ever completion.
+    #[serde(default)]
+    pub last_warmup: Option<DailyWarmup>,
     /// Last transition time (Unix seconds, injected).
     pub updated_at_epoch_secs: i64,
     /// Forward-compatibility: top-level fields this build doesn't know yet
@@ -133,6 +188,8 @@ impl Default for LearnerModel {
             difficulty: 0,
             sound_profile: None,
             key_mastery: BTreeMap::new(),
+            streak: Streak::default(),
+            last_warmup: None,
             updated_at_epoch_secs: 0,
             extra: serde_json::Map::new(),
         }
@@ -214,6 +271,77 @@ pub fn apply_difficulty(model: &LearnerModel, difficulty: u8, now_epoch_secs: i6
     let mut next = model.clone();
     next.difficulty = difficulty.min(MAX_DIFFICULTY);
     next.updated_at_epoch_secs = now_epoch_secs;
+    next
+}
+
+/// Pure transition: apply a completed daily warmup for local day `day` with
+/// grade `score` (#257 S1).
+///
+/// The streak measures **showing up, not performance**: any completion counts
+/// regardless of `score` (even `0.0`) — the score only feeds `last_warmup`.
+/// Exact math, with `prev = streak.last_completed_local_day`:
+/// - **first ever** (`prev == None`): count = 1, today recorded.
+/// - **same day** (`day == prev`): idempotent — count and `prev` unchanged;
+///   only the recorded daily score rises to the best attempt of the day.
+/// - **consecutive** (`day == prev + 1`): count saturates up by 1.
+/// - **missed ≥ 1 full day** (`day > prev + 1`): count resets to 1 — today is
+///   the first day of the new chain.
+/// - **backward day** (`day < prev`, clock rollback / DST / out-of-order
+///   replay): ignored entirely — the streak never decrements and `prev` never
+///   moves backward.
+///
+/// Deterministic and clock-free: same `(model, day, score)` → identical
+/// output; no I/O. `score` is clamped to `0.0..=1.0` (NaN counts as 0, same
+/// sanitization as [`apply_drill_result`]). All other model fields are
+/// preserved unchanged, including `updated_at_epoch_secs` — the signature
+/// takes no wall time, and stamping is the callers' concern.
+pub fn apply_daily_completion(m: &LearnerModel, day: LocalDay, score: f32) -> LearnerModel {
+    let mut next = m.clone();
+    let score = if score.is_nan() {
+        0.0
+    } else {
+        score.clamp(0.0, 1.0)
+    };
+    let warmup = |s: f32| {
+        Some(DailyWarmup {
+            day,
+            score: s,
+            extra: serde_json::Map::new(),
+        })
+    };
+    match m.streak.last_completed_local_day {
+        None => {
+            next.streak.count = 1;
+            next.streak.last_completed_local_day = Some(day);
+            next.last_warmup = warmup(score);
+        }
+        Some(last) if day.0 == last.0 => {
+            // Same-day repeat: never advances the chain, only raises the day's
+            // recorded score to the best attempt. The existing record is
+            // updated in place so its `extra` fields survive (F2 invariant);
+            // a prior warmup from another day (possible in a blob merged from
+            // sync) doesn't cap today's score and is superseded wholesale.
+            match next.last_warmup.as_mut().filter(|w| w.day == day) {
+                Some(w) => {
+                    let prior = if w.score.is_nan() { 0.0 } else { w.score };
+                    w.score = score.max(prior);
+                }
+                None => next.last_warmup = warmup(score),
+            }
+        }
+        Some(last) if day.0 == last.0.saturating_add(1) => {
+            next.streak.count = next.streak.count.saturating_add(1);
+            next.streak.last_completed_local_day = Some(day);
+            next.last_warmup = warmup(score);
+        }
+        Some(last) if day.0 > last.0 => {
+            // A full day (or more) skipped: today restarts the chain at 1.
+            next.streak.count = 1;
+            next.streak.last_completed_local_day = Some(day);
+            next.last_warmup = warmup(score);
+        }
+        Some(_) => {} // Backward day: stale input, model untouched.
+    }
     next
 }
 
@@ -444,10 +572,15 @@ mod tests {
             },
             "updated_at_epoch_secs": 5,
             "sound_profile": { "mode_lean": "minor" },
-            "streak": { "count": 7 }
+            "streak": { "count": 7, "freeze_tokens": 2 },
+            "warmup_history": [ { "day": 3, "score": 0.5 } ]
         }"#;
         let model: LearnerModel = serde_json::from_str(json).expect("newer blob parses");
         assert_eq!(model.version, 2);
+        // `streak` is a known field since #257 — it parses, and its own
+        // unknown sub-fields ride the entry-level flatten.
+        assert_eq!(model.streak.count, 7);
+        assert_eq!(model.streak.last_completed_local_day, None);
         let after = apply_reveal(&model, "G Dorian", "Miles Davis", 6);
         // Drill the SAME mastery key so the per-Mastery unknown field survives
         // the entry-update path, not just an untouched clone.
@@ -463,7 +596,10 @@ mod tests {
         let out = serde_json::to_value(&after).expect("serializes");
         // Top-level unknown fields preserved.
         assert_eq!(out["sound_profile"]["mode_lean"], "minor");
+        assert_eq!(out["warmup_history"][0]["score"], 0.5);
+        // Known-field roundtrip + per-Streak unknown fields preserved.
         assert_eq!(out["streak"]["count"], 7);
+        assert_eq!(out["streak"]["freeze_tokens"], 2);
         // Per-entry unknown fields preserved too — including through #388's
         // legacy-concept normalization, which re-keys "C Major" → "Major".
         assert_eq!(
@@ -660,5 +796,231 @@ mod tests {
         let model: LearnerModel = serde_json::from_str(json).expect("old blob parses");
         assert_eq!(model.difficulty, 0);
         assert!(model.key_mastery.is_empty());
+    }
+
+    // ── #257 S1: streak transition ────────────────────────────────────
+
+    /// A model mid-chain: `count` completed days ending on `last_day`.
+    fn streaked(count: u32, last_day: i64) -> LearnerModel {
+        let mut m = LearnerModel::default();
+        m.streak.count = count;
+        m.streak.last_completed_local_day = Some(LocalDay(last_day));
+        m.last_warmup = Some(DailyWarmup {
+            day: LocalDay(last_day),
+            score: 0.5,
+            extra: serde_json::Map::new(),
+        });
+        m
+    }
+
+    /// #257 AC1: the first-ever completion starts the streak at 1 and records
+    /// the day + score. Fails if the None case seeds a wrong count or drops
+    /// the warmup record.
+    #[test]
+    fn first_completion_starts_streak_at_one() {
+        let m0 = LearnerModel::default();
+        assert_eq!(m0.streak.last_completed_local_day, None);
+        let m1 = apply_daily_completion(&m0, LocalDay(19_900), 0.8);
+        assert_eq!(m1.streak.count, 1);
+        assert_eq!(m1.streak.last_completed_local_day, Some(LocalDay(19_900)));
+        let w = m1.last_warmup.as_ref().expect("warmup recorded");
+        assert_eq!(w.day, LocalDay(19_900));
+        assert!((w.score - 0.8).abs() < 1e-6);
+        // Pure: the input model is untouched.
+        assert_eq!(m0.streak.count, 0);
+    }
+
+    /// #257 AC2: completing on exactly the next local day increments the count
+    /// and advances the recorded day. Fails on an off-by-one in "consecutive".
+    #[test]
+    fn consecutive_day_increments() {
+        let m = apply_daily_completion(&streaked(4, 100), LocalDay(101), 0.6);
+        assert_eq!(m.streak.count, 5);
+        assert_eq!(m.streak.last_completed_local_day, Some(LocalDay(101)));
+        assert_eq!(m.last_warmup.as_ref().unwrap().day, LocalDay(101));
+    }
+
+    /// #257 AC3 + AC11: a second completion on the same day never double-counts
+    /// and never advances the day — it only raises the recorded daily score to
+    /// the best attempt. A worse retry can't lower it.
+    #[test]
+    fn same_day_is_idempotent_and_keeps_best_score() {
+        let m0 = streaked(4, 100);
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.9);
+        assert_eq!(m1.streak.count, 4, "same day must not double-count");
+        assert_eq!(m1.streak.last_completed_local_day, Some(LocalDay(100)));
+        assert!((m1.last_warmup.as_ref().unwrap().score - 0.9).abs() < 1e-6);
+        // A worse third attempt keeps the best of the day.
+        let m2 = apply_daily_completion(&m1, LocalDay(100), 0.2);
+        assert!(
+            (m2.last_warmup.as_ref().unwrap().score - 0.9).abs() < 1e-6,
+            "best-of-day must survive a worse retry"
+        );
+    }
+
+    /// #257 AC4: any gap of a full calendar day or more resets the count to 1
+    /// (today is day one of the new chain, not zero). Fails if a gap slips
+    /// through as consecutive or resets to 0.
+    #[test]
+    fn missed_day_resets_to_one() {
+        for gap in [2_i64, 3, 30, 400] {
+            let m = apply_daily_completion(&streaked(9, 100), LocalDay(100 + gap), 0.7);
+            assert_eq!(m.streak.count, 1, "gap of {gap} must restart at 1");
+            assert_eq!(m.streak.last_completed_local_day, Some(LocalDay(100 + gap)));
+        }
+    }
+
+    /// #257 AC5: a day that goes backward (clock rollback, DST fall-back,
+    /// out-of-order replay) is ignored wholesale — count, recorded day, and
+    /// last_warmup all keep their values. Fails if backward input decrements
+    /// or rewrites anything.
+    #[test]
+    fn backward_day_ignored() {
+        let m0 = streaked(4, 100);
+        let m1 = apply_daily_completion(&m0, LocalDay(99), 1.0);
+        assert_eq!(m1, m0, "a backward day must leave the model untouched");
+    }
+
+    /// #257 AC6: the transition is pure and deterministic — identical inputs
+    /// produce byte-identical models, with no clock read anywhere (the
+    /// signature has nowhere to put one).
+    #[test]
+    fn apply_daily_completion_is_pure_deterministic() {
+        let m0 = streaked(2, 50);
+        let a = apply_daily_completion(&m0, LocalDay(51), 0.4);
+        let b = apply_daily_completion(&m0, LocalDay(51), 0.4);
+        assert_eq!(a, b);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        // Every other model field is preserved unchanged — including the
+        // timestamp, which this clock-free transition must not invent.
+        assert_eq!(a.updated_at_epoch_secs, m0.updated_at_epoch_secs);
+        assert_eq!(a.collection, m0.collection);
+        assert_eq!(a.key_mastery, m0.key_mastery);
+        assert_eq!(a.difficulty, m0.difficulty);
+    }
+
+    /// #257 AC10: the streak measures showing up, not performance — a 0.0
+    /// score advances the chain exactly like a perfect one.
+    #[test]
+    fn zero_score_still_advances_streak() {
+        let m = apply_daily_completion(&streaked(4, 100), LocalDay(101), 0.0);
+        assert_eq!(m.streak.count, 5);
+        assert_eq!(m.last_warmup.as_ref().unwrap().score, 0.0);
+    }
+
+    /// #257 AC11 + garbage hardening: out-of-range scores clamp into 0..=1 and
+    /// NaN counts as 0 (same sanitization as drill accuracy) — a bad grade
+    /// can't poison the stored best-of-day.
+    #[test]
+    fn warmup_score_is_sanitized() {
+        let m1 = apply_daily_completion(&LearnerModel::default(), LocalDay(10), 7.0);
+        assert_eq!(m1.last_warmup.as_ref().unwrap().score, 1.0);
+        let m2 = apply_daily_completion(&m1, LocalDay(11), -3.0);
+        assert_eq!(m2.last_warmup.as_ref().unwrap().score, 0.0);
+        let m3 = apply_daily_completion(&m2, LocalDay(12), f32::NAN);
+        assert_eq!(m3.last_warmup.as_ref().unwrap().score, 0.0);
+        assert_eq!(m3.streak.count, 3, "sanitized scores still count the day");
+    }
+
+    /// Edge: the count saturates instead of overflowing u32.
+    #[test]
+    fn count_saturates_at_u32_max() {
+        let m = apply_daily_completion(&streaked(u32::MAX, 100), LocalDay(101), 0.5);
+        assert_eq!(m.streak.count, u32::MAX);
+    }
+
+    /// Edge (forward-compat): a blob saved before #257 loads with the zero
+    /// streak and no warmup, and the first completion on it behaves as
+    /// first-ever. Fails if the additive fields break old-blob parsing.
+    #[test]
+    fn model_without_streak_fields_loads_and_starts_fresh() {
+        let json = r#"{ "version": 1, "collection": {}, "updated_at_epoch_secs": 4 }"#;
+        let model: LearnerModel = serde_json::from_str(json).expect("pre-#257 blob parses");
+        assert_eq!(model.streak, Streak::default());
+        assert_eq!(model.last_warmup, None);
+        let m1 = apply_daily_completion(&model, LocalDay(200), 0.5);
+        assert_eq!(m1.streak.count, 1);
+    }
+
+    /// Same-day best-of-day survives a serialize→deserialize roundtrip in
+    /// between (the persisted-model path the command layer will use): the
+    /// prior score is read from the stored `last_warmup`, not in-memory state.
+    #[test]
+    fn best_of_day_reads_the_persisted_warmup() {
+        let m1 = apply_daily_completion(&LearnerModel::default(), LocalDay(70), 0.9);
+        let stored = serde_json::to_string(&m1).unwrap();
+        let reloaded: LearnerModel = serde_json::from_str(&stored).unwrap();
+        let m2 = apply_daily_completion(&reloaded, LocalDay(70), 0.3);
+        assert!((m2.last_warmup.as_ref().unwrap().score - 0.9).abs() < 1e-6);
+    }
+
+    /// F2 invariant (review MF2): a same-day retry updates the existing
+    /// warmup record in place — unknown per-entry fields written by a newer
+    /// build survive, exactly as they do for `Collected` and `Mastery`.
+    /// Fails if the same-day arm rebuilds the record and strips `extra`.
+    #[test]
+    fn same_day_retry_preserves_warmup_extra_fields() {
+        let mut m0 = streaked(2, 100);
+        m0.last_warmup
+            .as_mut()
+            .unwrap()
+            .extra
+            .insert("attempts".into(), serde_json::json!(3));
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.9);
+        let w = m1.last_warmup.as_ref().unwrap();
+        assert_eq!(w.extra["attempts"], 3, "newer-build data must survive");
+        assert!((w.score - 0.9).abs() < 1e-6);
+    }
+
+    /// Merged-blob shape: the streak says today is already completed but no
+    /// warmup record exists. The retry records today's score without touching
+    /// the chain. Fails if the same-day arm assumes a record is present.
+    #[test]
+    fn same_day_without_warmup_record_records_score_only() {
+        let mut m0 = streaked(4, 100);
+        m0.last_warmup = None;
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.7);
+        assert_eq!(m1.streak.count, 4);
+        assert_eq!(m1.streak.last_completed_local_day, Some(LocalDay(100)));
+        let w = m1.last_warmup.as_ref().expect("today's score recorded");
+        assert_eq!(w.day, LocalDay(100));
+        assert!((w.score - 0.7).abs() < 1e-6);
+    }
+
+    /// Edge (review MF1): a blob holding `LocalDay(i64::MAX)` — user-editable
+    /// local storage — must not panic the consecutive-day guard in debug
+    /// builds. Earlier days classify as backward; the same day stays
+    /// idempotent.
+    #[test]
+    fn extreme_day_ordinal_does_not_overflow() {
+        let m0 = streaked(4, i64::MAX);
+        let m1 = apply_daily_completion(&m0, LocalDay(5), 1.0);
+        assert_eq!(m1, m0, "an earlier day is backward input — untouched");
+        let m2 = apply_daily_completion(&m0, LocalDay(i64::MAX), 0.9);
+        assert_eq!(m2.streak.count, 4, "same extreme day stays idempotent");
+    }
+
+    /// A `last_warmup` from a *different* day (a blob merged from sync) does
+    /// not cap today's same-day score — only a same-day prior participates in
+    /// best-of-day.
+    #[test]
+    fn best_of_day_ignores_another_days_warmup() {
+        let mut m0 = streaked(3, 100);
+        // Simulate a merged blob: streak says day 100, warmup is older.
+        m0.last_warmup = Some(DailyWarmup {
+            day: LocalDay(90),
+            score: 1.0,
+            extra: serde_json::Map::new(),
+        });
+        let m1 = apply_daily_completion(&m0, LocalDay(100), 0.4);
+        let w = m1.last_warmup.as_ref().unwrap();
+        assert_eq!(w.day, LocalDay(100), "the record moves to today");
+        assert!(
+            (w.score - 0.4).abs() < 1e-6,
+            "an old day's 1.0 must not masquerade as today's best"
+        );
     }
 }
