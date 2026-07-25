@@ -40,8 +40,8 @@ export default function InstrumentSelector() {
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Catalog is fetched from the Rust backend on mount. `null` means
-  // "still loading"; `[]` would mean "loaded but empty" which would be
-  // an error state — the backend panics rather than returning empty.
+  // "still loading". A missing/empty profiles dir arrives as a rejected
+  // invoke (#364), rendered by the catalog-error alert below.
   const [instruments, setInstruments] = useState<InstrumentInfo[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
 

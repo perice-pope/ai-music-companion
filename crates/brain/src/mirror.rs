@@ -149,25 +149,14 @@ pub fn derive_sound_profile(
         // The dominant concrete mode label carries the lookup (family leans
         // are too coarse for the curated table).
         dominant(&mode_labels).and_then(|label| {
-            crate::connections::curated_for(&label.to_lowercase()).map(|(_, exemplars)| {
+            crate::connections::curated_for(&label.to_lowercase()).and_then(|(_, exemplars)| {
                 let wants: Vec<String> = taste
                     .artists
                     .iter()
                     .chain(taste.genres.iter())
                     .map(|s| s.to_lowercase())
                     .collect();
-                let pick = exemplars
-                    .iter()
-                    .find(|e| {
-                        let c = e.connection.to_lowercase();
-                        wants.iter().any(|w| c.contains(w.as_str()))
-                    })
-                    .or_else(|| exemplars.first())
-                    .expect("curated rows are non-empty");
-                Comparison {
-                    label: format!("shades of {}", pick.connection),
-                    source: RevealSource::Grounded,
-                }
+                comparison_from(exemplars, &wants)
             })
         })
     } else {
@@ -182,6 +171,26 @@ pub fn derive_sound_profile(
         confidence,
         derived_at: now,
     })
+}
+
+/// Taste-preferred pick from a curated exemplar row. An empty row yields no
+/// comparison — this runs on the session-recap path, so a bad curated entry
+/// must degrade to silence, never crash the recap screen (#364).
+fn comparison_from(
+    exemplars: &[crate::connections::Exemplar],
+    wants: &[String],
+) -> Option<Comparison> {
+    exemplars
+        .iter()
+        .find(|e| {
+            let c = e.connection.to_lowercase();
+            wants.iter().any(|w| c.contains(w.as_str()))
+        })
+        .or_else(|| exemplars.first())
+        .map(|pick| Comparison {
+            label: format!("shades of {}", pick.connection),
+            source: RevealSource::Grounded,
+        })
 }
 
 /// Most frequent element (ties broken by first occurrence — deterministic).
@@ -282,6 +291,30 @@ mod tests {
         assert_eq!(p.feel, None);
         assert_eq!(p.confidence, 0.0);
         assert!(p.comparison.is_none(), "no evidence → no comparison, ever");
+    }
+
+    /// #364: an empty curated row yields no comparison instead of crashing.
+    /// This runs on the recap path — a bad content row must degrade to
+    /// silence, so any future `expect`/index on the pick would fail here.
+    #[test]
+    fn empty_curated_row_yields_no_comparison() {
+        assert_eq!(comparison_from(&[], &["santana".to_string()]), None);
+        assert_eq!(comparison_from(&[], &[]), None);
+    }
+
+    /// No taste intersection falls back to the row's FIRST exemplar (the
+    /// deterministic default the UI copy is written against), not to None.
+    #[test]
+    fn no_taste_match_falls_back_to_first_exemplar() {
+        let row = crate::connections::curated_for("dorian")
+            .expect("dorian is curated")
+            .1;
+        let pick = comparison_from(row, &["polka".to_string()]).expect("non-empty row must pick");
+        assert!(
+            pick.label.contains(row[0].connection),
+            "fallback must be the first exemplar, got {:?}",
+            pick.label
+        );
     }
 
     /// Mixed evidence lowers confidence below the comparison bar: half major /
