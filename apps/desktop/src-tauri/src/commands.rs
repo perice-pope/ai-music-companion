@@ -718,6 +718,12 @@ pub struct AppState {
     /// `list_instruments` command and by session-validation paths.
     /// Held behind Arc so clones into IPC responses are cheap.
     instruments: Arc<Vec<InstrumentInfo>>,
+    /// Why the catalog is empty, when it is (missing/unreadable `profiles/`
+    /// dir — e.g. a packaged build whose bundled resources are absent, the
+    /// scenario behind #112). Startup no longer panics over it (#364);
+    /// `list_instruments` returns this as its error so the selector screen
+    /// shows the reason instead of an unexplained empty grid.
+    catalog_error: Option<String>,
     /// Live mic → pitch-detector → `audio-event` pipeline. `Some` only
     /// between `start_practice_session` and `end_practice_session`;
     /// swapped in place by `switch_instrument`. Held in a separate
@@ -870,8 +876,8 @@ impl AppState {
     /// Resolves profiles via env override → workspace walk (see
     /// [`locate_profiles_dir`]). For a *packaged* build, prefer
     /// [`AppState::new_with_app_handle`], which also checks the bundled
-    /// resource directory — a bare `new()` in an installed app would fail
-    /// to find profiles and panic (the bug behind #112).
+    /// resource directory — a bare `new()` in an installed app finds no
+    /// profiles and degrades to the explained-empty selector (#112, #364).
     pub fn new() -> Self {
         Self::build(None)
     }
@@ -902,6 +908,16 @@ impl AppState {
         let coaching_available = coaching_svc.coaching_available();
         let recap_gen = LlmRecapGenerator::new();
 
+        // A missing catalog degrades to an explained-empty selector rather
+        // than a startup crash (#364) — same posture as `open_stores` above.
+        let (instruments, catalog_error) = match load_instrument_catalog(app_handle) {
+            Ok(list) => (list, None),
+            Err(e) => {
+                tracing::warn!(error = %e, "instrument catalog unavailable; selector will explain");
+                (Vec::new(), Some(e))
+            }
+        };
+
         let state = Self {
             active_session: Mutex::new(None),
             coaching_service: Arc::new(coaching_svc),
@@ -912,7 +928,8 @@ impl AppState {
             coaching_available,
             persistence_degraded: !persisted,
             omr_enabled: pdf_omr_enabled_from_env(),
-            instruments: Arc::new(load_instrument_catalog(app_handle)),
+            instruments: Arc::new(instruments),
+            catalog_error,
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -969,6 +986,7 @@ impl AppState {
             persistence_degraded: false,
             omr_enabled: false,
             instruments: Arc::new(test_instrument_catalog()),
+            catalog_error: None,
             audio_pipeline: Mutex::new(None),
             idiom_buffer: SharedIdiomBuffer::new(),
             phrase_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1481,9 +1499,23 @@ impl AppState {
         })
     }
 
-    /// Clone the full instrument catalog for an IPC response.
-    pub fn list_instruments(&self) -> Vec<InstrumentInfo> {
-        (*self.instruments).clone()
+    /// Clone the full instrument catalog for an IPC response, or the
+    /// startup load failure when there is one (#364) — the selector
+    /// screen renders the message where the grid would be.
+    pub fn list_instruments(&self) -> Result<Vec<InstrumentInfo>, String> {
+        if let Some(reason) = &self.catalog_error {
+            return Err(reason.clone());
+        }
+        // Structural guard, not just convention: an empty catalog must never
+        // reach the UI as `Ok([])` — the selector renders that as a silent
+        // empty grid, the exact no-feedback state the old panic existed to
+        // prevent. Holds even if the degraded-load wiring in `build` regresses.
+        if self.instruments.is_empty() {
+            return Err("no instrument profiles are loaded. Reinstalling the app \
+                 should restore them; set AI_MUSIC_COMPANION_PROFILES_DIR to override."
+                .to_string());
+        }
+        Ok((*self.instruments).clone())
     }
 
     /// Count of instruments in the catalog. Tests use this to assert
@@ -1675,27 +1707,35 @@ fn locate_profiles_dir(app_handle: Option<&tauri::AppHandle>) -> std::path::Path
 /// `app_handle` is `Some` for packaged builds (enables bundled-resource
 /// resolution) and `None` for dev/test (workspace walk).
 ///
-/// Panics with a clear message on failure — the app is unusable without
-/// instruments, and silent degradation to an empty catalog would leave
-/// the user staring at an empty selector with no feedback about why.
-fn load_instrument_catalog(app_handle: Option<&tauri::AppHandle>) -> Vec<InstrumentInfo> {
-    let dir = locate_profiles_dir(app_handle);
-    let profiles = ProfileLoader::load_all(&dir).unwrap_or_else(|e| {
-        panic!(
+/// Errors instead of panicking (#364): a packaged build with a missing or
+/// empty resource dir must reach the UI so the selector can explain why
+/// it's empty — a startup crash gives the user nothing to act on.
+fn load_instrument_catalog(
+    app_handle: Option<&tauri::AppHandle>,
+) -> Result<Vec<InstrumentInfo>, String> {
+    load_catalog_from(&locate_profiles_dir(app_handle))
+}
+
+/// Directory-explicit body of [`load_instrument_catalog`] — the seam the
+/// error-path tests use, since the env-var override in `locate_profiles_dir`
+/// is process-global and can't be varied safely across parallel tests.
+fn load_catalog_from(dir: &std::path::Path) -> Result<Vec<InstrumentInfo>, String> {
+    let profiles = ProfileLoader::load_all(dir).map_err(|e| {
+        format!(
             "failed to load instrument profiles from {}: {}. \
              Set AI_MUSIC_COMPANION_PROFILES_DIR to override the location.",
             dir.display(),
             e
         )
-    });
+    })?;
     if profiles.is_empty() {
-        panic!(
+        return Err(format!(
             "no instrument profiles found in {}. Check that the profiles/ \
              directory is populated; set AI_MUSIC_COMPANION_PROFILES_DIR to override.",
             dir.display()
-        );
+        ));
     }
-    profiles.iter().map(profile_to_info).collect()
+    Ok(profiles.iter().map(profile_to_info).collect())
 }
 
 /// Deterministic catalog used by `AppState::with_mocks` so tests don't
@@ -2221,8 +2261,9 @@ pub async fn end_practice_session_impl(state: &AppState) -> Result<SessionRecap,
 
 /// Pure implementation of `list_instruments`. Returns a clone of the
 /// catalog cached on `AppState` — catalog loading happens once in
-/// `AppState::new` and is shared across IPC calls.
-pub fn list_instruments_impl(state: &AppState) -> Vec<InstrumentInfo> {
+/// `AppState::new` and is shared across IPC calls. Errs with the load
+/// failure when startup found no usable `profiles/` dir (#364).
+pub fn list_instruments_impl(state: &AppState) -> Result<Vec<InstrumentInfo>, String> {
     state.list_instruments()
 }
 
@@ -4906,7 +4947,7 @@ pub fn end_lesson(state: State<'_, AppState>) -> Result<(), String> {
 /// Return the instrument catalog for the selector grid.
 #[tauri::command]
 pub fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentInfo>, String> {
-    Ok(list_instruments_impl(state.inner()))
+    list_instruments_impl(state.inner())
 }
 
 /// Check app capabilities (coaching availability, etc.).
@@ -7757,7 +7798,7 @@ mod tests {
     #[test]
     fn list_instruments_returns_expected_catalog() {
         let s = state();
-        let list = list_instruments_impl(&s);
+        let list = list_instruments_impl(&s).expect("healthy state must list the catalog");
         assert_eq!(
             list.len(),
             s.instrument_count(),
@@ -7796,7 +7837,7 @@ mod tests {
         // CARGO_MANIFEST_DIR is apps/desktop/src-tauri — workspace root
         // is three hops up, matching the locate_profiles_dir() default.
         // `None` handle → workspace-walk resolution (the dev/test path).
-        let loaded = load_instrument_catalog(None);
+        let loaded = load_instrument_catalog(None).expect("workspace profiles/ must load");
         assert!(
             !loaded.is_empty(),
             "load_instrument_catalog must return every profile in profiles/"
@@ -7813,6 +7854,72 @@ mod tests {
         assert!(
             loaded.iter().any(|i| !i.emoji.is_empty()),
             "at least one profile should ship with a non-empty emoji"
+        );
+    }
+
+    /// #364 AC: a missing profiles dir (the packaged-build failure of #112)
+    /// is an `Err` naming the directory it tried — never a panic. The
+    /// message is what the selector screen shows, so it must say where the
+    /// app looked and how to override.
+    #[test]
+    fn catalog_load_errors_on_missing_dir() {
+        let dir = std::path::Path::new("/nonexistent/amc-profiles-364");
+        let err = load_catalog_from(dir).expect_err("missing dir must be an error, not a panic");
+        assert!(
+            err.contains("/nonexistent/amc-profiles-364"),
+            "error must name the directory it tried: {err}"
+        );
+        assert!(
+            err.contains("AI_MUSIC_COMPANION_PROFILES_DIR"),
+            "error must mention the override hook: {err}"
+        );
+    }
+
+    /// #364 AC: a present-but-empty profiles dir is also an `Err` (an empty
+    /// selector grid with no explanation was the exact failure the old
+    /// panic guarded against — the guard survives, the crash doesn't).
+    #[test]
+    fn catalog_load_errors_on_empty_dir() {
+        let dir = std::env::temp_dir().join(format!("amc-empty-profiles-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir must be creatable");
+        let result = load_catalog_from(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        let err = result.expect_err("empty dir must be an error, not a panic");
+        assert!(
+            err.contains("no instrument profiles found"),
+            "error must say the dir was empty: {err}"
+        );
+    }
+
+    /// #364 AC: when startup degraded (catalog missing), `list_instruments`
+    /// surfaces the stored reason as its IPC error — the selector's
+    /// existing catch renders it, so the user sees why the grid is empty.
+    #[test]
+    fn list_instruments_surfaces_catalog_error() {
+        let mut s = AppState::with_mocks();
+        s.instruments = Arc::new(Vec::new());
+        s.catalog_error = Some("failed to load instrument profiles from /bundle/profiles".into());
+        let err = list_instruments_impl(&s).expect_err("degraded catalog must err");
+        assert!(
+            err.contains("/bundle/profiles"),
+            "IPC error must carry the load failure verbatim: {err}"
+        );
+    }
+
+    /// #364 structural guard: an empty catalog errs even when no load
+    /// failure was recorded. `Ok([])` renders as a silent empty grid — the
+    /// exact no-feedback state the old startup panic existed to prevent —
+    /// so it must be unreachable regardless of how the state got here
+    /// (e.g. a future regression in `build`'s degraded-load wiring).
+    #[test]
+    fn empty_catalog_errs_even_without_recorded_failure() {
+        let mut s = AppState::with_mocks();
+        s.instruments = Arc::new(Vec::new());
+        s.catalog_error = None;
+        let err = list_instruments_impl(&s).expect_err("empty catalog must never be Ok([])");
+        assert!(
+            err.contains("no instrument profiles are loaded"),
+            "error must explain the empty grid: {err}"
         );
     }
 

@@ -398,6 +398,38 @@ mod tests {
         assert!(reveal_for(&ctx(0, "Bebop Super Locrian", 0.99), 0).is_none());
     }
 
+    /// #364 data invariant: every curated mode key carries at least one
+    /// exemplar. Downstream pickers (mirror's comparison, `reveal_for`)
+    /// degrade gracefully on an empty row, but an empty row is still a
+    /// content bug — it silently mutes a mode's reveals. Keep this list in
+    /// sync with the `curated_for` match arms.
+    #[test]
+    fn every_curated_row_is_non_empty() {
+        for key in [
+            "major",
+            "ionian",
+            "minor",
+            "aeolian",
+            "dorian",
+            "phrygian",
+            "lydian",
+            "mixolydian",
+            "locrian",
+            "harmonic minor",
+            "melodic minor",
+            "major pentatonic",
+            "minor pentatonic",
+            "blues",
+        ] {
+            let (display, exemplars) =
+                curated_for(key).unwrap_or_else(|| panic!("{key} must stay curated"));
+            assert!(
+                !exemplars.is_empty(),
+                "curated row {key:?} ({display}) has no exemplars"
+            );
+        }
+    }
+
     /// AC6: selection is deterministic for a fixed `(ctx, seed)`, and the seed
     /// actually rotates exemplars (Dorian has two). Fails if selection became
     /// non-deterministic or stopped using the seed.
