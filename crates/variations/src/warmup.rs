@@ -100,6 +100,10 @@ const PLAYED_SLACK: f32 = 1.5;
 /// always in `0.0..=1.0`. Order-preserving longest-common-subsequence on
 /// pitch CLASS — octave-agnostic for the same reason drill scoring is: a
 /// voice warms up the right scale degrees wherever its range sits.
+///
+/// Cost is O(target × played) in time and memory: fine for a warmup's
+/// ≤ ~15-note target, but the caller (S3's command layer) owns bounding
+/// `played_midi` to session scale before handing it over.
 pub fn score_warmup(target_midi: &[u8], played_midi: &[u8]) -> f32 {
     let n = target_midi.len();
     let m = played_midi.len();
@@ -143,19 +147,30 @@ mod tests {
             generate(&a.spec, a.seed),
             "the challenge IS the F1 deal for its own (spec, seed)"
         );
+        // Golden pin (review r1): CROSS-version replay. Within-process
+        // equality above can't catch an algorithm drift that changes what
+        // every stored seed throws — this crate's stored-seed discipline
+        // demands the draw itself stay bit-stable.
+        assert_eq!(a.spec.roots, vec![61], "seed 42 draws C#4 — pinned");
+        assert_eq!(
+            a.spec.scale.map(|s| s.scale),
+            Some(ScaleType::Mixolydian),
+            "seed 42 draws Mixolydian — pinned"
+        );
     }
 
     /// #257 AC7 (variety half): different seeds can land different keys AND
     /// different scales, every draw stays on the advertised wheels (12
     /// chromatic roots from C4 × WARMUP_SCALES), and each throw is a single
     /// root — the roulette throws ONE key a day, not the 12-key row.
-    /// Fails if a draw index is biased off-wheel or the modulus wraps roots
-    /// out of range.
+    /// Fails if a draw index is biased off-wheel, the modulus wraps roots
+    /// out of range, or — the review-r1 mutant — the two draws are
+    /// CORRELATED (e.g. both from the same scramble step), which covers
+    /// each wheel alone yet deals only 12 of the 72 (key, scale) pairs.
     #[test]
     fn roulette_draws_vary_and_stay_on_the_wheels() {
-        let mut roots = std::collections::BTreeSet::new();
-        let mut scales = std::collections::BTreeSet::new();
-        for seed in 0..200u64 {
+        let mut pairs = std::collections::BTreeSet::new();
+        for seed in 0..1000u64 {
             let c = roulette(seed);
             assert_eq!(c.spec.roots.len(), 1, "one key per daily throw");
             let root = c.spec.roots[0];
@@ -168,16 +183,15 @@ mod tests {
                 WARMUP_SCALES.contains(&scale),
                 "{scale:?} is not on the warmup wheel"
             );
-            roots.insert(root);
-            scales.insert(format!("{scale:?}"));
+            pairs.insert((root, format!("{scale:?}")));
         }
-        // 200 seeds cover both small wheels completely — anything less means
-        // a draw is stuck (e.g. both indices derived from the same bits).
-        assert_eq!(roots.len(), 12, "every key must be reachable: {roots:?}");
+        // 1000 seeds deal every (key, scale) combination — anything less
+        // means a draw is stuck or the two draws share bits.
         assert_eq!(
-            scales.len(),
-            WARMUP_SCALES.len(),
-            "every scale must be reachable: {scales:?}"
+            pairs.len(),
+            12 * WARMUP_SCALES.len(),
+            "every (key, scale) pair must be reachable, got {}",
+            pairs.len()
         );
     }
 
@@ -193,9 +207,11 @@ mod tests {
             "label {:?} must name {scale_label}",
             c.sequence.label
         );
+        // The trailing space blocks the prefix trap: a C draw mislabeled
+        // "C# …" must not pass a bare starts_with("C").
         let root_name = theory::pitch_class_name(c.spec.roots[0] % 12);
         assert!(
-            c.sequence.label.starts_with(root_name),
+            c.sequence.label.starts_with(&format!("{root_name} ")),
             "label {:?} must lead with the key {root_name}",
             c.sequence.label
         );
