@@ -1104,6 +1104,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
         // theory-grounded flavour (#209) read from the same measured signal.
         let fingerprint = build_fingerprint(&input.phrases);
         let flavour = theory_flavour(&fingerprint);
+        let intonation_display = fingerprint.intonation.as_ref().map(intonation_display_line);
+        let groove_display = fingerprint.groove.as_ref().map(groove_display_line);
 
         let recap = SessionRecap {
             score_summary: input
@@ -1148,6 +1150,8 @@ All text should be written as a teacher would speak — warm, specific, and acti
             phrase_count: input.phrases.len(),
             instrument: input.instrument.clone(),
             fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
+            intonation_display,
+            groove_display,
             // Theory-grounded flavour from mode + swing (#209), shared with the
             // offline path. Hedged, and `None` when there's no clear signal.
             flavour,
@@ -1411,6 +1415,10 @@ pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
         duration_secs: input.duration_secs,
         phrase_count,
         instrument: input.instrument.clone(),
+        // The surface renders whatever rows the fingerprint carries, even on
+        // a thin session — so the ready-to-show lines ride along too (#366).
+        intonation_display: fingerprint.intonation.as_ref().map(intonation_display_line),
+        groove_display: fingerprint.groove.as_ref().map(groove_display_line),
         fingerprint: if fingerprint.is_empty() {
             None
         } else {
@@ -1706,6 +1714,8 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         duration_secs: input.duration_secs,
         phrase_count,
         instrument: input.instrument.clone(),
+        intonation_display: fingerprint.intonation.as_ref().map(intonation_display_line),
+        groove_display: fingerprint.groove.as_ref().map(groove_display_line),
         // Persist the measured fingerprint instead of throwing it away —
         // `None` only when nothing cleared a gate, so "nothing measured" stays
         // distinct from "some dimensions measured".
@@ -1738,39 +1748,73 @@ fn describe_tone(t: &tone::ToneDescriptor) -> String {
 /// single most out-of-tune scale degree) so it can phrase them warmly without
 /// inventing any figures.
 fn describe_intonation(s: &theory::IntonationSummary) -> String {
-    let direction = if s.mean_cents > 1.0 {
-        "tends sharp"
-    } else if s.mean_cents < -1.0 {
-        "tends flat"
-    } else {
-        "centered"
-    };
     let mut line = format!(
-        "mean {:+.0} cents ({direction}), {:.0}% within tolerance over {} notes",
+        "mean {:+.0} cents ({}), {:.0}% within tolerance over {} notes",
         s.mean_cents,
+        intonation_direction(s.mean_cents),
         s.in_tune_ratio * 100.0,
         s.note_count
     );
-    // Surface the single worst degree, when we have per-degree tendencies — a
-    // concrete, teacher-style observation ("the 3rd ran sharp").
-    if let Some(worst) = s
-        .tendencies
+    if let Some(worst) = worst_tuned_degree(s) {
+        line.push_str(&format!(
+            "; the {} ran {:+.0} cents ({})",
+            degree_name(worst.semitones_from_tonic),
+            worst.mean_cents,
+            sharp_or_flat(worst.mean_cents),
+        ));
+    }
+    line
+}
+
+/// Overall sharp/flat/centered read of a session's mean cents. The ±1¢
+/// cutoff is a product decision (#366): it lives here so the recap surface
+/// and the LLM prompt can never disagree about when drift is worth naming.
+fn intonation_direction(mean_cents: f32) -> &'static str {
+    if mean_cents > 1.0 {
+        "tends sharp"
+    } else if mean_cents < -1.0 {
+        "tends flat"
+    } else {
+        "centered"
+    }
+}
+
+fn sharp_or_flat(cents: f32) -> &'static str {
+    if cents >= 0.0 {
+        "sharp"
+    } else {
+        "flat"
+    }
+}
+
+/// The single most out-of-tune degree worth naming as a teacher-style
+/// observation ("the 3rd ran sharp"): observed at least twice and at least
+/// 5¢ off on average — below either bar a "worst" degree is noise, not a
+/// tendency (#366).
+fn worst_tuned_degree(s: &theory::IntonationSummary) -> Option<&theory::DegreeTendency> {
+    s.tendencies
         .iter()
         .filter(|t| t.count >= 2)
         .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-    {
-        if worst.mean_cents.abs() >= 5.0 {
-            let degree = degree_name(worst.semitones_from_tonic);
-            let dir = if worst.mean_cents >= 0.0 {
-                "sharp"
-            } else {
-                "flat"
-            };
-            line.push_str(&format!(
-                "; the {degree} ran {:+.0} cents ({dir})",
-                worst.mean_cents
-            ));
-        }
+        .filter(|worst| worst.mean_cents.abs() >= 5.0)
+}
+
+/// Ready-to-show "Intonation:" line for the recap surface — the same buckets
+/// as the prompt line, phrased for the student ("% in tune", no note count).
+pub fn intonation_display_line(s: &theory::IntonationSummary) -> String {
+    let mut line = format!(
+        "mean {:+.0} cents ({}), {:.0}% in tune",
+        s.mean_cents,
+        intonation_direction(s.mean_cents),
+        s.in_tune_ratio * 100.0,
+    );
+    if let Some(worst) = worst_tuned_degree(s) {
+        line.push_str(&format!(
+            "; the {} ran {:+.0} cents ({})",
+            degree_name(worst.semitones_from_tonic),
+            worst.mean_cents,
+            sharp_or_flat(worst.mean_cents),
+        ));
     }
     line
 }
@@ -1799,27 +1843,50 @@ fn degree_name(semitones_from_tonic: u8) -> &'static str {
 /// Only the computed facts are surfaced — tempo, swing ratio, and a plain-word
 /// steadiness read derived from `timing_consistency`.
 fn describe_groove(g: &groove::GrooveDescriptor) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(bpm) = g.tempo_bpm {
-        parts.push(format!("~{:.0} BPM", bpm));
+    let mut parts = groove_read_parts(g);
+    parts.push(format!("{} onsets", g.onset_count));
+    parts.join(", ")
+}
+
+/// Swing read for a groove line: ratios ≥ 1.25 read as swung, below as
+/// straight. Distinct from `theory_flavour`'s stricter `SWING_MIN` bar,
+/// which decides whether swing can ground a flavour *claim*.
+fn swing_feel(swing_ratio: f32) -> String {
+    if swing_ratio >= 1.25 {
+        format!("swung ~{swing_ratio:.1}:1")
+    } else {
+        "straight feel".to_owned()
     }
-    if let Some(swing) = g.swing_ratio {
-        if swing >= 1.25 {
-            parts.push(format!("swung ~{swing:.1}:1"));
-        } else {
-            parts.push("straight feel".to_owned());
-        }
-    }
-    let steadiness = if g.timing_consistency >= 0.9 {
+}
+
+/// Plain-word steadiness read of `timing_consistency`. The 0.9/0.7 buckets
+/// are a product decision (#366) — single-sourced here for prompt and recap.
+fn steadiness_word(timing_consistency: f32) -> &'static str {
+    if timing_consistency >= 0.9 {
         "steady"
-    } else if g.timing_consistency >= 0.7 {
+    } else if timing_consistency >= 0.7 {
         "mostly steady"
     } else {
         "uneven"
-    };
-    parts.push(steadiness.to_owned());
-    parts.push(format!("{} onsets", g.onset_count));
-    parts.join(", ")
+    }
+}
+
+fn groove_read_parts(g: &groove::GrooveDescriptor) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(bpm) = g.tempo_bpm {
+        parts.push(format!("~{bpm:.0} BPM"));
+    }
+    if let Some(swing) = g.swing_ratio {
+        parts.push(swing_feel(swing));
+    }
+    parts.push(steadiness_word(g.timing_consistency).to_owned());
+    parts
+}
+
+/// Ready-to-show "Feel:" line for the recap surface — the prompt line minus
+/// the onset count (an internal evidence figure, not student-facing).
+pub fn groove_display_line(g: &groove::GrooveDescriptor) -> String {
+    groove_read_parts(g).join(", ")
 }
 
 /// Render the student's stated [`TasteProfile`] as a labelled context block for
@@ -5869,5 +5936,236 @@ mod tests {
             CoachingEngine::build_recap_user_prompt(&detuned_session_input("trumpet", "Brass"));
         assert!(trumpet.contains("- Intonation:"));
         assert!(!trumpet.contains("NOT player-controllable"));
+    }
+
+    // ── #366: recap display lines — buckets single-sourced in the core ──────
+
+    fn intonation_summary_of(
+        mean_cents: f32,
+        in_tune_ratio: f32,
+        tendencies: Vec<theory::DegreeTendency>,
+    ) -> theory::IntonationSummary {
+        theory::IntonationSummary {
+            note_count: 24,
+            mean_cents,
+            mean_abs_cents: mean_cents.abs(),
+            in_tune_ratio,
+            tendencies,
+        }
+    }
+
+    fn tendency_of(
+        semitones_from_tonic: u8,
+        mean_cents: f32,
+        count: u32,
+    ) -> theory::DegreeTendency {
+        theory::DegreeTendency {
+            semitones_from_tonic,
+            mean_cents,
+            count,
+        }
+    }
+
+    fn groove_of(
+        tempo_bpm: Option<f32>,
+        swing_ratio: Option<f32>,
+        timing_consistency: f32,
+    ) -> groove::GrooveDescriptor {
+        groove::GrooveDescriptor {
+            tempo_bpm,
+            swing_ratio,
+            mean_ioi_secs: 0.4,
+            timing_consistency,
+            onset_count: 40,
+        }
+    }
+
+    /// #366 — the ±1¢ direction cutoff and the exact student-facing wording.
+    /// Fails if the cutoff moves, the wording drifts, or the percentage
+    /// stops being the in-tune ratio.
+    #[test]
+    fn intonation_display_line_buckets_direction_at_one_cent() {
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(8.4, 0.75, vec![])),
+            "mean +8 cents (tends sharp), 75% in tune"
+        );
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(-6.0, 0.6, vec![])),
+            "mean -6 cents (tends flat), 60% in tune"
+        );
+        // The boundaries themselves stay centered — only strictly beyond
+        // ±1¢ earns a direction claim.
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(1.0, 0.9, vec![])),
+            "mean +1 cents (centered), 90% in tune"
+        );
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(-1.0, 0.9, vec![])),
+            "mean -1 cents (centered), 90% in tune"
+        );
+    }
+
+    /// #366 — the worst-degree bar: at least 2 observations AND ≥5¢ mean
+    /// error; the largest |mean_cents| wins and is named with its own
+    /// sharp/flat read.
+    #[test]
+    fn intonation_display_line_names_only_a_real_worst_degree() {
+        let one_observation = intonation_summary_of(8.0, 0.75, vec![tendency_of(4, 40.0, 1)]);
+        assert_eq!(
+            intonation_display_line(&one_observation),
+            "mean +8 cents (tends sharp), 75% in tune",
+            "one observation is noise, not a tendency"
+        );
+        let sub_five_cents = intonation_summary_of(8.0, 0.75, vec![tendency_of(4, 4.9, 6)]);
+        assert_eq!(
+            intonation_display_line(&sub_five_cents),
+            "mean +8 cents (tends sharp), 75% in tune",
+            "a sub-5¢ tendency is not worth naming"
+        );
+        let contested = intonation_summary_of(
+            8.0,
+            0.75,
+            vec![tendency_of(2, 6.0, 3), tendency_of(10, -18.0, 4)],
+        );
+        assert_eq!(
+            intonation_display_line(&contested),
+            "mean +8 cents (tends sharp), 75% in tune; the minor 7th ran -18 cents (flat)"
+        );
+    }
+
+    /// #366 — tempo/swing/steadiness reads, exact wording, and the parts
+    /// that drop out when unmeasured.
+    #[test]
+    fn groove_display_line_reads_tempo_swing_and_steadiness() {
+        assert_eq!(
+            groove_display_line(&groove_of(Some(92.4), Some(1.6), 0.95)),
+            "~92 BPM, swung ~1.6:1, steady"
+        );
+        assert_eq!(
+            groove_display_line(&groove_of(None, Some(1.1), 0.8)),
+            "straight feel, mostly steady"
+        );
+        assert_eq!(groove_display_line(&groove_of(None, None, 0.5)), "uneven");
+    }
+
+    /// #366 — bucket boundaries: swing splits at 1.25 (inclusive on swung),
+    /// steadiness at 0.9 / 0.7 (inclusive upward).
+    #[test]
+    fn groove_display_line_bucket_boundaries() {
+        assert!(
+            groove_display_line(&groove_of(None, Some(1.25), 0.95)).starts_with("swung ~"),
+            "1.25 already reads swung"
+        );
+        assert!(
+            groove_display_line(&groove_of(None, Some(1.24), 0.95)).starts_with("straight feel"),
+            "just under 1.25 reads straight"
+        );
+        assert_eq!(groove_display_line(&groove_of(None, None, 0.9)), "steady");
+        assert_eq!(
+            groove_display_line(&groove_of(None, None, 0.89)),
+            "mostly steady"
+        );
+        assert_eq!(
+            groove_display_line(&groove_of(None, None, 0.7)),
+            "mostly steady"
+        );
+        assert_eq!(groove_display_line(&groove_of(None, None, 0.69)), "uneven");
+    }
+
+    /// #366 — the offline path ships ready-to-show lines that are the core's
+    /// own read of the very summaries the recap carries; the frontend
+    /// renders them verbatim and re-derives nothing. Fails if a construction
+    /// site drops the fields or wires a different dimension into them.
+    #[test]
+    fn offline_recap_ships_display_lines_matching_its_fingerprint() {
+        let input = offline_input(settled_phrases(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            4.0,
+        ));
+        let recap = grounded_offline_recap(&input);
+        let fp = recap.fingerprint.as_ref().expect("dimensions measured");
+        let intonation = fp.intonation.as_ref().expect("intonation measured");
+        let groove = fp.groove.as_ref().expect("groove measured");
+        assert_eq!(
+            recap.intonation_display,
+            Some(intonation_display_line(intonation))
+        );
+        assert_eq!(recap.groove_display, Some(groove_display_line(groove)));
+        let line = recap.intonation_display.as_deref().unwrap();
+        assert!(line.contains("% in tune"), "student wording, got: {line}");
+        assert!(
+            !line.contains("within tolerance"),
+            "prompt wording must not leak, got: {line}"
+        );
+    }
+
+    /// #366 — a thin session still ships the lines for whatever cleared a
+    /// gate (measured truth is never suppressed), and a session with nothing
+    /// measured ships neither.
+    #[test]
+    fn thin_and_empty_recaps_gate_display_lines_on_measurement() {
+        // One 7s phrase → the thin path; 12 pitches clear the intonation
+        // gate (MIN_NOTES) and 8 onsets clear the groove gate (MIN_ONSETS).
+        let mut p = phrase_from(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        );
+        p.duration_secs = 7.0;
+        let input = offline_input(vec![p]);
+        assert!(is_thin_session(&input), "one phrase is the thin path");
+        let thin = grounded_offline_recap(&input);
+        let fp = thin.fingerprint.as_ref().expect("dimensions measured");
+        let intonation = fp.intonation.as_ref().expect("intonation measured");
+        let groove = fp.groove.as_ref().expect("groove measured");
+        assert_eq!(
+            thin.intonation_display,
+            Some(intonation_display_line(intonation))
+        );
+        assert_eq!(thin.groove_display, Some(groove_display_line(groove)));
+
+        // No phrases → nothing measured → no lines.
+        let empty = grounded_offline_recap(&offline_input(Vec::new()));
+        assert!(empty.fingerprint.is_none());
+        assert_eq!(empty.intonation_display, None);
+        assert_eq!(empty.groove_display, None);
+    }
+
+    /// #366 — the LLM path ships the same lines, built from the measured
+    /// fingerprint alongside the model's prose — never left to the frontend.
+    #[tokio::test]
+    async fn llm_recap_ships_display_lines_matching_its_fingerprint() {
+        let mock = MockHttpClient::succeeding(&mock_anthropic_response());
+        let engine = online_engine(
+            CoachingConfig {
+                api_key: "test".to_owned(),
+                model: "claude-opus-4-8".to_owned(),
+                rate_limit_secs: 0.0,
+            },
+            Box::new(mock),
+        );
+        let input = offline_input(settled_phrases(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            4.0,
+        ));
+        let recap = engine.generate_recap(&input).await.unwrap();
+        let fp = recap.fingerprint.as_ref().expect("dimensions measured");
+        let intonation = fp.intonation.as_ref().expect("intonation measured");
+        let groove = fp.groove.as_ref().expect("groove measured");
+        assert_eq!(
+            recap.intonation_display,
+            Some(intonation_display_line(intonation))
+        );
+        assert_eq!(recap.groove_display, Some(groove_display_line(groove)));
     }
 }

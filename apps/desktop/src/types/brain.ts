@@ -508,6 +508,19 @@ export interface SessionRecap {
    */
   fingerprint?: MusicalFingerprint | null;
   /**
+   * Ready-to-show "Intonation:" line, built in Rust (#366): the sharp/flat
+   * cutoff and the worst-degree bar are core product decisions, so the
+   * frontend renders this verbatim and derives nothing from the raw
+   * {@link IntonationSummary}. Absent/`null` whenever the intonation gate
+   * failed (and on recaps persisted before the field existed).
+   */
+  intonation_display?: string | null;
+  /**
+   * Ready-to-show "Feel:" line (tempo, swing, steadiness), built in Rust
+   * (#366) — same contract as {@link intonation_display}, for the groove.
+   */
+  groove_display?: string | null;
+  /**
    * Score-practice summary (#337 S4): honest accuracy over the notes the
    * follower judged and the measures that most need work. Absent for
    * free-play sessions or when nothing was judged.

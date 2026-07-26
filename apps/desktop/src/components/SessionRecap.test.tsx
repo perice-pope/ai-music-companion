@@ -363,12 +363,42 @@ describe("SessionRecap", () => {
     expect(screen.queryByTestId("recap-key-unsettled")).toBeNull();
   });
 
-  it("shows the intonation read-out only when the recap carries one", () => {
+  it("renders the Rust-built intonation line verbatim, only when present", () => {
     seedRecap(fullRecap());
     const { rerender } = render(<SessionRecap />);
-    // No fingerprint → no intonation line.
+    // No line from the core → no intonation row.
     expect(screen.queryByTestId("recap-intonation")).toBeNull();
 
+    seedRecap(
+      fullRecap({
+        intonation_display:
+          "mean +8 cents (tends sharp), 75% in tune; the major 3rd ran +14 cents (sharp)",
+      }),
+    );
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-intonation").textContent).toBe(
+      "Intonation: mean +8 cents (tends sharp), 75% in tune; the major 3rd ran +14 cents (sharp)",
+    );
+  });
+
+  it("renders the Rust-built feel line verbatim, only when present", () => {
+    seedRecap(fullRecap());
+    const { rerender } = render(<SessionRecap />);
+    // No line from the core → no feel row.
+    expect(screen.queryByTestId("recap-groove")).toBeNull();
+
+    seedRecap(fullRecap({ groove_display: "~92 BPM, swung ~1.6:1, steady" }));
+    rerender(<SessionRecap />);
+    expect(screen.getByTestId("recap-groove").textContent).toBe(
+      "Feel: ~92 BPM, swung ~1.6:1, steady",
+    );
+  });
+
+  it("never re-derives intonation/feel lines from raw fingerprint numbers (#366)", () => {
+    // A recap carrying raw summaries but no display lines stays silent on
+    // both rows: the buckets (sharp/flat cutoff, worst-degree bar, swing and
+    // steadiness thresholds) are the Rust core's product decisions, and this
+    // fails if frontend threshold math ever comes back.
     seedRecap(
       fullRecap({
         fingerprint: {
@@ -379,24 +409,6 @@ describe("SessionRecap", () => {
             in_tune_ratio: 0.75,
             tendencies: [{ semitones_from_tonic: 4, mean_cents: 14, count: 6 }],
           },
-        },
-      }),
-    );
-    rerender(<SessionRecap />);
-    const line = screen.getByTestId("recap-intonation").textContent ?? "";
-    expect(line).toContain("tends sharp");
-    expect(line).toContain("major 3rd");
-  });
-
-  it("shows the groove read-out only when the recap carries one", () => {
-    seedRecap(fullRecap());
-    const { rerender } = render(<SessionRecap />);
-    // No fingerprint → no feel line.
-    expect(screen.queryByTestId("recap-groove")).toBeNull();
-
-    seedRecap(
-      fullRecap({
-        fingerprint: {
           groove: {
             tempo_bpm: 92,
             swing_ratio: 1.6,
@@ -407,11 +419,9 @@ describe("SessionRecap", () => {
         },
       }),
     );
-    rerender(<SessionRecap />);
-    const line = screen.getByTestId("recap-groove").textContent ?? "";
-    expect(line).toContain("92 BPM");
-    expect(line).toContain("swung");
-    expect(line).toContain("steady");
+    render(<SessionRecap />);
+    expect(screen.queryByTestId("recap-intonation")).toBeNull();
+    expect(screen.queryByTestId("recap-groove")).toBeNull();
   });
 
   it("shows the theory-grounded flavour line only when the recap carries one", () => {

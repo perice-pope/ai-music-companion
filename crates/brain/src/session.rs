@@ -359,6 +359,19 @@ pub struct SessionRecap {
     /// load (defaulting to `None`).
     #[serde(default)]
     pub fingerprint: Option<MusicalFingerprint>,
+    /// Ready-to-show "Intonation:" line, built in Rust from the fingerprint's
+    /// intonation summary (#366): the sharp/flat cutoff and the worst-degree
+    /// bar are core product decisions, so the frontend renders this verbatim
+    /// and derives nothing from the raw summary. `None` whenever
+    /// `fingerprint.intonation` is — including recaps persisted before the
+    /// field existed (additive + `serde(default)`).
+    #[serde(default)]
+    pub intonation_display: Option<String>,
+    /// Ready-to-show "Feel:" line (tempo, swing, steadiness), built in Rust
+    /// (#366) — same contract as `intonation_display`, for
+    /// `fingerprint.groove`.
+    #[serde(default)]
+    pub groove_display: Option<String>,
     /// A short, **hedged** "flavour" line for the session, grounded in the two
     /// signals the app measures reliably — the key's **mode** and the groove's
     /// **swing ratio** (see [`crate::coaching::theory_flavour`]). `None` when
@@ -995,6 +1008,8 @@ mod tests {
             phrase_count: 0,
             instrument: "trumpet".to_owned(),
             fingerprint: None,
+            intonation_display: None,
+            groove_display: None,
             flavour: None,
             idiom_notes: Vec::new(),
             connections: Vec::new(),
