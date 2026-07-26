@@ -1454,7 +1454,7 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         if phrase_count == 1 { "" } else { "s" },
     );
     if let Some(s) = &fingerprint.intonation {
-        let centered = s.mean_cents.abs() <= 1.0;
+        let centered = intonation_direction(s.mean_cents) == "centered";
         if fixed_pitch {
             // #389: the player cannot alter this — mention only a clear
             // instrument-level tendency, phrased as the instrument.
@@ -1548,21 +1548,12 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                 s.in_tune_ratio * 100.0,
             ));
         }
-        if let Some(worst) = s
-            .tendencies
-            .iter()
-            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
-            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-        {
-            let degree = degree_name(worst.semitones_from_tonic);
-            let dir = if worst.mean_cents >= 0.0 {
-                "sharp"
-            } else {
-                "flat"
-            };
+        if let Some(worst) = worst_tuned_degree(s) {
             areas.push(format!(
-                "Your {degree} ran {:+.0} cents {dir} — worth a tuner check.",
+                "Your {} ran {:+.0} cents {} — worth a tuner check.",
+                degree_name(worst.semitones_from_tonic),
                 worst.mean_cents,
+                sharp_or_flat(worst.mean_cents),
             ));
         }
     }
@@ -1661,12 +1652,7 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                     if s.mean_cents > 0.0 { "sharp" } else { "flat" },
                 ));
             }
-        } else if let Some(worst) = s
-            .tendencies
-            .iter()
-            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
-            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-        {
+        } else if let Some(worst) = worst_tuned_degree(s) {
             suggestions.push(format!(
                 "Play a slow scale against a drone, listening for the {}.",
                 degree_name(worst.semitones_from_tonic),
@@ -1794,25 +1780,26 @@ fn sharp_or_flat(cents: f32) -> &'static str {
 fn worst_tuned_degree(s: &theory::IntonationSummary) -> Option<&theory::DegreeTendency> {
     s.tendencies
         .iter()
-        .filter(|t| t.count >= 2)
+        .filter(|t| t.mean_cents.is_finite() && t.count >= 2)
         .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
         .filter(|worst| worst.mean_cents.abs() >= 5.0)
 }
 
 /// Ready-to-show "Intonation:" line for the recap surface — the same buckets
 /// as the prompt line, phrased for the student ("% in tune", no note count).
+/// Cents round through `i32` so a near-zero mean can never render as "-0".
 pub fn intonation_display_line(s: &theory::IntonationSummary) -> String {
+    let mean = s.mean_cents.round() as i32;
     let mut line = format!(
-        "mean {:+.0} cents ({}), {:.0}% in tune",
-        s.mean_cents,
+        "mean {mean:+} cents ({}), {:.0}% in tune",
         intonation_direction(s.mean_cents),
         s.in_tune_ratio * 100.0,
     );
     if let Some(worst) = worst_tuned_degree(s) {
+        let cents = worst.mean_cents.round() as i32;
         line.push_str(&format!(
-            "; the {} ran {:+.0} cents ({})",
+            "; the {} ran {cents:+} cents ({})",
             degree_name(worst.semitones_from_tonic),
-            worst.mean_cents,
             sharp_or_flat(worst.mean_cents),
         ));
     }
@@ -6003,6 +5990,21 @@ mod tests {
             intonation_display_line(&intonation_summary_of(-1.0, 0.9, vec![])),
             "mean -1 cents (centered), 90% in tune"
         );
+        // …and just beyond ±1¢ the claim fires (direction reads the raw
+        // mean, before display rounding collapses it back to ±1).
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(1.1, 0.9, vec![])),
+            "mean +1 cents (tends sharp), 90% in tune"
+        );
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(-1.1, 0.9, vec![])),
+            "mean -1 cents (tends flat), 90% in tune"
+        );
+        // A slightly-flat mean rounds through i32 — never a "-0" display.
+        assert_eq!(
+            intonation_display_line(&intonation_summary_of(-0.4, 0.9, vec![])),
+            "mean +0 cents (centered), 90% in tune"
+        );
     }
 
     /// #366 — the worst-degree bar: at least 2 observations AND ≥5¢ mean
@@ -6030,6 +6032,13 @@ mod tests {
         assert_eq!(
             intonation_display_line(&contested),
             "mean +8 cents (tends sharp), 75% in tune; the minor 7th ran -18 cents (flat)"
+        );
+        // Both bars are inclusive: exactly 2 observations at exactly 5¢
+        // already earns the name.
+        let at_the_bar = intonation_summary_of(8.0, 0.75, vec![tendency_of(7, 5.0, 2)]);
+        assert_eq!(
+            intonation_display_line(&at_the_bar),
+            "mean +8 cents (tends sharp), 75% in tune; the 5th ran +5 cents (sharp)"
         );
     }
 
