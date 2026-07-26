@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useAudioStore, frequencyToNote } from "./audioStore";
+import { useAudioStore } from "./audioStore";
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -24,36 +24,6 @@ const localStorageMock = (() => {
 
 Object.defineProperty(window, "localStorage", { value: localStorageMock });
 
-describe("frequencyToNote", () => {
-  it("converts A4 (440 Hz) correctly", () => {
-    const note = frequencyToNote(440);
-    expect(note.name).toBe("A");
-    expect(note.octave).toBe(4);
-    expect(Math.abs(note.cents_deviation)).toBeLessThan(1);
-  });
-
-  it("converts middle C (261.63 Hz) correctly", () => {
-    const note = frequencyToNote(261.63);
-    expect(note.name).toBe("C");
-    expect(note.octave).toBe(4);
-    expect(Math.abs(note.cents_deviation)).toBeLessThan(2);
-  });
-
-  it("detects sharp pitch", () => {
-    // 450 Hz is sharper than A4 (440 Hz)
-    const note = frequencyToNote(450);
-    expect(note.name).toBe("A");
-    expect(note.cents_deviation).toBeGreaterThan(0);
-  });
-
-  it("detects flat pitch", () => {
-    // 430 Hz is flatter than A4 (440 Hz)
-    const note = frequencyToNote(430);
-    expect(note.name).toBe("A");
-    expect(note.cents_deviation).toBeLessThan(0);
-  });
-});
-
 describe("audioStore", () => {
   beforeEach(() => {
     localStorageMock.clear();
@@ -63,6 +33,7 @@ describe("audioStore", () => {
       currentNote: null,
       isListening: false,
       selectedInstrument: null,
+      instrumentVibratoToleranceCents: 15.0,
     });
   });
 
@@ -74,28 +45,58 @@ describe("audioStore", () => {
     expect(state.selectedInstrument).toBeNull();
   });
 
-  it("setEvent updates latestEvent and derives note", () => {
-    useAudioStore.getState().setEvent({
+  it("setEvent derives the note from Rust's note_info, never from TS math", () => {
+    // Rust is the sole authority on note naming (CLAUDE.md: no business
+    // logic in the frontend). This event's note_info deliberately
+    // DISAGREES with everything TS could re-derive it from: 440 Hz is
+    // A4 ±0¢ (kills pitch-based math), midi 70 maps to "A#"/octave 4
+    // through a sharp note table and floor(midi/12)-1 (kills a
+    // resurrected NOTE_NAMES lookup — "Bb" is not in a sharp table, and
+    // Rust owns enharmonic spelling). Any recomputation goes red here.
+    const event = {
       pitch_hz: 440,
       confidence: 0.95,
       amplitude: 0.8,
       timestamp_secs: 1.0,
+      is_onset: true,
+      note_info: {
+        midi_note: 70,
+        note_name: "Bb",
+        octave: 3,
+        cents_deviation: -12.5,
+      },
+    };
+    useAudioStore.getState().setEvent(event);
+
+    const state = useAudioStore.getState();
+    expect(state.latestEvent).toEqual(event);
+    expect(state.currentNote).toEqual({
+      name: "Bb",
+      octave: 3,
+      cents_deviation: -12.5,
+      frequency_hz: 440,
+    });
+  });
+
+  it("setEvent rounds frequency_hz to one decimal for display", () => {
+    useAudioStore.getState().setEvent({
+      pitch_hz: 261.6256,
+      confidence: 0.9,
+      amplitude: 0.5,
+      timestamp_secs: 1.5,
       is_onset: false,
       note_info: {
-        midi_note: 69,
-        note_name: "A",
+        midi_note: 60,
+        note_name: "C",
         octave: 4,
         cents_deviation: 0,
       },
     });
 
-    const state = useAudioStore.getState();
-    expect(state.latestEvent).not.toBeNull();
-    expect(state.currentNote?.name).toBe("A");
-    expect(state.currentNote?.octave).toBe(4);
+    expect(useAudioStore.getState().currentNote?.frequency_hz).toBe(261.6);
   });
 
-  it("setEvent with null pitch clears currentNote", () => {
+  it("setEvent with null pitch clears currentNote but keeps listening", () => {
     useAudioStore.getState().setEvent({
       pitch_hz: null,
       confidence: 0.0,
@@ -108,6 +109,41 @@ describe("audioStore", () => {
     const state = useAudioStore.getState();
     expect(state.latestEvent).not.toBeNull();
     expect(state.currentNote).toBeNull();
+    // The ears silence gate streams null-pitch events through every quiet
+    // moment of a live session; they still prove the pipeline is hot.
+    // Only session end (setListening(false)) may drop the flag.
+    expect(state.isListening).toBe(true);
+  });
+
+  it("setEvent needs BOTH pitch_hz and note_info before naming a note", () => {
+    // pitch_hz without note_info is legitimate (Rust omits note_info for
+    // out-of-MIDI-range frequencies); note_info without pitch_hz shouldn't
+    // happen. Either way the display contract is the same: no half-built
+    // note — a name with no frequency (or vice versa) must render nothing.
+    useAudioStore.getState().setEvent({
+      pitch_hz: null,
+      confidence: 0.4,
+      amplitude: 0.2,
+      timestamp_secs: 3.0,
+      is_onset: false,
+      note_info: {
+        midi_note: 69,
+        note_name: "A",
+        octave: 4,
+        cents_deviation: 0,
+      },
+    });
+    expect(useAudioStore.getState().currentNote).toBeNull();
+
+    useAudioStore.getState().setEvent({
+      pitch_hz: 440,
+      confidence: 0.4,
+      amplitude: 0.2,
+      timestamp_secs: 3.1,
+      is_onset: false,
+      note_info: null,
+    });
+    expect(useAudioStore.getState().currentNote).toBeNull();
   });
 
   it("setListening updates state", () => {
