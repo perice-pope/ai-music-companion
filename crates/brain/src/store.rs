@@ -1872,6 +1872,8 @@ mod tests {
             phrase_count,
             instrument: instrument.to_owned(),
             fingerprint: None,
+            intonation_display: None,
+            groove_display: None,
             flavour: None,
             idiom_notes: Vec::new(),
             connections: Vec::new(),
@@ -1966,6 +1968,9 @@ mod tests {
         assert!(legacy.fingerprint.is_none());
         // The same legacy blob predates `connections` too — defaults to empty.
         assert!(legacy.connections.is_empty());
+        // And the #366 ready-to-show lines — absent fields load as None.
+        assert!(legacy.intonation_display.is_none());
+        assert!(legacy.groove_display.is_none());
     }
 
     #[test]
@@ -2088,6 +2093,8 @@ mod tests {
             phrase_count: 17,
             instrument: "clarinet".to_owned(),
             fingerprint: None,
+            intonation_display: None,
+            groove_display: None,
             flavour: None,
             idiom_notes: Vec::new(),
             connections: Vec::new(),
