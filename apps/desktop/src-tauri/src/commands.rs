@@ -45,7 +45,7 @@ use brain::store::{
     ExerciseFactRow, ScoreLibraryEntry, ScoreStore, SessionStore, SessionSummary, StoredSession,
     TasteProfile, LOCAL_TASTE_PROFILE_USER_ID,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Offset, Utc};
 use ears::profile::{InstrumentProfile, ProfileLoader};
 
 use crate::audio_pipeline::{AudioPipeline, DetectorProfile, PipelineError, SharedIdiomBuffer};
@@ -3902,11 +3902,17 @@ fn local_day_from_instant(epoch_secs: i64, utc_offset_secs: i32) -> brain::learn
     brain::learner::LocalDay((epoch_secs + i64::from(utc_offset_secs)).div_euclid(SECS_PER_DAY))
 }
 
+/// The calendar day `now` falls in for its own timezone. Generic over the
+/// zone so the offset wiring is testable with a fixed offset — the runner's
+/// TZ (usually UTC, offset 0) can't exercise a sign or drop mutation.
+fn local_day_of<Tz: chrono::TimeZone>(now: &DateTime<Tz>) -> brain::learner::LocalDay {
+    local_day_from_instant(now.timestamp(), now.offset().fix().local_minus_utc())
+}
+
 /// The feature's single clock read (#257 spec §4): "now" becomes a `LocalDay`
 /// here at the IPC boundary, and the pure core only ever sees the ordinal.
 fn today_local_day() -> brain::learner::LocalDay {
-    let now = chrono::Local::now();
-    local_day_from_instant(now.timestamp(), now.offset().local_minus_utc())
+    local_day_of(&chrono::Local::now())
 }
 
 /// `completed_today` is a fact about `last_warmup`, not the streak tail: a
@@ -9627,6 +9633,50 @@ mod tests {
         assert_eq!(local_day_from_instant(-1, 0), LocalDay(-1));
     }
 
+    /// #257 S3: the wrapper wiring reads the offset off the instant itself —
+    /// deterministic under fixed offsets regardless of the runner's TZ (a UTC
+    /// runner, offset 0, cannot distinguish a dropped or sign-flipped offset).
+    /// The bracket check then pins `today_local_day` to the same calendar
+    /// arithmetic — it fails on a millis-for-seconds or UTC-only mutant.
+    #[test]
+    fn local_day_rides_the_instants_own_offset() {
+        use brain::learner::LocalDay;
+        use chrono::TimeZone;
+        // 1970-01-01 23:30 UTC: next day in Tokyo, same day in UTC…
+        let late_evening = 23 * 3600 + 30 * 60;
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(
+            local_day_of(&tokyo.timestamp_opt(late_evening, 0).unwrap()),
+            LocalDay(1)
+        );
+        assert_eq!(
+            local_day_of(&chrono::Utc.timestamp_opt(late_evening, 0).unwrap()),
+            LocalDay(0)
+        );
+        // …and 00:30 UTC is still yesterday in New York.
+        let new_york = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(
+            local_day_of(&new_york.timestamp_opt(30 * 60, 0).unwrap()),
+            LocalDay(-1)
+        );
+
+        // `today_local_day` agrees with chrono's own local calendar; sampled
+        // twice in case the test straddles local midnight.
+        let calendar_day = || {
+            chrono::Local::now()
+                .date_naive()
+                .signed_duration_since(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+                .num_days()
+        };
+        let before = calendar_day();
+        let got = today_local_day().0;
+        let after = calendar_day();
+        assert!(
+            got == before || got == after,
+            "today_local_day says {got}, local calendar says {before}..={after}"
+        );
+    }
+
     /// #257 S3: the DTO the score view renders is exactly the deal for its
     /// echoed seed — label and target match `roulette(seed)` — so a later
     /// `complete_daily_warmup(seed, …)` grades against the very target the
@@ -9737,16 +9787,62 @@ mod tests {
         assert_eq!(model.last_warmup.unwrap().score, 0.0);
     }
 
-    /// #257 S3: a runaway IPC payload (far beyond any honest ~60 s warmup)
-    /// completes calmly — bounded before the O(target × played) grader, it
-    /// still counts as showing up, and the precision cap grades it near zero
-    /// rather than crediting a wall of notes. Fails if the bound slices the
-    /// target instead of the take, or if noodling volume can buy a grade.
+    /// #257 spec §4: `completed_today` derives from `last_warmup.day`, NOT
+    /// the streak tail. The two legitimately diverge (a sync-merged blob can
+    /// carry a newer streak tail than its last recorded warmup) — a badge lit
+    /// off the tail would claim today's ritual is done with no result for
+    /// today. Fails if `streak_dto` compares `streak.last_completed_local_day`
+    /// instead.
     #[test]
-    fn runaway_played_stream_completes_bounded_and_grades_near_zero() {
+    fn completed_today_reads_last_warmup_not_the_streak_tail() {
+        use brain::learner::LocalDay;
         let s = state();
-        let noise = vec![60u8; MAX_WARMUP_PLAYED_NOTES + 5_000];
-        let dto = complete_daily_warmup_impl(&s, 3, &noise, brain::learner::LocalDay(50)).unwrap();
+        let mut model = brain::learner::LearnerModel::default();
+        model.streak.count = 4;
+        model.streak.last_completed_local_day = Some(LocalDay(100));
+        model.last_warmup = Some(brain::learner::DailyWarmup {
+            day: LocalDay(90),
+            score: 0.8,
+            extra: serde_json::Map::new(),
+        });
+        s.session_store
+            .lock_or_recover()
+            .upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &model)
+            .unwrap();
+
+        // On the streak-tail day: no warmup result for it → badge dark.
+        assert_eq!(
+            get_streak_impl(&s, LocalDay(100)).unwrap(),
+            StreakDto {
+                count: 4,
+                completed_today: false
+            }
+        );
+        // On the last warmup's own day: lit.
+        assert_eq!(
+            get_streak_impl(&s, LocalDay(90)).unwrap(),
+            StreakDto {
+                count: 4,
+                completed_today: true
+            }
+        );
+    }
+
+    /// #257 S3: a runaway IPC payload (far beyond any honest ~60 s warmup)
+    /// completes calmly and is truncated to exactly the first
+    /// `MAX_WARMUP_PLAYED_NOTES` notes before grading. The take opens with
+    /// the full target, so the expected grade is precisely full recall times
+    /// the precision cap AT THE BOUND — an unbounded grader halves it (m is
+    /// the whole payload) and a bound keeping the take's tail instead of its
+    /// head drops recall to ~0. Either mutation fails the exact assert.
+    #[test]
+    fn runaway_played_stream_is_truncated_at_the_documented_bound() {
+        let s = state();
+        let target = brain::coach::roulette(3).sequence.target_midi;
+        let n = target.len();
+        let mut take = target;
+        take.resize(2 * MAX_WARMUP_PLAYED_NOTES, 60);
+        let dto = complete_daily_warmup_impl(&s, 3, &take, brain::learner::LocalDay(50)).unwrap();
         assert_eq!(
             dto,
             StreakDto {
@@ -9763,7 +9859,11 @@ mod tests {
             .last_warmup
             .unwrap()
             .score;
-        assert!(score < 0.05, "a wall of notes must grade ~0, got {score}");
+        let expected = (n as f32 * 1.5 / MAX_WARMUP_PLAYED_NOTES as f32).min(1.0);
+        assert!(
+            (score - expected).abs() < 1e-6,
+            "grade must be capped at the bound: expected {expected}, got {score}"
+        );
     }
 
     /// #214 S1b: the index lifecycle through the REAL import path —
