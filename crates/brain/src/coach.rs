@@ -532,7 +532,8 @@ pub fn score_drill(target_midi: &[u8], played: &[PlayedNote], onset_count: usize
     // slow chromatic walk contains every target as a subsequence and would
     // grade 100%. Cap the free extras at PLAYED_SLACK× the target length and
     // scale the grade down past it, so noodling collapses while a genuine take
-    // with a few flubs is untouched.
+    // with a few flubs is untouched. Twin lives in `variations::score_warmup`
+    // (#257 S2, crate layering forbids sharing) — tune them together.
     const PLAYED_SLACK: f32 = 1.5;
     let recall = if n == 0 {
         0.0

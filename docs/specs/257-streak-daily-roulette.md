@@ -88,14 +88,19 @@ Notes that make it testable:
 ### Roulette + grading (F1)
 ```rust
 pub struct WarmupChallenge {
-    pub spec: VariationSpec,         // a single random root (key) + one scale, ~60s of material
+    pub spec: VariationSpec,         // a single random root (key) + one scale — one calm up-down
+                                     // pass; the ~60s is the RITUAL's budget (throw → play →
+                                     // score, S4 paces it), not the dealt material's length
+                                     // (documented drift, S2 review)
     pub seed: u64,                   // echoed back so the grade is reproducible
     pub sequence: GeneratedSequence, // F1 output; `target_notes` is the grading target, `label` the UI string
 }
 /// Pure: deterministically derive one key+scale challenge from `seed`, then F1-`generate` it.
 pub fn roulette(seed: u64) -> WarmupChallenge;
 /// Grade played pitches against the generated target. 0.0..=1.0; tolerant of octave per existing scoring.
-pub fn score_warmup(target: &[Pitch], played: &[Pitch]) -> f32;
+// Documented drift (S2): no `Pitch` type exists in the leaf crate and the DTOs are
+// integer MIDI, so grading takes MIDI numbers — the target is F1's `target_midi`.
+pub fn score_warmup(target_midi: &[u8], played_midi: &[u8]) -> f32;
 ```
 `roulette` chooses the root + scale from a bounded catalog using only `seed` (no RNG, no I/O), so the
 same seed always yields the same challenge. The command layer supplies a fresh seed per throw.
