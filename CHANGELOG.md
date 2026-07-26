@@ -1,3 +1,9 @@
+## [2.51.0](https://github.com/perice-pope/ai-music-companion/compare/v2.50.0...v2.51.0) (2026-07-26)
+
+### Features
+
+* **ipc:** the daily warmup's three commands and the boundary clock read ([#257](https://github.com/perice-pope/ai-music-companion/issues/257) S3) ([#489](https://github.com/perice-pope/ai-music-companion/issues/489)) ([365a0d8](https://github.com/perice-pope/ai-music-companion/commit/365a0d82ba4166de4e05290031e3bfd3a752d037))
+
 ## [2.50.0](https://github.com/perice-pope/ai-music-companion/compare/v2.49.0...v2.50.0) (2026-07-26)
 
 ### Features
