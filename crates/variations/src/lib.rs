@@ -19,8 +19,10 @@
 //!   nothing about scores or scoring.
 
 pub mod catalog;
+pub mod warmup;
 
 pub use catalog::{ChordType, Enclosure, ScaleType};
+pub use warmup::{roulette, score_warmup, WarmupChallenge};
 
 use serde::{Deserialize, Serialize};
 
@@ -309,15 +311,23 @@ pub struct GeneratedSequence {
 /// explicitly so generation is reproducible (no `rand`, no wall clock).
 struct Xorshift64(u64);
 
+/// One splitmix64 scramble step — decorrelates adjacent inputs (0/1/2…)
+/// into well-mixed states. The crate's only seed-mixing primitive: the
+/// PRNG seats itself through it, and the warmup roulette (#257 S2) draws
+/// its key/scale indices from chained steps without carrying RNG state.
+pub(crate) fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 impl Xorshift64 {
     fn new(seed: u64) -> Self {
-        // Scramble the seed through one splitmix64 step so adjacent seeds
-        // (0/1/2…) start from decorrelated states, and so seed 0 is distinct
-        // from seed 1 (a bare xorshift locks at zero forever).
-        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        Self((z ^ (z >> 31)).max(1))
+        // Scramble the seed so adjacent seeds start from decorrelated
+        // states, and so seed 0 is distinct from seed 1 (a bare xorshift
+        // locks at zero forever).
+        Self(splitmix64(seed).max(1))
     }
 
     fn next_u64(&mut self) -> u64 {
