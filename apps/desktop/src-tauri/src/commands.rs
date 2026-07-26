@@ -3868,6 +3868,137 @@ pub fn get_mastery_wheel(state: State<'_, AppState>) -> Result<brain::wheel::Whe
     get_mastery_wheel_impl(&state).map_err(|e| e.to_frontend())
 }
 
+// ---------------------------------------------------------------------------
+// #257 S3: the daily warmup ritual's IPC — throw, grade + streak, badge read
+// ---------------------------------------------------------------------------
+
+/// One thrown Daily Warmup Roulette challenge as the score view consumes it
+/// (#257): the seed that dealt it (echoed back on completion so the grade
+/// re-derives the exact target the player saw), F1's label, and the target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WarmupChallengeDto {
+    pub seed: u64,
+    /// e.g. `"F# Dorian scale · up-down · 72 BPM"`.
+    pub label: String,
+    /// MIDI numbers, in target order.
+    pub target_notes: Vec<u8>,
+}
+
+/// The streak as the badge renders it (#257): the chain length and whether
+/// today's warmup is already done.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreakDto {
+    pub count: u32,
+    pub completed_today: bool,
+}
+
+const SECS_PER_DAY: i64 = 86_400;
+
+/// Instant → [`brain::learner::LocalDay`]: shift the Unix instant by the local
+/// UTC offset, then floor-divide into days. `div_euclid` keeps pre-epoch
+/// instants and negative offsets on the correct side of local midnight —
+/// truncating division would round them toward the epoch.
+fn local_day_from_instant(epoch_secs: i64, utc_offset_secs: i32) -> brain::learner::LocalDay {
+    brain::learner::LocalDay((epoch_secs + i64::from(utc_offset_secs)).div_euclid(SECS_PER_DAY))
+}
+
+/// The feature's single clock read (#257 spec §4): "now" becomes a `LocalDay`
+/// here at the IPC boundary, and the pure core only ever sees the ordinal.
+fn today_local_day() -> brain::learner::LocalDay {
+    let now = chrono::Local::now();
+    local_day_from_instant(now.timestamp(), now.offset().local_minus_utc())
+}
+
+/// `completed_today` is a fact about `last_warmup`, not the streak tail: a
+/// result recorded for a stale/backward day must not light the badge.
+fn streak_dto(m: &brain::learner::LearnerModel, today: brain::learner::LocalDay) -> StreakDto {
+    StreakDto {
+        count: m.streak.count,
+        completed_today: m.last_warmup.as_ref().is_some_and(|w| w.day == today),
+    }
+}
+
+/// Pure implementation of `start_daily_warmup`: deal the throw for `seed`.
+/// Read-only on the model — a throw the player abandons writes nothing.
+pub fn start_daily_warmup_impl(seed: u64) -> WarmupChallengeDto {
+    let challenge = brain::coach::roulette(seed);
+    WarmupChallengeDto {
+        seed: challenge.seed,
+        label: challenge.sequence.label,
+        target_notes: challenge.sequence.target_midi,
+    }
+}
+
+/// The played stream is bounded before the O(target × played) grader (its
+/// documented caller contract). No honest ~60 s warmup approaches this many
+/// notes, and far below it the grader's precision cap has already ground the
+/// grade to ~0 — truncation never changes a realistic score, it only bounds
+/// the allocation an IPC payload can force.
+const MAX_WARMUP_PLAYED_NOTES: usize = 4_096;
+
+/// Pure implementation of `complete_daily_warmup`: re-deal the challenge from
+/// its seed, grade the take, and fold the completion into the Learner Model —
+/// the whole read-modify-write under the store lock (same shape as
+/// `record_reveal_impl`) so two rapid completions can't lose an update. Any
+/// finished warmup advances the streak regardless of grade (#257 AC10:
+/// showing up is the ritual; the score only feeds `last_warmup`).
+pub fn complete_daily_warmup_impl(
+    state: &AppState,
+    seed: u64,
+    played_notes: &[u8],
+    today: brain::learner::LocalDay,
+) -> Result<StreakDto, CommandError> {
+    let challenge = brain::coach::roulette(seed);
+    let bounded = &played_notes[..played_notes.len().min(MAX_WARMUP_PLAYED_NOTES)];
+    let score = brain::coach::score_warmup(&challenge.sequence.target_midi, bounded);
+    let store = state.session_store.lock_or_recover();
+    let current = store
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    let next = brain::learner::apply_daily_completion(&current, today, score);
+    store.upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &next)?;
+    Ok(streak_dto(&next, today))
+}
+
+/// Pure implementation of `get_streak`, for the badge. Read-only.
+pub fn get_streak_impl(
+    state: &AppState,
+    today: brain::learner::LocalDay,
+) -> Result<StreakDto, CommandError> {
+    let model = state
+        .session_store
+        .lock_or_recover()
+        .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)?
+        .unwrap_or_default();
+    Ok(streak_dto(&model, today))
+}
+
+#[tauri::command]
+pub fn start_daily_warmup() -> WarmupChallengeDto {
+    // Fresh seed per throw (spec §4); millis stay far below 2^53, so the
+    // frontend echoes it back through a JS number losslessly.
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1);
+    start_daily_warmup_impl(seed)
+}
+
+#[tauri::command]
+pub fn complete_daily_warmup(
+    state: State<'_, AppState>,
+    seed: u64,
+    played_notes: Vec<u8>,
+) -> Result<StreakDto, String> {
+    complete_daily_warmup_impl(&state, seed, &played_notes, today_local_day())
+        .map_err(|e| e.to_frontend())
+}
+
+#[tauri::command]
+pub fn get_streak(state: State<'_, AppState>) -> Result<StreakDto, String> {
+    get_streak_impl(&state, today_local_day()).map_err(|e| e.to_frontend())
+}
+
 /// The "your sound" mirror (#258) as the frontend renders it: the derived
 /// profile (None below brain::mirror::MIN_SESSIONS) plus how many measured
 /// sessions exist, for the "N of K" empty-state copy.
@@ -9473,6 +9604,166 @@ mod tests {
             2,
             "a different connection is a new unlock"
         );
+    }
+
+    // ── #257 S3: daily warmup IPC ────────────────────────────────────────
+
+    /// #257 spec §7 "localday boundary": the instant→`LocalDay` conversion
+    /// respects the local UTC offset — one instant lands on different calendar
+    /// days under different offsets — and floors rather than truncates, so
+    /// pre-epoch instants fall on the correct side of local midnight. Fails if
+    /// the conversion drops the offset or rounds toward zero.
+    #[test]
+    fn localday_from_instant_uses_local_offset() {
+        use brain::learner::LocalDay;
+        // 1970-01-01 23:30 UTC…
+        let late_evening = 23 * 3600 + 30 * 60;
+        assert_eq!(local_day_from_instant(late_evening, 0), LocalDay(0));
+        // …is already past local midnight in Tokyo (UTC+9): day 1.
+        assert_eq!(local_day_from_instant(late_evening, 9 * 3600), LocalDay(1));
+        // 1970-01-01 00:30 UTC is still 1969-12-31 in New York (UTC-5).
+        assert_eq!(local_day_from_instant(30 * 60, -5 * 3600), LocalDay(-1));
+        // Floor, not truncation: one second before the epoch is day -1.
+        assert_eq!(local_day_from_instant(-1, 0), LocalDay(-1));
+    }
+
+    /// #257 S3: the DTO the score view renders is exactly the deal for its
+    /// echoed seed — label and target match `roulette(seed)` — so a later
+    /// `complete_daily_warmup(seed, …)` grades against the very target the
+    /// player was shown. Fails if the mapping picks other fields or re-throws
+    /// under a different seed.
+    #[test]
+    fn warmup_dto_echoes_the_seed_and_its_exact_deal() {
+        let dto = start_daily_warmup_impl(42);
+        let deal = brain::coach::roulette(42);
+        assert_eq!(dto.seed, 42);
+        assert_eq!(dto.label, deal.sequence.label);
+        assert_eq!(dto.target_notes, deal.sequence.target_midi);
+        assert!(!dto.target_notes.is_empty());
+    }
+
+    /// #257 AC9: completing the warmup through the command layer persists BOTH
+    /// halves — `last_warmup { day, score }` and the streak transition — and
+    /// `get_streak` then reports the new count with `completed_today == true`
+    /// (and `false` again the next day). Fails if the load→grade→apply→write
+    /// path drops either write, or if the badge read stops deriving from the
+    /// persisted model.
+    #[test]
+    fn complete_warmup_writes_score_and_streak() {
+        let s = state();
+        let today = brain::learner::LocalDay(20_000);
+
+        // Untouched model: badge dark, no chain.
+        assert_eq!(
+            get_streak_impl(&s, today).unwrap(),
+            StreakDto {
+                count: 0,
+                completed_today: false
+            }
+        );
+
+        // A perfect take: play exactly what seed 42 dealt.
+        let target = brain::coach::roulette(42).sequence.target_midi;
+        let dto = complete_daily_warmup_impl(&s, 42, &target, today).unwrap();
+        assert_eq!(
+            dto,
+            StreakDto {
+                count: 1,
+                completed_today: true
+            }
+        );
+
+        // Persisted, not just returned: re-read the model from the store.
+        let model = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .expect("completion must write the model");
+        let warmup = model.last_warmup.expect("last_warmup recorded");
+        assert_eq!(warmup.day, today);
+        assert!(
+            (warmup.score - 1.0).abs() < 1e-6,
+            "a perfect take grades 1.0, got {}",
+            warmup.score
+        );
+        assert_eq!(model.streak.count, 1);
+        assert_eq!(model.streak.last_completed_local_day, Some(today));
+
+        // The badge read agrees with the persisted truth…
+        assert_eq!(
+            get_streak_impl(&s, today).unwrap(),
+            StreakDto {
+                count: 1,
+                completed_today: true
+            }
+        );
+        // …and the same chain reads not-yet-done tomorrow.
+        assert_eq!(
+            get_streak_impl(&s, brain::learner::LocalDay(20_001)).unwrap(),
+            StreakDto {
+                count: 1,
+                completed_today: false
+            }
+        );
+    }
+
+    /// #257 AC10 at the boundary: a botched take (nothing played → grade 0.0)
+    /// on the NEXT day still extends the chain — showing up is the ritual;
+    /// only `last_warmup.score` differs. Also proves the second completion
+    /// reads the first one back from the store (count 2 requires the
+    /// persisted count 1). Fails if the command layer grows a minimum-score
+    /// gate or stops round-tripping the model.
+    #[test]
+    fn zero_score_completion_still_advances_streak() {
+        let s = state();
+        let target = brain::coach::roulette(7).sequence.target_midi;
+        complete_daily_warmup_impl(&s, 7, &target, brain::learner::LocalDay(100)).unwrap();
+
+        let dto = complete_daily_warmup_impl(&s, 7, &[], brain::learner::LocalDay(101)).unwrap();
+        assert_eq!(
+            dto,
+            StreakDto {
+                count: 2,
+                completed_today: true
+            }
+        );
+        let model = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.last_warmup.unwrap().score, 0.0);
+    }
+
+    /// #257 S3: a runaway IPC payload (far beyond any honest ~60 s warmup)
+    /// completes calmly — bounded before the O(target × played) grader, it
+    /// still counts as showing up, and the precision cap grades it near zero
+    /// rather than crediting a wall of notes. Fails if the bound slices the
+    /// target instead of the take, or if noodling volume can buy a grade.
+    #[test]
+    fn runaway_played_stream_completes_bounded_and_grades_near_zero() {
+        let s = state();
+        let noise = vec![60u8; MAX_WARMUP_PLAYED_NOTES + 5_000];
+        let dto = complete_daily_warmup_impl(&s, 3, &noise, brain::learner::LocalDay(50)).unwrap();
+        assert_eq!(
+            dto,
+            StreakDto {
+                count: 1,
+                completed_today: true
+            }
+        );
+        let score = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap()
+            .last_warmup
+            .unwrap()
+            .score;
+        assert!(score < 0.05, "a wall of notes must grade ~0, got {score}");
     }
 
     /// #214 S1b: the index lifecycle through the REAL import path —

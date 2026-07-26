@@ -24,6 +24,9 @@ pub use variations::DirectionMode;
 pub use variations::FoldWindow;
 pub use variations::GeneratedSequence;
 pub use variations::VariationSpec;
+/// #257 S3: the Daily Warmup Roulette seam — the desktop layer deals and
+/// grades through brain (its only variations path), same as the specs above.
+pub use variations::{roulette, score_warmup, WarmupChallenge};
 
 use variations::{
     generate_in_window, unfolded_figures, ArpeggioPattern, ChordModifier, ChordType, Enclosure,
