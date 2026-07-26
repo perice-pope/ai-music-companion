@@ -1,3 +1,9 @@
+## [2.50.0](https://github.com/perice-pope/ai-music-companion/compare/v2.49.0...v2.50.0) (2026-07-26)
+
+### Features
+
+* **variations:** the daily roulette throw and its honest grade ([#257](https://github.com/perice-pope/ai-music-companion/issues/257) S2) ([#488](https://github.com/perice-pope/ai-music-companion/issues/488)) ([9dda2ca](https://github.com/perice-pope/ai-music-companion/commit/9dda2ca461ce468d21d36c41fde57f6dc47307e9))
+
 ## [2.49.0](https://github.com/perice-pope/ai-music-companion/compare/v2.48.1...v2.49.0) (2026-07-25)
 
 ### Features
