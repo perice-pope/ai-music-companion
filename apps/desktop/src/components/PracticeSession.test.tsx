@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import PracticeSession from "./PracticeSession";
 import { usePracticeStore } from "../stores/practiceStore";
 import type { InstrumentInfo } from "../stores/audioStore";
+import { useWarmupStore } from "../stores/warmupStore";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -93,10 +94,24 @@ describe("PracticeSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     seedListeningSession();
-    // Default: only `list_instruments` is handled; every other command
-    // must be explicitly mocked by the test that triggers it.
+    // #257 S4: the header's StreakBadge reads the warmup store — reset it
+    // so one test's active throw can't leak into the next.
+    useWarmupStore.setState({
+      streak: null,
+      phase: "idle",
+      challenge: null,
+      playedNotes: [],
+      result: null,
+      notice: null,
+      submitting: false,
+    });
+    // Default: only `list_instruments` and the badge's `get_streak` are
+    // handled; every other command must be explicitly mocked by the test
+    // that triggers it.
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "get_streak")
+        return Promise.resolve({ count: 0, completed_today: false });
       return Promise.reject(new Error(`no mock configured for "${cmd}"`));
     });
   });
@@ -338,6 +353,20 @@ describe("PracticeSession", () => {
     });
     render(<PracticeSession />);
     expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-score-pane")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("start-lesson")).not.toBeInTheDocument();
+  });
+
+  it("an active warmup owns the stage — over score mode — and parks the lesson entry", () => {
+    // #257 S4: the throw outranks every other stage, and only ONE graded
+    // flow may hold it at a time.
+    useWarmupStore.setState({
+      phase: "active",
+      challenge: { seed: 1, label: "C Major scale", target_notes: [60] },
+    });
+    usePracticeStore.setState({ activeScoreXml: "<score-partwise/>" });
+    render(<PracticeSession />);
+    expect(screen.getByTestId("daily-warmup-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("session-score-pane")).not.toBeInTheDocument();
     expect(screen.queryByTestId("start-lesson")).not.toBeInTheDocument();
   });
