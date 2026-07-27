@@ -55,16 +55,30 @@ export interface ConnectionsState {
    */
   autoUpdateCheckEnabled: boolean;
 
+  /**
+   * #465: the once-only first-launch question about automatic update checks
+   * has been answered — by either prompt button, or made moot by using the
+   * Connections & Privacy toggle directly. The prompt never returns once true.
+   */
+  updatePromptAnswered: boolean;
+
   setCloudSyncEnabled: (on: boolean) => void;
   setTeacherSharingEnabled: (on: boolean) => void;
   setDashboardSyncEnabled: (on: boolean) => void;
   setAutoUpdateCheckEnabled: (on: boolean) => void;
+  /**
+   * #465: answer the first-launch prompt. "Yes" enables the auto-check
+   * toggle; "No thanks" changes nothing beyond recording the answer, so
+   * everything stays exactly as today.
+   */
+  answerUpdatePrompt: (enable: boolean) => void;
 }
 
 const CLOUD_SYNC_KEY = "ai-music-companion:cloud-sync-enabled";
 const TEACHER_SHARING_KEY = "ai-music-companion:teacher-sharing-enabled";
 const DASHBOARD_SYNC_KEY = "ai-music-companion:dashboard-sync-enabled";
 const AUTO_UPDATE_KEY = "ai-music-companion:auto-update-check-enabled";
+const UPDATE_PROMPT_KEY = "ai-music-companion:update-prompt-answered";
 
 /** Read a persisted opt-in flag. Defaults to false (off) for everything. */
 function loadFlag(key: string): boolean {
@@ -89,6 +103,7 @@ export const useConnectionsStore = create<ConnectionsState>((set) => ({
   teacherSharingEnabled: loadFlag(TEACHER_SHARING_KEY),
   dashboardSyncEnabled: loadFlag(DASHBOARD_SYNC_KEY),
   autoUpdateCheckEnabled: loadFlag(AUTO_UPDATE_KEY),
+  updatePromptAnswered: loadFlag(UPDATE_PROMPT_KEY),
 
   setCloudSyncEnabled: (on) => {
     saveFlag(CLOUD_SYNC_KEY, on);
@@ -119,6 +134,21 @@ export const useConnectionsStore = create<ConnectionsState>((set) => ({
 
   setAutoUpdateCheckEnabled: (on) => {
     saveFlag(AUTO_UPDATE_KEY, on);
-    set({ autoUpdateCheckEnabled: on });
+    // An explicit choice in Connections & Privacy answers the #465
+    // first-launch question too — it must never ask after that.
+    saveFlag(UPDATE_PROMPT_KEY, true);
+    set({ autoUpdateCheckEnabled: on, updatePromptAnswered: true });
+  },
+
+  answerUpdatePrompt: (enable) => {
+    saveFlag(UPDATE_PROMPT_KEY, true);
+    if (enable) {
+      saveFlag(AUTO_UPDATE_KEY, true);
+      set({ updatePromptAnswered: true, autoUpdateCheckEnabled: true });
+    } else {
+      // "No thanks" records only the answer — the toggle (and its
+      // persisted value) stays exactly as it was.
+      set({ updatePromptAnswered: true });
+    }
   },
 }));

@@ -108,7 +108,12 @@ app and practicing offline make no update request. The egress lives inside the
 disclosure scanner cannot see it (see the registry note below); it is disclosed
 here and surfaced in Connections & Privacy as an informational row rather than a
 toggle, because the consent gate is the native update dialog rather than a
-Face-layer switch.
+Face-layer switch. Since #465 the automatic-check toggle has a second consent
+surface: a once-only first-launch prompt (`FirstRunUpdatePrompt.tsx`, in the
+update pill's slot) that asks the question in plain words and flips the same
+`connectionsStore.autoUpdateCheckEnabled` switch on "yes" — the prompt itself
+makes no network call, "no thanks" changes nothing, and either answer is final
+(the choice remains editable in Connections & Privacy).
 
 ### What never leaves the device
 
