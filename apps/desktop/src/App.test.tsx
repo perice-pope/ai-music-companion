@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import App from "./App";
 
 const mockInvoke = vi.fn();
@@ -300,6 +300,31 @@ describe("App", () => {
     useConnectionsStore.setState({ autoUpdateCheckEnabled: false });
     await vi.advanceTimersByTimeAsync(8 * 60 * 60 * 1000);
     expect(mockUpdateCheck).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  // #465 AC5+AC2: the first-launch prompt itself makes no update request —
+  // the first check happens only AFTER "Yes", via the existing heartbeat,
+  // with no restart needed. Fails if the prompt (or anything else) checks
+  // before the answer, or if answering doesn't reach the heartbeat.
+  it("first-launch prompt: no check before the answer, first check right after yes", async () => {
+    vi.useFakeTimers();
+    localStorage.clear();
+    useConnectionsStore.setState({
+      autoUpdateCheckEnabled: false,
+      updatePromptAnswered: false,
+    });
+    render(<App />);
+
+    // The question is up, and an hour of runtime sends nothing.
+    screen.getByTestId("first-run-update-prompt");
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(mockUpdateCheck).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("update-prompt-yes"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockUpdateCheck).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("first-run-update-prompt")).toBeNull();
     vi.useRealTimers();
   });
 

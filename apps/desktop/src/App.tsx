@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import PracticeShell from "./components/PracticeShell";
 import UpdatePill from "./components/UpdatePill";
+import FirstRunUpdatePrompt from "./components/FirstRunUpdatePrompt";
 import { useConnectionsStore } from "./stores/connectionsStore";
 import { useUpdateStore } from "./stores/updateStore";
 import { useAudioStore, type AudioEvent } from "./stores/audioStore";
@@ -245,6 +246,8 @@ function App() {
         <PracticeShell />
       </div>
       <UpdatePill />
+      {/* #465: shares the pill's slot; hides itself whenever the pill shows. */}
+      <FirstRunUpdatePrompt />
     </>
   );
 }
