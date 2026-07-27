@@ -1,3 +1,9 @@
+## [2.52.0](https://github.com/perice-pope/ai-music-companion/compare/v2.51.0...v2.52.0) (2026-07-27)
+
+### Features
+
+* **face:** first-launch prompt — ask once whether to enable update checks ([#465](https://github.com/perice-pope/ai-music-companion/issues/465)) ([#492](https://github.com/perice-pope/ai-music-companion/issues/492)) ([0e15f11](https://github.com/perice-pope/ai-music-companion/commit/0e15f1167f9e60a22efc795bf500b8d57ae0f177)), closes [#58](https://github.com/perice-pope/ai-music-companion/issues/58)
+
 ## [2.51.0](https://github.com/perice-pope/ai-music-companion/compare/v2.50.0...v2.51.0) (2026-07-26)
 
 ### Features
