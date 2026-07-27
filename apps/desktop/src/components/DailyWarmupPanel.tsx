@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAudioStore } from "../stores/audioStore";
 import { useWarmupStore, WARMUP_SECONDS } from "../stores/warmupStore";
 import type { WarmupChallengeDto } from "../types/brain";
@@ -29,14 +29,30 @@ function ActiveThrow({ challenge }: { challenge: WarmupChallengeDto }) {
 
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_SECONDS);
   useEffect(() => {
-    const id = setInterval(() => setSecondsLeft((s) => s - 1), 1000);
+    const id = setInterval(
+      () =>
+        setSecondsLeft((s) => {
+          // The clock stops AT zero — ticking past it would re-run the
+          // expiry effect every second, auto-retrying a failed completion
+          // forever against a backend that just said no.
+          if (s <= 1) {
+            clearInterval(id);
+          }
+          return s - 1;
+        }),
+      1000,
+    );
     return () => clearInterval(id);
   }, []);
 
   // The countdown paces, it doesn't punish: at 0:00 a heard take is graded,
-  // an unheard one costs nothing (the throw is free, spec §6).
+  // an unheard one costs nothing (the throw is free, spec §6). One-shot:
+  // expiry fires once per throw — a failed grade waits for the player's own
+  // retry tap, and a note played after an error must not re-trigger it.
+  const expiredRef = useRef(false);
   useEffect(() => {
-    if (secondsLeft <= 0) {
+    if (secondsLeft <= 0 && !expiredRef.current) {
+      expiredRef.current = true;
       if (heardCount > 0) {
         void finishWarmup();
       } else {

@@ -53,6 +53,8 @@ beforeEach(() => {
     _lastRecordedMidi: null,
     _pendingMidi: null,
     _pendingRun: 0,
+    _silenceRun: 0,
+    _lastEventFed: null,
   });
 });
 
@@ -159,5 +161,31 @@ describe("DailyWarmupPanel (#257 S4)", () => {
     );
     expect(screen.getByTestId("daily-warmup-panel")).toBeInTheDocument();
     expect(useWarmupStore.getState().playedNotes).toEqual([61]);
+  });
+
+  it("a grade that fails AT expiry is not auto-retried once per second", async () => {
+    // The clock stops at zero and expiry is one-shot: a backend that said
+    // "busy" must not be hammered by the countdown's corpse ticking on.
+    mockInvoke.mockRejectedValue("store is busy");
+    useWarmupStore.setState({ playedNotes: [61] });
+    render(<DailyWarmupPanel />);
+    act(() => {
+      vi.advanceTimersByTime(WARMUP_SECONDS * 1000);
+    });
+    await settle();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await settle();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    // The player's own retry still works.
+    mockInvoke.mockResolvedValue({
+      score: 0.4,
+      streak: { count: 1, completed_today: true },
+    });
+    fireEvent.click(screen.getByTestId("warmup-finish"));
+    await settle();
+    expect(screen.getByTestId("warmup-result")).toBeInTheDocument();
   });
 });

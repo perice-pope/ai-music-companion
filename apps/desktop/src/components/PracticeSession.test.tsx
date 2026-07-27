@@ -371,6 +371,17 @@ describe("PracticeSession", () => {
     expect(screen.queryByTestId("start-lesson")).not.toBeInTheDocument();
   });
 
+  it("the warmup entry parks while another flow grades the mic", () => {
+    // #257 S4 review 7: a loaded score (or exploration/lesson) keeps the
+    // backend grading the mic — a warmup thrown on top would pollute its
+    // tally. The badge itself stays visible.
+    useWarmupStore.setState({ streak: { count: 2, completed_today: false } });
+    usePracticeStore.setState({ activeScoreXml: "<score-partwise/>" });
+    render(<PracticeSession />);
+    expect(screen.queryByTestId("daily-warmup-entry")).not.toBeInTheDocument();
+    expect(screen.getByTestId("streak-badge")).toBeInTheDocument();
+  });
+
   it("the start-lesson button fires start_lesson", () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);

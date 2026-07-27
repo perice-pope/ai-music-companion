@@ -213,9 +213,12 @@ export default function PracticeSession() {
         <div className="flex items-center gap-4">
           <SessionTimer />
           {/* #257 S4: the streak + its one-tap entry. The entry hides while
-              a lesson holds the stage — two graded flows at once would fight
-              over it. */}
-          <StreakBadge allowStart={!lessonActive} />
+              a lesson, an exploration, or a loaded score holds the stage —
+              those flows keep grading the mic underneath, and a warmup scale
+              would pollute their tallies. */}
+          <StreakBadge
+            allowStart={!lessonActive && !exploreActive && !activeScoreXml}
+          />
           {!lessonActive && !warmupActive && (
             <button
               type="button"

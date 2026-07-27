@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { AudioEvent } from "./audioStore";
+import { useAudioStore, type AudioEvent } from "./audioStore";
 import type {
   StreakDto,
   WarmupChallengeDto,
@@ -26,8 +26,20 @@ export const WARMUP_SECONDS = 60;
  * as played. The pipeline streams at ~40–50 Hz, so two events ≈ 45 ms —
  * far shorter than any deliberate 72 BPM warmup note, but longer than the
  * single-event pitch flicker this rejects (the same idea as the backend
- * drill grader's `DRILL_MIN_PITCH_RUN`). */
+ * drill grader's `DRILL_MIN_PITCH_RUN`).
+ *
+ * This client-side segmentation exists because S3's IPC contract takes
+ * `played_notes` from the frontend (documented drift on the spec: no
+ * `Pitch` type in the leaf crate). The GRADE still lives entirely in Rust
+ * (`score_warmup`); a follow-up could move collection onto the backend
+ * phrase buffer the way `submit_drill` grades. */
 const STABLE_RUN = 2;
+
+/** Consecutive silent events before a gap counts as a re-attack boundary —
+ * symmetric with `STABLE_RUN`, so a single unvoiced frame inside a held
+ * note (breath, bow change, vibrato dip) can't split it into two recorded
+ * notes and dent the grade. */
+const SILENCE_RUN = 2;
 
 /** Client-side bound on the collected take. A 60 s warmup at 72 BPM is
  * ~15 notes; this only keeps a stuck session from growing an unbounded
@@ -49,10 +61,16 @@ interface WarmupState {
   submitting: boolean;
 
   /** Note-collector scratch: the last recorded note (suppresses the held
-   * note's stream), and the candidate still earning its `STABLE_RUN`. */
+   * note's stream), the candidate still earning its `STABLE_RUN`, the
+   * silence run earning a re-attack boundary, and the last event object
+   * already fed (each event counts once — StrictMode re-runs the feed
+   * effect with the same object, and the pre-throw stale event is
+   * pre-seeded here by `startWarmup` so it can never be collected). */
   _lastRecordedMidi: number | null;
   _pendingMidi: number | null;
   _pendingRun: number;
+  _silenceRun: number;
+  _lastEventFed: AudioEvent | null;
 
   fetchStreak: () => Promise<void>;
   startWarmup: () => Promise<void>;
@@ -73,6 +91,8 @@ export const useWarmupStore = create<WarmupState>((set, get) => ({
   _lastRecordedMidi: null,
   _pendingMidi: null,
   _pendingRun: 0,
+  _silenceRun: 0,
+  _lastEventFed: null,
 
   fetchStreak: async () => {
     try {
@@ -92,44 +112,69 @@ export const useWarmupStore = create<WarmupState>((set, get) => ({
       playedNotes: [],
       result: null,
       notice: null,
+      // A previous throw's in-flight completion no longer owns the flag.
+      submitting: false,
       _lastRecordedMidi: null,
       _pendingMidi: null,
       _pendingRun: 0,
+      _silenceRun: 0,
+      // What the mic heard BEFORE the throw is not part of the take: the
+      // feed effect replays the store's latest event on mount, so consume
+      // it here — spec §6 says an untouched warmup writes nothing.
+      _lastEventFed: useAudioStore.getState().latestEvent,
     });
   },
 
   hearEvent: (event) => {
     const s = get();
-    if (s.phase !== "active") {
+    // Each event object counts exactly once — StrictMode's doubled feed
+    // effect must not turn one flicker frame into a stable run.
+    if (s.phase !== "active" || event === s._lastEventFed) {
       return;
     }
+    set({ _lastEventFed: event });
     const midi =
       event.pitch_hz !== null && event.note_info !== null
         ? event.note_info.midi_note
         : null;
     if (midi === null) {
-      // Silence: the next attack is a new note even if it's the same pitch —
-      // an up-down pass revisits every degree on the way back.
-      set({ _lastRecordedMidi: null, _pendingMidi: null, _pendingRun: 0 });
+      // Silence: after a real gap (`SILENCE_RUN`) the next attack is a new
+      // note even at the same pitch — an up-down pass revisits every degree
+      // on the way back. A single unvoiced frame is NOT a gap: it must not
+      // split a held note in two.
+      const silence = s._silenceRun + 1;
+      if (silence >= SILENCE_RUN) {
+        set({
+          _lastRecordedMidi: null,
+          _pendingMidi: null,
+          _pendingRun: 0,
+          _silenceRun: silence,
+        });
+      } else {
+        set({ _silenceRun: silence });
+      }
       return;
     }
     if (midi === s._lastRecordedMidi) {
       // Still the held note that was already recorded; a flicker candidate
       // that resolved back to it is dropped.
-      if (s._pendingMidi !== null) {
-        set({ _pendingMidi: null, _pendingRun: 0 });
-      }
+      set({ _pendingMidi: null, _pendingRun: 0, _silenceRun: 0 });
       return;
     }
     const run = midi === s._pendingMidi ? s._pendingRun + 1 : 1;
     if (run < STABLE_RUN) {
-      set({ _pendingMidi: midi, _pendingRun: run });
+      set({ _pendingMidi: midi, _pendingRun: run, _silenceRun: 0 });
       return;
     }
     if (s.playedNotes.length >= MAX_COLLECTED_NOTES) {
       // Take is full: keep tracking identity so a later cap-raise stays
       // honest, but record nothing more.
-      set({ _lastRecordedMidi: midi, _pendingMidi: null, _pendingRun: 0 });
+      set({
+        _lastRecordedMidi: midi,
+        _pendingMidi: null,
+        _pendingRun: 0,
+        _silenceRun: 0,
+      });
       return;
     }
     set({
@@ -137,6 +182,7 @@ export const useWarmupStore = create<WarmupState>((set, get) => ({
       _lastRecordedMidi: midi,
       _pendingMidi: null,
       _pendingRun: 0,
+      _silenceRun: 0,
     });
   },
 
@@ -147,29 +193,40 @@ export const useWarmupStore = create<WarmupState>((set, get) => ({
     if (s.phase !== "active" || s.challenge === null || s.submitting) {
       return;
     }
+    const seed = s.challenge.seed;
+    // "Still this throw": close (or close + a fresh throw) while the grade
+    // was in flight means this completion no longer owns the panel — a
+    // dismissed throw must not resurrect, and throw B must never wear
+    // throw A's grade.
+    const ownsThrow = () =>
+      get().phase === "active" && get().challenge?.seed === seed;
     set({ submitting: true });
     try {
       const result = await invoke<WarmupResultDto>("complete_daily_warmup", {
-        seed: s.challenge.seed,
+        seed,
         playedNotes: s.playedNotes,
       });
-      if (get().phase === "active") {
+      if (ownsThrow()) {
         set({ phase: "done", result, streak: result.streak, notice: null });
       } else {
-        // Panel was closed while the grade was in flight: the completion
-        // still landed backend-side, so the badge gets the truth — but a
-        // dismissed panel must not resurrect to show it.
+        // The completion still landed backend-side, so the badge gets the
+        // truth either way.
         set({ streak: result.streak });
       }
     } catch (err) {
       // Keep the take on screen for a retry and say why — a silent blink
       // would eat the day's completion.
       console.error("complete_daily_warmup failed:", err);
-      if (get().phase === "active") {
+      if (ownsThrow()) {
         set({ notice: String(err) });
       }
     } finally {
-      set({ submitting: false });
+      // Release the flag — unless a DIFFERENT throw is already active
+      // (its own submission owns it now).
+      const cur = get();
+      if (!(cur.phase === "active" && cur.challenge?.seed !== seed)) {
+        set({ submitting: false });
+      }
     }
   },
 
@@ -193,5 +250,7 @@ export const useWarmupStore = create<WarmupState>((set, get) => ({
       _lastRecordedMidi: null,
       _pendingMidi: null,
       _pendingRun: 0,
+      _silenceRun: 0,
+      _lastEventFed: null,
     }),
 }));

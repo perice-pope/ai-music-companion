@@ -9810,6 +9810,44 @@ mod tests {
         assert_eq!(model.last_warmup.unwrap().score, 0.0);
     }
 
+    /// #257 S4: `WarmupResultDto.score` is THIS take's grade — the whole
+    /// point of the DTO drift — while the model keeps the day's best
+    /// (AC11). A same-day second take that grades LOWER is the only case
+    /// that tells them apart; returning `last_warmup.score` instead would
+    /// show the player yesterday's-best-style dishonesty ("you played
+    /// nothing: 100%"). Fails on exactly that mutation.
+    #[test]
+    fn returned_grade_is_this_takes_not_the_days_best() {
+        let s = state();
+        let today = brain::learner::LocalDay(300);
+        let target = brain::coach::roulette(9).sequence.target_midi;
+        let first = complete_daily_warmup_impl(&s, 9, &target, today).unwrap();
+        assert!((first.score - 1.0).abs() < 1e-6);
+
+        // Second take the same day, botched: the DTO reports the honest 0.0…
+        let second = complete_daily_warmup_impl(&s, 9, &[], today).unwrap();
+        assert_eq!(second.score, 0.0, "the DTO must carry THIS take's grade");
+        // …and the streak stays idempotent for the day.
+        assert_eq!(
+            second.streak,
+            StreakDto {
+                count: 1,
+                completed_today: true
+            }
+        );
+        // The model keeps the day's best (AC11) — proving score ≠ stored.
+        let model = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (model.last_warmup.unwrap().score - 1.0).abs() < 1e-6,
+            "best-of-day stays 1.0 in the model"
+        );
+    }
+
     /// #257 spec §4: `completed_today` derives from `last_warmup.day`, NOT
     /// the streak tail. The two legitimately diverge (a sync-merged blob can
     /// carry a newer streak tail than its last recorded warmup) — a badge lit

@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { useWarmupStore } from "./warmupStore";
-import type { AudioEvent } from "./audioStore";
+import { useAudioStore, type AudioEvent } from "./audioStore";
 
 /** A pitched event at `midi`, or silence when `midi` is null. */
 const ev = (midi: number | null): AudioEvent => ({
@@ -42,6 +42,7 @@ const CHALLENGE = {
 
 beforeEach(() => {
   mockInvoke.mockReset();
+  useAudioStore.setState({ latestEvent: null });
   useWarmupStore.setState({
     streak: null,
     phase: "idle",
@@ -53,6 +54,8 @@ beforeEach(() => {
     _lastRecordedMidi: null,
     _pendingMidi: null,
     _pendingRun: 0,
+    _silenceRun: 0,
+    _lastEventFed: null,
   });
 });
 
@@ -74,11 +77,40 @@ describe("note collector", () => {
     expect(useWarmupStore.getState().playedNotes).toEqual([60]);
   });
 
-  it("silence separates re-attacks of the same pitch", () => {
+  it("a real silence gap separates re-attacks of the same pitch", () => {
     activeState();
     // Up-down passes revisit degrees: C … rest … C must be TWO notes.
-    hear(60, 60, null, 60, 60);
+    hear(60, 60, null, null, 60, 60);
     expect(useWarmupStore.getState().playedNotes).toEqual([60, 60]);
+  });
+
+  it("a single unvoiced frame does NOT split a held note in two", () => {
+    activeState();
+    // Breath / bow change / vibrato dip: one dropout frame mid-hold. Two
+    // recorded notes here would dent the grade as an insertion.
+    hear(60, 60, null, 60, 60);
+    expect(useWarmupStore.getState().playedNotes).toEqual([60]);
+  });
+
+  it("repeated single-frame flickers to the same wrong pitch never accumulate", () => {
+    activeState();
+    // Each lone 62 is cleared when the held 60 resumes — two non-adjacent
+    // flickers must not add up to a stable run.
+    hear(60, 60, 62, 60, 62, 60, 62, 60);
+    expect(useWarmupStore.getState().playedNotes).toEqual([60]);
+  });
+
+  it("the same event object fed twice counts once (StrictMode double-feed)", () => {
+    activeState();
+    const first = ev(60);
+    // StrictMode re-runs the feed effect with the SAME latest event: the
+    // pair must not satisfy the stability run by itself.
+    useWarmupStore.getState().hearEvent(first);
+    useWarmupStore.getState().hearEvent(first);
+    expect(useWarmupStore.getState().playedNotes).toEqual([]);
+    // A genuinely new event completes the run.
+    useWarmupStore.getState().hearEvent(ev(60));
+    expect(useWarmupStore.getState().playedNotes).toEqual([60]);
   });
 
   it("a note change without silence records once stable", () => {
@@ -97,10 +129,9 @@ describe("note collector", () => {
 
   it("stops recording at the client-side bound", () => {
     activeState();
-    // Alternate two pitches with a rest between pairs so every attack is
-    // distinct; push past the 1024-note cap.
+    // Re-attack the same pitch across real rests; push past the 1024 cap.
     for (let i = 0; i < 1100; i++) {
-      hear(60, 60, null);
+      hear(60, 60, null, null);
     }
     expect(useWarmupStore.getState().playedNotes.length).toBe(1024);
   });
@@ -122,6 +153,22 @@ describe("state machine", () => {
     expect(s.playedNotes).toEqual([]);
     expect(s.result).toBeNull();
     expect(s.notice).toBeNull();
+  });
+
+  it("what the mic heard before the throw is never part of the take", async () => {
+    // Spec §6: an untouched warmup writes nothing — so the free-play note
+    // still sitting in the audio store (the feed effect replays it on
+    // mount, twice under StrictMode) must not be collected.
+    const stale = ev(60);
+    useAudioStore.setState({ latestEvent: stale });
+    mockInvoke.mockResolvedValue(CHALLENGE);
+    await useWarmupStore.getState().startWarmup();
+    useWarmupStore.getState().hearEvent(stale);
+    useWarmupStore.getState().hearEvent(stale);
+    expect(useWarmupStore.getState().playedNotes).toEqual([]);
+    // Fresh post-throw events still record normally.
+    hear(60, 60);
+    expect(useWarmupStore.getState().playedNotes).toEqual([60]);
   });
 
   it("finishWarmup grades the collected take against the echoed seed", async () => {
@@ -176,6 +223,30 @@ describe("state machine", () => {
     expect(s.phase).toBe("idle");
     expect(s.result).toBeNull();
     expect(s.streak).toEqual({ count: 7, completed_today: true });
+    expect(s.submitting).toBe(false);
+  });
+
+  it("throw A's late completion never hijacks throw B", async () => {
+    // Finish A (slow IPC) → close → throw B: when A's grade finally lands
+    // it must not flip B's panel to "done" wearing A's score, and B's
+    // finish button must not sit disabled on A's in-flight flag.
+    activeState();
+    let resolveA!: (v: unknown) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((r) => (resolveA = r)));
+    const pendingA = useWarmupStore.getState().finishWarmup();
+    useWarmupStore.getState().closeWarmup();
+    mockInvoke.mockResolvedValueOnce({ ...CHALLENGE, seed: 43 });
+    await useWarmupStore.getState().startWarmup();
+    expect(useWarmupStore.getState().submitting).toBe(false);
+    resolveA({ score: 1, streak: { count: 9, completed_today: true } });
+    await pendingA;
+    const s = useWarmupStore.getState();
+    expect(s.phase).toBe("active");
+    expect(s.challenge?.seed).toBe(43);
+    expect(s.result).toBeNull();
+    // The badge still learns A's landed truth.
+    expect(s.streak).toEqual({ count: 9, completed_today: true });
+    expect(s.submitting).toBe(false);
   });
 
   it("closeWarmup abandons without any IPC call — the throw writes nothing", () => {
