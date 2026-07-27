@@ -99,12 +99,23 @@ describe("FirstRunUpdatePrompt (#465)", () => {
     expect(screen.queryByTestId("first-run-update-prompt")).toBeNull();
   });
 
-  it("yields the bottom-left slot whenever the pill is showing", () => {
+  it("yields the bottom-left slot in every pill phase, not just 'available'", () => {
     // A manual check (Connections & Privacy button) can raise the pill
-    // before the question is answered — the two must never stack.
-    useUpdateStore.setState({ phase: "available", availableVersion: "9.9.9" });
+    // before the question is answered, and from there the user can walk it
+    // through downloading/ready/error — the two must never stack in ANY of
+    // those phases (adversarial review MF1: an `=== "available"` gate
+    // survived the original single-phase test).
+    const nonIdle = ["available", "downloading", "ready", "error"] as const;
     render(<FirstRunUpdatePrompt />);
-    expect(screen.queryByTestId("first-run-update-prompt")).toBeNull();
+    for (const phase of nonIdle) {
+      act(() => {
+        useUpdateStore.setState({ phase, availableVersion: "9.9.9" });
+      });
+      expect(
+        screen.queryByTestId("first-run-update-prompt"),
+        `prompt must hide while the pill shows (phase "${phase}")`,
+      ).toBeNull();
+    }
 
     // Pill dismissed → the still-unanswered question returns.
     act(() => {

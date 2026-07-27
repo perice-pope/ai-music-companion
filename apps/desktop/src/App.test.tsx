@@ -33,6 +33,15 @@ describe("App", () => {
       cmd === "list_instruments" ? [] : "unused",
     );
     mockListen.mockResolvedValue(() => {});
+    // #465: the store and localStorage are singletons shared across this
+    // file — reset them so no test inherits another's update-check opt-in
+    // or prompt answer. `updatePromptAnswered: true` keeps the prompt out
+    // of tests that aren't about it; the #465 test opts back in.
+    localStorage.clear();
+    useConnectionsStore.setState({
+      autoUpdateCheckEnabled: false,
+      updatePromptAnswered: true,
+    });
   });
 
   it("renders the practice shell with the app title on the selector screen", () => {
@@ -309,11 +318,8 @@ describe("App", () => {
   // before the answer, or if answering doesn't reach the heartbeat.
   it("first-launch prompt: no check before the answer, first check right after yes", async () => {
     vi.useFakeTimers();
-    localStorage.clear();
-    useConnectionsStore.setState({
-      autoUpdateCheckEnabled: false,
-      updatePromptAnswered: false,
-    });
+    // Fresh install: nothing answered yet (overrides the beforeEach).
+    useConnectionsStore.setState({ updatePromptAnswered: false });
     render(<App />);
 
     // The question is up, and an hour of runtime sends nothing.

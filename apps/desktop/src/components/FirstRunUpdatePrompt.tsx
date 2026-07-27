@@ -29,6 +29,7 @@ export default function FirstRunUpdatePrompt() {
   return (
     <div
       data-testid="first-run-update-prompt"
+      role="status"
       className="fixed bottom-4 left-4 z-40 w-80 rounded-2xl border border-sky-700
         bg-sky-950/95 p-4 text-sm text-sky-100 shadow-lg"
     >
