@@ -12,6 +12,8 @@
 //! don't judge") — but a drill has an explicit, user-accepted target, so
 //! grading against `target_midi` is the honest signal here (spec #254 §2).
 
+pub mod moments;
+
 use serde::{Deserialize, Serialize};
 
 use crate::learner::{
