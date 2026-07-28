@@ -22,6 +22,9 @@ import LiftProgressionButton from "./LiftProgressionButton";
 import ScoreView from "./ScoreView";
 import VerdictStrip from "./VerdictStrip";
 import ScorePhraseCard from "./ScorePhraseCard";
+import StreakBadge from "./StreakBadge";
+import DailyWarmupPanel from "./DailyWarmupPanel";
+import { useWarmupStore } from "../stores/warmupStore";
 
 /**
  * Active-session screen: timer + pitch display + coaching tips, with a
@@ -46,6 +49,9 @@ export default function PracticeSession() {
   const startLesson = usePracticeStore((s) => s.startLesson);
   const lessonActive = lessonDrill !== null || lessonRecap !== null;
   const exploreActive = usePracticeStore((s) => s.explore !== null);
+  // #257 S4: any non-idle warmup phase owns the stage — active throw,
+  // graded result, or the "didn't hear you" card.
+  const warmupActive = useWarmupStore((s) => s.phase !== "idle");
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -206,7 +212,14 @@ export default function PracticeSession() {
 
         <div className="flex items-center gap-4">
           <SessionTimer />
-          {!lessonActive && (
+          {/* #257 S4: the streak + its one-tap entry. The entry hides while
+              a lesson, an exploration, or a loaded score holds the stage —
+              those flows keep grading the mic underneath, and a warmup scale
+              would pollute their tallies. */}
+          <StreakBadge
+            allowStart={!lessonActive && !exploreActive && !activeScoreXml}
+          />
+          {!lessonActive && !warmupActive && (
             <button
               type="button"
               onClick={() => void startLesson().catch(console.error)}
@@ -233,11 +246,24 @@ export default function PracticeSession() {
           instruments.find((i) => i.name === instrumentName)?.polyphonic ?? true
         }
         roomListening={
-          listenToRoom && !lessonActive && !exploreActive && !activeScoreXml
+          listenToRoom &&
+          !lessonActive &&
+          !warmupActive &&
+          !exploreActive &&
+          !activeScoreXml
         }
       />
 
-      {lessonActive ? (
+      {warmupActive ? (
+        // Daily warmup (#257 S4): the throw takes the stage; the pitch
+        // meter stays alongside so the player can see what the app hears.
+        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+          <DailyWarmupPanel />
+          <div className="flex flex-row items-start gap-6 lg:w-72 lg:flex-col">
+            <PitchDisplay />
+          </div>
+        </div>
+      ) : lessonActive ? (
         // Guided lesson (#254): the drill's sheet music takes the stage.
         <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
           <LessonPanel />

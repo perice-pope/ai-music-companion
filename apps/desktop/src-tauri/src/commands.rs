@@ -3892,6 +3892,18 @@ pub struct StreakDto {
     pub completed_today: bool,
 }
 
+/// What a completion hands back to the score view (#257 S4): this take's
+/// 0–1 grade plus the updated streak. Documented drift from spec §4 (which
+/// returned `StreakDto` alone): the badge's DTO can't say how the take went —
+/// the model stores best-of-day, not this attempt — and re-deriving the grade
+/// client-side would put scoring logic in the frontend.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct WarmupResultDto {
+    /// This take's grade, `0.0..=1.0` (`last_warmup.score` keeps the day's best).
+    pub score: f32,
+    pub streak: StreakDto,
+}
+
 const SECS_PER_DAY: i64 = 86_400;
 
 /// Instant → [`brain::learner::LocalDay`]: shift the Unix instant by the local
@@ -3953,7 +3965,7 @@ pub fn complete_daily_warmup_impl(
     seed: u64,
     played_notes: &[u8],
     today: brain::learner::LocalDay,
-) -> Result<StreakDto, CommandError> {
+) -> Result<WarmupResultDto, CommandError> {
     let challenge = brain::coach::roulette(seed);
     let bounded = &played_notes[..played_notes.len().min(MAX_WARMUP_PLAYED_NOTES)];
     let score = brain::coach::score_warmup(&challenge.sequence.target_midi, bounded);
@@ -3963,7 +3975,10 @@ pub fn complete_daily_warmup_impl(
         .unwrap_or_default();
     let next = brain::learner::apply_daily_completion(&current, today, score);
     store.upsert_learner_model(LOCAL_TASTE_PROFILE_USER_ID, &next)?;
-    Ok(streak_dto(&next, today))
+    Ok(WarmupResultDto {
+        score,
+        streak: streak_dto(&next, today),
+    })
 }
 
 /// Pure implementation of `get_streak`, for the badge. Read-only.
@@ -3995,7 +4010,7 @@ pub fn complete_daily_warmup(
     state: State<'_, AppState>,
     seed: u64,
     played_notes: Vec<u8>,
-) -> Result<StreakDto, String> {
+) -> Result<WarmupResultDto, String> {
     complete_daily_warmup_impl(&state, seed, &played_notes, today_local_day())
         .map_err(|e| e.to_frontend())
 }
@@ -9716,11 +9731,18 @@ mod tests {
         let target = brain::coach::roulette(42).sequence.target_midi;
         let dto = complete_daily_warmup_impl(&s, 42, &target, today).unwrap();
         assert_eq!(
-            dto,
+            dto.streak,
             StreakDto {
                 count: 1,
                 completed_today: true
             }
+        );
+        // #257 S4: the take's own grade rides back with the streak — the
+        // score view shows it without re-deriving scoring client-side.
+        assert!(
+            (dto.score - 1.0).abs() < 1e-6,
+            "a perfect take must return grade 1.0, got {}",
+            dto.score
         );
 
         // Persisted, not just returned: re-read the model from the store.
@@ -9772,12 +9794,13 @@ mod tests {
 
         let dto = complete_daily_warmup_impl(&s, 7, &[], brain::learner::LocalDay(101)).unwrap();
         assert_eq!(
-            dto,
+            dto.streak,
             StreakDto {
                 count: 2,
                 completed_today: true
             }
         );
+        assert_eq!(dto.score, 0.0, "an unheard take returns grade 0.0");
         let model = s
             .session_store
             .lock_or_recover()
@@ -9785,6 +9808,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(model.last_warmup.unwrap().score, 0.0);
+    }
+
+    /// #257 S4: `WarmupResultDto.score` is THIS take's grade — the whole
+    /// point of the DTO drift — while the model keeps the day's best
+    /// (AC11). A same-day second take that grades LOWER is the only case
+    /// that tells them apart; returning `last_warmup.score` instead would
+    /// show the player yesterday's-best-style dishonesty ("you played
+    /// nothing: 100%"). Fails on exactly that mutation.
+    #[test]
+    fn returned_grade_is_this_takes_not_the_days_best() {
+        let s = state();
+        let today = brain::learner::LocalDay(300);
+        let target = brain::coach::roulette(9).sequence.target_midi;
+        let first = complete_daily_warmup_impl(&s, 9, &target, today).unwrap();
+        assert!((first.score - 1.0).abs() < 1e-6);
+
+        // Second take the same day, botched: the DTO reports the honest 0.0…
+        let second = complete_daily_warmup_impl(&s, 9, &[], today).unwrap();
+        assert_eq!(second.score, 0.0, "the DTO must carry THIS take's grade");
+        // …and the streak stays idempotent for the day.
+        assert_eq!(
+            second.streak,
+            StreakDto {
+                count: 1,
+                completed_today: true
+            }
+        );
+        // The model keeps the day's best (AC11) — proving score ≠ stored.
+        let model = s
+            .session_store
+            .lock_or_recover()
+            .get_learner_model(LOCAL_TASTE_PROFILE_USER_ID)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (model.last_warmup.unwrap().score - 1.0).abs() < 1e-6,
+            "best-of-day stays 1.0 in the model"
+        );
     }
 
     /// #257 spec §4: `completed_today` derives from `last_warmup.day`, NOT
@@ -9844,7 +9905,7 @@ mod tests {
         take.resize(2 * MAX_WARMUP_PLAYED_NOTES, 60);
         let dto = complete_daily_warmup_impl(&s, 3, &take, brain::learner::LocalDay(50)).unwrap();
         assert_eq!(
-            dto,
+            dto.streak,
             StreakDto {
                 count: 1,
                 completed_today: true

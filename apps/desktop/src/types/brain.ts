@@ -880,3 +880,27 @@ export type StarterScaleKind =
   | "mixolydian";
 
 export type StarterEnclosureStyle = "one_down_one_up" | "one_up_one_down";
+
+/** #257 S4 — the streak as the badge renders it. Matches `commands::StreakDto`. */
+export interface StreakDto {
+  count: number;
+  completed_today: boolean;
+}
+
+/** One thrown Daily Warmup Roulette challenge. Matches
+ * `commands::WarmupChallengeDto`. */
+export interface WarmupChallengeDto {
+  /** Echoed back on completion so the grade re-derives the exact deal. */
+  seed: number;
+  /** e.g. `"F# Dorian scale · up-down · 72 BPM"`. */
+  label: string;
+  /** MIDI numbers, in target order. */
+  target_notes: number[];
+}
+
+/** What a completion hands back: this take's 0–1 grade plus the updated
+ * streak. Matches `commands::WarmupResultDto`. */
+export interface WarmupResultDto {
+  score: number;
+  streak: StreakDto;
+}

@@ -108,15 +108,20 @@ same seed always yields the same challenge. The command layer supplies a fresh s
 ### IPC (command layer, `apps/desktop/src-tauri/src/commands.rs`)
 - `start_daily_warmup() -> WarmupChallengeDto` — calls `roulette(fresh_seed)`; returns label + target
   for the score view. Read-only on the model.
-- `complete_daily_warmup(seed, played_notes) -> StreakDto` — grades via `score_warmup`, computes the
-  **LocalDay at this instant from the OS local offset** (the only place a clock is read), then calls
-  `apply_daily_completion`, persists the new Learner Model, and returns `{ count, completed_today }`.
+- `complete_daily_warmup(seed, played_notes) -> WarmupResultDto` — grades via `score_warmup`,
+  computes the **LocalDay at this instant from the OS local offset** (the only place a clock is
+  read), then calls `apply_daily_completion`, persists the new Learner Model, and returns
+  `{ score, streak: { count, completed_today } }`. Documented drift (S4): the spec originally
+  returned `StreakDto` alone, but the score view must show the take's 0–1 grade ("gets a quick
+  score", §1) — the badge DTO can't carry it (`last_warmup.score` is best-of-day, not this take)
+  and re-deriving it client-side would put scoring in the frontend.
 - `get_streak() -> StreakDto` — for the badge; `completed_today` = `last_warmup.day == today_localday`.
 
 ### Frontend (`apps/desktop/src/types/brain.ts` + components)
 ```ts
 export interface StreakDto { count: number; completed_today: boolean }
 export interface WarmupChallengeDto { seed: number; label: string; target_notes: number[] /* MIDI */ }
+export interface WarmupResultDto { score: number; streak: StreakDto } // S4 drift, see above
 ```
 - A small **StreakBadge** (flame + count) on the home surface; greyed when `completed_today` is false,
   lit when true.

@@ -288,6 +288,54 @@ describe("practiceStore — state machine", () => {
     expect(s.recapError).toContain("llm timeout");
   });
 
+  // #257 S4: leaving the session abandons an unfinished warmup throw — the
+  // same stale-drill rule as #254 M1, and spec §6's "abandoned warmup
+  // writes NOTHING". Deleting either closeWarmup() call turns these red.
+  it("endSession abandons an active warmup without writing a completion", async () => {
+    const useStore = await freshStore();
+    // freshStore resets modules — import the SAME warmup store instance the
+    // fresh practiceStore is wired to.
+    const { useWarmupStore } = await import("./warmupStore");
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    useWarmupStore.setState({
+      phase: "active",
+      challenge: { seed: 5, label: "C Major", target_notes: [60] },
+      playedNotes: [60, 62],
+    });
+    mockInvoke.mockResolvedValueOnce({
+      overall_assessment: "ok",
+      strengths: [],
+      areas_to_improve: [],
+      next_session_suggestions: [],
+      duration_secs: 10,
+      phrase_count: 0,
+      instrument: "Trumpet",
+    } satisfies SessionRecap);
+    await useStore.getState().endSession();
+    expect(useWarmupStore.getState().phase).toBe("idle");
+    expect(
+      mockInvoke.mock.calls.some((c) => c[0] === "complete_daily_warmup"),
+    ).toBe(false);
+  });
+
+  it("returnToSelector abandons an active warmup without writing a completion", async () => {
+    const useStore = await freshStore();
+    const { useWarmupStore } = await import("./warmupStore");
+    mockInvoke.mockResolvedValueOnce("sid");
+    await useStore.getState().startSession("Trumpet");
+    useWarmupStore.setState({
+      phase: "active",
+      challenge: { seed: 5, label: "C Major", target_notes: [60] },
+      playedNotes: [60],
+    });
+    useStore.getState().returnToSelector();
+    expect(useWarmupStore.getState().phase).toBe("idle");
+    expect(
+      mockInvoke.mock.calls.some((c) => c[0] === "complete_daily_warmup"),
+    ).toBe(false);
+  });
+
   it("returnToSelector resets transient session state", async () => {
     const useStore = await freshStore();
     mockInvoke.mockResolvedValueOnce("sid");

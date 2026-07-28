@@ -22,6 +22,7 @@ import type {
 } from "../types/brain";
 import type { ChartEntry } from "../types/brain";
 import { useAudioStore } from "./audioStore";
+import { useWarmupStore } from "./warmupStore";
 
 /**
  * Screen routing enum — keeps Free Play as a state-machine in the
@@ -1098,6 +1099,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     // listening flag immediately so `PitchDisplay` drops back to its
     // idle copy while the recap round-trip is in flight.
     useAudioStore.getState().setListening(false);
+    // #257 S4: a warmup the session ends out from under is abandoned — no
+    // write — and must not re-mount in the next session (the #254 M1 rule).
+    useWarmupStore.getState().closeWarmup();
     const wasJam = get().listenToRoom;
     try {
       const recap = await invoke<SessionRecap>("end_practice_session");
@@ -2030,7 +2034,10 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     set({ elapsedSecs: Math.floor((Date.now() - startedAtMs) / 1000) });
   },
 
-  returnToSelector: () =>
+  returnToSelector: () => {
+    // #257 S4: same stale-warmup rule as endSession — leaving the session
+    // abandons an unfinished throw (writes nothing).
+    useWarmupStore.getState().closeWarmup();
     set({
       screen: "selector",
       bridgeNotice: null,
@@ -2059,7 +2066,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       perception: null,
       keyPinned: false,
       pinnedKey: null,
-    }),
+    });
+  },
 
   setCoachingEnabled: (on) => {
     saveCoachingPref(on);
