@@ -1,3 +1,9 @@
+## [2.52.1](https://github.com/perice-pope/ai-music-companion/compare/v2.52.0...v2.52.1) (2026-08-02)
+
+### Bug Fixes
+
+* **face:** a failed lesson start shows its error — no more dead button ([#495](https://github.com/perice-pope/ai-music-companion/issues/495)) ([#499](https://github.com/perice-pope/ai-music-companion/issues/499)) ([6b0caeb](https://github.com/perice-pope/ai-music-companion/commit/6b0caeb4cd41e4e2da8eb735cf777cb73c0f9fde)), closes [#184](https://github.com/perice-pope/ai-music-companion/issues/184) [#254](https://github.com/perice-pope/ai-music-companion/issues/254)
+
 ## [2.52.0](https://github.com/perice-pope/ai-music-companion/compare/v2.51.0...v2.52.0) (2026-07-27)
 
 ### Features
