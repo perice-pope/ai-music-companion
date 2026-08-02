@@ -64,6 +64,23 @@ describe("PocketControl (#421 S1)", () => {
     );
   });
 
+  it("a failed start shows a calm error, and a working retry clears it (#498)", async () => {
+    // The backend may have torn down a playing click before failing — the
+    // user must see WHY there's silence, not a dead button (the raw error
+    // goes to the console, not the UI).
+    mockInvoke.mockRejectedValueOnce(
+      new Error("could not start the click: bpm 500 out of range (30-300)"),
+    );
+    render(<PocketControl />);
+    fireEvent.click(screen.getByTestId("pocket-start"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Couldn't start the click/i);
+    expect(alert).not.toHaveTextContent("500");
+    // Next attempt succeeds (mock resolves again) — the message clears.
+    fireEvent.click(screen.getByTestId("pocket-start"));
+    await waitFor(() => expect(screen.queryByTestId("pocket-error")).toBeNull());
+  });
+
   it("playing state is backend-authoritative and reports the CLAMPED tempo", () => {
     render(<PocketControl />);
     // The backend clamped 300 → 220 and says so; the label must repeat it.

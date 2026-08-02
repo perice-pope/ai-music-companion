@@ -49,6 +49,24 @@ pub struct MetronomeConfig {
     pub volume: f32,
 }
 
+/// A [`MetronomeConfig`] that has passed [`MetronomeConfig::validated`].
+/// Holding one IS the proof of validity, so [`Metronome::from_validated`]
+/// can be infallible even where no error channel exists — e.g. inside the
+/// render-thread source closure of `AudioOutput::start`, where a panic
+/// would take down live audio (#498). Validation is sample-rate
+/// independent, which is what makes the split sound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValidatedMetronomeConfig(MetronomeConfig);
+
+impl MetronomeConfig {
+    /// Validate this config once, up front, where the caller can still
+    /// return an error to the user.
+    pub fn validated(self) -> Result<ValidatedMetronomeConfig, OutputError> {
+        validate_metronome_config(&self)?;
+        Ok(ValidatedMetronomeConfig(self))
+    }
+}
+
 /// Duration of a single click in milliseconds.
 const CLICK_DURATION_MS: f64 = 30.0;
 /// Frequency of a normal click in Hz.
@@ -125,9 +143,16 @@ impl Metronome {
     /// The first click fires on the first call to [`Self::next_sample`].
     /// Subsequent clicks fire every `samples_per_beat` samples thereafter.
     pub fn new(config: MetronomeConfig, sample_rate: u32) -> Result<Self, OutputError> {
-        validate_metronome_config(&config)?;
+        Ok(Self::from_validated(config.validated()?, sample_rate))
+    }
+
+    /// Create a metronome from a pre-validated config. Infallible by
+    /// construction: a [`ValidatedMetronomeConfig`] can only be obtained
+    /// through validation, so no failure path (and no panic) exists here.
+    pub fn from_validated(config: ValidatedMetronomeConfig, sample_rate: u32) -> Self {
+        let ValidatedMetronomeConfig(config) = config;
         let samples_in_click = ((CLICK_DURATION_MS / 1000.0) * sample_rate as f64) as usize;
-        Ok(Self {
+        Self {
             config,
             sample_rate,
             beat_index: 0,
@@ -142,7 +167,7 @@ impl Metronome {
             count_in_beats_remaining: 0,
             samples_emitted: 0,
             fire_tx: ClickFireTx(None),
-        })
+        }
     }
 
     /// #421 S1: prepend `bars` count-in bars — every click in them is the
@@ -551,6 +576,56 @@ mod tests {
     fn metronome_accepts_boundary_bpm() {
         assert!(Metronome::new(metro(30.0), SR).is_ok());
         assert!(Metronome::new(metro(300.0), SR).is_ok());
+    }
+
+    #[test]
+    fn validated_config_rejects_each_invalid_field() {
+        // #498: `validated()` is the gate `start_pocket` relies on before
+        // handing the config to the infallible render-thread constructor.
+        // One probe per error class; full equivalence with `Metronome::new`
+        // is structural (`new` delegates through `validated()`).
+        let err = metro(29.0).validated().unwrap_err();
+        assert_eq!(err, OutputError::BpmOutOfRange(29.0));
+
+        let mut bad_sig = metro(120.0);
+        bad_sig.time_signature = (4, 3);
+        let err = bad_sig.validated().unwrap_err();
+        assert_eq!(err, OutputError::InvalidTimeSignature(4, 3));
+
+        let mut bad_vol = metro(120.0);
+        bad_vol.volume = 1.5;
+        let err = bad_vol.validated().unwrap_err();
+        assert_eq!(err, OutputError::VolumeOutOfRange(1.5));
+
+        assert!(metro(120.0).validated().is_ok());
+    }
+
+    #[test]
+    fn from_validated_produces_a_working_metronome() {
+        // #498: the infallible path ships straight to the render thread
+        // with no error channel, so its output is pinned in absolute
+        // terms — wrong samples-per-beat math, a stray click firing at
+        // construction, or a silent stub would each go red here.
+        let valid = metro(120.0).validated().unwrap();
+        let mut m = Metronome::from_validated(valid, 44_100);
+        // 120 BPM at 44100: 60 * 44100 / 120 = 22050 samples per beat.
+        assert_eq!(m.samples_per_beat(), 22_050);
+        assert_eq!(m.current_beat(), 0);
+        assert!(
+            !m.is_clicking(),
+            "no click may play before the first sample"
+        );
+        // 2 seconds at 120 BPM = 4 beats -> 4 click windows of ~30 ms.
+        let mut nonzero = 0usize;
+        for _ in 0..(2 * 44_100) {
+            if m.next_sample().abs() > 1e-5 {
+                nonzero += 1;
+            }
+        }
+        assert!(
+            (4 * 800..=4 * 1500).contains(&nonzero),
+            "expected ~4 click windows of nonzero audio, got {nonzero}"
+        );
     }
 
     #[test]
