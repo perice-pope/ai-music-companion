@@ -1,3 +1,9 @@
+## [2.52.2](https://github.com/perice-pope/ai-music-companion/compare/v2.52.1...v2.52.2) (2026-08-02)
+
+### Bug Fixes
+
+* the two hot-path invariant .expect()s become typed flow ([#498](https://github.com/perice-pope/ai-music-companion/issues/498)) ([#500](https://github.com/perice-pope/ai-music-companion/issues/500)) ([edb70c2](https://github.com/perice-pope/ai-music-companion/commit/edb70c27c55767d2a614531a49af7658e0f50764))
+
 ## [2.52.1](https://github.com/perice-pope/ai-music-companion/compare/v2.52.0...v2.52.1) (2026-08-02)
 
 ### Bug Fixes
