@@ -342,7 +342,7 @@ describe("PracticeSession", () => {
     expect(screen.queryByTestId("start-lesson")).not.toBeInTheDocument();
   });
 
-  it("the start-lesson button fires start_lesson", () => {
+  it("the start-lesson button fires start_lesson", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
       if (cmd === "start_lesson")
@@ -357,6 +357,60 @@ describe("PracticeSession", () => {
     render(<PracticeSession />);
     fireEvent.click(screen.getByTestId("start-lesson"));
     expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
+    // AC3 (#495): the happy path never shows the failure alert.
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // #495: a failed lesson start must SHOW — the same dead-button class
+  // fixed for the score screen in #184. Rejects with a plain string on
+  // purpose: Tauri invoke rejections often aren't Error instances, and the
+  // message must not render as "[object Object]".
+  it("a failed lesson start shows the error instead of a dead button", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_lesson")
+        return Promise.reject("the coach isn't ready yet");
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Couldn't start the lesson: the coach isn't ready yet",
+    );
+    // The button stays mounted — it is the retry affordance.
+    expect(screen.getByTestId("start-lesson")).toBeInTheDocument();
+  });
+
+  it("retrying after a failed start clears the error and mounts the lesson", async () => {
+    let fail = true;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_lesson") {
+        return fail
+          ? Promise.reject("mic busy")
+          : Promise.resolve({
+              seed: 1,
+              score: null,
+              drill: LESSON_DRILL,
+              recap: null,
+            });
+      }
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    await screen.findByRole("alert");
+
+    fail = false;
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   // #341 wiring AC: the SCORE branch hands ScoreView the measure-tap

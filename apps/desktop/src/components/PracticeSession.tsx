@@ -49,6 +49,10 @@ export default function PracticeSession() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  // Surfaced when starting a lesson fails — previously this only went to
+  // console.error, so the button looked like a dead no-op (#495, same
+  // failure class as #184).
+  const [lessonStartError, setLessonStartError] = useState<string | null>(null);
   // Catalog is fetched from the backend. Starts as `null` (loading);
   // we don't render the dropdown list items until it resolves.
   const [instruments, setInstruments] = useState<InstrumentInfo[]>([]);
@@ -97,6 +101,16 @@ export default function PracticeSession() {
       await switchInstrument(instrumentName, inst?.vibratoToleranceCents);
     } catch (err) {
       setSwitchError(String(err));
+    }
+  };
+
+  const onStartLesson = async () => {
+    setLessonStartError(null);
+    try {
+      await startLesson();
+    } catch (err) {
+      // Surface the failure in the UI instead of swallowing it (#495).
+      setLessonStartError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -207,14 +221,24 @@ export default function PracticeSession() {
         <div className="flex items-center gap-4">
           <SessionTimer />
           {!lessonActive && (
-            <button
-              type="button"
-              onClick={() => void startLesson().catch(console.error)}
-              data-testid="start-lesson"
-              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
-            >
-              Give me a lesson
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => void onStartLesson()}
+                data-testid="start-lesson"
+                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+              >
+                Give me a lesson
+              </button>
+              {lessonStartError && (
+                <p
+                  className="absolute right-0 top-full z-10 mt-1 w-56 rounded border border-red-500 bg-red-900/90 px-2 py-1 text-xs text-red-200"
+                  role="alert"
+                >
+                  Couldn't start the lesson: {lessonStartError}
+                </p>
+              )}
+            </div>
           )}
           <PocketControl />
           <AccompanimentToggle />
