@@ -3160,32 +3160,40 @@ pub async fn start_pocket<R: Runtime>(
     emit_accompaniment_status(&app, false);
 
     let (tempo, beats) = clamp_pocket_params(tempo_bpm, beats_per_bar);
-    // #498: validate HERE, where an error can still reach the user as the
-    // calm banner — not inside the render closure, where the only outlet
-    // would be a panic on the audio path. A red result means the clamp and
-    // the metronome's valid range have drifted apart (a bug, pinned by
-    // `clamped_pocket_params_always_form_a_valid_click_config`), and the
-    // user sees a message instead of a crash.
-    let config = ears::output::MetronomeConfig {
-        bpm: tempo,
-        time_signature: (beats, 4),
-        accent_first_beat: true,
-        volume: 0.8,
-    }
-    .validated()
-    .map_err(|e| format!("could not start the click: {e}"))?;
+    // #498: validate HERE, where an error can still reach the user as a
+    // calm message (PocketControl catches the rejection) — not inside the
+    // render closure, where the only outlet would be a panic on the audio
+    // path. A red result means the clamp and the metronome's valid range
+    // have drifted apart (a bug, pinned by
+    // `clamped_pocket_params_always_form_a_valid_click_config`).
+    let config = match pocket_click_config(tempo, beats).validated() {
+        Ok(config) => config,
+        Err(e) => {
+            // The previous click is already torn down — report it, or the
+            // UI keeps a breathing pulse over silence.
+            emit_pocket_status(&app, false, 0.0);
+            return Err(format!("could not start the click: {e}"));
+        }
+    };
     // #421 S2: the tempo channel — Follow/Handoff push, render pops.
     let (tempo_tx, tempo_rx) = ears::output_engine::pocket_tempo_channel(16);
     // #445: the click-fire channel — the render-side metronome reports
     // every click's sample index; the audio worker's click gate consumes.
     let (fire_tx, fire_rx) = ears::output_engine::click_fire_channel(CLICK_FIRE_CHANNEL_CAPACITY);
-    let output = ears::output_engine::AudioOutput::start(move |sample_rate| {
+    let output = match ears::output_engine::AudioOutput::start(move |sample_rate| {
         let metronome = ears::output::Metronome::from_validated(config, sample_rate)
             .with_count_in(if count_in { 1 } else { 0 })
             .with_fire_channel(fire_tx);
         ears::output_engine::TempoFedMetronome::new(metronome, tempo_rx)
-    })
-    .map_err(|e| format!("could not start the click: {e}"))?;
+    }) {
+        Ok(output) => output,
+        Err(e) => {
+            // Same stale-status hazard as above: the old click is gone and
+            // the new one never started.
+            emit_pocket_status(&app, false, 0.0);
+            return Err(format!("could not start the click: {e}"));
+        }
+    };
     // #445: install the click gate. The epoch is recorded now — playback
     // of the metronome's sample 0 begins (device already running) the
     // moment `AudioOutput::start` returns; the few-ms slop is far inside
@@ -3305,6 +3313,19 @@ fn push_clamped_tempo(tx: &mut ringbuf::HeapProd<f64>, tempo_bpm: f64) {
     use ringbuf::traits::Producer;
     let (tempo, _) = clamp_pocket_params(tempo_bpm, 4);
     let _ = tx.try_push(tempo); // full ring = drop, fine
+}
+
+/// The Pocket's click config from clamped params. One function shared by
+/// `start_pocket` and the #498 regression pin, so the test exercises the
+/// exact config production builds — a drift in any field here is a drift
+/// the pin sees.
+fn pocket_click_config(tempo: f64, beats: u8) -> ears::output::MetronomeConfig {
+    ears::output::MetronomeConfig {
+        bpm: tempo,
+        time_signature: (beats, 4),
+        accent_first_beat: true,
+        volume: 0.8,
+    }
 }
 
 /// #421 S1: the Pocket's parameter clamps — tempo 40..=220 (NaN → 40),
@@ -8640,13 +8661,7 @@ mod tests {
         for &t in &hostile_tempos {
             for &b in &hostile_beats {
                 let (tempo, beats) = clamp_pocket_params(t, b);
-                let validated = ears::output::MetronomeConfig {
-                    bpm: tempo,
-                    time_signature: (beats, 4),
-                    accent_first_beat: true,
-                    volume: 0.8,
-                }
-                .validated();
+                let validated = pocket_click_config(tempo, beats).validated();
                 assert!(
                     validated.is_ok(),
                     "clamp({t}, {b}) -> ({tempo}, {beats}) rejected by the \

@@ -581,8 +581,9 @@ mod tests {
     #[test]
     fn validated_config_rejects_each_invalid_field() {
         // #498: `validated()` is the gate `start_pocket` relies on before
-        // handing the config to the infallible render-thread constructor —
-        // it must reject exactly what `Metronome::new` rejects.
+        // handing the config to the infallible render-thread constructor.
+        // One probe per error class; full equivalence with `Metronome::new`
+        // is structural (`new` delegates through `validated()`).
         let err = metro(29.0).validated().unwrap_err();
         assert_eq!(err, OutputError::BpmOutOfRange(29.0));
 
@@ -600,20 +601,31 @@ mod tests {
     }
 
     #[test]
-    fn from_validated_behaves_identically_to_new() {
-        // #498: the infallible path is only sound if it builds the SAME
-        // metronome `new` would — same beat timing, same rendered clicks.
+    fn from_validated_produces_a_working_metronome() {
+        // #498: the infallible path ships straight to the render thread
+        // with no error channel, so its output is pinned in absolute
+        // terms — wrong samples-per-beat math, a stray click firing at
+        // construction, or a silent stub would each go red here.
         let valid = metro(120.0).validated().unwrap();
-        let mut via_proof = Metronome::from_validated(valid, SR);
-        let mut via_new = Metronome::new(metro(120.0), SR).unwrap();
-        assert_eq!(via_proof.samples_per_beat(), via_new.samples_per_beat());
-        for i in 0..(2 * SR as usize) {
-            let (a, b) = (via_proof.next_sample(), via_new.next_sample());
-            assert!(
-                (a - b).abs() <= EPS,
-                "sample {i} diverged: from_validated={a}, new={b}"
-            );
+        let mut m = Metronome::from_validated(valid, 44_100);
+        // 120 BPM at 44100: 60 * 44100 / 120 = 22050 samples per beat.
+        assert_eq!(m.samples_per_beat(), 22_050);
+        assert_eq!(m.current_beat(), 0);
+        assert!(
+            !m.is_clicking(),
+            "no click may play before the first sample"
+        );
+        // 2 seconds at 120 BPM = 4 beats -> 4 click windows of ~30 ms.
+        let mut nonzero = 0usize;
+        for _ in 0..(2 * 44_100) {
+            if m.next_sample().abs() > 1e-5 {
+                nonzero += 1;
+            }
         }
+        assert!(
+            (4 * 800..=4 * 1500).contains(&nonzero),
+            "expected ~4 click windows of nonzero audio, got {nonzero}"
+        );
     }
 
     #[test]

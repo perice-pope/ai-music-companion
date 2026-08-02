@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { usePracticeStore } from "../stores/practiceStore";
 
 /**
@@ -22,9 +23,23 @@ export default function PocketControl() {
   const setPocketCountIn = usePracticeStore((s) => s.setPocketCountIn);
   const startPocket = usePracticeStore((s) => s.startPocket);
   const stopPocket = usePracticeStore((s) => s.stopPocket);
+  // #498: a rejected start_pocket must say so — the backend may have torn
+  // down a playing click before failing, so silence with no message would
+  // read as a broken button. Same calm-surface pattern as the band toggle.
+  const [startError, setStartError] = useState<string | null>(null);
 
   const inSession = status === "listening";
   const beatSecs = 60 / Math.max(tempo, 1);
+
+  const onStart = async () => {
+    setStartError(null);
+    try {
+      await startPocket();
+    } catch (err) {
+      console.error("click start failed:", err);
+      setStartError("Couldn't start the click — check your audio output.");
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1" data-testid="pocket-control">
@@ -136,11 +151,20 @@ export default function PocketControl() {
               type="button"
               data-testid="pocket-start"
               disabled={!inSession}
-              onClick={() => void startPocket()}
+              onClick={() => void onStart()}
               className="rounded-md border border-gray-700 px-2 py-1 text-sm text-gray-200 hover:bg-gray-800 disabled:opacity-40"
             >
               ▔▏Click
             </button>
+            {startError && (
+              <span
+                className="text-xs text-red-400"
+                role="alert"
+                data-testid="pocket-error"
+              >
+                {startError}
+              </span>
+            )}
           </>
         )}
       </div>
