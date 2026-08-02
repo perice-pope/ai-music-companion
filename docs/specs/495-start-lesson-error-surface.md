@@ -27,8 +27,11 @@ unmounts both with the button).
 1. Given `start_lesson` rejects, clicking "Give me a lesson" renders a `role="alert"`
    element containing the backend's message.
 2. Clicking the button again clears the previous error before the new attempt; if the
-   retry succeeds, no alert remains and the lesson takes the stage.
-3. A successful first start renders no alert.
+   retry succeeds, no alert remains — including after the lesson ends and the button
+   remounts (the error state must be cleared, not merely hidden by unmount).
+3. A successful first start renders no alert at any point while the button is mounted.
+4. A second tap while a start is in flight fires no second `start_lesson` (the
+   `submitDrill` #254 M2 double-tap class).
 
 ## 6. Edge cases & failure modes
 - Non-`Error` rejection values (Tauri invoke rejects with strings): stringified, not
@@ -40,9 +43,11 @@ unmounts both with the button).
 | AC / edge | Test | Asserts |
 |---|---|---|
 | AC1 | `PracticeSession.test.tsx` "a failed lesson start shows the error instead of a dead button" | alert with backend message appears after rejected invoke |
-| AC2 | same file, "retrying after a failed start clears the error" | alert gone after successful retry, lesson panel mounted |
-| AC3 | existing "the start-lesson button fires start_lesson" + new assert | no alert on success path |
-| string rejection | AC1 test rejects with a plain string | message shown verbatim |
+| AC2 | same file, "retrying after a failed start clears the error and mounts the lesson" | alert gone after successful retry AND after the button remounts post-lesson (kills the delete-the-clear mutation) |
+| AC3 | existing "the start-lesson button fires start_lesson" + asserts before click, after click, after mount | no alert while the button is mounted (kills the unconditional-alert mutation) |
+| AC4 | "a second tap during an in-flight start fires no second start_lesson" | exactly one `start_lesson` invoke across a double-tap |
+| string rejection | AC1 test rejects with a plain string | message shown verbatim, never `[object Object]` |
+| Error rejection | "an Error rejection shows its message without the Error: prefix" | `.message` rendered, no `Error:` stringification (kills the collapsed-ternary mutation) |
 
 ## 8. Architecture / approach
 Frontend-only, matching `ScorePicker.tsx`'s #184 handling: local state set in a

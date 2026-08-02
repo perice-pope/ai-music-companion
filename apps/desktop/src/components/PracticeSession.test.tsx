@@ -355,9 +355,13 @@ describe("PracticeSession", () => {
       return Promise.reject(new Error(`no mock configured for "${cmd}"`));
     });
     render(<PracticeSession />);
+    // AC3 (#495): no alert while the button is mounted — this must run
+    // BEFORE the lesson mounts, or an unconditionally-rendered alert
+    // would unmount with the button block and slip past the assertion.
+    expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByTestId("start-lesson"));
     expect(mockInvoke).toHaveBeenCalledWith("start_lesson", {});
-    // AC3 (#495): the happy path never shows the failure alert.
+    expect(screen.queryByRole("alert")).toBeNull();
     await vi.waitFor(() => {
       expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
     });
@@ -410,7 +414,57 @@ describe("PracticeSession", () => {
     await vi.waitFor(() => {
       expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
     });
+
+    // The error must be CLEARED, not just hidden by the button block
+    // unmounting: end the lesson so the button remounts, and assert the
+    // stale "mic busy" alert does not resurface (review must-fix 2).
+    usePracticeStore.setState({ lessonDrill: null, lessonRecap: null });
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("start-lesson")).toBeInTheDocument();
+    });
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // #495 review nit 3: the store's own throw path rejects with an Error
+  // instance — its .message must render, not "Error: …" stringification.
+  it("an Error rejection shows its message without the Error: prefix", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_lesson")
+        return Promise.reject(new Error("the coach is still warming up"));
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Couldn't start the lesson: the coach is still warming up",
+    );
+    expect(alert.textContent).not.toContain("Error:");
+  });
+
+  // #495 review nit 4: a double-tap while a start is in flight must not
+  // fire a second start_lesson (same class as submitDrill's #254 M2 guard).
+  it("a second tap during an in-flight start fires no second start_lesson", async () => {
+    let resolveStart: (v: unknown) => void = () => {};
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_instruments") return Promise.resolve(TEST_INSTRUMENTS);
+      if (cmd === "start_lesson")
+        return new Promise((res) => {
+          resolveStart = res;
+        });
+      return Promise.reject(new Error(`no mock configured for "${cmd}"`));
+    });
+    render(<PracticeSession />);
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    fireEvent.click(screen.getByTestId("start-lesson"));
+    expect(
+      mockInvoke.mock.calls.filter((args) => args[0] === "start_lesson").length,
+    ).toBe(1);
+    resolveStart({ seed: 1, score: null, drill: LESSON_DRILL, recap: null });
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("lesson-panel")).toBeInTheDocument();
+    });
   });
 
   // #341 wiring AC: the SCORE branch hands ScoreView the measure-tap

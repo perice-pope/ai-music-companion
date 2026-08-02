@@ -53,6 +53,7 @@ export default function PracticeSession() {
   // console.error, so the button looked like a dead no-op (#495, same
   // failure class as #184).
   const [lessonStartError, setLessonStartError] = useState<string | null>(null);
+  const [lessonStarting, setLessonStarting] = useState(false);
   // Catalog is fetched from the backend. Starts as `null` (loading);
   // we don't render the dropdown list items until it resolves.
   const [instruments, setInstruments] = useState<InstrumentInfo[]>([]);
@@ -105,12 +106,19 @@ export default function PracticeSession() {
   };
 
   const onStartLesson = async () => {
+    // Double-tap guard: a second tap while one start is in flight would
+    // fire a second start_lesson — same class as submitDrill's (#254 M2).
+    if (lessonStarting) return;
+    setLessonStarting(true);
     setLessonStartError(null);
     try {
       await startLesson();
     } catch (err) {
       // Surface the failure in the UI instead of swallowing it (#495).
+      console.error("start_lesson failed:", err);
       setLessonStartError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLessonStarting(false);
     }
   };
 
@@ -225,8 +233,9 @@ export default function PracticeSession() {
               <button
                 type="button"
                 onClick={() => void onStartLesson()}
+                disabled={lessonStarting}
                 data-testid="start-lesson"
-                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
               >
                 Give me a lesson
               </button>
