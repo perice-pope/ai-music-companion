@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { usePracticeStore } from "../stores/practiceStore";
 import CellStaff from "./CellStaff";
@@ -96,11 +96,10 @@ const ENCLOSURES: { label: string; style: StarterEnclosureStyle }[] = [
   { label: "enclose ↑↓", style: "one_up_one_down" },
 ];
 
+type OpenerDirection = "forward" | "reversed" | "varied";
+
 /** #419 S2b: recipe-level directions — exclusive chips, forward default. */
-const DIRECTIONS: {
-  label: string;
-  value: "forward" | "reversed" | "varied";
-}[] = [
+const DIRECTIONS: { label: string; value: OpenerDirection }[] = [
   { label: "forward", value: "forward" },
   { label: "reversed", value: "reversed" },
   { label: "varied", value: "varied" },
@@ -119,7 +118,7 @@ interface SavedRecipe {
   id: number;
   name: string;
   items: StarterItem[];
-  direction: "forward" | "reversed" | "varied";
+  direction: OpenerDirection;
 }
 
 /** #419 S4: yesterday's opener. Mirrors `commands::LastOpenerDto`. */
@@ -189,6 +188,189 @@ export function parseCustomSequence(raw: string): number[] | null {
     return null;
   }
   return degrees;
+}
+
+/** Every bank row wears the same chip. */
+const BANK_CHIP =
+  "rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700";
+
+/** A bank row: uppercase heading over a wrapping chip strip. */
+function BankSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+        {title}
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">{children}</div>
+    </>
+  );
+}
+
+/**
+ * The folded bank behind "More options" (#471 pt 3): the sub-banks, the
+ * custom entry, and the direction chips. Presentation only — every tap
+ * speaks the same semantic wire shapes through the panel's handlers, and
+ * the custom entry's state stays with the panel so its notice keeps
+ * rendering beside the other panel notices.
+ *
+ * Must stay module-level: defined inside OpenersPanel it would be a new
+ * component type each render, remounting the custom input (and dropping
+ * its focus) on every keystroke.
+ */
+function OpenerBank({
+  onAdd,
+  direction,
+  onDirection,
+  customSeq,
+  onCustomSeq,
+  onAddCustom,
+}: {
+  onAdd: (item: StarterItem) => Promise<void>;
+  direction: OpenerDirection;
+  onDirection: (d: OpenerDirection) => void;
+  customSeq: string;
+  onCustomSeq: (value: string) => void;
+  onAddCustom: () => void;
+}) {
+  return (
+    <div data-testid="opener-more">
+      {/* The bank — S1's two live entries. */}
+      <BankSection title="Notes">
+        {DEGREES.map((d) => (
+          <button
+            key={d}
+            type="button"
+            data-testid={`opener-note-${d}`}
+            onClick={() => void onAdd({ type: "note_sequence", degrees: [d] })}
+            className="h-8 w-8 rounded-md bg-indigo-800/60 text-sm font-semibold text-indigo-100 hover:bg-indigo-700"
+          >
+            {d}
+          </button>
+        ))}
+      </BankSection>
+
+      <BankSection title="Note sequence">
+        {SEQUENCE_PRESETS.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            data-testid={`opener-seq-${p.label}`}
+            onClick={() =>
+              void onAdd({ type: "note_sequence", degrees: p.degrees })
+            }
+            className={BANK_CHIP}
+          >
+            {p.label}
+          </button>
+        ))}
+      </BankSection>
+
+      {/* #419 S2a: custom sequence — parsed client-side into the SAME
+      note_sequence wire shape; degree validity stays the backend's. */}
+      <div className="mt-2 flex gap-1.5">
+        <input
+          type="text"
+          data-testid="opener-custom-input"
+          value={customSeq}
+          onChange={(e) => onCustomSeq(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onAddCustom();
+          }}
+          placeholder="your own: 1 5 3 2"
+          className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder-gray-500"
+        />
+        <button
+          type="button"
+          data-testid="opener-custom-add"
+          onClick={onAddCustom}
+          className={BANK_CHIP}
+        >
+          Add
+        </button>
+      </div>
+
+      <BankSection title="Intervals">
+        {INTERVALS.map((iv) => (
+          <button
+            key={iv.number}
+            type="button"
+            data-testid={`opener-interval-${iv.number}`}
+            onClick={() => void onAdd({ type: "interval", number: iv.number })}
+            className={BANK_CHIP}
+          >
+            {iv.label}
+          </button>
+        ))}
+      </BankSection>
+
+      <BankSection title="Chords">
+        {CHORDS.map((c) => (
+          <button
+            key={c.kind}
+            type="button"
+            data-testid={`opener-chord-${c.kind}`}
+            onClick={() => void onAdd({ type: "chord", kind: c.kind })}
+            className={BANK_CHIP}
+          >
+            {c.label}
+          </button>
+        ))}
+      </BankSection>
+
+      <BankSection title="Scales">
+        {SCALES.map((sc) => (
+          <button
+            key={sc.kind}
+            type="button"
+            data-testid={`opener-scale-${sc.kind}`}
+            onClick={() => void onAdd({ type: "scale", kind: sc.kind })}
+            className={BANK_CHIP}
+          >
+            {sc.label}
+          </button>
+        ))}
+      </BankSection>
+
+      <BankSection title="Enclosures">
+        {ENCLOSURES.map((en) => (
+          <button
+            key={en.style}
+            type="button"
+            data-testid={`opener-enclosure-${en.style}`}
+            onClick={() => void onAdd({ type: "enclosure", style: en.style })}
+            className={BANK_CHIP}
+          >
+            {en.label}
+          </button>
+        ))}
+      </BankSection>
+
+      <BankSection title="Pattern direction">
+        {DIRECTIONS.map((d) => (
+          <button
+            key={d.value}
+            type="button"
+            data-testid={`opener-direction-${d.value}`}
+            aria-pressed={direction === d.value}
+            onClick={() => onDirection(d.value)}
+            className={`rounded-md px-2.5 py-1 text-sm ${
+              direction === d.value
+                ? "bg-indigo-600 font-semibold text-white"
+                : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </BankSection>
+    </div>
+  );
 }
 
 export default function OpenersPanel() {
@@ -434,171 +616,14 @@ export default function OpenersPanel() {
       </button>
 
       {more && (
-        <div data-testid="opener-more">
-          {/* The bank — S1's two live entries. */}
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Notes
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {DEGREES.map((d) => (
-              <button
-                key={d}
-                type="button"
-                data-testid={`opener-note-${d}`}
-                onClick={() =>
-                  void addOpenerItem({ type: "note_sequence", degrees: [d] })
-                }
-                className="h-8 w-8 rounded-md bg-indigo-800/60 text-sm font-semibold text-indigo-100 hover:bg-indigo-700"
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Note sequence
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {SEQUENCE_PRESETS.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                data-testid={`opener-seq-${p.label}`}
-                onClick={() =>
-                  void addOpenerItem({
-                    type: "note_sequence",
-                    degrees: p.degrees,
-                  })
-                }
-                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          {/* #419 S2a: custom sequence — parsed client-side into the SAME
-          note_sequence wire shape; degree validity stays the backend's. */}
-          <div className="mt-2 flex gap-1.5">
-            <input
-              type="text"
-              data-testid="opener-custom-input"
-              value={customSeq}
-              onChange={(e) => setCustomSeq(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addCustom();
-              }}
-              placeholder="your own: 1 5 3 2"
-              className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder-gray-500"
-            />
-            <button
-              type="button"
-              data-testid="opener-custom-add"
-              onClick={addCustom}
-              className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-            >
-              Add
-            </button>
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Intervals
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {INTERVALS.map((iv) => (
-              <button
-                key={iv.number}
-                type="button"
-                data-testid={`opener-interval-${iv.number}`}
-                onClick={() =>
-                  void addOpenerItem({ type: "interval", number: iv.number })
-                }
-                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              >
-                {iv.label}
-              </button>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Chords
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {CHORDS.map((c) => (
-              <button
-                key={c.kind}
-                type="button"
-                data-testid={`opener-chord-${c.kind}`}
-                onClick={() =>
-                  void addOpenerItem({ type: "chord", kind: c.kind })
-                }
-                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Scales
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {SCALES.map((sc) => (
-              <button
-                key={sc.kind}
-                type="button"
-                data-testid={`opener-scale-${sc.kind}`}
-                onClick={() =>
-                  void addOpenerItem({ type: "scale", kind: sc.kind })
-                }
-                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              >
-                {sc.label}
-              </button>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Enclosures
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {ENCLOSURES.map((en) => (
-              <button
-                key={en.style}
-                type="button"
-                data-testid={`opener-enclosure-${en.style}`}
-                onClick={() =>
-                  void addOpenerItem({ type: "enclosure", style: en.style })
-                }
-                className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              >
-                {en.label}
-              </button>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-            Pattern direction
-          </p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {DIRECTIONS.map((d) => (
-              <button
-                key={d.value}
-                type="button"
-                data-testid={`opener-direction-${d.value}`}
-                aria-pressed={openerDirection === d.value}
-                onClick={() => setOpenerDirection(d.value)}
-                className={`rounded-md px-2.5 py-1 text-sm ${
-                  openerDirection === d.value
-                    ? "bg-indigo-600 font-semibold text-white"
-                    : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
-                }`}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <OpenerBank
+          onAdd={addOpenerItem}
+          direction={openerDirection}
+          onDirection={setOpenerDirection}
+          customSeq={customSeq}
+          onCustomSeq={setCustomSeq}
+          onAddCustom={addCustom}
+        />
       )}
 
       {/* #419 S3: the bank's last entry, live — YOUR patterns. */}

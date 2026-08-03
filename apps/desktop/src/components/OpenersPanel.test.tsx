@@ -353,6 +353,28 @@ describe("OpenersPanel (#419 S1)", () => {
     ).toBe("");
   });
 
+  it("Enter in the custom entry adds — same wire as the Add button", async () => {
+    // The keyboard path has its own handler; without this pin, dropping
+    // onKeyDown (the classic extract-component casualty) stays green.
+    openFull();
+    fireEvent.change(screen.getByTestId("opener-custom-input"), {
+      target: { value: "1 5 3 2" },
+    });
+    fireEvent.keyDown(screen.getByTestId("opener-custom-input"), {
+      key: "Enter",
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenLastCalledWith("preview_opener", {
+        items: [{ type: "note_sequence", degrees: [1, 5, 3, 2] }],
+        tonic: null,
+        direction: "forward",
+      }),
+    );
+    expect(
+      (screen.getByTestId("opener-custom-input") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
   it("custom junk gets a calm client notice and NOTHING goes over the wire", async () => {
     openFull();
     fireEvent.change(screen.getByTestId("opener-custom-input"), {
