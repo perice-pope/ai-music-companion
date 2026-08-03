@@ -1947,6 +1947,23 @@ mod tests {
         );
     }
 
+    /// The `.stacked` qualifier is load-bearing: an ARPEGGIATED chord row
+    /// is melodic material and edits like any other row — only block
+    /// chords refuse. Fails if the guard widens to any chord spec, which
+    /// would lock arpeggio drill specs (stored-spec replays carry them)
+    /// out of note edits.
+    #[test]
+    fn arpeggiated_chord_rows_stay_editable() {
+        let model = LearnerModel::default();
+        let (mut state, _) = start_explore_chord(9, theory::ChordQuality::Min7, &model, 5);
+        if let Some(c) = state.spec.chord.as_mut() {
+            c.stacked = false;
+        }
+        let (next, _) = edit_explore_note(&state, 0, &NoteEdit::Semitones { by: 1 })
+            .expect("an arpeggiated chord row edits like any melodic row");
+        assert!(next.spec.cell.is_some(), "the edit bakes a cell");
+    }
+
     /// Review M1 (T4a): the chips flow must never destroy the tapped jam
     /// chord — a difficulty bump keeps the block-chord figure (rebuilding
     /// tempo/roots around it), and the fresh-material chips REPLACE it
