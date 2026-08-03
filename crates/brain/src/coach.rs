@@ -1111,102 +1111,9 @@ pub fn apply_explore_delta_windowed(
         VariationDelta::ReshuffleRoots => {
             next.spec.randomize_roots = true;
         }
-        VariationDelta::BumpDifficulty { by } => {
-            let d = i16::from(next.difficulty) + i16::from(*by);
-            next.difficulty = d.clamp(0, i16::from(MAX_DIFFICULTY)) as u8;
-            // Rebuild the knobs at the new step, preserving the explored
-            // scale AND any hand-edited cell — a difficulty chip must never
-            // silently destroy the player's own material (review M4); the
-            // tempo/roots knobs still ramp meaningfully around a cell.
-            let scale = next.spec.scale;
-            let cell = next.spec.cell.take();
-            let degrees = next.spec.degrees.take();
-            // A tapped jam chord (#349 T4a) is the player's material too —
-            // the ladder rebuild must not turn their Am7 blocks into a
-            // scale run (review M1). Same for a lifted progression (T3c).
-            let chord = next.spec.chord.take();
-            let progression = next.spec.progression.take();
-            let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
-            next.spec = spec;
-            if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
-                m.scale = prev.scale;
-            }
-            next.spec.cell = cell;
-            // Degree patterns are the player's material too (#289) — they
-            // survive the ladder rebuild exactly like a hand-edited cell.
-            next.spec.degrees = degrees;
-            if chord.is_some() {
-                // The chord IS the figure: the rebuilt scale would shadow
-                // it (scale > chord precedence), so drop the ladder scale.
-                next.spec.scale = None;
-                next.spec.chord = chord;
-                next.spec.enclosure = None;
-            }
-            if progression.is_some() {
-                // Progression outranks scale by precedence, but clear the
-                // ladder scale anyway so the spec reads what it deals.
-                next.spec.scale = None;
-                next.spec.progression = progression;
-                next.spec.enclosure = None;
-            }
-        }
-        VariationDelta::DifferentScale => {
-            // With a hand-edited cell the scale figure is shadowed (cell has
-            // precedence) — this chip is then explicitly "fresh material":
-            // discard the cell, back to the catalog; undo recovers it
-            // (review M3).
-            next.spec.cell = None;
-            // Fresh material replaces a tapped jam chord too (#349 T4a) —
-            // never a silent no-op; undo recovers the chord row. Same for
-            // a lifted progression (T3c).
-            next.spec.chord = None;
-            next.spec.progression = None;
-            if next.spec.scale.is_none() {
-                next.spec.scale = Some(ScaleModifier {
-                    scale: ScaleType::Major,
-                    pattern: ScalePattern::Up,
-                });
-            }
-            if let Some(m) = next.spec.scale.as_mut() {
-                let current = m.scale;
-                let idx = (next.seed as usize) % EXPLORE_SCALES.len();
-                let pick = EXPLORE_SCALES
-                    .iter()
-                    .cycle()
-                    .skip(idx)
-                    .find(|&&sc| sc != current)
-                    .copied()
-                    .unwrap_or(ScaleType::Major);
-                m.scale = pick;
-            }
-        }
-        VariationDelta::TryPattern => {
-            // Like DifferentScale, a pattern is "fresh material" vs a hand-
-            // edited cell — discard the cell (undo recovers it) and pull a
-            // pattern from the database, never the one already playing.
-            next.spec.cell = None;
-            // Fresh material replaces a tapped jam chord too (#349 T4a).
-            next.spec.chord = None;
-            next.spec.progression = None;
-            // Degrees need a scale to map through; give a default rather than
-            // silently no-op if explore ever seeds from scale-less material.
-            if next.spec.scale.is_none() {
-                next.spec.scale = Some(ScaleModifier {
-                    scale: ScaleType::Major,
-                    pattern: ScalePattern::Up,
-                });
-            }
-            let current = next.spec.degrees.clone();
-            let idx = (next.seed as usize) % DEGREE_PATTERNS.len();
-            let pick = DEGREE_PATTERNS
-                .iter()
-                .cycle()
-                .skip(idx)
-                .map(|(_, d)| d.to_vec())
-                .find(|d| Some(d) != current.as_ref())
-                .expect("database has >1 pattern");
-            next.spec.degrees = Some(pick);
-        }
+        VariationDelta::BumpDifficulty { by } => bump_explore_difficulty(&mut next, *by),
+        VariationDelta::DifferentScale => swap_explore_scale(&mut next),
+        VariationDelta::TryPattern => deal_explore_pattern(&mut next),
         VariationDelta::ToggleDirection => {
             next.spec.direction = match next.spec.direction {
                 DirectionMode::Reversed => DirectionMode::Forward,
@@ -1216,6 +1123,93 @@ pub fn apply_explore_delta_windowed(
     }
     let sequence = generate_in_window(&next.spec, next.seed, window);
     (next, sequence)
+}
+
+/// The `[Add keys]`/`[Simpler]` arm: rebuild the knobs at the new step,
+/// preserving the explored scale AND any player material — a difficulty chip
+/// must never silently destroy the player's own hand-edited cell (review M4),
+/// degree pattern (#289), tapped jam chord (#349 T4a review M1), or lifted
+/// progression (T3c); the tempo/roots knobs still ramp meaningfully around it.
+fn bump_explore_difficulty(next: &mut ExploreState, by: i8) {
+    let d = i16::from(next.difficulty) + i16::from(by);
+    next.difficulty = d.clamp(0, i16::from(MAX_DIFFICULTY)) as u8;
+    let scale = next.spec.scale;
+    let cell = next.spec.cell.take();
+    let degrees = next.spec.degrees.take();
+    let chord = next.spec.chord.take();
+    let progression = next.spec.progression.take();
+    let (spec, _) = spec_for(DrillKind::WarmupScale, next.difficulty, next.tonic, false);
+    next.spec = spec;
+    if let (Some(prev), Some(m)) = (scale, next.spec.scale.as_mut()) {
+        m.scale = prev.scale;
+    }
+    next.spec.cell = cell;
+    next.spec.degrees = degrees;
+    if chord.is_some() {
+        // The chord IS the figure: the rebuilt scale would shadow
+        // it (scale > chord precedence), so drop the ladder scale.
+        next.spec.scale = None;
+        next.spec.chord = chord;
+        next.spec.enclosure = None;
+    }
+    if progression.is_some() {
+        // Progression outranks scale by precedence, but clear the
+        // ladder scale anyway so the spec reads what it deals.
+        next.spec.scale = None;
+        next.spec.progression = progression;
+        next.spec.enclosure = None;
+    }
+}
+
+/// The fresh-material chips (DifferentScale / TryPattern) discard the
+/// player's material — hand-edited cell (review M3), tapped jam chord
+/// (#349 T4a), lifted progression (T3c) — never a silent no-op; undo
+/// recovers each. A scale is guaranteed so the fresh figure has something
+/// to speak through (degrees need one to map; a cell had shadowed one).
+fn reset_to_fresh_material(spec: &mut VariationSpec) {
+    spec.cell = None;
+    spec.chord = None;
+    spec.progression = None;
+    if spec.scale.is_none() {
+        spec.scale = Some(ScaleModifier {
+            scale: ScaleType::Major,
+            pattern: ScalePattern::Up,
+        });
+    }
+}
+
+/// The `[Different scale]` arm: fresh material, then a seeded pick from
+/// [`EXPLORE_SCALES`] — never the scale already playing.
+fn swap_explore_scale(next: &mut ExploreState) {
+    reset_to_fresh_material(&mut next.spec);
+    if let Some(m) = next.spec.scale.as_mut() {
+        let current = m.scale;
+        let idx = (next.seed as usize) % EXPLORE_SCALES.len();
+        let pick = EXPLORE_SCALES
+            .iter()
+            .cycle()
+            .skip(idx)
+            .find(|&&sc| sc != current)
+            .copied()
+            .unwrap_or(ScaleType::Major);
+        m.scale = pick;
+    }
+}
+
+/// The `[Try a pattern 🎲]` arm: fresh material, then a seeded pull from
+/// [`DEGREE_PATTERNS`] — never the pattern already playing.
+fn deal_explore_pattern(next: &mut ExploreState) {
+    reset_to_fresh_material(&mut next.spec);
+    let current = next.spec.degrees.clone();
+    let idx = (next.seed as usize) % DEGREE_PATTERNS.len();
+    let pick = DEGREE_PATTERNS
+        .iter()
+        .cycle()
+        .skip(idx)
+        .map(|(_, d)| d.to_vec())
+        .find(|d| Some(d) != current.as_ref())
+        .expect("database has >1 pattern");
+    next.spec.degrees = Some(pick);
 }
 
 // ---------------------------------------------------------------------------
@@ -1600,23 +1594,7 @@ pub fn edit_explore_note_windowed(
     edit: &NoteEdit,
     window: FoldWindow,
 ) -> Result<(ExploreState, GeneratedSequence), String> {
-    // #349 T4a review M2: a stacked chord row has no melodic cell to bake —
-    // dragging one dot would flatten the block into a one-note melody and
-    // silently drop the chord grading. Refuse calmly; the lane is the edit
-    // surface for chords.
-    if state.spec.chord.is_some_and(|c| c.stacked) {
-        return Err(
-            "this row is a chord — tap a different chord in the lane to change it".to_owned(),
-        );
-    }
-    if state
-        .spec
-        .progression
-        .as_ref()
-        .is_some_and(|p| !p.is_empty())
-    {
-        return Err("this row is a progression — lift a new one to change it".to_owned());
-    }
+    refuse_celless_row(&state.spec)?;
     let seq = generate_in_window(&state.spec, state.seed, window);
     if index >= seq.target_midi.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
@@ -1629,34 +1607,7 @@ pub fn edit_explore_note_windowed(
     // #471-2 F3 coherence: staff-step gestures use the edited segment's OWN
     // key — the signature its bar is spelled under on the CellStaff.
     let seg_key = key_signature_for(seq.root_order[seg] % 12, &explore_material(&state.spec));
-    // Once a cell exists (and no un-baked modifiers sit on top), edit the CELL
-    // itself — never round-trip through the generated output, whose per-
-    // segment octave fold would corrupt other segments' offsets (review M2).
-    let direct = state.spec.cell.as_ref().is_some_and(|c| !c.is_empty())
-        && state.spec.enclosure.is_none()
-        && state.spec.direction == DirectionMode::Forward;
-    let mut offsets: Vec<i8> = if direct {
-        state.spec.cell.clone().expect("checked above")
-    } else {
-        // First edit: bake the segment's TRUE (unfolded) figure — direction
-        // and enclosure realized, register fold NOT applied (#471-2 F2). The
-        // old code read the folded `target_midi` with a ±36 clamp, so a
-        // zero-move nudge on a wide cell baked the fold's register lie (or
-        // the clamp's flattened contour) into all 12 keys permanently.
-        let figs = unfolded_figures(&state.spec, state.seed);
-        let fig = figs
-            .get(seg)
-            .filter(|f| f.len() == seg_len)
-            .ok_or_else(|| "this variation can't be edited yet".to_owned())?;
-        fig.iter()
-            .map(|&m| {
-                // True offsets fit i8 for every UI-built spec (cells are
-                // capped at ±36, catalog figures are narrow); a hostile
-                // spec that overflows refuses calmly — never a clamp.
-                i8::try_from(m - root).map_err(|_| "this variation can't be edited yet".to_owned())
-            })
-            .collect::<Result<_, _>>()?
-    };
+    let mut offsets = segment_true_offsets(state, seg, seg_len, root)?;
     if pos >= offsets.len() {
         return Err("that note is no longer on the staff — try again".to_owned());
     }
@@ -1672,31 +1623,7 @@ pub fn edit_explore_note_windowed(
             // folded render may sit whole octaves away, but the cell's
             // offsets are the truth the row re-derives from (#471-2 F2).
             let current = root + i16::from(offsets[pos]);
-            // Clamp audit (#471-2 F2): the old `.clamp(0, 127)` here and on
-            // the semitone/octave arms could silently turn "+1 octave" near
-            // the physical edges into a DIFFERENT interval — a lied edit.
-            // Gone: the math stays in i16 and the one honest cap below
-            // refuses instead.
-            let new_midi = match edit {
-                NoteEdit::StaffSteps { by } => {
-                    // Spelling needs a physical pitch; a true pitch outside
-                    // MIDI can only arise from a hostile spec (UI cells stay
-                    // within ±36 of roots 60..71). Refuse, don't clamp.
-                    let cur = u8::try_from(current)
-                        .map_err(|_| "that's further than a note can move".to_owned())?;
-                    i16::from(midi_at_staff_steps(cur, *by, &seg_key)?)
-                }
-                NoteEdit::Semitones { by } => current + i16::from(*by),
-                NoteEdit::Octaves { by } => current + 12 * i16::from(*by),
-                NoteEdit::Remove => unreachable!(),
-            };
-            let off = new_midi - root;
-            // Refuse past the founder's ±3-octave range rather than landing
-            // on a pitch the gesture never asked for (review nice-to-have).
-            if !(-MAX_CELL_OFFSET..=MAX_CELL_OFFSET).contains(&off) {
-                return Err("that's as far as this note can go".to_owned());
-            }
-            offsets[pos] = off as i8;
+            offsets[pos] = gesture_target_offset(edit, current, root, &seg_key)?;
         }
     }
     let mut next = state.clone();
@@ -1707,6 +1634,92 @@ pub fn edit_explore_note_windowed(
     next.spec.enclosure = None;
     let seq = generate_in_window(&next.spec, next.seed, window);
     Ok((next, seq))
+}
+
+/// #349 T4a review M2: a stacked chord row has no melodic cell to bake —
+/// dragging one dot would flatten the block into a one-note melody and
+/// silently drop the chord grading. Refuse calmly; the lane is the edit
+/// surface for chords. A lifted progression (T3c) refuses for the same
+/// reason.
+fn refuse_celless_row(spec: &VariationSpec) -> Result<(), String> {
+    if spec.chord.is_some_and(|c| c.stacked) {
+        return Err(
+            "this row is a chord — tap a different chord in the lane to change it".to_owned(),
+        );
+    }
+    if spec.progression.as_ref().is_some_and(|p| !p.is_empty()) {
+        return Err("this row is a progression — lift a new one to change it".to_owned());
+    }
+    Ok(())
+}
+
+/// The edit's base material as semitone offsets from the segment root.
+/// Once a cell exists (and no un-baked modifiers sit on top), edit the CELL
+/// itself — never round-trip through the generated output, whose per-
+/// segment octave fold would corrupt other segments' offsets (review M2).
+fn segment_true_offsets(
+    state: &ExploreState,
+    seg: usize,
+    seg_len: usize,
+    root: i16,
+) -> Result<Vec<i8>, String> {
+    let direct = state.spec.cell.as_ref().is_some_and(|c| !c.is_empty())
+        && state.spec.enclosure.is_none()
+        && state.spec.direction == DirectionMode::Forward;
+    if direct {
+        return Ok(state.spec.cell.clone().expect("checked above"));
+    }
+    // First edit: bake the segment's TRUE (unfolded) figure — direction
+    // and enclosure realized, register fold NOT applied (#471-2 F2). The
+    // old code read the folded `target_midi` with a ±36 clamp, so a
+    // zero-move nudge on a wide cell baked the fold's register lie (or
+    // the clamp's flattened contour) into all 12 keys permanently.
+    let figs = unfolded_figures(&state.spec, state.seed);
+    let fig = figs
+        .get(seg)
+        .filter(|f| f.len() == seg_len)
+        .ok_or_else(|| "this variation can't be edited yet".to_owned())?;
+    fig.iter()
+        .map(|&m| {
+            // True offsets fit i8 for every UI-built spec (cells are
+            // capped at ±36, catalog figures are narrow); a hostile
+            // spec that overflows refuses calmly — never a clamp.
+            i8::try_from(m - root).map_err(|_| "this variation can't be edited yet".to_owned())
+        })
+        .collect()
+}
+
+/// Where a move gesture lands, as an offset from the segment root.
+/// Clamp audit (#471-2 F2): the old `.clamp(0, 127)` on the staff-step
+/// input and the semitone/octave arms could silently turn "+1 octave" near
+/// the physical edges into a DIFFERENT interval — a lied edit. Gone: the
+/// math stays in i16 and the two honest caps refuse instead.
+fn gesture_target_offset(
+    edit: &NoteEdit,
+    current: i16,
+    root: i16,
+    seg_key: &crate::score::KeySignature,
+) -> Result<i8, String> {
+    let new_midi = match edit {
+        NoteEdit::StaffSteps { by } => {
+            // Spelling needs a physical pitch; a true pitch outside
+            // MIDI can only arise from a hostile spec (UI cells stay
+            // within ±36 of roots 60..71). Refuse, don't clamp.
+            let cur = u8::try_from(current)
+                .map_err(|_| "that's further than a note can move".to_owned())?;
+            i16::from(midi_at_staff_steps(cur, *by, seg_key)?)
+        }
+        NoteEdit::Semitones { by } => current + i16::from(*by),
+        NoteEdit::Octaves { by } => current + 12 * i16::from(*by),
+        NoteEdit::Remove => unreachable!(),
+    };
+    let off = new_midi - root;
+    // Refuse past the founder's ±3-octave range rather than landing
+    // on a pitch the gesture never asked for (review nice-to-have).
+    if !(-MAX_CELL_OFFSET..=MAX_CELL_OFFSET).contains(&off) {
+        return Err("that's as far as this note can go".to_owned());
+    }
+    Ok(off as i8)
 }
 
 /// #419 S4: rebuild an exploration from a STORED spec — the exact-replay
@@ -1914,6 +1927,41 @@ mod tests {
         );
         // Flat-family spelling: a Bb dominant engraves flat-side (#335).
         assert!(seq.label.starts_with("Bb"), "label: {}", seq.label);
+    }
+
+    /// #349 T4a review M2: a stacked chord row refuses note edits calmly —
+    /// a dot-drag would flatten the block into a one-note melody and
+    /// silently drop the chord grading. Fails if the guard stops firing
+    /// (the edit would bake a corrupted cell) or the refusal stops pointing
+    /// the player at the lane, the chord's real edit surface.
+    #[test]
+    fn chord_rows_refuse_note_edits_calmly() {
+        let model = LearnerModel::default();
+        let (state, _) = start_explore_chord(9, theory::ChordQuality::Min7, &model, 5);
+        let err = edit_explore_note(&state, 0, &NoteEdit::Semitones { by: 1 })
+            .expect_err("chord rows refuse note edits");
+        assert!(err.contains("chord"), "the refusal names it: {err}");
+        assert!(
+            err.contains("lane"),
+            "and points at the edit surface: {err}"
+        );
+    }
+
+    /// The `.stacked` qualifier is load-bearing: an ARPEGGIATED chord row
+    /// is melodic material and edits like any other row — only block
+    /// chords refuse. Fails if the guard widens to any chord spec, which
+    /// would lock arpeggio drill specs (stored-spec replays carry them)
+    /// out of note edits.
+    #[test]
+    fn arpeggiated_chord_rows_stay_editable() {
+        let model = LearnerModel::default();
+        let (mut state, _) = start_explore_chord(9, theory::ChordQuality::Min7, &model, 5);
+        if let Some(c) = state.spec.chord.as_mut() {
+            c.stacked = false;
+        }
+        let (next, _) = edit_explore_note(&state, 0, &NoteEdit::Semitones { by: 1 })
+            .expect("an arpeggiated chord row edits like any melodic row");
+        assert!(next.spec.cell.is_some(), "the edit bakes a cell");
     }
 
     /// Review M1 (T4a): the chips flow must never destroy the tapped jam
