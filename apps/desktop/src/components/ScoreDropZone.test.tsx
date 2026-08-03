@@ -968,7 +968,9 @@ describe("import-feedback breadcrumbs (#336)", () => {
       expect(breadcrumbs()).toContain(
         "import feedback #2: seeded stage=transcribing via file-picker (.wav)",
       );
-      expect(breadcrumbs()).not.toContain("import feedback #1: cleared (success)");
+      expect(breadcrumbs()).not.toContain(
+        "import feedback #1: cleared (success)",
+      );
     } finally {
       vi.useRealTimers();
     }

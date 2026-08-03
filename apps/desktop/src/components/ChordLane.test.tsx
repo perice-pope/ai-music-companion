@@ -99,7 +99,9 @@ describe("ChordLane (#349 T4a)", () => {
     render(<ChordLane />);
     const chords = screen.getAllByTestId("lane-chord");
     expect(chords).toHaveLength(8);
-    expect(chords[0]).toHaveTextContent("chord-4", { normalizeWhitespace: true });
+    expect(chords[0]).toHaveTextContent("chord-4", {
+      normalizeWhitespace: true,
+    });
   });
 
   // Silence between two strikes of the SAME chord re-records it (the lane

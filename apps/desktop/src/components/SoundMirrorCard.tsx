@@ -8,11 +8,14 @@ function axisSentence(dto: SoundMirrorDto): string | null {
   if (!p) return null;
   const parts: string[] = [];
   if (p.mode_lean === "minor") parts.push("you lean into darker, minor colors");
-  else if (p.mode_lean === "major") parts.push("you live in bright, major colors");
-  else if (p.mode_lean === "balanced") parts.push("you move between light and dark");
+  else if (p.mode_lean === "major")
+    parts.push("you live in bright, major colors");
+  else if (p.mode_lean === "balanced")
+    parts.push("you move between light and dark");
   if (p.feel === "swung") parts.push("with a swung, laid-back feel");
   else if (p.feel === "straight") parts.push("with a straight, even pulse");
-  else if (p.feel === "mixed") parts.push("shifting between straight and swung");
+  else if (p.feel === "mixed")
+    parts.push("shifting between straight and swung");
   if (parts.length === 0) return null;
   const s = parts.join(" ");
   return s.charAt(0).toUpperCase() + s.slice(1) + ".";
@@ -79,7 +82,10 @@ export default function SoundMirrorCard() {
               {dto.profile.comparison.label} ✨
             </p>
           ) : (
-            <p className="mt-2 text-xs italic text-gray-400" data-testid="mirror-listening">
+            <p
+              className="mt-2 text-xs italic text-gray-400"
+              data-testid="mirror-listening"
+            >
               still listening…
             </p>
           )}

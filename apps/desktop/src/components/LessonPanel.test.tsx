@@ -75,7 +75,9 @@ describe("LessonPanel", () => {
     // #391: difficulty 0 displays as "step 1" — the player never sees "STEP 0".
     expect(screen.getByText(/step 1/)).toBeInTheDocument();
     expect(screen.queryByText(/step 0/)).toBeNull();
-    expect(screen.getByText("C Major · up · 1 root · 60 BPM")).toBeInTheDocument();
+    expect(
+      screen.getByText("C Major · up · 1 root · 60 BPM"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("lesson-last-score")).toHaveTextContent("80%");
     expect(screen.getByTestId("stub-score-view")).toBeInTheDocument();
   });

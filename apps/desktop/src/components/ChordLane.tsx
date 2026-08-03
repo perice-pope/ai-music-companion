@@ -71,15 +71,12 @@ export default function ChordLane() {
           )
         )}
       </div>
-      <p
-        data-testid="lane-tap-hint"
-        className="text-xs text-gray-500"
-      >
+      <p data-testid="lane-tap-hint" className="text-xs text-gray-500">
         Tap any chord to row it through 12 keys.
       </p>
       <p data-testid="lane-privacy" className="text-[10px] text-gray-600">
-        Labels only — nothing is recorded, identified, or sent anywhere.
-        Fully offline.
+        Labels only — nothing is recorded, identified, or sent anywhere. Fully
+        offline.
       </p>
     </div>
   );

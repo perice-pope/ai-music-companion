@@ -47,7 +47,10 @@ describe("SoundMirrorCard (#258)", () => {
   it("renders the axes sentence and the grounded comparison", async () => {
     mockInvoke.mockResolvedValueOnce({
       profile: profile({
-        comparison: { label: "shades of Santana — “Oye Como Va”", source: "grounded" },
+        comparison: {
+          label: "shades of Santana — “Oye Como Va”",
+          source: "grounded",
+        },
       }),
       sessions_seen: 6,
     } satisfies SoundMirrorDto);
