@@ -20,7 +20,6 @@ import { test, expect, assertNoNetwork } from "../fixtures/app";
 const position = (measure: number, beat: number) => ({
   measure_number: measure,
   beat,
-  section_name: null,
   expected_note: null,
 });
 

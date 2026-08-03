@@ -40,7 +40,7 @@ Every box above is local code with no network dependency:
 
 | Stage | Where it runs | Needs network? |
 |---|---|---|
-| Mic / MIDI capture | `crates/ears` (cpal) | No |
+| Mic capture | `crates/ears` (cpal) | No |
 | Pitch / onset detection | `crates/ears` | No |
 | Phrase summary, key, intonation, groove, tone | `crates/brain` | No |
 | `MusicalFingerprint` assembly | `crates/brain` (`coaching.rs`) | No |
