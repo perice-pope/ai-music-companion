@@ -286,8 +286,6 @@ export interface Reveal {
 export interface ScorePosition {
   measure_number: number;
   beat: number;
-  /** Section label (e.g. "Verse"), when the score provides one. */
-  section_name?: string | null;
   /** MIDI note expected at this position, when known. */
   expected_note?: number | null;
 }

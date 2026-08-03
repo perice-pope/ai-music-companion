@@ -2300,7 +2300,6 @@ mod tests {
         p.score_position = Some(crate::follower::ScorePosition {
             measure_number: measure,
             beat: 0.0,
-            section_name: None,
             expected_note: None,
         });
         p

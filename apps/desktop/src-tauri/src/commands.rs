@@ -6760,7 +6760,6 @@ mod tests {
         phrase.score_position = Some(ScorePosition {
             measure_number: 3,
             beat: 1.0,
-            section_name: None,
             expected_note: Some(62),
         });
         phrase.score_span = Some((3, 4));

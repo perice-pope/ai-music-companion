@@ -1,11 +1,13 @@
 //! # Ears — Audio capture and analysis
 //!
 //! This crate handles the real-time audio pipeline:
-//! - Microphone capture via cpal
-//! - MIDI input via midir
-//! - Pitch detection via Aubio/PESTO
-//! - Onset detection
-//! - Instrument profile loading
+//! - Microphone capture via cpal into a lock-free ring buffer ([`capture`])
+//! - Pitch detection via pure-Rust YIN ([`pitch`])
+//! - SuperFlux onset detection ([`onset`])
+//! - 12-bin chromagram front end for chord/key perception ([`chroma`])
+//! - Instrument profile loading from JSON ([`profile`])
+//! - Opt-in WAV session recording ([`recorder`]) and its age/size-bounded
+//!   cleanup ([`retention`])
 //! - Audio output: practice-aid sample generators ([`output`]) and a cpal
 //!   output engine fed by a lock-free ring buffer ([`output_engine`])
 

@@ -45,8 +45,6 @@ pub struct ScorePosition {
     pub measure_number: usize,
     /// Beat within the current measure (0.0-based, e.g., 0.0-3.99 in 4/4).
     pub beat: f64,
-    /// Optional section name (e.g., "Verse", "Chorus") if available in score.
-    pub section_name: Option<String>,
     /// The MIDI note number we expect to hear at this position, if any.
     pub expected_note: Option<u8>,
 }
@@ -57,7 +55,6 @@ impl ScorePosition {
         Self {
             measure_number: 1,
             beat: 0.0,
-            section_name: None,
             expected_note: None,
         }
     }
@@ -488,7 +485,6 @@ impl ScoreFollower {
                 let score_note = &self.score_notes[best_idx];
                 self.position.measure_number = score_note.measure_number;
                 self.position.beat = score_note.beat_in_measure;
-                self.position.section_name = None; // TODO: extract from score metadata
                 self.position.expected_note = Some(score_note.midi_number);
                 self.dtw.score_index = best_idx;
                 self.judge_advance(best_idx, played_event);
@@ -1121,7 +1117,6 @@ mod tests {
         let pos = ScorePosition {
             measure_number: 5,
             beat: 2.5,
-            section_name: Some("Chorus".to_string()),
             expected_note: Some(64),
         };
 
@@ -1131,8 +1126,29 @@ mod tests {
 
         assert_eq!(roundtrip.measure_number, 5);
         assert_eq!(roundtrip.beat, 2.5);
-        assert_eq!(roundtrip.section_name.as_deref(), Some("Chorus"));
         assert_eq!(roundtrip.expected_note, Some(64));
+    }
+
+    /// Recap blobs persisted before the dead `section_name` field was
+    /// removed (#496) still carry it; loading them must keep working, so
+    /// `ScorePosition` must tolerate the unknown field. Historical blobs
+    /// only ever hold `null` (the follower always wrote `None`); the
+    /// string case is the stricter tolerance check.
+    #[test]
+    fn score_position_loads_legacy_blobs_with_section_name() {
+        let historical =
+            r#"{"measure_number":5,"beat":2.5,"section_name":null,"expected_note":64}"#;
+        let pos: ScorePosition = serde_json::from_str(historical).expect("historical blob loads");
+        assert_eq!(pos.measure_number, 5);
+        assert_eq!(pos.beat, 2.5);
+        assert_eq!(pos.expected_note, Some(64));
+
+        let stricter =
+            r#"{"measure_number":5,"beat":2.5,"section_name":"Chorus","expected_note":64}"#;
+        let pos: ScorePosition = serde_json::from_str(stricter).expect("legacy blob loads");
+        assert_eq!(pos.measure_number, 5);
+        assert_eq!(pos.beat, 2.5);
+        assert_eq!(pos.expected_note, Some(64));
     }
 
     #[test]
