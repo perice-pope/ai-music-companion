@@ -1571,7 +1571,7 @@ mod tests {
         generate(&spec, 0).target_midi
     }
 
-    /// Pins the tricky scale tables from C4. Fails on any wrong semitone.
+    /// Pins the scale tables from C4. Fails on any wrong semitone.
     #[test]
     fn scale_tables_are_pinned() {
         assert_eq!(
@@ -1606,6 +1606,14 @@ mod tests {
         assert_eq!(
             scale_up(ScaleType::MinorPentatonic),
             vec![60, 63, 65, 67, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::NaturalMinor),
+            vec![60, 62, 63, 65, 67, 68, 70, 72]
+        );
+        assert_eq!(
+            scale_up(ScaleType::MajorPentatonic),
+            vec![60, 62, 64, 67, 69, 72]
         );
     }
 
