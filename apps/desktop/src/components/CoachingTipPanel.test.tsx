@@ -135,7 +135,7 @@ describe("CoachingTipPanel", () => {
 
     render(<CoachingTipPanel />);
     expect(
-      screen.getByText("Great intonation on that phrase!")
+      screen.getByText("Great intonation on that phrase!"),
     ).toBeInTheDocument();
 
     // Fast-forward 10 seconds

@@ -78,7 +78,9 @@ describe("PocketControl (#421 S1)", () => {
     expect(alert).not.toHaveTextContent("500");
     // Next attempt succeeds (mock resolves again) — the message clears.
     fireEvent.click(screen.getByTestId("pocket-start"));
-    await waitFor(() => expect(screen.queryByTestId("pocket-error")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByTestId("pocket-error")).toBeNull(),
+    );
   });
 
   it("playing state is backend-authoritative and reports the CLAMPED tempo", () => {

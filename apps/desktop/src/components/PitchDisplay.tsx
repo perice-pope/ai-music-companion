@@ -103,7 +103,9 @@ export default function PitchDisplay() {
   // until the hold expires on the audio clock, then IDLE — identical
   // layout throughout: nothing mounts or unmounts with the signal.
   const live = Boolean(currentNote);
-  const silentSecs = latestEvent ? latestEvent.timestamp_secs - held.atSecs : 0.0;
+  const silentSecs = latestEvent
+    ? latestEvent.timestamp_secs - held.atSecs
+    : 0.0;
   const idle = !live && silentSecs > HOLD_SECS;
   const surface = live ? "live" : idle ? "idle" : "held";
 

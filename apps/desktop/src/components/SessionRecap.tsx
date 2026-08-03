@@ -178,7 +178,10 @@ export default function SessionRecap() {
             (the explicit unsettled claim) — a percussive/groove-only session
             with no tonal readings says nothing about key at all. */}
           {!isEmptyState && fingerprint?.key_claim === "unsettled" && (
-            <p className="text-sm text-gray-400" data-testid="recap-key-unsettled">
+            <p
+              className="text-sm text-gray-400"
+              data-testid="recap-key-unsettled"
+            >
               Key:{" "}
               <span className="text-gray-200">
                 kept moving — normal for exploratory playing
@@ -468,8 +471,6 @@ function formatUnclearSpan(secs: number): string {
   const s = Math.round(secs);
   return s < 60 ? `${s}s` : `${Math.round(secs / 60)}m`;
 }
-
-
 
 /**
  * Full-height dark surface for the recap. Every other screen owns its own
