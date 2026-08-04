@@ -373,6 +373,228 @@ function OpenerBank({
   );
 }
 
+/**
+ * #471 pt 3 — the RV-simple face: one button per pitch class, tap order =
+ * note order, order badges on the lit buttons. Presentation only — the
+ * tap→item compilation (and the picks state it rides on) stays with the
+ * panel, which owns the compiled item's identity inside openerItems.
+ */
+function ChromaticPicker({
+  picks,
+  onToggle,
+}: {
+  picks: number[];
+  onToggle: (k: number) => void;
+}) {
+  return (
+    <>
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+        Pick your notes · tap in order, up to 12
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {PITCH_CLASSES.map((label, k) => {
+          const pos = picks.indexOf(k);
+          return (
+            <button
+              key={label}
+              type="button"
+              data-testid={`opener-pc-${k}`}
+              aria-pressed={pos >= 0}
+              onClick={() => onToggle(k)}
+              className={`relative h-9 w-9 rounded-md text-sm font-semibold ${
+                pos >= 0
+                  ? "bg-indigo-600 text-white"
+                  : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
+              }`}
+            >
+              {label}
+              {pos >= 0 && (
+                <span
+                  // Visual order badge only — without aria-hidden, screen
+                  // readers read "♭3 2" as if both were the note's name.
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-300 text-[10px] font-bold text-indigo-950"
+                >
+                  {pos + 1}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/** #419 S3: the one-tap strip of patterns your hands actually played.
+ * Presentation only — the fetch (and its calm-empty degradation) stays
+ * with the panel; taps speak the same Notes wire as the picker. */
+function MyPatternsStrip({
+  patterns,
+  onAdd,
+}: {
+  patterns: MyPattern[];
+  onAdd: (item: StarterItem) => Promise<void>;
+}) {
+  return (
+    <>
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+        My patterns
+      </p>
+      {patterns.length === 0 ? (
+        <p
+          className="mt-1 text-xs text-gray-500"
+          data-testid="my-patterns-empty"
+        >
+          play and lift a few things first — your patterns appear here
+        </p>
+      ) : (
+        <div className="mt-1 flex flex-wrap gap-1.5" data-testid="my-patterns">
+          {patterns.map((p, i) => (
+            <button
+              key={`${p.label}-${i}`}
+              type="button"
+              data-testid={`opener-my-pattern-${i}`}
+              onClick={() => void onAdd({ type: "notes", offsets: p.offsets })}
+              className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+              title={p.label}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * #419 S4 — the recall surfaces: yesterday's opener, the saved-recipe
+ * strip, and the save row. Presentation only — fetch, save, and forget
+ * stay with the panel so the strip's data and notices share the panel's
+ * lifecycle.
+ *
+ * Must stay module-level: defined inside OpenersPanel it would be a new
+ * component type each render, remounting the name input (and dropping
+ * its focus) on every keystroke.
+ */
+function RecipesSection({
+  lastOpener,
+  recipes,
+  recipeName,
+  recipeNotice,
+  showSave,
+  onRecipeName,
+  onSave,
+  onForget,
+  onApply,
+  onRecall,
+}: {
+  lastOpener: LastOpener | null;
+  recipes: SavedRecipe[];
+  recipeName: string;
+  recipeNotice: string | null;
+  showSave: boolean;
+  onRecipeName: (value: string) => void;
+  onSave: () => void;
+  onForget: (id: number) => void;
+  onApply: (recipe: SavedRecipe) => void;
+  onRecall: () => void;
+}) {
+  return (
+    <>
+      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
+        Recipes
+      </p>
+      {lastOpener ? (
+        <button
+          type="button"
+          data-testid="opener-yesterday"
+          onClick={onRecall}
+          className="mt-1 rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
+          title="replay it exactly — same notes, same journey"
+        >
+          ⟲ yesterday: {lastOpener.label}
+        </button>
+      ) : (
+        <p
+          className="mt-1 text-xs text-gray-500"
+          data-testid="opener-yesterday-empty"
+        >
+          begin an opener and it&apos;ll be waiting here tomorrow
+        </p>
+      )}
+      {recipes.length === 0 ? (
+        <p
+          className="mt-1 text-xs text-gray-500"
+          data-testid="opener-recipes-empty"
+        >
+          name and save a builder you like — it&apos;ll live here
+        </p>
+      ) : (
+        <div
+          className="mt-1 flex flex-wrap gap-1.5"
+          data-testid="opener-recipes"
+        >
+          {recipes.map((r) => (
+            <span
+              key={r.id}
+              className="inline-flex items-center gap-1 rounded-md bg-indigo-800/60 pr-1"
+            >
+              <button
+                type="button"
+                data-testid={`opener-recipe-${r.id}`}
+                onClick={() => onApply(r)}
+                className="px-2.5 py-1 text-sm text-indigo-100 hover:text-white"
+                title={`${r.items.length} item${r.items.length === 1 ? "" : "s"}, ${r.direction}`}
+              >
+                {r.name}
+              </button>
+              <button
+                type="button"
+                data-testid={`opener-recipe-delete-${r.id}`}
+                onClick={() => onForget(r.id)}
+                aria-label={`Forget ${r.name}`}
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs text-indigo-400/70 hover:text-white"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {showSave && (
+        <div className="mt-2 flex gap-1.5">
+          <input
+            data-testid="opener-recipe-name"
+            value={recipeName}
+            onChange={(e) => onRecipeName(e.target.value)}
+            placeholder="name this recipe"
+            className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder:text-gray-500"
+          />
+          <button
+            type="button"
+            data-testid="opener-recipe-save"
+            onClick={onSave}
+            disabled={recipeName.trim().length === 0}
+            className="rounded-md bg-indigo-600/80 px-2.5 py-1 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      )}
+      {recipeNotice && (
+        <p
+          className="mt-1 text-xs text-amber-300"
+          data-testid="opener-recipe-notice"
+        >
+          {recipeNotice}
+        </p>
+      )}
+    </>
+  );
+}
+
 export default function OpenersPanel() {
   const openerItems = usePracticeStore((s) => s.openerItems);
   const openerPreview = usePracticeStore((s) => s.openerPreview);
@@ -569,40 +791,7 @@ export default function OpenersPanel() {
       </div>
 
       {/* #471 pt 3 — the RV-simple face: twelve notes, tap in order. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Pick your notes · tap in order, up to 12
-      </p>
-      <div className="mt-1 flex flex-wrap gap-1.5">
-        {PITCH_CLASSES.map((label, k) => {
-          const pos = picks.indexOf(k);
-          return (
-            <button
-              key={label}
-              type="button"
-              data-testid={`opener-pc-${k}`}
-              aria-pressed={pos >= 0}
-              onClick={() => togglePick(k)}
-              className={`relative h-9 w-9 rounded-md text-sm font-semibold ${
-                pos >= 0
-                  ? "bg-indigo-600 text-white"
-                  : "bg-indigo-800/60 text-indigo-100 hover:bg-indigo-700"
-              }`}
-            >
-              {label}
-              {pos >= 0 && (
-                <span
-                  // Visual order badge only — without aria-hidden, screen
-                  // readers read "♭3 2" as if both were the note's name.
-                  aria-hidden="true"
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-300 text-[10px] font-bold text-indigo-950"
-                >
-                  {pos + 1}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      <ChromaticPicker picks={picks} onToggle={togglePick} />
 
       {/* Everything the builder grew lives here, folded (#471 pt 3). */}
       <button
@@ -627,124 +816,21 @@ export default function OpenersPanel() {
       )}
 
       {/* #419 S3: the bank's last entry, live — YOUR patterns. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        My patterns
-      </p>
-      {myPatterns.length === 0 ? (
-        <p
-          className="mt-1 text-xs text-gray-500"
-          data-testid="my-patterns-empty"
-        >
-          play and lift a few things first — your patterns appear here
-        </p>
-      ) : (
-        <div className="mt-1 flex flex-wrap gap-1.5" data-testid="my-patterns">
-          {myPatterns.map((p, i) => (
-            <button
-              key={`${p.label}-${i}`}
-              type="button"
-              data-testid={`opener-my-pattern-${i}`}
-              onClick={() =>
-                void addOpenerItem({ type: "notes", offsets: p.offsets })
-              }
-              className="rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-              title={p.label}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <MyPatternsStrip patterns={myPatterns} onAdd={addOpenerItem} />
 
       {/* #419 S4: recall — yesterday's opener and the recipes you kept. */}
-      <p className="mt-3 text-xs uppercase tracking-wider text-indigo-300/70">
-        Recipes
-      </p>
-      {lastOpener ? (
-        <button
-          type="button"
-          data-testid="opener-yesterday"
-          onClick={() => void beginOpenerRecall()}
-          className="mt-1 rounded-md bg-indigo-800/60 px-2.5 py-1 text-sm text-indigo-100 hover:bg-indigo-700"
-          title="replay it exactly — same notes, same journey"
-        >
-          ⟲ yesterday: {lastOpener.label}
-        </button>
-      ) : (
-        <p
-          className="mt-1 text-xs text-gray-500"
-          data-testid="opener-yesterday-empty"
-        >
-          begin an opener and it&apos;ll be waiting here tomorrow
-        </p>
-      )}
-      {recipes.length === 0 ? (
-        <p
-          className="mt-1 text-xs text-gray-500"
-          data-testid="opener-recipes-empty"
-        >
-          name and save a builder you like — it&apos;ll live here
-        </p>
-      ) : (
-        <div
-          className="mt-1 flex flex-wrap gap-1.5"
-          data-testid="opener-recipes"
-        >
-          {recipes.map((r) => (
-            <span
-              key={r.id}
-              className="inline-flex items-center gap-1 rounded-md bg-indigo-800/60 pr-1"
-            >
-              <button
-                type="button"
-                data-testid={`opener-recipe-${r.id}`}
-                onClick={() => void applyOpenerRecipe(r.items, r.direction)}
-                className="px-2.5 py-1 text-sm text-indigo-100 hover:text-white"
-                title={`${r.items.length} item${r.items.length === 1 ? "" : "s"}, ${r.direction}`}
-              >
-                {r.name}
-              </button>
-              <button
-                type="button"
-                data-testid={`opener-recipe-delete-${r.id}`}
-                onClick={() => forgetRecipe(r.id)}
-                aria-label={`Forget ${r.name}`}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs text-indigo-400/70 hover:text-white"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {openerItems.length > 0 && (
-        <div className="mt-2 flex gap-1.5">
-          <input
-            data-testid="opener-recipe-name"
-            value={recipeName}
-            onChange={(e) => setRecipeName(e.target.value)}
-            placeholder="name this recipe"
-            className="w-40 rounded-md border border-indigo-800 bg-indigo-950/60 px-2 py-1 text-sm text-indigo-100 placeholder:text-gray-500"
-          />
-          <button
-            type="button"
-            data-testid="opener-recipe-save"
-            onClick={saveRecipe}
-            disabled={recipeName.trim().length === 0}
-            className="rounded-md bg-indigo-600/80 px-2.5 py-1 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
-      )}
-      {recipeNotice && (
-        <p
-          className="mt-1 text-xs text-amber-300"
-          data-testid="opener-recipe-notice"
-        >
-          {recipeNotice}
-        </p>
-      )}
+      <RecipesSection
+        lastOpener={lastOpener}
+        recipes={recipes}
+        recipeName={recipeName}
+        recipeNotice={recipeNotice}
+        showSave={openerItems.length > 0}
+        onRecipeName={setRecipeName}
+        onSave={saveRecipe}
+        onForget={forgetRecipe}
+        onApply={(r) => void applyOpenerRecipe(r.items, r.direction)}
+        onRecall={() => void beginOpenerRecall()}
+      />
 
       {/* What's been added. */}
       {openerItems.length > 0 && (
