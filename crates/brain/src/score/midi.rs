@@ -85,11 +85,83 @@ pub fn parse_midi_bytes_track(
     track_filter: Option<usize>,
 ) -> Result<ScoreModel, ScoreError> {
     let smf = Smf::parse(bytes).map_err(|e| ScoreError::Midi(e.to_string()))?;
+    let ticks_per_quarter = parse_header(&smf)?;
 
-    // `ticks_per_quarter` is the number of MIDI ticks per quarter note, which
-    // is what MIDI's Metrical timing natively expresses. We convert to
-    // "ticks per beat" below once we know the time signature, because in a
-    // 3/8 or 6/8 meter the *beat* is an eighth note, not a quarter.
+    // Out-of-range filter = a caller bug; refuse with the real reason, not
+    // the misleading "no playable notes" (review S5).
+    if let Some(want) = track_filter {
+        if want >= smf.tracks.len() {
+            return Err(ScoreError::Midi(format!(
+                "track {want} doesn't exist in this file ({} tracks)",
+                smf.tracks.len()
+            )));
+        }
+    }
+
+    let mut header = HeaderState::new();
+    // Collect all note events with absolute tick positions from all tracks
+    let mut raw_notes: Vec<RawNote> = Vec::new();
+    for (track_index, track) in smf.tracks.iter().enumerate() {
+        // The filter silences a track's NOTES and its NAME; tempo and
+        // signatures still come from every track (the conductor track
+        // carries them), but the score's title/instrument must describe
+        // the part the player chose — importing "Bass" must not label the
+        // library entry "Trumpet" (review MUST-FIX 1).
+        let notes_wanted = track_filter.is_none_or(|want| want == track_index);
+        collect_track_events(track, notes_wanted, &mut header, &mut raw_notes);
+    }
+
+    assemble_model(raw_notes, header, ticks_per_quarter)
+}
+
+// ── Internal types and helpers ────────────────────────────────────────
+
+struct RawNote {
+    midi_key: u8,
+    start_tick: u64,
+    duration_ticks: u64,
+}
+
+/// The score-header facts accumulated from `Meta` events while walking
+/// tracks — everything about the piece that isn't a note.
+struct HeaderState {
+    title: String,
+    instrument: Option<String>,
+    time_signature: TimeSignature,
+    key_signature: KeySignature,
+    // Tempo is tracked internally in quarter-note BPM (because MIDI's
+    // `MetaMessage::Tempo` is defined as microseconds-per-quarter-note,
+    // independent of any time signature). We convert to signature-beat
+    // BPM in `assemble_model` so downstream consumers using
+    // `time_signature.beat_type` see consistent units. `None` until the
+    // FIRST Tempo event: the header tempo is the score's tempo — later
+    // events are ritardandos/rubato that must not retroactively rewrite
+    // the whole piece (#337 S1; v1 has no tempo map).
+    // (abs_tick, quarter-BPM) of the EARLIEST tempo event by tick time —
+    // not iteration order: a conductor track's mid-piece tempo must not
+    // beat another track's tick-0 header tempo (review S6).
+    tempo_quarter_bpm: Option<(u64, f64)>,
+}
+
+impl HeaderState {
+    fn new() -> Self {
+        Self {
+            title: String::from("Untitled"),
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_quarter_bpm: None,
+        }
+    }
+}
+
+/// Validate the SMF header and return its ticks-per-quarter-note.
+///
+/// `ticks_per_quarter` is what MIDI's Metrical timing natively expresses.
+/// It becomes "ticks per beat" only in `assemble_model`, once the time
+/// signature is known, because in a 3/8 or 6/8 meter the *beat* is an
+/// eighth note, not a quarter.
+fn parse_header(smf: &Smf) -> Result<f64, ScoreError> {
     let ticks_per_quarter = match smf.header.timing {
         midly::Timing::Metrical(tpb) => tpb.as_int() as f64,
         midly::Timing::Timecode(_, _) => {
@@ -108,8 +180,8 @@ pub fn parse_midi_bytes_track(
     };
 
     // Reject SMF Format 2 (sequential tracks that play as independent
-    // pieces, one after another). Our single-timeline merging logic below
-    // would incorrectly overlap them as if they were simultaneous.
+    // pieces, one after another). Our single-timeline merging logic would
+    // incorrectly overlap them as if they were simultaneous.
     // Format 2 is rare outside of drum machine files — supporting it would
     // mean producing multiple ScoreModels or concatenating tracks with
     // track-local abs_tick offsets, neither of which fits the current API.
@@ -122,117 +194,81 @@ pub fn parse_midi_bytes_track(
         ));
     }
 
-    let mut title = String::from("Untitled");
-    let mut instrument: Option<String> = None;
-    let mut time_signature = TimeSignature::default();
-    let mut key_signature = KeySignature::default();
-    // Tempo is tracked internally in quarter-note BPM (because MIDI's
-    // `MetaMessage::Tempo` is defined as microseconds-per-quarter-note,
-    // independent of any time signature). We convert to signature-beat
-    // BPM at the end so downstream consumers using `time_signature.beat_type`
-    // see consistent units. `None` until the FIRST Tempo event: the header
-    // tempo is the score's tempo — later events are ritardandos/rubato that
-    // must not retroactively rewrite the whole piece (#337 S1; v1 has no
-    // tempo map).
-    // (abs_tick, quarter-BPM) of the EARLIEST tempo event by tick time —
-    // not iteration order: a conductor track's mid-piece tempo must not
-    // beat another track's tick-0 header tempo (review S6).
-    let mut tempo_quarter_bpm: Option<(u64, f64)> = None;
+    Ok(ticks_per_quarter)
+}
 
-    // Collect all note events with absolute tick positions from all tracks
-    let mut raw_notes: Vec<RawNote> = Vec::new();
+/// Walk one track's events, folding meta facts into `header` and finished
+/// notes into `raw_notes`. When `notes_wanted` is false the track still
+/// contributes tempo/signatures but neither notes nor its name (a filtered
+/// import must not be titled after a track the player didn't choose).
+/// Notes still active at end of track are closed at the final tick.
+fn collect_track_events(
+    track: &[midly::TrackEvent],
+    notes_wanted: bool,
+    header: &mut HeaderState,
+    raw_notes: &mut Vec<RawNote>,
+) {
+    let mut abs_tick: u64 = 0;
+    // Track active note-on events: (channel, key, velocity, start_tick).
+    // Channel is included so that the same MIDI key sounding on two
+    // different channels does not cross-match in `close_note`.
+    let mut active_notes: Vec<(u8, u8, u8, u64)> = Vec::new();
 
-    // Out-of-range filter = a caller bug; refuse with the real reason, not
-    // the misleading "no playable notes" (review S5).
-    if let Some(want) = track_filter {
-        if want >= smf.tracks.len() {
-            return Err(ScoreError::Midi(format!(
-                "track {want} doesn't exist in this file ({} tracks)",
-                smf.tracks.len()
-            )));
-        }
-    }
+    for event in track {
+        abs_tick += event.delta.as_int() as u64;
 
-    for (track_index, track) in smf.tracks.iter().enumerate() {
-        // The filter silences a track's NOTES and its NAME; tempo and
-        // signatures still come from every track (the conductor track
-        // carries them), but the score's title/instrument must describe
-        // the part the player chose — importing "Bass" must not label the
-        // library entry "Trumpet" (review MUST-FIX 1).
-        let notes_wanted = track_filter.is_none_or(|want| want == track_index);
-        let mut abs_tick: u64 = 0;
-        // Track active note-on events: (channel, key, velocity, start_tick).
-        // Channel is included so that the same MIDI key sounding on two
-        // different channels does not cross-match in `close_note`.
-        let mut active_notes: Vec<(u8, u8, u8, u64)> = Vec::new();
-
-        for event in track {
-            abs_tick += event.delta.as_int() as u64;
-
-            match event.kind {
-                TrackEventKind::Meta(meta) => {
-                    let is_name = matches!(meta, midly::MetaMessage::TrackName(_));
-                    if !is_name || notes_wanted {
-                        apply_meta_message(
-                            meta,
-                            abs_tick,
-                            &mut title,
-                            &mut instrument,
-                            &mut time_signature,
-                            &mut key_signature,
-                            &mut tempo_quarter_bpm,
-                        );
-                    }
+        match event.kind {
+            TrackEventKind::Meta(meta) => {
+                let is_name = matches!(meta, midly::MetaMessage::TrackName(_));
+                if !is_name || notes_wanted {
+                    apply_meta_message(meta, abs_tick, header);
                 }
-                TrackEventKind::Midi { channel, message } => {
-                    let ch = channel.as_int();
-                    // Percussion notes are kit-piece ids, not pitches; a
-                    // filtered-out track contributes no notes at all.
-                    if ch == PERCUSSION_CHANNEL || !notes_wanted {
-                        continue;
-                    }
-                    match message {
-                        MidiMessage::NoteOn { key, vel } => {
-                            if vel.as_int() == 0 {
-                                // Note-on with velocity 0 is treated as note-off
-                                close_note(
-                                    &mut active_notes,
-                                    &mut raw_notes,
-                                    ch,
-                                    key.as_int(),
-                                    abs_tick,
-                                );
-                            } else {
-                                active_notes.push((ch, key.as_int(), vel.as_int(), abs_tick));
-                            }
-                        }
-                        MidiMessage::NoteOff { key, .. } => {
-                            close_note(
-                                &mut active_notes,
-                                &mut raw_notes,
-                                ch,
-                                key.as_int(),
-                                abs_tick,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
             }
-        }
-
-        // Close any notes that were still active at end of track
-        let final_tick = abs_tick;
-        for (_ch, key, _vel, start) in active_notes.drain(..) {
-            raw_notes.push(RawNote {
-                midi_key: key,
-                start_tick: start,
-                duration_ticks: final_tick.saturating_sub(start),
-            });
+            TrackEventKind::Midi { channel, message } => {
+                let ch = channel.as_int();
+                // Percussion notes are kit-piece ids, not pitches; a
+                // filtered-out track contributes no notes at all.
+                if ch == PERCUSSION_CHANNEL || !notes_wanted {
+                    continue;
+                }
+                match message {
+                    MidiMessage::NoteOn { key, vel } => {
+                        if vel.as_int() == 0 {
+                            // Note-on with velocity 0 is treated as note-off
+                            close_note(&mut active_notes, raw_notes, ch, key.as_int(), abs_tick);
+                        } else {
+                            active_notes.push((ch, key.as_int(), vel.as_int(), abs_tick));
+                        }
+                    }
+                    MidiMessage::NoteOff { key, .. } => {
+                        close_note(&mut active_notes, raw_notes, ch, key.as_int(), abs_tick);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 
+    // Close any notes that were still active at end of track
+    let final_tick = abs_tick;
+    for (_ch, key, _vel, start) in active_notes.drain(..) {
+        raw_notes.push(RawNote {
+            midi_key: key,
+            start_tick: start,
+            duration_ticks: final_tick.saturating_sub(start),
+        });
+    }
+}
+
+/// Quantize the collected notes onto the header's rhythmic grid and build
+/// the final [`ScoreModel`] — the pure back half of the parse, after all
+/// tracks have been walked.
+fn assemble_model(
+    mut raw_notes: Vec<RawNote>,
+    header: HeaderState,
+    ticks_per_quarter: f64,
+) -> Result<ScoreModel, ScoreError> {
     // No sounding notes anywhere (drums-only file, click track, wrong track
     // filter): refuse calmly instead of importing an empty "score" the player
     // can't practice (#337 S1 — the silent half-score is the product bug).
@@ -250,9 +286,9 @@ pub fn parse_midi_bytes_track(
     // Convert ticks-per-quarter into ticks-per-beat using the time signature's
     // beat unit. In 6/8 the beat is an eighth note (beat_type = 8), so
     // ticks_per_beat = ticks_per_quarter * (4 / 8) = half of a quarter.
-    let beat_type = time_signature.beat_type.max(1) as f64;
+    let beat_type = header.time_signature.beat_type.max(1) as f64;
     let ticks_per_beat = ticks_per_quarter * (4.0 / beat_type);
-    let beats_per_measure = time_signature.beats as f64;
+    let beats_per_measure = header.time_signature.beats as f64;
     let ticks_per_measure = ticks_per_beat * beats_per_measure;
 
     // Quantize raw performance/transcription timing onto a rhythmic grid and
@@ -284,54 +320,37 @@ pub fn parse_midi_bytes_track(
     // This is the inverse of the ticks_per_beat multiplier above — ticks
     // scale with beat *period*, tempo scales with beat *frequency*.
     // 120 quarter-BPM is MIDI's defined default when no Tempo event exists.
-    let tempo_bpm = tempo_quarter_bpm.map_or(120.0, |(_, bpm)| bpm) * (beat_type / 4.0);
+    let tempo_bpm = header.tempo_quarter_bpm.map_or(120.0, |(_, bpm)| bpm) * (beat_type / 4.0);
 
     Ok(ScoreModel {
-        title,
+        title: header.title,
         composer: None,
-        instrument,
-        time_signature,
-        key_signature,
+        instrument: header.instrument,
+        time_signature: header.time_signature,
+        key_signature: header.key_signature,
         tempo_bpm,
         measures,
         grand_staff: false,
     })
 }
 
-// ── Internal types and helpers ────────────────────────────────────────
-
-struct RawNote {
-    midi_key: u8,
-    start_tick: u64,
-    duration_ticks: u64,
-}
-
-/// Close the first matching active note (same channel AND key) and push a RawNote.
 /// Apply a MIDI `Meta` event to the running header state: title, instrument,
 /// tempo, time signature, key signature. Unhandled meta types are ignored.
 ///
 /// Title is the first non-empty `TrackName` seen on any track (Format-1 files
 /// often put the real title on track 1, not track 0); the instrument is the
 /// first track-name that isn't the title.
-fn apply_meta_message(
-    meta: midly::MetaMessage,
-    abs_tick: u64,
-    title: &mut String,
-    instrument: &mut Option<String>,
-    time_signature: &mut TimeSignature,
-    key_signature: &mut KeySignature,
-    tempo_quarter_bpm: &mut Option<(u64, f64)>,
-) {
+fn apply_meta_message(meta: midly::MetaMessage, abs_tick: u64, header: &mut HeaderState) {
     match meta {
         midly::MetaMessage::TrackName(name_bytes) => {
             if let Ok(name) = std::str::from_utf8(name_bytes) {
                 let name = name.trim().to_string();
                 if !name.is_empty() {
-                    if *title == "Untitled" {
-                        *title = name.clone();
+                    if header.title == "Untitled" {
+                        header.title = name.clone();
                     }
-                    if instrument.is_none() && *title != name {
-                        *instrument = Some(name);
+                    if header.instrument.is_none() && header.title != name {
+                        header.instrument = Some(name);
                     }
                 }
             }
@@ -342,18 +361,22 @@ fn apply_meta_message(
             // piece's tempo; later Tempo events (a closing ritardando is the
             // classic) must not rewrite it.
             let uspqn = t.as_int() as f64;
-            if uspqn > 0.0 && tempo_quarter_bpm.is_none_or(|(tick, _)| abs_tick < tick) {
-                *tempo_quarter_bpm = Some((abs_tick, 60_000_000.0 / uspqn));
+            if uspqn > 0.0
+                && header
+                    .tempo_quarter_bpm
+                    .is_none_or(|(tick, _)| abs_tick < tick)
+            {
+                header.tempo_quarter_bpm = Some((abs_tick, 60_000_000.0 / uspqn));
             }
         }
         midly::MetaMessage::TimeSignature(num, denom_pow, _, _) => {
-            *time_signature = TimeSignature {
+            header.time_signature = TimeSignature {
                 beats: num,
                 beat_type: 1u8.checked_shl(denom_pow as u32).unwrap_or(4),
             };
         }
         midly::MetaMessage::KeySignature(sf, minor) => {
-            *key_signature = KeySignature {
+            header.key_signature = KeySignature {
                 fifths: sf,
                 mode: if minor {
                     KeyMode::Minor
@@ -366,6 +389,8 @@ fn apply_meta_message(
     }
 }
 
+/// Close the first matching active note (same channel AND key) and push a
+/// [`RawNote`].
 fn close_note(
     active: &mut Vec<(u8, u8, u8, u64)>,
     out: &mut Vec<RawNote>,
@@ -783,13 +808,70 @@ mod tests {
     }
 
     /// Review S5: an out-of-range track index is a caller bug and gets the
-    /// real reason — not the misleading "no playable notes" message.
+    /// real reason — not the misleading "no playable notes" message. The
+    /// exact boundary (`len()`, first invalid index) is asserted too —
+    /// an off-by-one there falls through to the misleading message.
     #[test]
     fn out_of_range_track_filter_names_the_real_problem() {
         let err = parse_midi_bytes_track(&build_band_midi(), Some(99)).unwrap_err();
         assert!(
             matches!(&err, ScoreError::Midi(m) if m.contains("track 99 doesn't exist")),
             "got: {err:?}"
+        );
+        // The band fixture has exactly 4 tracks, so index 4 is the boundary.
+        let err = parse_midi_bytes_track(&build_band_midi(), Some(4)).unwrap_err();
+        assert!(
+            matches!(&err, ScoreError::Midi(m) if m.contains("track 4 doesn't exist")),
+            "index == track count must be out of range, got: {err:?}"
+        );
+    }
+
+    /// A note with no NoteOff closes at ITS OWN track's final tick — not
+    /// dropped, and not stretched to another (longer) track's end. Pins the
+    /// end-of-track close in `collect_track_events` and its per-track
+    /// `final_tick`; fails if the close loop is deleted (the note vanishes)
+    /// or if a refactor ever computes the final tick across all tracks
+    /// (duration would read 4 beats instead of 1).
+    #[test]
+    fn an_unterminated_note_closes_at_its_own_tracks_end() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MThd");
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes()); // format 1
+        buf.extend_from_slice(&2u16.to_be_bytes()); // 2 tracks
+        buf.extend_from_slice(&480u16.to_be_bytes());
+
+        // Track 0: a C5 NoteOn with NO NoteOff; end-of-track at tick 480.
+        let mut t0 = Vec::new();
+        write_meta_event(&mut t0, 0, 0x58, &[4, 2, 24, 8]); // 4/4
+        write_midi_event(&mut t0, 0, 0x90, 72, 80);
+        write_meta_event(&mut t0, 480, 0x2F, &[]);
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(t0.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&t0);
+
+        // Track 1: four properly-closed quarter notes, ending at tick 1920.
+        let mut t1 = Vec::new();
+        for &key in &[60u8, 62, 64, 65] {
+            write_midi_event(&mut t1, 0, 0x90, key, 80);
+            write_midi_event(&mut t1, 480, 0x80, key, 0);
+        }
+        write_meta_event(&mut t1, 0, 0x2F, &[]);
+        buf.extend_from_slice(b"MTrk");
+        buf.extend_from_slice(&(t1.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&t1);
+
+        let model = parse_midi_bytes(&buf).expect("parse unterminated-note MIDI");
+        let unterminated = model
+            .measures
+            .iter()
+            .flat_map(|m| m.notes.iter())
+            .find(|n| n.midi_number == 72)
+            .expect("the unterminated C5 must still be imported");
+        assert!(
+            (unterminated.duration_beats - 1.0).abs() < 0.01,
+            "C5 must close at its own track's end (1 beat), got {}",
+            unterminated.duration_beats
         );
     }
 
