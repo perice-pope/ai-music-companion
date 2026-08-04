@@ -105,7 +105,7 @@ pub fn score_warmup(target_midi: &[u8], played_midi: &[u8]) -> f32;
 `roulette` chooses the root + scale from a bounded catalog using only `seed` (no RNG, no I/O), so the
 same seed always yields the same challenge. The command layer supplies a fresh seed per throw.
 
-### IPC (command layer, `apps/desktop/src-tauri/src/commands.rs`)
+### IPC (command layer, `apps/desktop/src-tauri/src/commands/warmup.rs`)
 - `start_daily_warmup() -> WarmupChallengeDto` — calls `roulette(fresh_seed)`; returns label + target
   for the score view. Read-only on the model.
 - `complete_daily_warmup(seed, played_notes) -> StreakDto` — grades via `score_warmup`, computes the
@@ -186,11 +186,11 @@ export interface WarmupChallengeDto { seed: number; label: string; target_notes:
 | AC6 | `brain::learner::tests::apply_daily_completion_is_pure_deterministic` | two calls byte-identical |
 | AC7 | `variations::tests::roulette_matches_generate_and_is_seed_stable` | target ∈ F1 output; seed-stable; varies across seeds |
 | AC8 | `variations::tests::score_warmup_perfect_partial_bounds` | 1.0 exact, lower partial, ∈[0,1] |
-| AC9 | integration `commands::tests::complete_warmup_writes_score_and_streak` | model `last_warmup` + streak; `get_streak` reports it |
+| AC9 | integration `commands::warmup::tests::complete_warmup_writes_score_and_streak` | model `last_warmup` + streak; `get_streak` reports it |
 | AC10 | `brain::learner::tests::zero_score_still_advances_streak` | score 0 advances like any other |
 | AC11 | `brain::learner::tests::score_clamped_and_best_of_day` | clamp to [0,1]; same-day keeps max |
 | AC12 | `StreakBadge.test.tsx` | lit vs greyed by `completed_today`; tap invokes `start_daily_warmup` |
-| edge: localday boundary | `commands::tests::localday_from_instant_uses_local_offset` | instant→LocalDay at the boundary only |
+| edge: localday boundary | `commands::warmup::tests::localday_from_instant_uses_local_offset` | instant→LocalDay at the boundary only |
 | edge: overflow | `brain::learner::tests::count_saturates_at_u32_max` | no panic/overflow |
 | edge: forward-compat | `brain::learner::tests::model_without_last_warmup_loads` | absent field → None, roundtrip preserves |
 
@@ -212,7 +212,7 @@ offline; nothing here is networked, so no new disclosure is required.
 |---|---|---|---|---|
 | S1 | `LocalDay` + exact `apply_daily_completion` streak math + additive `last_warmup` field (pure, fully unit-tested per AC1–6,10,11) | `crates/brain/src/learner*` | F2 | no |
 | S2 | `roulette(seed)` + `score_warmup` over F1 (`target_notes`), seed-deterministic (AC7,8) | `crates/variations/**` | F1 | no |
-| S3 | IPC: `start_daily_warmup` / `complete_daily_warmup` / `get_streak` + instant→`LocalDay` at boundary + persist (AC9, localday boundary test) | `apps/desktop/src-tauri/src/commands.rs`, `crates/brain` store glue | S1, S2 | no |
+| S3 | IPC: `start_daily_warmup` / `complete_daily_warmup` / `get_streak` + instant→`LocalDay` at boundary + persist (AC9, localday boundary test) | `apps/desktop/src-tauri/src/commands/warmup.rs`, `crates/brain` store glue | S1, S2 | no |
 | S4 | Frontend StreakBadge + one-tap "Daily warmup" 60s flow + DTO types (AC12) | `apps/desktop/src/components/StreakBadge.tsx`, `DailyWarmup*.tsx`, `apps/desktop/src/types/brain.ts` | S3 | no |
 
 Interface/seam slice = S1 (the `LocalDay`/transition contract) and S2 (the challenge/score contract);
