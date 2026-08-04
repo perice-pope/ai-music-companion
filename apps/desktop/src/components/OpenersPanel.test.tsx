@@ -657,6 +657,53 @@ describe("OpenersPanel (#419 S4 recipes)", () => {
     ).toBe("");
   });
 
+  it("a failed save surfaces its notice calmly and keeps the name for correction", async () => {
+    let failSave = true;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "my_patterns" || cmd === "list_opener_recipes") {
+        return Promise.resolve([]);
+      }
+      if (cmd === "recall_last_opener") {
+        return Promise.resolve(null);
+      }
+      if (cmd === "save_opener_recipe") {
+        return failSave
+          ? Promise.reject("recipes need a name")
+          : Promise.resolve({
+              id: 5,
+              name: "Morning",
+              items: [{ type: "note_sequence", degrees: [3] }],
+              direction: "forward",
+            });
+      }
+      return Promise.resolve(PREVIEW_DTO);
+    });
+    openFull();
+    fireEvent.click(screen.getByTestId("opener-note-3"));
+    await waitFor(() => screen.getByTestId("opener-recipe-save"));
+    fireEvent.change(screen.getByTestId("opener-recipe-name"), {
+      target: { value: "Morning" },
+    });
+    fireEvent.click(screen.getByTestId("opener-recipe-save"));
+    // The backend's refusal lands in the panel, not a crash — and the
+    // typed name survives for a second try.
+    await waitFor(() => screen.getByTestId("opener-recipe-notice"));
+    expect(screen.getByTestId("opener-recipe-notice").textContent).toContain(
+      "recipes need a name",
+    );
+    expect(
+      (screen.getByTestId("opener-recipe-name") as HTMLInputElement).value,
+    ).toBe("Morning");
+    // The next successful save clears the notice with the name.
+    failSave = false;
+    fireEvent.click(screen.getByTestId("opener-recipe-save"));
+    await waitFor(() => screen.getByTestId("opener-recipe-5"));
+    expect(screen.queryByTestId("opener-recipe-notice")).toBeNull();
+    expect(
+      (screen.getByTestId("opener-recipe-name") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
   it("a tapped recipe repopulates the builder through the preview path", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "my_patterns") {
@@ -848,6 +895,23 @@ describe("OpenersPanel (#471 pt 3 — the RV-simple picker)", () => {
     expect(screen.getByTestId("opener-pc-7").getAttribute("aria-pressed")).toBe(
       "true",
     );
+  });
+
+  it("the lit buttons wear their tap-order badges, hidden from screen readers", async () => {
+    render(<OpenersPanel />);
+    fireEvent.click(screen.getByTestId("openers-toggle"));
+    fireEvent.click(screen.getByTestId("opener-pc-4"));
+    fireEvent.click(screen.getByTestId("opener-pc-7"));
+    await waitFor(() => screen.getByTestId("opener-chip-0"));
+    // Tap order IS the badge: first tap wears 1, second wears 2 — the
+    // off-by-zero mutant (pos, not pos + 1) badges 0/1 and fails here.
+    expect(screen.getByTestId("opener-pc-4").textContent).toContain("1");
+    const second = screen.getByTestId("opener-pc-7");
+    expect(second.textContent).toContain("2");
+    // The badge is visual order only — without aria-hidden, screen
+    // readers announce "5 2" as if both were the note's name.
+    const badge = second.querySelector('[aria-hidden="true"]');
+    expect(badge?.textContent).toBe("2");
   });
 
   it("the picker holds its place in the row while bank items join", async () => {
