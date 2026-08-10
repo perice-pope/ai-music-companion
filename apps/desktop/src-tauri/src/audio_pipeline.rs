@@ -354,6 +354,17 @@ impl AudioPipeline {
         S: FnMut(ScorePosition) + Send + 'static,
         V: FnMut(NoteVerdict) + Send + 'static,
     {
+        // Fail a doomed startup before spawning a thread or opening the mic
+        // (which on macOS can raise the permission prompt): the phrase gate
+        // needs nothing from the device to validate (#509). The worker
+        // re-checks when it builds the aggregator, so direct `worker_loop`
+        // callers get the same typed bail.
+        PhraseConfig {
+            voiced_confidence_threshold: profile.voiced_confidence_threshold,
+            ..PhraseConfig::default()
+        }
+        .validate()?;
+
         let shutdown = Arc::new(AtomicBool::new(false));
         let (profile_tx, profile_rx) = std::sync::mpsc::channel::<DetectorProfile>();
         let (startup_tx, startup_rx) = std::sync::mpsc::channel::<Result<(), PipelineError>>();
@@ -1170,6 +1181,28 @@ mod tests {
                 }
             }
             assert_eq!(events.get(), 0, "a doomed worker must not process audio");
+        }
+    }
+
+    /// #509 review: the public start path rejects a bad profile before
+    /// spawning a worker or opening the mic. CI-safe precisely because the
+    /// bail happens ahead of `AudioCapture::new` (runners have no input
+    /// device) — a `Capture` error here would mean validation moved back
+    /// behind the device open.
+    #[test]
+    fn start_rejects_invalid_profile_before_touching_the_mic() {
+        match AudioPipeline::start(
+            DetectorProfile {
+                voiced_confidence_threshold: f64::NAN,
+                ..test_profile()
+            },
+            |_, _| {},
+        ) {
+            Err(PipelineError::Phrase(PhraseError::InvalidConfidenceThreshold(v))) => {
+                assert!(v.is_nan(), "error must carry the offending value, got {v}");
+            }
+            Err(other) => panic!("expected the typed phrase-config error, got {other:?}"),
+            Ok(_) => panic!("invalid gate must not start a pipeline"),
         }
     }
 
