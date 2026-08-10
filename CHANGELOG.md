@@ -1,3 +1,9 @@
+## [2.52.3](https://github.com/perice-pope/ai-music-companion/compare/v2.52.2...v2.52.3) (2026-08-10)
+
+### Bug Fixes
+
+* audio worker never panics on profile-derived config — typed startup failure ([#509](https://github.com/perice-pope/ai-music-companion/issues/509)) ([#512](https://github.com/perice-pope/ai-music-companion/issues/512)) ([acc3e40](https://github.com/perice-pope/ai-music-companion/commit/acc3e40a98c1ba6d06abd29fc28951504c5d3633))
+
 ## [2.52.2](https://github.com/perice-pope/ai-music-companion/compare/v2.52.1...v2.52.2) (2026-08-02)
 
 ### Bug Fixes
