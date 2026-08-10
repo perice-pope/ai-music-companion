@@ -28,7 +28,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use brain::follower::{NoteVerdict, ScoreFollower, ScorePosition};
-use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseSummary};
+use brain::phrase::{PhraseAggregator, PhraseConfig, PhraseError, PhraseSummary};
 use ears::capture::{AudioCapture, CaptureConfig, CaptureError};
 use ears::output_engine::ClickFire;
 use ears::pitch::{PitchConfig, PitchDetector, PitchError};
@@ -47,6 +47,8 @@ pub enum PipelineError {
     Capture(#[from] CaptureError),
     #[error("pitch detector rejected config: {0}")]
     Pitch(#[from] PitchError),
+    #[error("phrase aggregator rejected profile-derived config: {0}")]
+    Phrase(#[from] PhraseError),
     #[error("pipeline is already stopped")]
     AlreadyStopped,
 }
@@ -511,11 +513,19 @@ fn worker_loop<C, F, P, S, V>(
     // it began on — the anchor the cursor follows. The voiced-confidence gate
     // comes from the active instrument profile so quiet, breathy singing still
     // forms phrases (#185); the rest of the config is the validated default.
-    let mut aggregator = PhraseAggregator::new(PhraseConfig {
+    // The gate is profile DATA, not an invariant: a bad value must bail
+    // through the startup channel like the capture/detector failures below —
+    // a panic here kills this thread and takes pitch detection with it (#509).
+    let mut aggregator = match PhraseAggregator::new(PhraseConfig {
         voiced_confidence_threshold: initial_profile.voiced_confidence_threshold,
         ..PhraseConfig::default()
-    })
-    .expect("PhraseConfig derived from the instrument profile is valid");
+    }) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = startup_tx.send(Err(PipelineError::Phrase(e)));
+            return;
+        }
+    };
     let has_follower = follower.is_some();
     if let Some(f) = follower {
         aggregator.set_score_follower(f);
@@ -1108,6 +1118,59 @@ mod tests {
             "worker loop must signal successful startup"
         );
         log
+    }
+
+    /// #509: a bad profile-derived voiced-confidence gate must fail startup
+    /// through the typed channel, not panic the audio-pipeline thread. The
+    /// old `.expect` unwound the worker before it signaled ready, so the
+    /// caller saw only `StartupChannelClosed` with the root cause lost to
+    /// the panic — a config/data bug turned into undiagnosable feature loss.
+    #[test]
+    fn invalid_voiced_gate_fails_startup_typed_instead_of_panicking() {
+        for bad in [0.0, -0.5, 1.5, f64::NAN] {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let capture = ScriptedCapture {
+                samples: vec![0.0; 4096],
+                cursor: 0,
+                shutdown: Arc::clone(&shutdown),
+                stalls: Cell::new(0),
+                last_cursor: Cell::new(0),
+            };
+            let (_profile_tx, profile_rx) = std::sync::mpsc::channel();
+            let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+            let events = Rc::new(Cell::new(0_usize));
+            let ev = Rc::clone(&events);
+            worker_loop(
+                capture,
+                DetectorProfile {
+                    voiced_confidence_threshold: bad,
+                    ..test_profile()
+                },
+                None,
+                None,
+                None,
+                None,
+                profile_rx,
+                shutdown,
+                startup_tx,
+                move |_event, _chroma| ev.set(ev.get() + 1),
+                |_phrase| {},
+                |_position| {},
+                |_verdict| {},
+            );
+            match startup_rx.try_recv() {
+                Ok(Err(PipelineError::Phrase(PhraseError::InvalidConfidenceThreshold(got)))) => {
+                    assert!(
+                        got == bad || (got.is_nan() && bad.is_nan()),
+                        "error must carry the offending value: got {got}, fed {bad}"
+                    );
+                }
+                other => {
+                    panic!("expected typed phrase-config startup error for {bad}, got {other:?}")
+                }
+            }
+            assert_eq!(events.get(), 0, "a doomed worker must not process audio");
+        }
     }
 
     /// #354's exact symptom: 'score follower installed' with ZERO position
