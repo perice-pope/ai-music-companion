@@ -14,7 +14,7 @@
 //! model carries pitch as a MIDI number, the exact spelling doesn't affect
 //! round-trip fidelity.
 
-use super::{Dynamic, KeyMode, ScoreModel, ScoreNote};
+use super::{Dynamic, KeyMode, Measure, ScoreModel, ScoreNote};
 
 /// Ticks per quarter note used in the emitted `<divisions>`.
 ///
@@ -31,6 +31,47 @@ const DIVISIONS: u32 = 480;
 pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     let mut out = String::with_capacity(1024 + model.measures.len() * 256);
 
+    write_document_head(&mut out, model);
+
+    out.push_str("  <part id=\"P1\">\n");
+    let mut state = EmitState {
+        current_dynamic: None,
+        carry_staff: 1,
+    };
+    for (idx, measure) in model.measures.iter().enumerate() {
+        out.push_str(&format!("    <measure number=\"{}\">\n", measure.number));
+        // Attributes (divisions/key/time) + tempo only on the first measure;
+        // the parser carries them forward, and re-emitting would be noise.
+        if idx == 0 {
+            write_leading_attributes(&mut out, model);
+        }
+        write_measure_notes(&mut out, measure, model, &mut state);
+        out.push_str("    </measure>\n");
+    }
+    out.push_str("  </part>\n");
+    out.push_str("</score-partwise>\n");
+    out
+}
+
+/// Emitter state threaded across measures — MusicXML directions and staff
+/// placement are stateful between barlines, so neither field resets per
+/// measure.
+struct EmitState {
+    /// Dynamic tracked across notes/measures so we only emit a
+    /// `<direction><dynamics>` when the marking *changes* — matching how the
+    /// parser carries `current_dynamic` forward.
+    current_dynamic: Option<Dynamic>,
+    /// #417-3 review MF3: the staff a rest inherits carries across BARLINES —
+    /// `push_span` splits a cross-barline breath into per-measure rests, and
+    /// a bass phrase's measure-opening rest must stay in the left hand, not
+    /// teleport to the empty treble staff. Opening rests of the piece: treble
+    /// (starts at 1).
+    carry_staff: u8,
+}
+
+/// The document prelude: XML declaration, doctype, root element, `<work>`
+/// title, composer identification, and the `<part-list>`.
+fn write_document_head(out: &mut String, model: &ScoreModel) {
     out.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     out.push('\n');
     out.push_str(
@@ -40,7 +81,6 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     out.push_str(r#"<score-partwise version="3.1">"#);
     out.push('\n');
 
-    // ── Work title + identification (composer) ──
     out.push_str("  <work>\n");
     out.push_str(&format!(
         "    <work-title>{}</work-title>\n",
@@ -57,7 +97,6 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
         out.push_str("  </identification>\n");
     }
 
-    // ── Part list ──
     // #356: the staff label. A filtered MIDI import carries the chosen part's
     // name as the TITLE (instrument stays None so other tracks' names can't
     // leak), so the title is the honest second choice — "Music" would show
@@ -76,152 +115,138 @@ pub fn score_model_to_musicxml(model: &ScoreModel) -> String {
     ));
     out.push_str("    </score-part>\n");
     out.push_str("  </part-list>\n");
+}
 
-    // ── The single part ──
-    out.push_str("  <part id=\"P1\">\n");
-
-    // Dynamic state tracked across notes/measures so we only emit a
-    // `<direction><dynamics>` when the marking *changes* — matching how the
-    // parser carries `current_dynamic` forward.
-    let mut current_dynamic: Option<Dynamic> = None;
-    // #417-3 review MF3: the staff a rest inherits carries across BARLINES —
-    // `push_span` splits a cross-barline breath into per-measure rests, and
-    // a bass phrase's measure-opening rest must stay in the left hand, not
-    // teleport to the empty treble staff. Opening rests of the piece: treble.
-    let mut carry_staff = 1u8;
-
-    for (idx, measure) in model.measures.iter().enumerate() {
-        out.push_str(&format!("    <measure number=\"{}\">\n", measure.number));
-
-        // Attributes (divisions/key/time) + tempo only on the first measure;
-        // the parser carries them forward, and re-emitting would be noise.
-        if idx == 0 {
-            out.push_str("      <attributes>\n");
-            out.push_str(&format!("        <divisions>{DIVISIONS}</divisions>\n"));
-            out.push_str("        <key>\n");
-            out.push_str(&format!(
-                "          <fifths>{}</fifths>\n",
-                model.key_signature.fifths
-            ));
-            out.push_str(&format!(
-                "          <mode>{}</mode>\n",
-                match model.key_signature.mode {
-                    KeyMode::Major => "major",
-                    KeyMode::Minor => "minor",
-                }
-            ));
-            out.push_str("        </key>\n");
-            out.push_str("        <time>\n");
-            out.push_str(&format!(
-                "          <beats>{}</beats>\n",
-                model.time_signature.beats
-            ));
-            out.push_str(&format!(
-                "          <beat-type>{}</beat-type>\n",
-                model.time_signature.beat_type
-            ));
-            out.push_str("        </time>\n");
-            // #417-3: keyboard scores are a GRAND STAFF — two staves, treble
-            // over bass, both clefs declared up front (an empty bass staff
-            // with whole rests is how real piano music shows a silent left
-            // hand). XSD order: <staves> before <clef>.
-            if model.grand_staff {
-                out.push_str("        <staves>2</staves>\n");
-                out.push_str("        <clef number=\"1\">\n");
-                out.push_str("          <sign>G</sign>\n");
-                out.push_str("          <line>2</line>\n");
-                out.push_str("        </clef>\n");
-                out.push_str("        <clef number=\"2\">\n");
-                out.push_str("          <sign>F</sign>\n");
-                out.push_str("          <line>4</line>\n");
-                out.push_str("        </clef>\n");
-            }
-            out.push_str("      </attributes>\n");
-
-            // #356: a <direction> with no <direction-type> child is invalid
-            // MusicXML, and OSMD 1.9.x reacts by silently dropping EVERY note
-            // of the measure that contains it — imports rendered with a blank
-            // first measure ("half the notes" on a two-measure score). The
-            // metronome mark makes the element valid (and shows the tempo);
-            // <sound tempo> stays because the parser round-trips from it.
-            out.push_str("      <direction placement=\"above\">\n");
-            out.push_str("        <direction-type>\n");
-            out.push_str("          <metronome>\n");
-            out.push_str(&format!(
-                "            <beat-unit>{}</beat-unit>\n",
-                beat_unit_name(model.time_signature.beat_type)
-            ));
-            out.push_str(&format!(
-                "            <per-minute>{}</per-minute>\n",
-                fmt_f64(model.tempo_bpm)
-            ));
-            out.push_str("          </metronome>\n");
-            out.push_str("        </direction-type>\n");
-            out.push_str(&format!(
-                "        <sound tempo=\"{}\"/>\n",
-                fmt_f64(model.tempo_bpm)
-            ));
-            out.push_str("      </direction>\n");
+/// The first measure's `<attributes>` (divisions, key, time, grand-staff
+/// clefs) and the tempo `<direction>`.
+fn write_leading_attributes(out: &mut String, model: &ScoreModel) {
+    out.push_str("      <attributes>\n");
+    out.push_str(&format!("        <divisions>{DIVISIONS}</divisions>\n"));
+    out.push_str("        <key>\n");
+    out.push_str(&format!(
+        "          <fifths>{}</fifths>\n",
+        model.key_signature.fifths
+    ));
+    out.push_str(&format!(
+        "          <mode>{}</mode>\n",
+        match model.key_signature.mode {
+            KeyMode::Major => "major",
+            KeyMode::Minor => "minor",
         }
-
-        // Two onsets within this many beats count as simultaneous (a chord).
-        const CHORD_ONSET_EPSILON: f64 = 1e-6;
-        // #417-3: on a grand staff every note (and rest) carries its staff.
-        let staves = model
-            .grand_staff
-            .then(|| staff_positions(&measure.notes, carry_staff));
-        if let Some(last) = staves.as_ref().and_then(|s| s.last()) {
-            carry_staff = *last;
-        }
-        let beams = beam_positions(
-            &measure.notes,
-            model.time_signature.beats,
-            model.time_signature.beat_type,
-            staves.as_deref(),
-        );
-        // Onset of the previous sounding note, so a note sharing it can be
-        // flagged as a chord member. MusicXML stacks notes only when the
-        // 2nd+ of a simultaneity carries a <chord/> element.
-        let mut prev_sounding_start: Option<f64> = None;
-        for (note_idx, note) in measure.notes.iter().enumerate() {
-            // Emit a dynamics direction when the marking changes (skip on
-            // rests — dynamics attach to sounding notes).
-            if !note.is_rest && note.dynamic != current_dynamic {
-                if let Some(dynamic) = note.dynamic {
-                    out.push_str("      <direction placement=\"below\">\n");
-                    out.push_str("        <direction-type>\n");
-                    out.push_str(&format!(
-                        "          <dynamics><{tag}/></dynamics>\n",
-                        tag = dynamic_tag(dynamic)
-                    ));
-                    out.push_str("        </direction-type>\n");
-                    out.push_str("      </direction>\n");
-                    current_dynamic = Some(dynamic);
-                }
-            }
-
-            let is_chord = !note.is_rest
-                && prev_sounding_start
-                    .is_some_and(|prev| (note.start_beat - prev).abs() < CHORD_ONSET_EPSILON);
-            write_note(
-                &mut out,
-                note,
-                is_chord,
-                model.key_signature.fifths < 0,
-                beams[note_idx],
-                staves.as_ref().map(|s| s[note_idx]),
-            );
-            if !note.is_rest {
-                prev_sounding_start = Some(note.start_beat);
-            }
-        }
-
-        out.push_str("    </measure>\n");
+    ));
+    out.push_str("        </key>\n");
+    out.push_str("        <time>\n");
+    out.push_str(&format!(
+        "          <beats>{}</beats>\n",
+        model.time_signature.beats
+    ));
+    out.push_str(&format!(
+        "          <beat-type>{}</beat-type>\n",
+        model.time_signature.beat_type
+    ));
+    out.push_str("        </time>\n");
+    // #417-3: keyboard scores are a GRAND STAFF — two staves, treble
+    // over bass, both clefs declared up front (an empty bass staff
+    // with whole rests is how real piano music shows a silent left
+    // hand). XSD order: <staves> before <clef>.
+    if model.grand_staff {
+        out.push_str("        <staves>2</staves>\n");
+        out.push_str("        <clef number=\"1\">\n");
+        out.push_str("          <sign>G</sign>\n");
+        out.push_str("          <line>2</line>\n");
+        out.push_str("        </clef>\n");
+        out.push_str("        <clef number=\"2\">\n");
+        out.push_str("          <sign>F</sign>\n");
+        out.push_str("          <line>4</line>\n");
+        out.push_str("        </clef>\n");
     }
+    out.push_str("      </attributes>\n");
 
-    out.push_str("  </part>\n");
-    out.push_str("</score-partwise>\n");
-    out
+    // #356: a <direction> with no <direction-type> child is invalid
+    // MusicXML, and OSMD 1.9.x reacts by silently dropping EVERY note
+    // of the measure that contains it — imports rendered with a blank
+    // first measure ("half the notes" on a two-measure score). The
+    // metronome mark makes the element valid (and shows the tempo);
+    // <sound tempo> stays because the parser round-trips from it.
+    out.push_str("      <direction placement=\"above\">\n");
+    out.push_str("        <direction-type>\n");
+    out.push_str("          <metronome>\n");
+    out.push_str(&format!(
+        "            <beat-unit>{}</beat-unit>\n",
+        beat_unit_name(model.time_signature.beat_type)
+    ));
+    out.push_str(&format!(
+        "            <per-minute>{}</per-minute>\n",
+        fmt_f64(model.tempo_bpm)
+    ));
+    out.push_str("          </metronome>\n");
+    out.push_str("        </direction-type>\n");
+    out.push_str(&format!(
+        "        <sound tempo=\"{}\"/>\n",
+        fmt_f64(model.tempo_bpm)
+    ));
+    out.push_str("      </direction>\n");
+}
+
+/// One measure's notes: staff and beam assignment, dynamic-change
+/// directions, and each `<note>` (chord members flagged by shared onset).
+fn write_measure_notes(
+    out: &mut String,
+    measure: &Measure,
+    model: &ScoreModel,
+    state: &mut EmitState,
+) {
+    // Two onsets within this many beats count as simultaneous (a chord).
+    const CHORD_ONSET_EPSILON: f64 = 1e-6;
+    // #417-3: on a grand staff every note (and rest) carries its staff.
+    let staves = model
+        .grand_staff
+        .then(|| staff_positions(&measure.notes, state.carry_staff));
+    if let Some(last) = staves.as_ref().and_then(|s| s.last()) {
+        state.carry_staff = *last;
+    }
+    let beams = beam_positions(
+        &measure.notes,
+        model.time_signature.beats,
+        model.time_signature.beat_type,
+        staves.as_deref(),
+    );
+    // Onset of the previous sounding note, so a note sharing it can be
+    // flagged as a chord member. MusicXML stacks notes only when the
+    // 2nd+ of a simultaneity carries a <chord/> element.
+    let mut prev_sounding_start: Option<f64> = None;
+    for (note_idx, note) in measure.notes.iter().enumerate() {
+        // Emit a dynamics direction when the marking changes (skip on
+        // rests — dynamics attach to sounding notes).
+        if !note.is_rest && note.dynamic != state.current_dynamic {
+            if let Some(dynamic) = note.dynamic {
+                out.push_str("      <direction placement=\"below\">\n");
+                out.push_str("        <direction-type>\n");
+                out.push_str(&format!(
+                    "          <dynamics><{tag}/></dynamics>\n",
+                    tag = dynamic_tag(dynamic)
+                ));
+                out.push_str("        </direction-type>\n");
+                out.push_str("      </direction>\n");
+                state.current_dynamic = Some(dynamic);
+            }
+        }
+
+        let is_chord = !note.is_rest
+            && prev_sounding_start
+                .is_some_and(|prev| (note.start_beat - prev).abs() < CHORD_ONSET_EPSILON);
+        write_note(
+            out,
+            note,
+            is_chord,
+            model.key_signature.fifths < 0,
+            beams[note_idx],
+            staves.as_ref().map(|s| s[note_idx]),
+        );
+        if !note.is_rest {
+            prev_sounding_start = Some(note.start_beat);
+        }
+    }
 }
 
 /// A note's place in a `<beam number="1">` group.
@@ -799,6 +824,66 @@ mod tests {
         assert_eq!(reparsed.measures[1].notes[0].midi_number, 67);
         // Time/key/tempo declared only in measure 1 still apply throughout.
         assert_eq!(reparsed.tempo_bpm, 120.0);
+    }
+
+    /// Attributes and the tempo direction belong to the FIRST measure only.
+    /// Re-emitting them per measure round-trips cleanly (the parser just
+    /// re-applies the same values), so only a direct count pins the
+    /// once-up-front contract — fails if the `idx == 0` gate is lost.
+    #[test]
+    fn attributes_and_tempo_emit_only_in_the_first_measure() {
+        let model = ScoreModel {
+            title: "Two Bars".to_string(),
+            composer: None,
+            instrument: None,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            grand_staff: false,
+            measures: vec![
+                Measure {
+                    number: 1,
+                    notes: vec![note(60, 4.0, 0.0)],
+                },
+                Measure {
+                    number: 2,
+                    notes: vec![note(67, 4.0, 0.0)],
+                },
+            ],
+        };
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(xml.matches("<attributes>").count(), 1);
+        assert_eq!(xml.matches("<divisions>").count(), 1);
+        assert_eq!(xml.matches("<metronome>").count(), 1, "one tempo mark");
+    }
+
+    /// A `<dynamics>` direction fires only when the marking CHANGES —
+    /// re-stamping the same mark before every note also round-trips
+    /// identically (the parser carries it forward), so the change-only
+    /// contract is pinned by counting. Fails if the incumbent-dynamic
+    /// comparison is lost, including across a barline.
+    #[test]
+    fn an_unchanged_dynamic_is_not_re_emitted() {
+        let mut model = c_major_scale();
+        for n in &mut model.measures[0].notes {
+            n.dynamic = Some(Dynamic::MF);
+        }
+        // Second measure continues mf, then changes to p.
+        let mut m2_notes = vec![note(67, 2.0, 0.0), note(69, 2.0, 2.0)];
+        m2_notes[0].dynamic = Some(Dynamic::MF);
+        m2_notes[1].dynamic = Some(Dynamic::P);
+        model.measures.push(Measure {
+            number: 2,
+            notes: m2_notes,
+        });
+        let xml = score_model_to_musicxml(&model);
+        assert_eq!(
+            xml.matches("<dynamics>").count(),
+            2,
+            "one direction for the initial mf, one for the change to p:\n{xml}"
+        );
+        assert_eq!(xml.matches("<mf/>").count(), 1);
+        assert_eq!(xml.matches("<p/>").count(), 1);
     }
 
     /// #356: every emitted `<direction>` must carry a `<direction-type>`
