@@ -1086,20 +1086,22 @@ mod tests {
 
     #[test]
     fn backup_rewinds_the_cursor_for_a_second_voice() {
-        // A whole-measure C4, <backup> to the top, then a second voice's
-        // E4: both voices start at beat 0. Catches the <backup> arm being
-        // dropped (E4 would start at 4.0).
+        // C4 for 2 beats (4 divisions at divisions=2), then <backup> 2
+        // divisions = ONE beat, then E4: E4 starts at beat 1.0 — a nonzero
+        // landing, so "backup always zeroes the cursor" and "backup forgets
+        // the divisions scaling" both go red here, not just "backup arm
+        // dropped" (adversarial review, round 1).
         let xml = one_part_score(
-            r#"      <attributes><divisions>1</divisions></attributes>
+            r#"      <attributes><divisions>2</divisions></attributes>
       <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
-      <backup><duration>4</duration></backup>
-      <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note>"#,
+      <backup><duration>2</duration></backup>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration></note>"#,
         );
         let model = parse_musicxml_str(&xml).expect("parse backup XML");
         let notes = &model.measures[0].notes;
         assert!(
-            (notes[1].start_beat - 0.0).abs() < 1e-9,
-            "second voice starts back at 0.0, got {}",
+            (notes[1].start_beat - 1.0).abs() < 1e-9,
+            "a 1-beat backup from beat 2.0 lands the second voice at 1.0, got {}",
             notes[1].start_beat
         );
     }
@@ -1138,6 +1140,63 @@ mod tests {
             "<sound tempo=\"88\"> sets tempo_bpm, got {}",
             model.tempo_bpm
         );
+    }
+
+    #[test]
+    fn a_malformed_sound_tempo_leaves_the_tempo_untouched() {
+        // apply_direction's contract: directions are annotations, so an
+        // unparseable tempo must not clobber the last good one (or the
+        // default) with garbage.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <direction><sound tempo="88"/></direction>
+      <direction><sound tempo="fast"/></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse malformed-tempo XML");
+        assert!(
+            (model.tempo_bpm - 88.0).abs() < 1e-9,
+            "tempo=\"fast\" must not overwrite the valid 88, got {}",
+            model.tempo_bpm
+        );
+    }
+
+    #[test]
+    fn forward_without_duration_is_rejected() {
+        // <forward> is defined to carry a <duration>; coercing a missing one
+        // to 0 silently shifts every later beat cursor, so it must error.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <forward></forward>"#,
+        );
+        let err = parse_musicxml_str(&xml).unwrap_err();
+        match err {
+            ScoreError::MusicXml(ref m) => assert!(
+                m.contains("forward") && m.contains("duration"),
+                "error names the element and the missing duration, got: {m}"
+            ),
+            other => panic!("Expected MusicXml error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_default_time_and_key_signatures_are_extracted() {
+        // 4/4 + C major are also the defaults, so only non-default values
+        // prove the <time>/<key> arms of apply_attributes run at all.
+        let xml = one_part_score(
+            r#"      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>-3</fifths><mode>minor</mode></key>
+        <time><beats>3</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse 3/4 c-minor XML");
+        assert_eq!(model.time_signature.beats, 3);
+        assert_eq!(model.time_signature.beat_type, 4);
+        assert_eq!(model.key_signature.fifths, -3);
+        assert_eq!(model.key_signature.mode, KeyMode::Minor);
     }
 
     #[test]
@@ -1198,8 +1257,9 @@ mod tests {
 
     #[test]
     fn missing_measure_number_falls_back_to_document_position() {
-        // A measure with no (or unparseable) number attribute takes its
-        // 1-based document position; the parse must not error or emit 0.
+        // A measure whose number attribute is unparseable (measure 2) or
+        // missing (measure 3) takes its 1-based document position; the
+        // parse must not error or emit 0.
         let xml = r#"<?xml version="1.0"?>
 <score-partwise>
   <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
@@ -1208,15 +1268,20 @@ mod tests {
       <attributes><divisions>1</divisions></attributes>
       <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
     </measure>
-    <measure>
+    <measure number="A">
       <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+    <measure>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>
     </measure>
   </part>
 </score-partwise>"#;
         let model = parse_musicxml_str(xml).expect("parse unnumbered-measure XML");
+        let numbers: Vec<usize> = model.measures.iter().map(|m| m.number).collect();
         assert_eq!(
-            model.measures[1].number, 2,
-            "unnumbered second measure numbers by position"
+            numbers,
+            vec![1, 2, 3],
+            "unparseable and missing numbers both fall back to position"
         );
     }
 }
