@@ -261,6 +261,72 @@ pub fn best_match_retentive(
     bass_pc: Option<u8>,
     incumbent: Option<(u8, ChordQuality)>,
 ) -> Option<ChordMatch> {
+    let d = denoise(chroma)?;
+    // A decayed hold can thin to two relative-active bins while the chord
+    // audibly rings (max ≳ 1.0) — the incumbent may still retain through
+    // that, but nothing NEW can be named on fewer than MIN_CHORD_BINS.
+    // Today every quality carries ≥ 3 required tones needing denoised
+    // bins, so fresh minting on a thin chroma is already impossible by
+    // template arithmetic — this gate (and its per-root twin in
+    // [`root_is_candidate`]) is defense-in-depth that becomes LOAD-BEARING
+    // the day a 2-required-tone quality (a "5" power chord, say) enters
+    // the vocabulary.
+    if d.active < MIN_CHORD_BINS && incumbent.is_none() {
+        return None;
+    }
+
+    let mut best: Option<ChordMatch> = None;
+    for root in 0u8..12 {
+        let retained_root = incumbent.is_some_and(|(r, _)| r == root);
+        if !root_is_candidate(&d, root, retained_root) {
+            continue;
+        }
+        for &q in ChordQuality::all() {
+            let retained = incumbent == Some((root, q));
+            let Some(score) = score_quality(&d, root, q, retained) else {
+                continue;
+            };
+            // Strictly-better wins; ties keep the earlier (simpler) quality
+            // and the earlier root — deterministic and triad-favoring.
+            // (#382 review note: an extra richer-must-win-by-a-margin rule
+            // was tried here and proved inert — the extension evidence bar
+            // and the outsider veto in [`score_quality`] already decide
+            // every case the margin could have. Deleted rather than shipped
+            // untestable.)
+            if score > best.map_or(MIN_CHORD_CONF, |b| b.confidence) {
+                best = Some(ChordMatch {
+                    root_pc: root,
+                    quality: q,
+                    bass_pc: slash_bass(bass_pc, root, q.intervals()),
+                    confidence: score.clamp(0.0, 1.0),
+                });
+            }
+        }
+    }
+    best
+}
+
+/// The chroma after the silence gates and the denoise pass — what every
+/// scoring seam reads. `raw` survives alongside `denoised` because the
+/// incumbent's retention checks use an audibility floor BELOW the denoise
+/// bar, and denoise zeroes exactly the bins retention must still see
+/// (#382 interior dropout).
+struct DenoisedChroma {
+    raw: [f32; 12],
+    denoised: [f32; 12],
+    max_bin: f32,
+    /// Denoised bins still sounding — the matcher's "active" count.
+    active: usize,
+    /// Total denoised energy — the score normalizer.
+    total: f32,
+}
+
+/// Gate silence, then denoise with the same threshold that defines
+/// "sounding": bins under it are analysis-noise floor (leakage, residual
+/// harmonics), not evidence for or against any chord. Without the zeroing,
+/// a clean four-note chord over a realistic floor scores below the
+/// confidence gate. `None` = nothing is sounding at all.
+fn denoise(chroma: &[f32; 12]) -> Option<DenoisedChroma> {
     let total: f32 = chroma.iter().sum();
     if total <= f32::EPSILON {
         return None;
@@ -269,139 +335,122 @@ pub fn best_match_retentive(
     if max_bin < CHROMA_SILENCE_FLOOR {
         return None;
     }
-    // Denoise with the same threshold that defines "sounding": bins under
-    // it are analysis-noise floor (leakage, residual harmonics), not
-    // evidence for or against any chord. Without this, a clean four-note
-    // chord over a realistic floor scores below the confidence gate. The
-    // RAW values survive for the incumbent's retention checks, whose
-    // audibility floor sits below the denoise bar (#382 interior dropout).
-    let raw = *chroma;
-    let mut chroma = *chroma;
-    for v in chroma.iter_mut() {
+    let mut denoised = *chroma;
+    for v in denoised.iter_mut() {
         if *v < max_bin * ACTIVE_BIN_RATIO {
             *v = 0.0;
         }
     }
-    let active = chroma.iter().filter(|&&v| v > 0.0).count();
-    // A decayed hold can thin to two relative-active bins while the chord
-    // audibly rings (max ≳ 1.0) — the incumbent may still retain through
-    // that, but nothing NEW can be named on fewer than MIN_CHORD_BINS.
-    // Today every quality carries ≥ 3 required tones needing denoised
-    // bins, so fresh minting on a thin chroma is already impossible by
-    // template arithmetic — this gate (and its per-root twin below) is
-    // defense-in-depth that becomes LOAD-BEARING the day a 2-required-tone
-    // quality (a "5" power chord, say) enters the vocabulary.
-    if active < MIN_CHORD_BINS && incumbent.is_none() {
-        return None;
-    }
-    let total: f32 = chroma.iter().sum();
+    Some(DenoisedChroma {
+        raw: *chroma,
+        max_bin,
+        active: denoised.iter().filter(|&&v| v > 0.0).count(),
+        total: denoised.iter().sum(),
+        denoised,
+    })
+}
 
-    let mut best: Option<ChordMatch> = None;
-    for root in 0u8..12 {
-        // #411 round 2 (review MF2): the ROOT bar also gets retention.
-        // Unison-string beating dips the root fundamental below the
-        // promotion bar on a held chord, which deleted the incumbent from
-        // candidacy entirely and elected its upper structure (Cmaj7→Em)
-        // or dropped the label. Promotion proved the root once; keeping
-        // the name only requires the root to stay AUDIBLE — measured on
-        // the raw chroma against [`RETAIN_FLOOR`], because the relative
-        // bar lies when another bin towers (#382 interior dropout).
-        let retained_root = incumbent.is_some_and(|(r, _)| r == root);
-        if active < MIN_CHORD_BINS && !retained_root {
-            continue;
-        }
-        let root_audible = if retained_root {
-            raw[usize::from(root)] >= (max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
-        } else {
-            chroma[usize::from(root)] >= max_bin * ROOT_BIN_RATIO
-        };
-        if !root_audible {
-            continue;
-        }
-        'quality: for &q in ChordQuality::all() {
-            let intervals = q.intervals();
-            let optional = q.optional();
-            let mut in_chord = 0.0f32;
-            let mut missing = 0usize;
-            let mut template_mask = [false; 12];
-            for &iv in intervals {
-                let pc = usize::from((root + iv) % 12);
-                template_mask[pc] = true;
-                let v = chroma[pc];
-                // #382: extension tones need REAL evidence, not residue —
-                // partial bleed lands exactly on 7th/9th/13th classes and
-                // sits well above the plain active threshold after log
-                // compression. Base-triad tones keep the active bar.
-                let is_extension = intervals.len() > 3 && !BASE_TRIAD_INTERVALS.contains(&iv);
-                let retained = incumbent == Some((root, q));
-                // Round 5: the MAJOR SEVENTH (iv 11) sits exactly where the
-                // bass/third's 3rd partial lands — the single most
-                // residue-prone interval on real piano (a real C/E read
-                // "Cmaj7/E" off the E's partials). Claiming maj7 takes a
-                // genuinely prominent seventh.
-                //
-                // #382 interior dropout: the incumbent's tones — base triad
-                // included — retain at an ABSOLUTE audibility floor when the
-                // relative bar is towered (root doubling puts two hammers'
-                // energy in one bin, and subtraction eats the third in
-                // proportion to it — the ringing third reads 0.18–0.31 while
-                // 25%-of-max asks ≥ 0.37). Measured on the raw chroma:
-                // denoise zeroes exactly the bins retention must still see.
-                let bar = if retained {
-                    (max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
-                } else if is_extension {
-                    if iv == 11 {
-                        max_bin * MAJ7_MIN_RATIO
-                    } else {
-                        max_bin * EXTENSION_MIN_RATIO
-                    }
-                } else {
-                    max_bin * ACTIVE_BIN_RATIO
-                };
-                let heard = if retained { raw[pc] } else { v };
-                // Required tones must actually sound (shells may drop the
-                // optional ones — at a small cost, tallied below).
-                if heard < bar {
-                    if !optional.contains(&iv) {
-                        continue 'quality;
-                    }
-                    missing += 1;
-                    continue;
-                }
-                in_chord += v;
-            }
-            let mut out_of_chord = 0.0f32;
-            for pc in (0..12).filter(|&pc| !template_mask[pc]) {
-                // #382: a strongly-sounding tone outside the template is a
-                // played note this chord doesn't explain — veto, don't
-                // just penalize (a cluster's loud C must kill Dmaj7).
-                if chroma[pc] >= max_bin * STRONG_OUTSIDER_RATIO {
-                    continue 'quality;
-                }
-                out_of_chord += chroma[pc];
-            }
-            let score = (in_chord - NON_CHORD_PENALTY * out_of_chord) / total
-                - MISSING_TONE_PENALTY * missing as f32;
-            // Strictly-better wins; ties keep the earlier (simpler) quality
-            // and the earlier root — deterministic and triad-favoring.
-            // (#382 review note: an extra richer-must-win-by-a-margin rule
-            // was tried here and proved inert — the extension evidence bar
-            // above and the outsider veto below already decide every case
-            // the margin could have. Deleted rather than shipped untestable.)
-            if score > best.map_or(MIN_CHORD_CONF, |b| b.confidence) {
-                let bass = bass_pc.filter(|&b| {
-                    b % 12 != root && intervals.iter().any(|&iv| (root + iv) % 12 == b % 12)
-                });
-                best = Some(ChordMatch {
-                    root_pc: root,
-                    quality: q,
-                    bass_pc: bass.map(|b| b % 12),
-                    confidence: score.clamp(0.0, 1.0),
-                });
-            }
-        }
+/// May `root` anchor a candidate at all? Promotion needs enough active
+/// bins and a root clearing the (stricter) [`ROOT_BIN_RATIO`] bar.
+///
+/// #411 round 2 (review MF2): the ROOT bar also gets retention. Unison-
+/// string beating dips the root fundamental below the promotion bar on a
+/// held chord, which deleted the incumbent from candidacy entirely and
+/// elected its upper structure (Cmaj7→Em) or dropped the label. Promotion
+/// proved the root once; keeping the name only requires the root to stay
+/// AUDIBLE — measured on the raw chroma against [`RETAIN_FLOOR`], because
+/// the relative bar lies when another bin towers (#382 interior dropout).
+fn root_is_candidate(d: &DenoisedChroma, root: u8, retained_root: bool) -> bool {
+    if d.active < MIN_CHORD_BINS && !retained_root {
+        return false;
     }
-    best
+    if retained_root {
+        d.raw[usize::from(root)] >= (d.max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
+    } else {
+        d.denoised[usize::from(root)] >= d.max_bin * ROOT_BIN_RATIO
+    }
+}
+
+/// Score one (root, quality) against the chroma: walk the template's
+/// evidence bars, veto on a strong tone the template doesn't explain, and
+/// net the non-chord penalty. `retained` marks the incumbent identity,
+/// whose tones get the audibility bar instead of the promotion bars.
+/// `None` = a required tone doesn't sound, or an outside tone disqualifies
+/// the template.
+fn score_quality(d: &DenoisedChroma, root: u8, q: ChordQuality, retained: bool) -> Option<f32> {
+    let intervals = q.intervals();
+    let optional = q.optional();
+    let mut in_chord = 0.0f32;
+    let mut missing = 0usize;
+    let mut template_mask = [false; 12];
+    for &iv in intervals {
+        let pc = usize::from((root + iv) % 12);
+        template_mask[pc] = true;
+        // #382: extension tones need REAL evidence, not residue —
+        // partial bleed lands exactly on 7th/9th/13th classes and
+        // sits well above the plain active threshold after log
+        // compression. Base-triad tones keep the active bar.
+        let is_extension = intervals.len() > 3 && !BASE_TRIAD_INTERVALS.contains(&iv);
+        // Round 5: the MAJOR SEVENTH (iv 11) sits exactly where the
+        // bass/third's 3rd partial lands — the single most
+        // residue-prone interval on real piano (a real C/E read
+        // "Cmaj7/E" off the E's partials). Claiming maj7 takes a
+        // genuinely prominent seventh.
+        //
+        // #382 interior dropout: the incumbent's tones — base triad
+        // included — retain at an ABSOLUTE audibility floor when the
+        // relative bar is towered (root doubling puts two hammers'
+        // energy in one bin, and subtraction eats the third in
+        // proportion to it — the ringing third reads 0.18–0.31 while
+        // 25%-of-max asks ≥ 0.37). Measured on the raw chroma:
+        // denoise zeroes exactly the bins retention must still see.
+        let bar = if retained {
+            (d.max_bin * ACTIVE_BIN_RATIO).min(RETAIN_FLOOR)
+        } else if is_extension {
+            if iv == 11 {
+                d.max_bin * MAJ7_MIN_RATIO
+            } else {
+                d.max_bin * EXTENSION_MIN_RATIO
+            }
+        } else {
+            d.max_bin * ACTIVE_BIN_RATIO
+        };
+        let heard = if retained { d.raw[pc] } else { d.denoised[pc] };
+        // Required tones must actually sound (shells may drop the
+        // optional ones — at a small cost, tallied below). Retained or
+        // not, only the DENOISED value counts as evidence: retention
+        // decides whether the name may stay, not how confident it reads.
+        if heard < bar {
+            if !optional.contains(&iv) {
+                return None;
+            }
+            missing += 1;
+            continue;
+        }
+        in_chord += d.denoised[pc];
+    }
+    let mut out_of_chord = 0.0f32;
+    for pc in (0..12).filter(|&pc| !template_mask[pc]) {
+        // #382: a strongly-sounding tone outside the template is a
+        // played note this chord doesn't explain — veto, don't
+        // just penalize (a cluster's loud C must kill Dmaj7).
+        if d.denoised[pc] >= d.max_bin * STRONG_OUTSIDER_RATIO {
+            return None;
+        }
+        out_of_chord += d.denoised[pc];
+    }
+    Some(
+        (in_chord - NON_CHORD_PENALTY * out_of_chord) / d.total
+            - MISSING_TONE_PENALTY * missing as f32,
+    )
+}
+
+/// The slash in "C7/E": the independently-detected bass names an inversion
+/// only when it's a chord tone other than the root — never forces the root.
+fn slash_bass(bass_pc: Option<u8>, root: u8, intervals: &[u8]) -> Option<u8> {
+    bass_pc
+        .filter(|&b| b % 12 != root && intervals.iter().any(|&iv| (root + iv) % 12 == b % 12))
+        .map(|b| b % 12)
 }
 
 #[cfg(test)]
@@ -530,6 +579,28 @@ mod tests {
         }
         let m = best_match(&c, None).expect("C7 must match over a floor");
         assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Dom7));
+    }
+
+    /// The floor is not evidence AGAINST the chord either: sub-threshold
+    /// bins must leave confidence EXACTLY where the clean reading puts it,
+    /// because denoise zeroes them out of both the penalty sum and the
+    /// score normalizer. Fails if the normalizer reverts to the raw total
+    /// (the floor would dilute every score) — a regression the
+    /// gate-clearing test above cannot see, since 0.71 still clears 0.5.
+    #[test]
+    fn a_noise_floor_does_not_dilute_confidence() {
+        let clean = chroma_of(&[0, 4, 7, 10]);
+        let clean_conf = best_match(&clean, None).expect("clean C7").confidence;
+        let mut floored = clean;
+        for pc in [1usize, 2, 3, 5, 6, 8, 9, 11] {
+            floored[pc] = 0.2; // below ACTIVE_BIN_RATIO of max — pure floor
+        }
+        let m = best_match(&floored, None).expect("floored C7");
+        assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Dom7));
+        assert_eq!(
+            m.confidence, clean_conf,
+            "sub-threshold floor must not move confidence at all"
+        );
     }
 
     /// The 3.16 s reading of the real c-major-over-c3 fixture (#382
