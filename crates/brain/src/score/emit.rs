@@ -1508,6 +1508,37 @@ mod tests {
         assert_eq!(staff_seq(&xml), vec![2, 2, 2, 2, 2]);
     }
 
+    /// #417-3 review MF3, sharpened: the carry is the measure's LAST staff,
+    /// not its first. A measure descending treble→bass hands the next
+    /// measure's opening rest to the bass — a carry reading the wrong end of
+    /// the measure (staff-homogeneous fixtures can't tell them apart) sends
+    /// it back to the empty treble staff.
+    #[test]
+    fn the_carry_is_the_measures_last_staff_not_its_first() {
+        let model = ScoreModel {
+            title: "Descent".to_string(),
+            composer: None,
+            instrument: Some("Piano".to_string()),
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 90.0,
+            grand_staff: true,
+            measures: vec![
+                Measure {
+                    number: 1,
+                    notes: vec![note(72, 2.0, 0.0), note(48, 2.0, 2.0)],
+                },
+                Measure {
+                    number: 2,
+                    notes: vec![rest(1.0, 0.0), note(50, 3.0, 1.0)],
+                },
+            ],
+        };
+        let xml = score_model_to_musicxml(&model);
+        // C5 treble, C3 bass | breath in the bass phrase, D3 bass.
+        assert_eq!(staff_seq(&xml), vec![1, 2, 2, 2]);
+    }
+
     /// #417-3 review N1: the XSD child order inside <note> is a semantic
     /// contract, not a fixture accident — <type> before <staff> before
     /// <beam>. Survives fixture regeneration.
