@@ -22,6 +22,17 @@ import type {
 } from "../types/brain";
 import type { ChartEntry } from "../types/brain";
 import { useAudioStore } from "./audioStore";
+import {
+  createPocketSlice,
+  HANDOFF_FOLLOW_MS,
+  FOLLOW_THROTTLE_MS,
+  FOLLOW_MIN_DELTA_BPM,
+  type PocketSlice,
+} from "./practice/pocketSlice";
+
+// The Pocket click's constants moved out with its slice (#511); re-exported
+// so the store keeps its public surface.
+export { HANDOFF_FOLLOW_MS };
 
 /**
  * Screen routing enum — keeps Free Play as a state-machine in the
@@ -255,36 +266,9 @@ export interface RecognizedPdf {
  */
 export const KEY_ASSERT_CONFIDENCE = 0.55;
 
-/** #421 S2: handoff follows for this long, then freezes. */
-export const HANDOFF_FOLLOW_MS = 8_000;
-/** #421 S2: follow sends at most once per this window… */
-const FOLLOW_THROTTLE_MS = 1_000;
-/** …and only when the reading moved at least this much. */
-const FOLLOW_MIN_DELTA_BPM = 2;
-
-const POCKET_TEMPO_KEY = "ai-music-companion:pocket-tempo";
-
-/** #421 S1: the click tempo survives restarts (spec §4). Default 90. */
-function loadPocketTempo(): number {
-  try {
-    const raw = localStorage.getItem(POCKET_TEMPO_KEY);
-    const parsed = raw === null ? NaN : Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 90;
-  } catch {
-    return 90;
-  }
-}
-
-function savePocketTempo(bpm: number): void {
-  try {
-    localStorage.setItem(POCKET_TEMPO_KEY, String(bpm));
-  } catch {
-    // localStorage unavailable — the tempo still works for this session.
-  }
-}
-
-/** All the state the free-play flow needs. */
-export interface PracticeState {
+/** All the state the free-play flow needs. The Pocket click's own state
+ * lives in its slice (#511) — this interface composes it back in. */
+export interface PracticeState extends PocketSlice {
   // Routing ---------------------------------------------------------------
   screen: AppScreen;
 
@@ -567,27 +551,6 @@ export interface PracticeState {
   refreshCoachingSuggestion: () => Promise<void>;
   dismissCoachingSuggestion: () => void;
 
-  /** #421 S2: the click's personality — anchor holds, follow locks to
-   * YOUR pulse, handoff follows then freezes ("now hold it"). */
-  pocketMode: "anchor" | "follow" | "handoff";
-  setPocketMode: (mode: "anchor" | "follow" | "handoff") => void;
-  /** #421 S2: handoff's frozen tempo once the follow window closes. */
-  pocketFrozenBpm: number | null;
-  /** Internal follow-policy state (throttle + delta gate). */
-  _pocketLastSentBpm: number | null;
-  _pocketLastSentAt: number;
-  _pocketFollowStartedAt: number;
-
-  /** #421 S1: The Pocket — strict Anchor click state. */
-  pocketPlaying: boolean;
-  pocketTempo: number;
-  pocketCountIn: boolean;
-  setPocketTempo: (bpm: number) => void;
-  setPocketCountIn: (on: boolean) => void;
-  startPocket: () => Promise<void>;
-  stopPocket: () => Promise<void>;
-  setPocketStatus: (playing: boolean, tempoBpm: number) => void;
-
   startAccompaniment: () => Promise<void>;
   /** Stop the follow-me accompaniment. Fires `stop_accompaniment`. */
   stopAccompaniment: () => Promise<void>;
@@ -794,7 +757,8 @@ function upsertScoreEntry(
   return [entry, ...library.filter((s) => s.id !== entry.id)];
 }
 
-export const usePracticeStore = create<PracticeState>((set, get) => ({
+export const usePracticeStore = create<PracticeState>((set, get, api) => ({
+  ...createPocketSlice(set, get, api),
   screen: "selector",
   status: "idle",
   sessionId: null,
@@ -1334,66 +1298,6 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
     }));
     return true;
   },
-
-  pocketMode: "anchor",
-  pocketFrozenBpm: null,
-  _pocketLastSentBpm: null,
-  _pocketLastSentAt: 0,
-  _pocketFollowStartedAt: 0,
-
-  setPocketMode: (mode) =>
-    set({
-      pocketMode: mode,
-      // A fresh personality starts a fresh follow window; anchor sends
-      // nothing (AC5: switching mid-play stops the stream).
-      pocketFrozenBpm: null,
-      _pocketLastSentBpm: null,
-      _pocketFollowStartedAt: Date.now(),
-    }),
-
-  pocketPlaying: false,
-  pocketTempo: loadPocketTempo(),
-  pocketCountIn: true,
-
-  setPocketTempo: (bpm) => {
-    savePocketTempo(bpm);
-    set({ pocketTempo: bpm });
-  },
-  setPocketCountIn: (on) => set({ pocketCountIn: on }),
-
-  startPocket: async () => {
-    // Semantic settings only — clamping and validation are the backend's.
-    await invoke("start_pocket", {
-      tempoBpm: get().pocketTempo,
-      beatsPerBar: 4,
-      countIn: get().pocketCountIn,
-    });
-  },
-
-  stopPocket: async () => {
-    await invoke("stop_pocket");
-  },
-
-  // Authoritative playing state comes from the pocket-status event, same
-  // discipline as the band (#421 rule: never optimistically flip).
-  setPocketStatus: (playing, tempoBpm) =>
-    set((s) => ({
-      pocketPlaying: playing,
-      // Review MF4: a FRESH click starts a fresh follow life — stale
-      // frozen/sent state from a previous click made the drift line lie
-      // and the delta gate block against a tempo the click no longer
-      // holds. The follow window anchors at the click's real start.
-      ...(playing && !s.pocketPlaying
-        ? {
-            pocketFrozenBpm: null,
-            _pocketLastSentBpm: null,
-            _pocketFollowStartedAt: Date.now(),
-          }
-        : {}),
-      // The backend reports the CLAMPED tempo it actually plays — mirror
-      // it so the pulse and label can never lie.
-      pocketTempo: playing && tempoBpm > 0 ? tempoBpm : s.pocketTempo,
-    })),
 
   startAccompaniment: async () => {
     // Authoritative `playing` comes from the `accompaniment-status` event, so we
