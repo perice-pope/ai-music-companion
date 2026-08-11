@@ -629,6 +629,33 @@ mod tests {
         assert_eq!((m.root_pc, m.quality), (0, ChordQuality::Maj));
     }
 
+    /// Retention decides whether the name may stay — not how confident it
+    /// reads: a retained tone below the denoise bar contributes ZERO
+    /// evidence, so two holds whose ringing third differs only in sub-bar
+    /// residue level read the SAME confidence (their denoised chromas are
+    /// bit-identical). Fails if the evidence accumulator reads the raw
+    /// chroma for the incumbent — residue level would leak into
+    /// confidence, letting a retained label out-shout a real challenger.
+    #[test]
+    fn sub_bar_residue_is_not_confidence_evidence() {
+        let mut c = [0.0f32; 12];
+        c[0] = 1.83;
+        c[4] = 0.19; // ringing third — audible, under the denoise bar
+        c[7] = 0.94;
+        c[11] = 0.60;
+        c[10] = 0.42;
+        c[1] = 0.27;
+        let inc = Some((0, ChordQuality::Maj));
+        let a = best_match_retentive(&c, None, inc).expect("retains at 0.19");
+        c[4] = 0.16; // quieter residue — still over RETAIN_FLOOR
+        let b = best_match_retentive(&c, None, inc).expect("retains at 0.16");
+        assert_eq!((a.root_pc, a.quality), (0, ChordQuality::Maj));
+        assert_eq!(
+            a.confidence, b.confidence,
+            "sub-bar residue level must not move the incumbent's confidence"
+        );
+    }
+
     /// Retention must not outlive the tone: the same towered shape with the
     /// third truly gone lets go — no template matches, so the tracker's
     /// clear dwell can run. The residue sits ONE notch under the floor
