@@ -40,6 +40,19 @@ describe("pocketSlice — tempo persistence (#421 S1)", () => {
     localStorageMock.clear();
   });
 
+  it("first run: anchor personality, count-in on, 90 BPM, not playing", async () => {
+    // The #421 S1 contract's defaults — a default-follow click would chase
+    // the player's pulse on first open; a default-off count-in breaks the
+    // "1-2-3-4!" call-off promise. Pinned because only initial values reach
+    // users unset (every other test setStates past them).
+    const useStore = await freshStore();
+    const s = useStore.getState();
+    expect(s.pocketMode).toBe("anchor");
+    expect(s.pocketCountIn).toBe(true);
+    expect(s.pocketTempo).toBe(90);
+    expect(s.pocketPlaying).toBe(false);
+  });
+
   it("persists a set tempo across fresh store instantiations", async () => {
     const useStore = await freshStore();
     expect(useStore.getState().pocketTempo).toBe(90); // spec §4 default
@@ -107,27 +120,36 @@ describe("pocketSlice — backend-authoritative status (#421)", () => {
 
   it("a FRESH click resets the follow life; a repeat status event does not", async () => {
     const useStore = await freshStore();
-    // Stale follow state from a previous click (review MF4).
-    useStore.setState({
-      pocketPlaying: false,
-      pocketMode: "handoff",
-      pocketFrozenBpm: 96,
-      _pocketLastSentBpm: 96,
-      _pocketFollowStartedAt: 1,
-    });
+    // Fake ONLY Date so the two events sit at provably different clock
+    // readings — with the real clock they can share a millisecond and an
+    // always-re-anchor mutation would pass unseen.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(5_000);
+      // Stale follow state from a previous click (review MF4).
+      useStore.setState({
+        pocketPlaying: false,
+        pocketMode: "handoff",
+        pocketFrozenBpm: 96,
+        _pocketLastSentBpm: 96,
+        _pocketFollowStartedAt: 1,
+      });
 
-    useStore.getState().setPocketStatus(true, 100);
-    expect(useStore.getState().pocketFrozenBpm).toBeNull();
-    expect(useStore.getState()._pocketLastSentBpm).toBeNull();
-    const anchoredAt = useStore.getState()._pocketFollowStartedAt;
-    expect(anchoredAt).toBeGreaterThan(1);
+      useStore.getState().setPocketStatus(true, 100);
+      expect(useStore.getState().pocketFrozenBpm).toBeNull();
+      expect(useStore.getState()._pocketLastSentBpm).toBeNull();
+      expect(useStore.getState()._pocketFollowStartedAt).toBe(5_000);
 
-    // Mid-play the handoff window freezes a tempo; a REPEAT playing:true
-    // event (backend re-emit) must not melt it or re-anchor the window.
-    useStore.setState({ pocketFrozenBpm: 98, _pocketLastSentBpm: 98 });
-    useStore.getState().setPocketStatus(true, 100);
-    expect(useStore.getState().pocketFrozenBpm).toBe(98);
-    expect(useStore.getState()._pocketLastSentBpm).toBe(98);
-    expect(useStore.getState()._pocketFollowStartedAt).toBe(anchoredAt);
+      // Mid-play the handoff window freezes a tempo; a REPEAT playing:true
+      // event (backend re-emit) must not melt it or re-anchor the window.
+      vi.setSystemTime(6_000);
+      useStore.setState({ pocketFrozenBpm: 98, _pocketLastSentBpm: 98 });
+      useStore.getState().setPocketStatus(true, 100);
+      expect(useStore.getState().pocketFrozenBpm).toBe(98);
+      expect(useStore.getState()._pocketLastSentBpm).toBe(98);
+      expect(useStore.getState()._pocketFollowStartedAt).toBe(5_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
