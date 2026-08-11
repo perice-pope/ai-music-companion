@@ -79,16 +79,6 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
     let doc = parse_xml(xml)?;
     let root = doc.root_element();
 
-    let title = extract_title(&root);
-    let composer = extract_composer(&root);
-
-    let mut time_signature = TimeSignature::default();
-    let mut key_signature = KeySignature::default();
-    let mut tempo_bpm: f64 = 120.0;
-    let mut divisions: f64 = 1.0;
-    let mut measures = Vec::new();
-    let mut current_dynamic: Option<Dynamic> = None;
-
     // Collect ALL <part> elements (not just the first) so the caller can
     // choose which part to practice in a multi-instrument score.
     let parts: Vec<Node> = root
@@ -104,101 +94,140 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
         .get(part_index)
         .ok_or(ScoreError::PartNotFound(part_index))?;
 
-    // Instrument name for the selected part (matches `id` attribute against
-    // `<score-part id="...">` in `<part-list>`).
-    let instrument = extract_instrument_for(&root, part.attribute("id"));
-
+    let mut state = ParseState::default();
+    let mut measures = Vec::new();
     for measure_node in part.children().filter(|n| n.has_tag_name("measure")) {
-        let measure_number = measure_node
-            .attribute("number")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(measures.len() + 1);
-
-        let mut notes = Vec::new();
-        let mut current_beat: f64 = 0.0;
-        // Remember the most recent non-chord note's start_beat so chord notes
-        // can share it. Using `current_beat - duration_beats` is only correct
-        // when the chord leader's duration equals the chord note's duration,
-        // which breaks for tied or mixed-value chords.
-        let mut last_note_start: f64 = 0.0;
-
-        for child in measure_node.children() {
-            if child.has_tag_name("attributes") {
-                apply_attributes(
-                    &child,
-                    measure_number,
-                    &mut divisions,
-                    &mut time_signature,
-                    &mut key_signature,
-                )?;
-            }
-
-            if child.has_tag_name("direction") {
-                // Extract tempo from <direction><sound tempo="...">
-                if let Some(sound) = find_descendant(&child, "sound") {
-                    if let Some(tempo_str) = sound.attribute("tempo") {
-                        if let Ok(t) = tempo_str.parse::<f64>() {
-                            tempo_bpm = t;
-                        }
-                    }
-                }
-                // Extract dynamics
-                if let Some(dynamics_node) = find_descendant(&child, "dynamics") {
-                    current_dynamic = parse_dynamic(&dynamics_node);
-                }
-            }
-
-            if child.has_tag_name("note") {
-                let parsed = parse_note(
-                    &child,
-                    divisions,
-                    current_dynamic,
-                    current_beat,
-                    last_note_start,
-                    measure_number,
-                )?;
-                // A chord note shares the previous note's start beat and does
-                // not advance the cursor; a normal note does both.
-                if !parsed.is_chord {
-                    last_note_start = parsed.note.start_beat;
-                    current_beat += parsed.note.duration_beats;
-                }
-                notes.push(parsed.note);
-            }
-
-            // <forward> advances the beat cursor
-            if child.has_tag_name("forward") {
-                let dur = parse_required_duration(&child, "forward", measure_number)?;
-                current_beat += dur / divisions;
-            }
-
-            // <backup> moves the beat cursor backwards
-            if child.has_tag_name("backup") {
-                let dur = parse_required_duration(&child, "backup", measure_number)?;
-                let backup_beats = dur / divisions;
-                current_beat = (current_beat - backup_beats).max(0.0);
-            }
-        }
-
-        measures.push(Measure {
-            number: measure_number,
-            notes,
-        });
+        measures.push(parse_measure(
+            &measure_node,
+            measures.len() + 1,
+            &mut state,
+        )?);
     }
 
     Ok(ScoreModel {
-        title,
-        composer,
-        instrument,
-        time_signature,
-        key_signature,
-        tempo_bpm,
+        title: extract_title(&root),
+        composer: extract_composer(&root),
+        // Instrument name for the selected part (matches `id` attribute
+        // against `<score-part id="...">` in `<part-list>`).
+        instrument: extract_instrument_for(&root, part.attribute("id")),
+        time_signature: state.time_signature,
+        key_signature: state.key_signature,
+        tempo_bpm: state.tempo_bpm,
         measures,
         grand_staff: false,
     })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
+
+/// Cross-measure parser state. MusicXML sets these via `<attributes>` /
+/// `<direction>` in whichever measure they change; each value then governs
+/// everything after it — a dynamic marked in measure 1 still colors notes
+/// in measure 12 — so this state must outlive any single measure.
+struct ParseState {
+    divisions: f64,
+    time_signature: TimeSignature,
+    key_signature: KeySignature,
+    tempo_bpm: f64,
+    current_dynamic: Option<Dynamic>,
+}
+
+impl Default for ParseState {
+    fn default() -> Self {
+        Self {
+            divisions: 1.0,
+            time_signature: TimeSignature::default(),
+            key_signature: KeySignature::default(),
+            tempo_bpm: 120.0,
+            current_dynamic: None,
+        }
+    }
+}
+
+/// Parse one `<measure>`: walk its children in document order, threading the
+/// beat cursor through notes / `<forward>` / `<backup>` and folding
+/// `<attributes>` / `<direction>` changes into `state`. `fallback_number`
+/// numbers a measure whose `number` attribute is missing or unparseable.
+fn parse_measure(
+    measure_node: &Node,
+    fallback_number: usize,
+    state: &mut ParseState,
+) -> Result<Measure, ScoreError> {
+    let measure_number = measure_node
+        .attribute("number")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(fallback_number);
+
+    let mut notes = Vec::new();
+    let mut current_beat: f64 = 0.0;
+    // Remember the most recent non-chord note's start_beat so chord notes
+    // can share it. Using `current_beat - duration_beats` is only correct
+    // when the chord leader's duration equals the chord note's duration,
+    // which breaks for tied or mixed-value chords.
+    let mut last_note_start: f64 = 0.0;
+
+    for child in measure_node.children() {
+        if child.has_tag_name("attributes") {
+            apply_attributes(&child, measure_number, state)?;
+        }
+
+        if child.has_tag_name("direction") {
+            apply_direction(&child, state);
+        }
+
+        if child.has_tag_name("note") {
+            let parsed = parse_note(
+                &child,
+                state.divisions,
+                state.current_dynamic,
+                current_beat,
+                last_note_start,
+                measure_number,
+            )?;
+            // A chord note shares the previous note's start beat and does
+            // not advance the cursor; a normal note does both.
+            if !parsed.is_chord {
+                last_note_start = parsed.note.start_beat;
+                current_beat += parsed.note.duration_beats;
+            }
+            notes.push(parsed.note);
+        }
+
+        // <forward> advances the beat cursor
+        if child.has_tag_name("forward") {
+            let dur = parse_required_duration(&child, "forward", measure_number)?;
+            current_beat += dur / state.divisions;
+        }
+
+        // <backup> moves the beat cursor backwards
+        if child.has_tag_name("backup") {
+            let dur = parse_required_duration(&child, "backup", measure_number)?;
+            let backup_beats = dur / state.divisions;
+            current_beat = (current_beat - backup_beats).max(0.0);
+        }
+    }
+
+    Ok(Measure {
+        number: measure_number,
+        notes,
+    })
+}
+
+/// Apply a `<direction>` element: tempo from `<sound tempo="...">` and the
+/// running dynamic from `<dynamics>`. Malformed values leave state untouched
+/// (directions are annotations, not structure — unlike `<attributes>`).
+fn apply_direction(direction: &Node, state: &mut ParseState) {
+    if let Some(sound) = find_descendant(direction, "sound") {
+        if let Some(tempo_str) = sound.attribute("tempo") {
+            if let Ok(t) = tempo_str.parse::<f64>() {
+                state.tempo_bpm = t;
+            }
+        }
+    }
+    if let Some(dynamics_node) = find_descendant(direction, "dynamics") {
+        state.current_dynamic = parse_dynamic(&dynamics_node);
+    }
+}
 
 /// Apply an `<attributes>` element to the running parser state: divisions,
 /// time signature, and key signature. Errors on an invalid `<divisions>`
@@ -207,9 +236,7 @@ pub fn parse_musicxml_str_part(xml: &str, part_index: usize) -> Result<ScoreMode
 fn apply_attributes(
     attributes: &Node,
     measure_number: usize,
-    divisions: &mut f64,
-    time_signature: &mut TimeSignature,
-    key_signature: &mut KeySignature,
+    state: &mut ParseState,
 ) -> Result<(), ScoreError> {
     if let Some(div) = find_descendant_text(attributes, "divisions") {
         let d = div.parse::<f64>().map_err(|_| {
@@ -223,7 +250,7 @@ fn apply_attributes(
                  at measure {measure_number}"
             )));
         }
-        *divisions = d;
+        state.divisions = d;
     }
     if let Some(time_node) = find_descendant(attributes, "time") {
         if let (Some(beats_str), Some(bt_str)) = (
@@ -231,7 +258,7 @@ fn apply_attributes(
             find_descendant_text(&time_node, "beat-type"),
         ) {
             if let (Ok(b), Ok(bt)) = (beats_str.parse::<u8>(), bt_str.parse::<u8>()) {
-                *time_signature = TimeSignature {
+                state.time_signature = TimeSignature {
                     beats: b,
                     beat_type: bt,
                 };
@@ -250,7 +277,7 @@ fn apply_attributes(
                         }
                     })
                     .unwrap_or(KeyMode::Major);
-                *key_signature = KeySignature { fifths: f, mode };
+                state.key_signature = KeySignature { fifths: f, mode };
             }
         }
     }
@@ -1018,6 +1045,243 @@ mod tests {
             note.dynamic,
             Some(Dynamic::F),
             "Should find the <f/> even though <other-dynamics> came first"
+        );
+    }
+
+    /// Wrap a measure body in the minimal single-part score the seam tests
+    /// share; `divisions` stays per-test so cursor math is visible on-site.
+    fn one_part_score(measure_body: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+{measure_body}
+    </measure>
+  </part>
+</score-partwise>"#
+        )
+    }
+
+    #[test]
+    fn forward_advances_the_beat_cursor() {
+        // C4 (1 beat), <forward> 2 divisions = 1 beat, then E4: E4 must
+        // start at beat 2.0, not 1.0. Catches the <forward> arm being
+        // dropped or forgetting the divisions scaling.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration></note>
+      <forward><duration>2</duration></forward>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse forward XML");
+        let notes = &model.measures[0].notes;
+        assert!(
+            (notes[1].start_beat - 2.0).abs() < 1e-9,
+            "note after a 1-beat <forward> starts at 2.0, got {}",
+            notes[1].start_beat
+        );
+    }
+
+    #[test]
+    fn backup_rewinds_the_cursor_for_a_second_voice() {
+        // C4 for 2 beats (4 divisions at divisions=2), then <backup> 2
+        // divisions = ONE beat, then E4: E4 starts at beat 1.0 — a nonzero
+        // landing, so "backup always zeroes the cursor" and "backup forgets
+        // the divisions scaling" both go red here, not just "backup arm
+        // dropped" (adversarial review, round 1).
+        let xml = one_part_score(
+            r#"      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+      <backup><duration>2</duration></backup>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse backup XML");
+        let notes = &model.measures[0].notes;
+        assert!(
+            (notes[1].start_beat - 1.0).abs() < 1e-9,
+            "a 1-beat backup from beat 2.0 lands the second voice at 1.0, got {}",
+            notes[1].start_beat
+        );
+    }
+
+    #[test]
+    fn backup_past_measure_start_clamps_to_zero() {
+        // A <backup> longer than what was played must clamp at the measure
+        // start, not drive the cursor negative and time-travel the next note.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <backup><duration>100</duration></backup>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse over-backup XML");
+        let notes = &model.measures[0].notes;
+        assert!(
+            (notes[1].start_beat - 0.0).abs() < 1e-9,
+            "over-long backup clamps to 0.0, got {}",
+            notes[1].start_beat
+        );
+    }
+
+    #[test]
+    fn sound_tempo_direction_sets_the_model_tempo() {
+        // The simple-scale fixture asserts 120 — which is also the default,
+        // so it never proves the extraction runs. 88 does.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <direction><sound tempo="88"/></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse tempo XML");
+        assert!(
+            (model.tempo_bpm - 88.0).abs() < 1e-9,
+            "<sound tempo=\"88\"> sets tempo_bpm, got {}",
+            model.tempo_bpm
+        );
+    }
+
+    #[test]
+    fn a_malformed_sound_tempo_leaves_the_tempo_untouched() {
+        // apply_direction's contract: directions are annotations, so an
+        // unparseable tempo must not clobber the last good one (or the
+        // default) with garbage.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <direction><sound tempo="88"/></direction>
+      <direction><sound tempo="fast"/></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse malformed-tempo XML");
+        assert!(
+            (model.tempo_bpm - 88.0).abs() < 1e-9,
+            "tempo=\"fast\" must not overwrite the valid 88, got {}",
+            model.tempo_bpm
+        );
+    }
+
+    #[test]
+    fn forward_without_duration_is_rejected() {
+        // <forward> is defined to carry a <duration>; coercing a missing one
+        // to 0 silently shifts every later beat cursor, so it must error.
+        let xml = one_part_score(
+            r#"      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <forward></forward>"#,
+        );
+        let err = parse_musicxml_str(&xml).unwrap_err();
+        match err {
+            ScoreError::MusicXml(ref m) => assert!(
+                m.contains("forward") && m.contains("duration"),
+                "error names the element and the missing duration, got: {m}"
+            ),
+            other => panic!("Expected MusicXml error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_default_time_and_key_signatures_are_extracted() {
+        // 4/4 + C major are also the defaults, so only non-default values
+        // prove the <time>/<key> arms of apply_attributes run at all.
+        let xml = one_part_score(
+            r#"      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>-3</fifths><mode>minor</mode></key>
+        <time><beats>3</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#,
+        );
+        let model = parse_musicxml_str(&xml).expect("parse 3/4 c-minor XML");
+        assert_eq!(model.time_signature.beats, 3);
+        assert_eq!(model.time_signature.beat_type, 4);
+        assert_eq!(model.key_signature.fifths, -3);
+        assert_eq!(model.key_signature.mode, KeyMode::Minor);
+    }
+
+    #[test]
+    fn a_dynamic_carries_across_the_barline() {
+        // MusicXML dynamics are stateful: a <p> in measure 1 governs measure
+        // 2's notes. The carry lives in ParseState — a refactor that resets
+        // the dynamic per measure (the natural bug when the measure loop is
+        // its own function) goes red here.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <direction><dynamics><p/></dynamics></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse cross-measure dynamic XML");
+        assert_eq!(
+            model.measures[1].notes[0].dynamic,
+            Some(Dynamic::P),
+            "the piano marked in measure 1 still governs measure 2"
+        );
+    }
+
+    #[test]
+    fn divisions_redefined_mid_score_rescale_later_durations() {
+        // Divisions are stateful too: measure 2 re-declares divisions=2, so
+        // its duration-2 note is ONE beat. Catches later <attributes> being
+        // ignored once the measure loop is seamed off.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+    <measure number="2">
+      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse re-divisions XML");
+        let note = &model.measures[1].notes[0];
+        assert!(
+            (note.duration_beats - 1.0).abs() < 1e-9,
+            "duration 2 under divisions 2 is 1.0 beats, got {}",
+            note.duration_beats
+        );
+    }
+
+    #[test]
+    fn missing_measure_number_falls_back_to_document_position() {
+        // A measure whose number attribute is unparseable (measure 2) or
+        // missing (measure 3) takes its 1-based document position; the
+        // parse must not error or emit 0.
+        let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+    <measure number="A">
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+    <measure>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let model = parse_musicxml_str(xml).expect("parse unnumbered-measure XML");
+        let numbers: Vec<usize> = model.measures.iter().map(|m| m.number).collect();
+        assert_eq!(
+            numbers,
+            vec![1, 2, 3],
+            "unparseable and missing numbers both fall back to position"
         );
     }
 }
