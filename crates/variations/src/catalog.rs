@@ -237,6 +237,40 @@ impl RhythmCell {
 mod tests {
     use super::*;
 
+    /// #421 S3 (review should-fix): the generator's barline safety rides on
+    /// every rhythm cell honoring three invariants — non-empty, all
+    /// durations > 0, and every running prefix ≤ 1 with the full cycle
+    /// summing to exactly one beat. "Adding an entry needs no generator
+    /// changes" is only true under them: a cell like [1.5, 0.5] would deal a
+    /// note across a barline, which `push_span` splits into two UNTIED notes
+    /// — silently changing what the player is asked to play. Fails on the
+    /// first catalog entry that breaks the contract.
+    #[test]
+    fn every_rhythm_cell_is_barline_safe() {
+        const ALL: [RhythmCell; 5] = [
+            RhythmCell::DottedEighthSixteenth,
+            RhythmCell::SixteenthDottedEighth,
+            RhythmCell::EighthTwoSixteenths,
+            RhythmCell::TwoSixteenthsEighth,
+            RhythmCell::SwungEighths,
+        ];
+        for cell in ALL {
+            let d = cell.durations();
+            assert!(!d.is_empty(), "{cell:?} has durations");
+            let mut prefix = 0.0_f64;
+            for &v in d {
+                assert!(v > 0.0, "{cell:?} durations all positive");
+                prefix += v;
+                assert!(prefix <= 1.0 + 1e-9, "{cell:?} prefix crosses a beat");
+            }
+            assert!(
+                (prefix - 1.0).abs() < 1e-9,
+                "{cell:?} cycle sums to one beat, got {prefix}"
+            );
+            assert!(!cell.label().is_empty(), "{cell:?} has a label");
+        }
+    }
+
     /// #349 T2b (review must-fix): every ChordType's grading quality is
     /// interval-identical to the tones it deals — a divergent mapping
     /// systematically misgrades every drill of that type (each correct

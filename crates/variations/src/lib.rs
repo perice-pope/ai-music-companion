@@ -171,8 +171,12 @@ pub struct RhythmSpec {
     /// per root so every key drills the identical rhythm. When set it IS the
     /// melodic grid (`notes_per_beat` is ignored); stacked/progression
     /// material keeps its whole-measure deal. Additive (`serde(default)`),
-    /// so persisted specs from before this field still parse.
-    #[serde(default)]
+    /// so persisted specs from before this field still parse — and skipped
+    /// when `None`, so a cell-less spec serializes byte-identically to the
+    /// pre-S3 wire (`exercise_spec_hash` FNVs those bytes verbatim under a
+    /// stability contract; emitting `"cell":null` would split identical
+    /// materials across the upgrade boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell: Option<RhythmCell>,
 }
 
@@ -1192,6 +1196,23 @@ mod tests {
         let wrapped = generate(&spec, 7);
         assert_eq!(wrapped.notes[7].duration_beats, 0.25, "cycle wraps");
         assert_eq!(wrapped.notes[3].duration_beats, 0.5, "cycle restarts at 3");
+
+        // Truncation edge (§6): a figure SHORTER than its cell uses only the
+        // first N durations, and the next root still opens the next measure.
+        let mut short = base_spec();
+        short.roots = vec![60, 62];
+        short.scale = None;
+        short.interval = Some(IntervalModifier {
+            semitones: 7,
+            ascending: true,
+        });
+        short.rhythm.cell = Some(RhythmCell::EighthTwoSixteenths);
+        let seq = generate(&short, 7);
+        assert_eq!(seq.notes.len(), 4, "two 2-note figures");
+        assert_eq!(seq.notes[0].duration_beats, 0.5, "first cell duration");
+        assert_eq!(seq.notes[1].duration_beats, 0.25, "second cell duration");
+        assert_eq!(seq.notes[2].start_beat, 4.0, "next root opens the bar");
+        assert_eq!(seq.notes[2].duration_beats, 0.5, "cycle restarts truncated");
     }
 
     /// #421 S3 AC2+AC3: the cycle restarts at every root — note k of every
@@ -1270,6 +1291,19 @@ mod tests {
         let old_wire = r#"{"roots":[60],"scale":null,"chord":null,"interval":null,"enclosure":null,"direction":"forward","rhythm":{"notes_per_beat":2,"tempo_bpm":80.0,"rest_beats_between_roots":1.0},"randomize_roots":false}"#;
         let parsed: VariationSpec = serde_json::from_str(old_wire).expect("old wire parses");
         assert_eq!(parsed.rhythm.cell, None, "absent key reads None");
+
+        // Serialization stability: a cell-less spec emits the exact pre-S3
+        // rhythm bytes — no `"cell":null`. `exercise_spec_hash` FNVs the
+        // serialized spec verbatim and persists the hash in the DB (and the
+        // teacher dashboard keys dim_material on it), so a byte change here
+        // splits identical materials across the upgrade boundary.
+        let none_json = serde_json::to_string(&base_spec()).expect("serializes");
+        assert!(
+            none_json.contains(
+                r#""rhythm":{"notes_per_beat":2,"tempo_bpm":80.0,"rest_beats_between_roots":1.0}"#
+            ),
+            "None cell keeps pre-S3 rhythm bytes: {none_json}"
+        );
 
         let mut spec = base_spec();
         spec.rhythm.cell = Some(RhythmCell::SixteenthDottedEighth);

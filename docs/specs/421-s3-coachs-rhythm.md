@@ -80,11 +80,12 @@ exist until the generator can express a non-uniform rhythm at all.
 | AC2 | `variations::tests::rhythm_cell_restarts_per_root` | note k same duration in every segment |
 | AC3 | `variations::tests::rhythm_cell_keeps_measure_boundaries` | each segment's first note on a measure line |
 | AC4 | `variations::tests::stacked_and_progression_ignore_rhythm_cell` | sequences equal with/without cell |
-| AC5 | `variations::tests::rhythm_cell_wire_compat` | old JSON → None; with-cell roundtrip |
-| AC6 | `variations::tests::label_names_the_rhythm_cell` | suffix present iff cell set |
+| AC5 | `variations::tests::rhythm_cell_wire_compat` | old JSON → None; with-cell roundtrip; **a None-cell spec serializes byte-identically to the pre-S3 wire** (`exercise_spec_hash` FNVs those bytes under a stability contract — `"cell":null` would split identical materials across the upgrade boundary) |
+| AC6 | `variations::tests::label_names_the_rhythm_cell` | suffix present iff cell set (and iff it re-timed — AC4's full-sequence equality pins the stacked/progression label) |
 | AC7 | `variations::tests::rhythm_cell_consumes_no_randomness` | root_order equal with/without cell under randomize_roots |
-| AC8 | `brain::coach::tests::rhythm_cell_drill_engraves_exact_durations` | ScoreModel well-formed; XML `<duration>` values exact |
-| edges | folded into AC1/AC2 fixtures (2-note and 5-note figures over 2- and 3-duration cells) | truncation + wrap |
+| AC8 | `brain::coach::tests::rhythm_cell_drill_engraves_exact_durations` | full bars for dotted/mixed/swung cells; XML ticks exact (360/120, 320/160); a mid-measure figure end engraves its breath as REST |
+| edges | truncation: 2-note interval figure under the 3-duration cell (in the AC1 test); wrap: 8-note figure under the same cell | truncation + wrap + cycle restart |
+| catalog | `variations::catalog::tests::every_rhythm_cell_is_barline_safe` | every entry: non-empty, all > 0, prefixes ≤ 1, cycle sums to one beat — the invariants "adding an entry needs no generator changes" rides on |
 
 ## 8. Architecture / approach
 Pure Rust in `crates/variations` (business logic in the core, CLAUDE.md); no
@@ -110,6 +111,13 @@ dotted figures simply don't beam).
 - CellStaff's flag glyph is binary (`duration < 1`), so a dotted eighth draws
   a plain eighth flag — position still carries the true rhythm. An augmentation
   dot in the rhythm layer is a possible S3c polish, not blocking.
+- Under a single-approach enclosure the cell's FIRST duration lands on the
+  ornament, not the target — "dotted-eighth anchors" then anchors the approach
+  note. Spec'd behavior (§6), but S3b should sanity-check it before dealing
+  cells onto enclosed rows (review observation).
+- `insights::shape_of` ignores `rhythm.cell`, so a dotted and a straight row
+  group as one practice-history shape. Plausibly right for melodic-shape
+  analytics; S3b decides deliberately (review observation).
 
 ## 11. References
 - Issue #421 (founder design, S1/S2 shipped in PRs #434/#441); this file's
