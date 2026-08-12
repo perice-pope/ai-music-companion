@@ -21,7 +21,7 @@
 pub mod catalog;
 pub mod warmup;
 
-pub use catalog::{ChordType, Enclosure, ScaleType};
+pub use catalog::{ChordType, Enclosure, RhythmCell, ScaleType};
 pub use warmup::{roulette, score_warmup, WarmupChallenge};
 
 use serde::{Deserialize, Serialize};
@@ -166,6 +166,14 @@ pub struct RhythmSpec {
     /// field no longer moves the grid. Kept in the wire format so persisted
     /// specs (exercise log, assignments) keep parsing.
     pub rest_beats_between_roots: f64,
+    /// #421 S3: a rhythm cell re-times each melodic figure — same pitches,
+    /// the cell's durations cycled from the figure's first note, restarting
+    /// per root so every key drills the identical rhythm. When set it IS the
+    /// melodic grid (`notes_per_beat` is ignored); stacked/progression
+    /// material keeps its whole-measure deal. Additive (`serde(default)`),
+    /// so persisted specs from before this field still parse.
+    #[serde(default)]
+    pub cell: Option<RhythmCell>,
 }
 
 impl Default for RhythmSpec {
@@ -174,6 +182,7 @@ impl Default for RhythmSpec {
             notes_per_beat: 2,
             tempo_bpm: 80.0,
             rest_beats_between_roots: 1.0,
+            cell: None,
         }
     }
 }
@@ -380,6 +389,10 @@ pub fn generate_in_window(
     // 2. Per root: figure + direction + enclosure, folded into range.
     let mut notes: Vec<GeneratedNote> = Vec::new();
     let step = 1.0 / f64::from(spec.rhythm.notes_per_beat.max(1));
+    // #421 S3: a rhythm cell replaces the uniform grid for melodic figures —
+    // durations cycle from each figure's first note (restarting per root, so
+    // the row drills the same rhythm in every key).
+    let cell_durations = spec.rhythm.cell.map(RhythmCell::durations);
     let mut cursor_beat = 0.0_f64;
 
     let stacked_chord = active_stacked_chord(spec);
@@ -470,18 +483,19 @@ pub fn generate_in_window(
 
         fold_toward(&mut figure, window, &mut range_fallback);
 
-        for m in &figure {
+        for (i, m) in figure.iter().enumerate() {
+            let duration = cell_durations.map_or(step, |d| d[i % d.len()]);
             notes.push(GeneratedNote {
                 midi: *m as u8,
                 start_beat: cursor_beat,
-                duration_beats: step,
+                duration_beats: duration,
                 // Root of THIS cell only (octave-insensitive). Enclosure
                 // approach notes and scale neighbors stay non-root even when
                 // some other cell in the row is anchored on their pitch class.
                 is_root: (*m).rem_euclid(12) == i16::from(root).rem_euclid(12),
                 chord_group: None,
             });
-            cursor_beat += step;
+            cursor_beat += duration;
         }
         // RV grid rule (founder, 2026-07-08): ONE CELL PER MEASURE. Every
         // root's figure starts on a measure boundary — a 4-note cell reads as
@@ -883,6 +897,14 @@ fn label_for(spec: &VariationSpec, roots: &[u8]) -> String {
     if let Some(enc) = spec.enclosure {
         parts.push(format!("enclosed ({})", enc.label()));
     }
+    // Only melodic material is re-timed by a rhythm cell (stacked and
+    // progression deals stay whole-measure blocks) — a label naming a cell
+    // that did nothing would be a lie.
+    if let Some(cell) = spec.rhythm.cell {
+        if active_stacked_chord(spec).is_none() && active_progression(spec).is_none() {
+            parts.push(cell.label().to_owned());
+        }
+    }
     parts.push(format!("{:.0} BPM", spec.rhythm.tempo_bpm));
     parts.join(" · ")
 }
@@ -1082,6 +1104,7 @@ mod tests {
             notes_per_beat: 2,
             tempo_bpm: 100.0,
             rest_beats_between_roots: 1.0,
+            cell: None,
         };
         let seq = generate(&spec, 0);
         // 8 notes per root figure.
@@ -1113,6 +1136,7 @@ mod tests {
             notes_per_beat: 1,
             tempo_bpm: 100.0,
             rest_beats_between_roots: 1.0,
+            cell: None,
         };
         let seq = generate(&spec, 0);
         let starts: Vec<f64> = seq.notes.iter().map(|n| n.start_beat).collect();
@@ -1138,6 +1162,161 @@ mod tests {
             seq.notes[9].start_beat, 8.0,
             "long cells own whole measures"
         );
+    }
+
+    /// #421 S3 AC1: a rhythm cell re-times the row without touching a single
+    /// pitch — same midis in the same order, durations cycled from each
+    /// figure's first note. Fails if the cell leaks into pitch selection or
+    /// mis-cycles (e.g. runs continuously instead of per note index).
+    #[test]
+    fn rhythm_cell_retimes_without_touching_pitches() {
+        let mut spec = base_spec();
+        let plain = generate(&spec, 7);
+        spec.rhythm.cell = Some(RhythmCell::DottedEighthSixteenth);
+        let cooked = generate(&spec, 7);
+
+        let pitches = |s: &GeneratedSequence| s.notes.iter().map(|n| n.midi).collect::<Vec<_>>();
+        assert_eq!(pitches(&plain), pitches(&cooked), "pitches untouched");
+
+        // 8-note figure under [0.75, 0.25]: starts accumulate the cycle.
+        let expected_starts = [0.0, 0.75, 1.0, 1.75, 2.0, 2.75, 3.0, 3.75];
+        for (n, want) in cooked.notes.iter().zip(expected_starts) {
+            assert!((n.start_beat - want).abs() < 1e-9, "start {want}");
+        }
+        assert_eq!(cooked.notes[0].duration_beats, 0.75);
+        assert_eq!(cooked.notes[1].duration_beats, 0.25);
+        // A 3-duration cell truncates on a shorter figure and wraps on a
+        // longer one: the 8-note figure under [0.5, 0.25, 0.25] wraps to
+        // index 7 % 3 == 1.
+        spec.rhythm.cell = Some(RhythmCell::EighthTwoSixteenths);
+        let wrapped = generate(&spec, 7);
+        assert_eq!(wrapped.notes[7].duration_beats, 0.25, "cycle wraps");
+        assert_eq!(wrapped.notes[3].duration_beats, 0.5, "cycle restarts at 3");
+    }
+
+    /// #421 S3 AC2+AC3: the cycle restarts at every root — note k of every
+    /// segment carries the same duration (RV row invariance: every key drills
+    /// the identical rhythm) — and each figure still starts on a measure
+    /// boundary. Fails if the cycle runs across segment joins or the grid
+    /// rule regresses under non-uniform durations.
+    #[test]
+    fn rhythm_cell_restarts_per_root_on_measure_boundaries() {
+        let mut spec = base_spec();
+        spec.roots = vec![60, 63, 66];
+        spec.rhythm.cell = Some(RhythmCell::TwoSixteenthsEighth);
+        let seq = generate(&spec, 3);
+        assert_eq!(seq.notes.len(), 24, "3 segments × 8-note figure");
+        let seg_len = 8;
+        for k in 0..seg_len {
+            let d0 = seq.notes[k].duration_beats;
+            for seg in 1..3 {
+                assert_eq!(
+                    seq.notes[seg * seg_len + k].duration_beats,
+                    d0,
+                    "note {k} duration identical in every key"
+                );
+            }
+        }
+        for seg in 0..3 {
+            let start = seq.notes[seg * seg_len].start_beat;
+            assert_eq!(
+                start % f64::from(BEATS_PER_MEASURE),
+                0.0,
+                "segment {seg} starts on a barline"
+            );
+        }
+    }
+
+    /// #421 S3 AC4: stacked chords and progressions keep their whole-measure
+    /// deal — a simultaneity has no note-to-note rhythm. Fails if the cell
+    /// starts re-timing block material.
+    #[test]
+    fn stacked_and_progression_ignore_rhythm_cell() {
+        let mut stacked = base_spec();
+        stacked.scale = None;
+        stacked.chord = Some(ChordModifier {
+            chord: ChordType::Major7,
+            pattern: ArpeggioPattern::Ascending,
+            inversion: 0,
+            stacked: true,
+        });
+        let plain = generate(&stacked, 5);
+        stacked.rhythm.cell = Some(RhythmCell::SwungEighths);
+        assert_eq!(plain, generate(&stacked, 5), "stacked deal unchanged");
+
+        let mut prog = base_spec();
+        prog.scale = None;
+        prog.progression = Some(vec![
+            ProgressionStep {
+                offset: 0,
+                chord: ChordType::MajorTriad,
+            },
+            ProgressionStep {
+                offset: 5,
+                chord: ChordType::Major7,
+            },
+        ]);
+        let plain = generate(&prog, 5);
+        prog.rhythm.cell = Some(RhythmCell::SwungEighths);
+        assert_eq!(plain, generate(&prog, 5), "progression deal unchanged");
+    }
+
+    /// #421 S3 AC5: `rhythm.cell` is additive on the wire — pre-S3 JSON (no
+    /// `cell` key) parses to None, and a spec with a cell round-trips. Fails
+    /// if the field ever becomes required or renames (persisted exercise-log
+    /// specs would stop parsing).
+    #[test]
+    fn rhythm_cell_wire_compat() {
+        let old_wire = r#"{"roots":[60],"scale":null,"chord":null,"interval":null,"enclosure":null,"direction":"forward","rhythm":{"notes_per_beat":2,"tempo_bpm":80.0,"rest_beats_between_roots":1.0},"randomize_roots":false}"#;
+        let parsed: VariationSpec = serde_json::from_str(old_wire).expect("old wire parses");
+        assert_eq!(parsed.rhythm.cell, None, "absent key reads None");
+
+        let mut spec = base_spec();
+        spec.rhythm.cell = Some(RhythmCell::SixteenthDottedEighth);
+        let json = serde_json::to_string(&spec).expect("serializes");
+        assert!(
+            json.contains(r#""cell":"sixteenth_dotted_eighth""#),
+            "snake_case tag on the wire: {json}"
+        );
+        let back: VariationSpec = serde_json::from_str(&json).expect("roundtrips");
+        assert_eq!(back, spec);
+    }
+
+    /// #421 S3 AC6: the row label names the rhythm cell so the player sees
+    /// what was dealt; without a cell the label is unchanged. Fails if the
+    /// suffix goes missing or leaks into cell-less labels.
+    #[test]
+    fn label_names_the_rhythm_cell() {
+        let mut spec = base_spec();
+        let plain = generate(&spec, 0).label;
+        assert!(
+            !plain.contains("dotted"),
+            "no rhythm chatter without a cell"
+        );
+        spec.rhythm.cell = Some(RhythmCell::DottedEighthSixteenth);
+        let labeled = generate(&spec, 0).label;
+        assert!(
+            labeled.contains("dotted eighth + sixteenth"),
+            "label names the cell: {labeled}"
+        );
+    }
+
+    /// #421 S3 AC7: the rhythm cell consumes no randomness — under
+    /// randomize_roots + random directions, the shuffle and every pitch are
+    /// identical with and without a cell. Fails if the cell path ever draws
+    /// from the PRNG (every persisted seed would deal a different row).
+    #[test]
+    fn rhythm_cell_consumes_no_randomness() {
+        let mut spec = base_spec();
+        spec.roots = chromatic_roots();
+        spec.randomize_roots = true;
+        spec.direction = DirectionMode::RandomPerRoot;
+        let plain = generate(&spec, 42);
+        spec.rhythm.cell = Some(RhythmCell::SwungEighths);
+        let cooked = generate(&spec, 42);
+        assert_eq!(plain.root_order, cooked.root_order, "same shuffle");
+        let pitches = |s: &GeneratedSequence| s.notes.iter().map(|n| n.midi).collect::<Vec<_>>();
+        assert_eq!(pitches(&plain), pitches(&cooked), "same directions");
     }
 
     /// Out-of-range figures fold back into the playable window by whole

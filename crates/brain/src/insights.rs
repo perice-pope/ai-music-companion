@@ -485,6 +485,7 @@ mod tests {
                 notes_per_beat: 2,
                 tempo_bpm: 80.0,
                 rest_beats_between_roots: 1.0,
+                cell: None,
             },
             randomize_roots: false,
         })

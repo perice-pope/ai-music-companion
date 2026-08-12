@@ -190,6 +190,49 @@ impl Enclosure {
     }
 }
 
+/// Rhythm cells (#421 S3): small repeating duration figures a melodic row can
+/// be re-timed with — same pitches, new rhythm. The classic subdivision
+/// figures from RV's meter/division language; each cycles per root so every
+/// key drills the identical rhythm. Adding an entry here needs no generator
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RhythmCell {
+    DottedEighthSixteenth,
+    SixteenthDottedEighth,
+    EighthTwoSixteenths,
+    TwoSixteenthsEighth,
+    SwungEighths,
+}
+
+/// Swung-eighth pair as exact-at-DIVISIONS f64 thirds (2/3 + 1/3 of a beat).
+const SWUNG_PAIR: [f64; 2] = [2.0 / 3.0, 1.0 / 3.0];
+
+impl RhythmCell {
+    /// Note durations in beats, in playing order, cycled over the figure.
+    /// Every duration is > 0; every cell sums to one beat.
+    pub fn durations(self) -> &'static [f64] {
+        match self {
+            RhythmCell::DottedEighthSixteenth => &[0.75, 0.25],
+            RhythmCell::SixteenthDottedEighth => &[0.25, 0.75],
+            RhythmCell::EighthTwoSixteenths => &[0.5, 0.25, 0.25],
+            RhythmCell::TwoSixteenthsEighth => &[0.25, 0.25, 0.5],
+            RhythmCell::SwungEighths => &SWUNG_PAIR,
+        }
+    }
+
+    /// Human label, e.g. `"dotted eighth + sixteenth"`.
+    pub fn label(self) -> &'static str {
+        match self {
+            RhythmCell::DottedEighthSixteenth => "dotted eighth + sixteenth",
+            RhythmCell::SixteenthDottedEighth => "sixteenth + dotted eighth",
+            RhythmCell::EighthTwoSixteenths => "eighth + two sixteenths",
+            RhythmCell::TwoSixteenthsEighth => "two sixteenths + eighth",
+            RhythmCell::SwungEighths => "swung eighths",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
