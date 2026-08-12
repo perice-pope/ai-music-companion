@@ -220,6 +220,9 @@ fn spec_for(
         // rests (the breath is the remainder of each cell's measure). Kept
         // at 0.0 so nobody mistakes it for a live pedagogical knob.
         rest_beats_between_roots: 0.0,
+        // Coach's Rhythm (#421 S3b) will deal a cell here from timing data;
+        // until then the ladder stays on the uniform grid.
+        cell: None,
     };
     let direction = if d >= 5 {
         DirectionMode::RandomPerRoot
@@ -2460,6 +2463,7 @@ mod tests {
                 notes_per_beat: 2,
                 tempo_bpm: 90.0,
                 rest_beats_between_roots: 1.0,
+                cell: None,
             },
             randomize_roots: false,
         };
@@ -2501,6 +2505,101 @@ mod tests {
         assert_eq!((c_open.midi_number, c_open.start_beat), (60, 0.0));
         let d_open = first_sounding(1);
         assert_eq!((d_open.midi_number, d_open.start_beat), (62, 0.0));
+    }
+
+    /// #421 S3 AC8: a drill re-timed by a rhythm cell still adapts to a
+    /// well-formed ScoreModel (measures sum to the bar, rests fill the
+    /// breath) and its MusicXML durations are exact at 480 divisions —
+    /// dotted eighth = 360, sixteenth = 120. Fails if the adapter re-flows
+    /// non-uniform figures or the emitter's rounding drifts a tick.
+    #[test]
+    fn rhythm_cell_drill_engraves_exact_durations() {
+        let mut spec = VariationSpec {
+            roots: vec![60, 62],
+            cell: None,
+            degrees: None,
+            progression: None,
+            scale: Some(ScaleModifier {
+                scale: ScaleType::Major,
+                pattern: ScalePattern::Up,
+            }),
+            chord: None,
+            interval: None,
+            enclosure: None,
+            direction: DirectionMode::Forward,
+            rhythm: RhythmSpec::default(),
+            randomize_roots: false,
+        };
+        // Dotted pair: 8 notes × [0.75, 0.25] fill the bar exactly.
+        spec.rhythm.cell = Some(variations::RhythmCell::DottedEighthSixteenth);
+        let seq = generate(&spec, 0);
+        let model = sequence_to_score_model(&seq, "Warmup", key_signature_for(0, "major"));
+        let assert_full_bars = |model: &crate::score::ScoreModel| {
+            for measure in &model.measures {
+                let total: f64 = measure.notes.iter().map(|n| n.duration_beats).sum();
+                assert!(
+                    (total - 4.0).abs() < 1e-6,
+                    "measure {} sums to {total}, not the bar",
+                    measure.number
+                );
+            }
+        };
+        assert_full_bars(&model);
+        let xml = crate::score::emit::score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<duration>360</duration>"),
+            "dotted eighth engraves 360 ticks"
+        );
+        assert!(
+            xml.contains("<duration>120</duration>"),
+            "sixteenth engraves 120 ticks"
+        );
+        // No rounding smear: every sounding duration is one of the cell's
+        // two values.
+        for measure in &model.measures {
+            for note in measure.notes.iter().filter(|n| !n.is_rest) {
+                assert!(
+                    (note.duration_beats - 0.75).abs() < 1e-9
+                        || (note.duration_beats - 0.25).abs() < 1e-9,
+                    "unexpected sounding duration {}",
+                    note.duration_beats
+                );
+            }
+        }
+
+        // Mid-measure figure end: 8 notes × [0.5, 0.25, 0.25] = 2.75 beats,
+        // so a REST must fill the remaining 1.25 — the breath is engraved,
+        // not dropped, and the bar still sums.
+        spec.rhythm.cell = Some(variations::RhythmCell::EighthTwoSixteenths);
+        let seq = generate(&spec, 0);
+        let model = sequence_to_score_model(&seq, "Warmup", key_signature_for(0, "major"));
+        assert_full_bars(&model);
+        let first_bar_rest: f64 = model.measures[0]
+            .notes
+            .iter()
+            .filter(|n| n.is_rest)
+            .map(|n| n.duration_beats)
+            .sum();
+        assert!(
+            (first_bar_rest - 1.25).abs() < 1e-6,
+            "the 1.25-beat breath engraves as rest, got {first_bar_rest}"
+        );
+
+        // Swung eighths are the only non-binary f64 durations in the catalog
+        // — pin their exactness at 480 divisions (2/3 → 320, 1/3 → 160).
+        spec.rhythm.cell = Some(variations::RhythmCell::SwungEighths);
+        let seq = generate(&spec, 0);
+        let model = sequence_to_score_model(&seq, "Warmup", key_signature_for(0, "major"));
+        assert_full_bars(&model);
+        let xml = crate::score::emit::score_model_to_musicxml(&model);
+        assert!(
+            xml.contains("<duration>320</duration>"),
+            "swung long engraves 320 ticks"
+        );
+        assert!(
+            xml.contains("<duration>160</duration>"),
+            "swung short engraves 160 ticks"
+        );
     }
 
     /// #335 — the VA's C#-major lesson drew a FLAT signature under a header
