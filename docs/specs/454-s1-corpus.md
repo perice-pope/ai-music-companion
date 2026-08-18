@@ -64,7 +64,7 @@ pub enum Family { Brass, Strings, Voice, Woodwind, Keyboard }
 pub enum SourceStatus { Pd, ParaphraseOnly }
 pub struct SourceRef { title, author, year, status, section }
 pub struct PedagogyEntry { id, family, topic, source, guidance, quote: Option<String>, triggers: Vec<String> }
-pub fn load_corpus() -> Vec<PedagogyEntry>;                      // embedded, infallible after CI
+fn load_corpus() -> Vec<PedagogyEntry>;                          // embedded, infallible after CI; private since #508
 pub fn try_load_corpus() -> Result<Vec<PedagogyEntry>, PedagogyError>;
 pub fn validate_entries(&[PedagogyEntry]) -> Result<(), PedagogyError>;
 ```
@@ -131,8 +131,8 @@ embedded strings and can grow a `from_dir` twin then.
 ## 8. Architecture / approach
 New module `crates/brain/src/pedagogy.rs`, registered in `lib.rs`. Data in repo-root
 `pedagogy/` (sibling of `profiles/` — same "adding content = adding a data file, no code"
-convention). Zero network, zero runtime I/O. Nothing consumes `load_corpus` yet; the
-module is the S2/S3 seam.
+convention). Zero network, zero runtime I/O. `load_corpus` is the module's internal
+seam (private since #508 — external callers use `try_load_corpus`/`select_pedagogy`).
 
 ## 9. Slice breakdown
 | # | Slice (goal) | Footprint | Depends on |

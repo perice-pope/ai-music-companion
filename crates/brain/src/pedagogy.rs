@@ -243,8 +243,11 @@ const FAMILY_FILES: [(&str, Family, &str); 5] = [
 ///
 /// Infallible by construction: the corpus is embedded at compile time and the
 /// CI gate (`cargo test` in this module) validates the exact same bytes, so a
-/// failure here is unreachable in any build that passed CI.
-pub fn load_corpus() -> Vec<PedagogyEntry> {
+/// failure here is unreachable in any build that passed CI. That argument only
+/// holds for the embedded bytes, so the panicking shortcut stays private —
+/// callers outside this module get [`try_load_corpus`], whose `Result` keeps
+/// the failure path visible at the call site.
+fn load_corpus() -> Vec<PedagogyEntry> {
     try_load_corpus().expect("embedded pedagogy corpus is validated by the CI gate")
 }
 
