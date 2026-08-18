@@ -574,8 +574,14 @@ mod tests {
 
     #[test]
     fn metronome_accepts_boundary_bpm() {
-        assert!(Metronome::new(metro(30.0), SR).is_ok());
-        assert!(Metronome::new(metro(300.0), SR).is_ok());
+        // Pinning the beat grid, not just non-error: a boundary config must
+        // build a metronome actually timed to its BPM.
+        // 30 BPM at 44100: 60 * 44100 / 30 = 88_200 samples per beat.
+        let slow = Metronome::new(metro(30.0), SR).unwrap();
+        assert_eq!(slow.samples_per_beat(), 88_200);
+        // 300 BPM at 44100: 60 * 44100 / 300 = 8_820 samples per beat.
+        let fast = Metronome::new(metro(300.0), SR).unwrap();
+        assert_eq!(fast.samples_per_beat(), 8_820);
     }
 
     #[test]
