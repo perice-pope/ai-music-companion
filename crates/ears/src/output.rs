@@ -585,6 +585,15 @@ mod tests {
     }
 
     #[test]
+    fn metronome_beat_period_rounds_to_nearest_sample() {
+        // 130 BPM at 44100: 60 * 44100 / 130 = 20_353.846… — the one pin in
+        // the suite whose period isn't integral, so it distinguishes
+        // round-to-nearest (20_354) from truncation (20_353).
+        let m = Metronome::new(metro(130.0), SR).unwrap();
+        assert_eq!(m.samples_per_beat(), 20_354);
+    }
+
+    #[test]
     fn validated_config_rejects_each_invalid_field() {
         // #498: `validated()` is the gate `start_pocket` relies on before
         // handing the config to the infallible render-thread constructor.
