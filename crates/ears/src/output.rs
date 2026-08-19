@@ -135,6 +135,17 @@ pub struct Metronome {
     /// alloc-free (pre-allocated HeapRb), so reporting is render-safe; a
     /// full ring drops the report rather than blocking.
     fire_tx: ClickFireTx,
+    /// #421 S4a: the gap-training cycle — `gap_play_bars` audible bars,
+    /// then `gap_gap_bars` silent bars, repeating. `gap_gap_bars == 0`
+    /// means no gaps. Count-in bars are always audible and stand outside
+    /// the cycle.
+    gap_play_bars: u8,
+    gap_gap_bars: u8,
+    /// #421 S4a: live (post-count-in) bars started since construction.
+    /// Bar audibility derives from this modulo the CURRENT cycle length,
+    /// which is what lets `set_gap_cycle` re-map mid-play without any
+    /// stored position to migrate.
+    live_bars_started: u64,
 }
 
 impl Metronome {
@@ -167,6 +178,9 @@ impl Metronome {
             count_in_beats_remaining: 0,
             samples_emitted: 0,
             fire_tx: ClickFireTx(None),
+            gap_play_bars: 1,
+            gap_gap_bars: 0,
+            live_bars_started: 0,
         }
     }
 
@@ -190,6 +204,37 @@ impl Metronome {
     pub fn with_fire_channel(mut self, tx: HeapProd<ClickFire>) -> Self {
         self.fire_tx = ClickFireTx(Some(tx));
         self
+    }
+
+    /// #421 S4a: gap training — `play_bars` audible bars, then `gap_bars`
+    /// silent bars, repeating. Builder-style, like [`Self::with_count_in`].
+    /// `gap_bars == 0` disables the cycle (today's behavior).
+    #[must_use]
+    pub fn with_gaps(mut self, play_bars: u8, gap_bars: u8) -> Self {
+        self.set_gap_cycle(play_bars, gap_bars);
+        self
+    }
+
+    /// #421 S4a: replace the gap cycle mid-play (control thread; the
+    /// render side applies it via `TempoFedMetronome`'s gap channel).
+    /// `play_bars` clamps to ≥ 1 — a cycle can never be all-silence.
+    /// Takes effect immediately: audibility is derived per bar from the
+    /// count of live bars started so far modulo the new cycle length.
+    pub fn set_gap_cycle(&mut self, play_bars: u8, gap_bars: u8) {
+        self.gap_play_bars = play_bars.max(1);
+        self.gap_gap_bars = gap_bars;
+    }
+
+    /// #421 S4a: true while the current live bar is a silent (gap) bar.
+    /// Count-in bars are never gap bars. The UI dims its pulse on this —
+    /// it keeps breathing through the silence (#417 rule 0), because the
+    /// grid underneath never stops.
+    pub fn is_gap_bar(&self) -> bool {
+        if self.gap_gap_bars == 0 || self.live_bars_started == 0 {
+            return false;
+        }
+        let cycle = u64::from(self.gap_play_bars) + u64::from(self.gap_gap_bars);
+        (self.live_bars_started - 1) % cycle >= u64::from(self.gap_play_bars)
     }
 
     /// The current configuration (#421 S2: Follow re-times the click by
@@ -230,26 +275,37 @@ impl Metronome {
     #[inline]
     pub fn next_sample(&mut self) -> f32 {
         if self.samples_until_next_beat == 0 {
-            // Fire a new click.
-            self.click_cursor = 0;
             self.samples_until_next_beat = samples_per_beat(self.config.bpm, self.sample_rate);
-            self.current_is_accent = if self.count_in_beats_remaining > 0 {
+            let in_count_in = self.count_in_beats_remaining > 0;
+            if in_count_in {
                 self.count_in_beats_remaining -= 1;
-                true // every count-in click calls off in the accent voice
-            } else {
-                self.config.accent_first_beat && self.beat_index == 0
-            };
+            } else if self.beat_index == 0 {
+                // #421 S4a: a live bar begins — the only place the gap
+                // cycle advances, so count-in bars never count toward it.
+                self.live_bars_started += 1;
+            }
+            // #421 S4a: a beat in a gap bar advances the grid but makes no
+            // sound AND reports no fire — nothing sounded, so the #445 gate
+            // must not reject mic onsets near the phantom grid (the
+            // player's re-entry is exactly the signal being graded).
+            if in_count_in || !self.is_gap_bar() {
+                // Fire a new click.
+                self.click_cursor = 0;
+                // Every count-in click calls off in the accent voice.
+                self.current_is_accent =
+                    in_count_in || (self.config.accent_first_beat && self.beat_index == 0);
+                // #445: report the fire the moment the click starts. try_push
+                // is lock-free and alloc-free — render-safe; a full ring just
+                // drops the report (the gate ages clicks out anyway).
+                if let Some(tx) = self.fire_tx.0.as_mut() {
+                    let _ = tx.try_push(ClickFire {
+                        sample_index: self.samples_emitted,
+                        is_accent: self.current_is_accent,
+                    });
+                }
+            }
             self.beat_index = (self.beat_index + 1) % self.config.time_signature.0 as usize;
             self.any_beat_fired = true;
-            // #445: report the fire the moment the click starts. try_push
-            // is lock-free and alloc-free — render-safe; a full ring just
-            // drops the report (the gate ages clicks out anyway).
-            if let Some(tx) = self.fire_tx.0.as_mut() {
-                let _ = tx.try_push(ClickFire {
-                    sample_index: self.samples_emitted,
-                    is_accent: self.current_is_accent,
-                });
-            }
         }
 
         let sample = if self.click_cursor < self.samples_in_click {
@@ -1224,6 +1280,205 @@ mod tests {
         let mut with_zero = Metronome::new(config, 48_000).unwrap().with_count_in(0);
         for _ in 0..48_000 {
             assert_eq!(plain.next_sample(), with_zero.next_sample());
+        }
+    }
+
+    // ── #421 S4a: gap training ──────────────────────────────────────────
+
+    /// Walk one full bar of samples; report whether anything sounded.
+    /// A silent GAP bar must be every-sample-zero — a merely quiet click
+    /// (volume bug) fails this the same as a present one.
+    fn bar_sounded(m: &mut Metronome, beats: usize) -> bool {
+        let n = m.samples_per_beat() * beats;
+        let mut sounded = false;
+        for _ in 0..n {
+            if m.next_sample() != 0.0 {
+                sounded = true;
+            }
+        }
+        sounded
+    }
+
+    /// S4 AC1 + AC8: 2 audible bars, 1 silent bar, repeating — the silent
+    /// bar is pure silence, `is_gap_bar` tracks it, and the cycle repeats
+    /// past its first period.
+    #[test]
+    fn gap_bars_are_pure_silence_and_the_cycle_repeats() {
+        let mut m = Metronome::new(metro(120.0), 48_000)
+            .unwrap()
+            .with_gaps(2, 1);
+        let pattern: Vec<(bool, bool)> = (0..6)
+            .map(|_| {
+                let sounded = bar_sounded(&mut m, 4);
+                (sounded, m.is_gap_bar())
+            })
+            .collect();
+        assert_eq!(
+            pattern,
+            vec![
+                (true, false),
+                (true, false),
+                (false, true),
+                (true, false),
+                (true, false),
+                (false, true),
+            ],
+            "(sounded, is_gap_bar) per bar over two full cycles"
+        );
+    }
+
+    /// S4 AC2: the beat pointer advances through the silence exactly as if
+    /// it clicked, and the re-entry click lands ON the unbroken grid — a
+    /// gap implementation that pauses or re-anchors the phase fails here.
+    #[test]
+    fn gap_bars_keep_the_grid() {
+        use crate::output_engine::click_fire_channel;
+        use ringbuf::traits::Consumer;
+
+        let (tx, mut rx) = click_fire_channel(32);
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_gaps(1, 1)
+            .with_fire_channel(tx);
+        let period = m.samples_per_beat(); // 120 BPM at 48 kHz → 24 000
+        let mut beats_seen = Vec::new();
+        for _ in 0..12 {
+            for _ in 0..period {
+                let _ = m.next_sample();
+            }
+            beats_seen.push(m.current_beat());
+        }
+        assert_eq!(
+            beats_seen,
+            vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3],
+            "the grid must advance through the silent bar"
+        );
+        let indices: Vec<u64> = std::iter::from_fn(|| rx.try_pop())
+            .map(|f| f.sample_index)
+            .collect();
+        // Bar 2 (samples 96 000..192 000) is silent; the re-entry fires at
+        // exactly 192 000 — one beat period after the silent bar's last
+        // (phantom) beat, no phase jump.
+        assert_eq!(
+            indices,
+            vec![0, 24_000, 48_000, 72_000, 192_000, 216_000, 240_000, 264_000]
+        );
+    }
+
+    /// S4 AC5: silent beats push NO ClickFire — a fire report without a
+    /// sound would make the #445 gate reject the player's own re-entry
+    /// onsets as "our click".
+    #[test]
+    fn fire_reports_skip_silent_beats() {
+        use crate::output_engine::click_fire_channel;
+        use ringbuf::traits::Consumer;
+
+        let (tx, mut rx) = click_fire_channel(32);
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_gaps(1, 1)
+            .with_fire_channel(tx);
+        // Three bars: audible, silent, audible — 288 000 samples + 1.
+        for _ in 0..288_001 {
+            let _ = m.next_sample();
+        }
+        let fires: Vec<_> = std::iter::from_fn(|| rx.try_pop()).collect();
+        assert_eq!(fires.len(), 8, "only the two audible bars report");
+        let accents: Vec<bool> = fires.iter().map(|f| f.is_accent).collect();
+        assert_eq!(
+            accents,
+            vec![true, false, false, false, true, false, false, false],
+            "both audible bars keep the normal downbeat-accent pattern"
+        );
+    }
+
+    /// S4 AC3 + AC8: the count-in is always audible (all-accent, as S1
+    /// pinned) and does NOT advance the gap cycle — the first LIVE bar is
+    /// audible, the second is the first gap.
+    #[test]
+    fn count_in_is_never_gapped_and_does_not_count() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000)
+            .unwrap()
+            .with_count_in(1)
+            .with_gaps(1, 1);
+        for beat in 0..4 {
+            assert!(fired_accent(&mut m), "count-in beat {beat} must accent");
+            assert!(!m.is_gap_bar(), "count-in is never a gap bar");
+        }
+        assert!(bar_sounded(&mut m, 4), "live bar 1 audible");
+        assert!(!m.is_gap_bar());
+        assert!(!bar_sounded(&mut m, 4), "live bar 2 is the first gap");
+        assert!(m.is_gap_bar());
+        assert!(bar_sounded(&mut m, 4), "live bar 3: the click returns");
+    }
+
+    /// S4 AC4: `gap_bars == 0` is byte-identical to no gaps at all.
+    #[test]
+    fn zero_gap_bars_is_todays_behavior() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut plain = Metronome::new(config, 48_000).unwrap();
+        let mut gapless = Metronome::new(config, 48_000).unwrap().with_gaps(4, 0);
+        for _ in 0..192_000 {
+            assert_eq!(plain.next_sample(), gapless.next_sample());
+        }
+        assert!(!gapless.is_gap_bar());
+    }
+
+    /// S4 AC6: re-sizing the cycle mid-play re-maps IMMEDIATELY from the
+    /// live-bar count — one bar has elapsed under (2, 2), so under (1, 1)
+    /// the very next bar is silent and the alternation continues.
+    #[test]
+    fn set_gap_cycle_remaps_immediately() {
+        let mut m = Metronome::new(metro(120.0), 48_000)
+            .unwrap()
+            .with_gaps(2, 2);
+        assert!(bar_sounded(&mut m, 4), "bar 1 audible under (2,2)");
+        m.set_gap_cycle(1, 1);
+        assert!(!bar_sounded(&mut m, 4), "bar 2 silent under (1,1)");
+        assert!(bar_sounded(&mut m, 4), "bar 3 audible");
+        assert!(!bar_sounded(&mut m, 4), "bar 4 silent");
+    }
+
+    /// S4 AC9: `play_bars == 0` clamps to 1 (a cycle can never be
+    /// all-silence), and the re-entry downbeat calls off in the ACCENT
+    /// voice so the return is unmistakable.
+    #[test]
+    fn gap_return_downbeat_accents_and_play_bars_clamps() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let mut m = Metronome::new(config, 48_000).unwrap().with_gaps(0, 1);
+        assert!(bar_sounded(&mut m, 4), "clamped (0,1) still clicks bar 1");
+        assert!(!bar_sounded(&mut m, 4), "bar 2 silent");
+        assert!(fired_accent(&mut m), "re-entry downbeat must accent");
+        for beat in 1..4 {
+            assert!(!fired_accent(&mut m), "re-entry beat {beat} is normal");
         }
     }
 }

@@ -8,13 +8,18 @@
 //! channel (`with_fire_channel`) whose `try_push` runs inside the render
 //! path — the measured window must stay at zero allocations WITH the
 //! channel attached and actually firing.
+//!
+//! #421 S4a AC7 extends it again: the gap-training cycle (silent bars +
+//! the gap channel's drain/apply) also rides the render path, so the
+//! window now covers a gapped, gap-channel-fed source too.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use ears::output::{Metronome, MetronomeConfig};
 use ears::output_engine::{
-    click_fire_channel, pocket_tempo_channel, RenderSource, TempoFedMetronome,
+    click_fire_channel, pocket_gap_channel, pocket_tempo_channel, GapCycle, RenderSource,
+    TempoFedMetronome,
 };
 use ringbuf::traits::{Consumer, Producer};
 
@@ -67,11 +72,16 @@ fn pocket_click_render_does_not_allocate() {
     let metronome = Metronome::new(config, 48_000)
         .expect("valid config")
         .with_count_in(1)
+        // #421 S4a: a live gap cycle — the silent-bar branch runs inside
+        // the measured window (the silent live bar starts ~240 000
+        // samples in, well within the 700-block window below).
+        .with_gaps(1, 1)
         .with_fire_channel(fire_tx);
     // #421 S2: the CHANNEL-FED source is the real render path now —
     // the alloc law must hold through tempo pops too.
     let (mut tx, rx) = pocket_tempo_channel(16);
-    let mut source = TempoFedMetronome::new(metronome, rx);
+    let (mut gap_tx, gap_rx) = pocket_gap_channel(16);
+    let mut source = TempoFedMetronome::new(metronome, rx).with_gap_channel(gap_rx);
 
     // Buffer allocated OUTSIDE the measured window; warm one block.
     let mut buf = vec![0.0f32; 512];
@@ -79,12 +89,18 @@ fn pocket_click_render_does_not_allocate() {
 
     COUNTING.with(|c| c.set(true));
     // Past the count-in→live transition (1 bar at 96 BPM = 120 000
-    // samples) and well into live clicking: 300 blocks ≈ 153 600 samples
-    // measure the count-in accents, the transition branch, AND the
-    // steady live pattern (review MF5 — the old window never left bar 1).
-    for i in 0..300 {
+    // samples), through steady live clicking, AND across the first silent
+    // gap bar (review MF5 pattern — measure every branch the render can
+    // take): 700 blocks ≈ 358 400 samples.
+    for i in 0..700 {
         if i % 50 == 0 {
             let _ = tx.try_push(96.0 + i as f64 / 10.0); // live re-timing
+                                                         // Re-assert the same cycle: the drain/apply path runs in the
+                                                         // window without perturbing the audibility pattern.
+            let _ = gap_tx.try_push(GapCycle {
+                play_bars: 1,
+                gap_bars: 1,
+            });
         }
         source.render(&mut buf);
     }
