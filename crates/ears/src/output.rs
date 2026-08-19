@@ -1462,6 +1462,20 @@ mod tests {
         assert!(!bar_sounded(&mut m, 4), "bar 4 silent");
     }
 
+    /// S4 edge (spec §6): a CLONE carries the gap cycle and its position —
+    /// gap state is plain integers under `derive(Clone)`, unlike the fire
+    /// channel, which a clone deliberately drops.
+    #[test]
+    fn cloned_metronome_keeps_the_gap_cycle() {
+        let mut m = Metronome::new(metro(120.0), 48_000)
+            .unwrap()
+            .with_gaps(1, 1);
+        assert!(bar_sounded(&mut m, 4), "bar 1 audible");
+        let mut clone = m.clone();
+        assert!(!bar_sounded(&mut m, 4), "original: bar 2 is the gap");
+        assert!(!bar_sounded(&mut clone, 4), "clone: bar 2 is the gap too");
+    }
+
     /// S4 AC9: `play_bars == 0` clamps to 1 (a cycle can never be
     /// all-silence), and the re-entry downbeat calls off in the ACCENT
     /// voice so the return is unmistakable.

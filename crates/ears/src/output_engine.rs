@@ -555,9 +555,12 @@ mod tests {
     use super::*;
     use crate::output::{Metronome, MetronomeConfig, TuningDrone};
 
-    /// #421 S4a AC7: the gap channel applies the LATEST pushed cycle —
-    /// two pushes in one block and the second wins, observable as the
-    /// (1,1) alternation instead of (1,3)'s longer silence.
+    /// #421 S4a AC7: the gap channel applies the LATEST pushed cycle.
+    /// The two pushes land AFTER bar 1 has rendered and straddle bar 2's
+    /// audibility: drain-latest applies (1,1) → bar 2 silent; a mutant
+    /// that pops one message per block applies the stale (2,2) at bar 2
+    /// → bar 2 audible. (Bar 1 is audible under ANY cycle, so pushing
+    /// before it would let that mutant pass.)
     #[test]
     fn gap_channel_applies_latest_cycle() {
         let config = MetronomeConfig {
@@ -570,10 +573,14 @@ mod tests {
         let (mut gap_tx, gap_rx) = pocket_gap_channel(8);
         let (_tempo_tx, tempo_rx) = pocket_tempo_channel(4);
         let mut source = TempoFedMetronome::new(metronome, tempo_rx).with_gap_channel(gap_rx);
+        // One bar per render block: 4 beats × 24 000 samples at 120 BPM.
+        let mut buf = vec![0.0f32; 96_000];
+        source.render(&mut buf);
+        assert!(buf.iter().any(|s| *s != 0.0), "bar 1 audible, no cycle yet");
         gap_tx
             .try_push(GapCycle {
-                play_bars: 1,
-                gap_bars: 3,
+                play_bars: 2,
+                gap_bars: 2,
             })
             .unwrap();
         gap_tx
@@ -582,17 +589,16 @@ mod tests {
                 gap_bars: 1,
             })
             .unwrap();
-        // One bar per render block: 4 beats × 24 000 samples at 120 BPM.
-        let mut buf = vec![0.0f32; 96_000];
         let mut audible = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..3 {
             source.render(&mut buf);
             audible.push(buf.iter().any(|s| *s != 0.0));
         }
         assert_eq!(
             audible,
-            vec![true, false, true, false],
-            "the (1,1) alternation — under the stale (1,3) bar 3 would be silent"
+            vec![false, true, false],
+            "bars 2-4 alternate per the LATEST (1,1) cycle — under the \
+             stale (2,2) bar 2 would be audible"
         );
     }
 
