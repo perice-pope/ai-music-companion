@@ -46,11 +46,15 @@ card. The wrong-Beethoven card (#417 item 2) was the founding complaint; a wrong
 4. A window whose tail diverges from the piece still chips (retrieval passes) but is
    NEVER asserted: `identify` returns the match, `confirm` returns None, DTO says
    `confirmed: false`, and the reveal card keeps the hedged catalog voice.
-5. Two library near-twins identical through the played window are never asserted
-   (alignment lead margin refuses a photo finish).
+5. A rival that aligns nearly as well is never out-shouted — whether it shares the
+   window exactly (near-twins) or diverges by a few slips and so sits UNDER the
+   retrieval evidence floors (the judge sees pre-gate finalists; the lead margin
+   refuses a photo finish either way).
 6. Deleting a score removes its melodic line: `confirm` can no longer pick it.
-7. Voice stickiness (rule 0): once a score's match arrives confirmed, a later
-   retrieval-only re-sight of the same score does not step the card back down.
+7. Voice stickiness (§5 rule): once a score's match arrives confirmed, neither a
+   retrieval-only re-sight of the same score nor a retrieval-only sighting of a
+   DIFFERENT score steps the card back down; only another confirmed match replaces
+   the assertion (the live-key contradiction dim still applies).
 8. Fully offline; no new network calls; no new dependencies.
 
 ## 6. Edge cases & failure modes
@@ -68,10 +72,11 @@ in the outcome).
 | AC2 | `piece_match::tests::transposition_never_defeats_confirmation` | transposed excerpt confirms |
 | AC3 | `piece_match::tests::a_stray_wrong_note_still_confirms` | one altered note → Some |
 | AC4 | `piece_match::tests::a_divergent_tail_chips_but_never_asserts`; commands `half_right_window_never_asserts`; `RevealCard.test.tsx` unconfirmed case | identify Some + confirm None; card hedges, chip shows |
-| AC5 | `piece_match::tests::near_twins_refuse_on_alignment_lead` | confirm None on twins |
+| AC5 | `piece_match::tests::near_twins_refuse_on_alignment_lead`, `…::a_lurking_variant_rival_blocks_the_assertion` | confirm None on twins AND on under-floor variants |
 | AC6 | `piece_match::tests::removing_a_score_drops_its_line` | removed id unpickable |
-| AC7 | `RevealCard.test.tsx` sticky-voice case | assertion holds across a false re-sight |
-| edges | `piece_match::tests` boundary cases (short query, window clamp, determinism) | per §6 |
+| AC7 | `RevealCard.test.tsx` sticky-voice case | assertion holds across same-score and different-score chip-tier sightings; a confirmed rival replaces it |
+| §4 agreement | `piece_match::tests::identify_and_confirm_never_disagree` | both engines name the same piece wherever both speak |
+| edges | `piece_match::tests` boundary cases (short query, window clamp, determinism, alien-tail boundary pinned 5-confirm/8-refuse, octave-slip cap pin) | per §6 |
 
 ## 8. Architecture / approach
 Pure logic in `crates/brain/src/piece_match.rs` beside the S1a engine: the index keeps

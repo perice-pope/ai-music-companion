@@ -1208,18 +1208,31 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         return;
       }
       // Replace in place; never clear on a miss. Rule 0 covers the VOICE
-      // too: once this score's match arrived confirmed, a later
-      // retrieval-only re-sight never steps the assertion back down —
-      // only the live-key contradiction (RevealCard's stale) does.
-      set((s) => ({
-        pieceMatch: {
-          scoreId: dto.score_id,
-          title: dto.title,
-          confirmed:
-            dto.confirmed ||
-            (s.pieceMatch?.scoreId === dto.score_id && s.pieceMatch.confirmed),
-        },
-      }));
+      // too (§5: a confirmed ID is sticky — replaced by a BETTER id,
+      // dimmed by contradiction, never blinked out): a retrieval-only
+      // re-sight of the same score keeps the assertion, and a
+      // retrieval-only sighting of a DIFFERENT score cannot displace a
+      // judge-confirmed one — only another confirmed match (or the
+      // live-key contradiction dim) moves the card.
+      set((s) => {
+        const held = s.pieceMatch;
+        if (
+          held?.confirmed &&
+          !dto.confirmed &&
+          held.scoreId !== dto.score_id
+        ) {
+          return {};
+        }
+        return {
+          pieceMatch: {
+            scoreId: dto.score_id,
+            title: dto.title,
+            confirmed:
+              dto.confirmed ||
+              (held?.scoreId === dto.score_id && held.confirmed),
+          },
+        };
+      });
     } catch {
       // Identification must never surface an error — silence is normal.
     }

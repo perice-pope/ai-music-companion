@@ -5878,9 +5878,11 @@ pub fn check_piece_match_impl(state: &AppState) -> Option<PieceMatchDto> {
     let matcher = state.piece_matcher.lock_or_recover();
     let m = matcher.index.identify(&recent)?;
     let (score_id, title) = matcher.titles.get(&m.id)?.clone();
-    // #214 S2b: the assertion voice is earned by the alignment judge, and
-    // only for the SAME score retrieval named — the chip and the card can
-    // never disagree about which piece is playing.
+    // #214 S2b: the assertion voice is earned by the alignment judge.
+    // Agreement with retrieval's pick is structurally expected (pinned by
+    // brain's identify_and_confirm_never_disagree invariant); the id check
+    // is belt-and-suspenders so a future ranking change can never make the
+    // card assert a different title than the chip shows.
     let confirmed = matcher.index.confirm(&recent).is_some_and(|c| c.id == m.id);
     Some(PieceMatchDto {
         score_id,

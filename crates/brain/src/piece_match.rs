@@ -47,10 +47,14 @@ pub(crate) const MARGIN_RATIO: f64 = 2.0;
 const INTERVAL_CLAMP: i16 = 12;
 /// §3.3: how many retrieval finalists the confirmation judge aligns.
 pub(crate) const CONFIRM_FINALISTS: usize = 3;
+/// The pre-gate noise floor shared by [`PieceIndex::finalists`] and the
+/// judge: below 2 coherent hits a candidate is a stray hash collision.
+pub(crate) const PREGATE_MIN_COHERENT: usize = 2;
 /// Mean per-interval alignment cost (semitones of melodic disagreement)
 /// at or under which the judge confirms. Measured on the fixtures: exact
-/// playing costs 0, one stray wrong note ≈0.2, a half-diverged window
-/// ≥1.0 (both sides pinned by tests) — 0.75 splits the bands.
+/// playing costs 0, one stray wrong note ≈0.2, and an alien tail crosses
+/// the bar between 5 tolerated notes and 8 refused (the boundary test
+/// pins both sides, so a meaningful move of this bar or GAP_COST fails).
 pub(crate) const CONFIRM_MAX_MEAN_COST: f64 = 0.75;
 /// The winner must beat the best OTHER piece's alignment by this much
 /// mean cost — a photo finish stays "sounds like", never "you're
@@ -253,9 +257,10 @@ impl PieceIndex {
         ranked
     }
 
-    /// The top-k retrieval candidates BEFORE the silence gates — what
-    /// §3.3's confirmation consumes. Noise-floor only: a candidate with
-    /// fewer than 2 coherent hits is a stray collision, not a finalist.
+    /// The top-k retrieval candidates BEFORE the silence gates — the
+    /// tier §3.3's confirmation judges. Noise-floor only: a candidate
+    /// with fewer than [`PREGATE_MIN_COHERENT`] coherent hits is a stray
+    /// collision, not a finalist.
     pub fn finalists(&self, recent_midi: &[u8], k: usize) -> Vec<Match> {
         let start = recent_midi.len().saturating_sub(QUERY_WINDOW);
         let ivs = intervals(&recent_midi[start..]);
@@ -264,47 +269,50 @@ impl PieceIndex {
         }
         self.ranked(&ivs)
             .into_iter()
-            .filter(|(m, _)| m.coherent_hits >= 2)
+            .filter(|(m, _)| m.coherent_hits >= PREGATE_MIN_COHERENT)
             .take(k)
             .map(|(m, _)| m)
             .collect()
     }
 
     /// §3.3 — the confirmation stage behind the ASSERTION voice. The
-    /// query's interval stream is fit-aligned against each finalist's
-    /// stored line in a slack window around its retrieval offset; the
-    /// cheapest alignment wins iff it clears the absolute bar AND leads
-    /// every rival piece by [`CONFIRM_MIN_LEAD`]. Evidence floors stay
-    /// retrieval's (hits + distinct identity), but the retrieval MARGIN
-    /// deliberately does not apply — the judge resolves what counting
-    /// can't. None means "keep the hedged voice", never an error.
+    /// query's interval stream is fit-aligned against each PRE-GATE
+    /// finalist's stored line (the [`finalists`](Self::finalists) tier —
+    /// a rival needn't share exact n-grams to contest an assertion, so
+    /// the retrieval gates must not hide it from the judge). The
+    /// cheapest alignment wins iff the winner ALSO carries
+    /// retrieval-grade evidence (hits + distinct identity), clears the
+    /// absolute bar, and leads every judged rival by
+    /// [`CONFIRM_MIN_LEAD`]. None means "keep the hedged voice", never
+    /// an error.
     pub fn confirm(&self, recent_midi: &[u8]) -> Option<Match> {
         let start = recent_midi.len().saturating_sub(QUERY_WINDOW);
         let ivs = intervals(&recent_midi[start..]);
         if ivs.len() < NGRAM_INTERVALS {
             return None; // Too little played — never an assertion.
         }
-        let mut judged: Vec<(Match, f64)> = self
+        let mut judged: Vec<(Match, usize, f64)> = self
             .ranked(&ivs)
             .into_iter()
-            .filter(|(m, distinct)| {
-                m.coherent_hits >= MIN_COHERENT_HITS && *distinct >= MIN_DISTINCT_COHERENT
-            })
+            .filter(|(m, _)| m.coherent_hits >= PREGATE_MIN_COHERENT)
             .take(CONFIRM_FINALISTS)
-            .filter_map(|(m, _)| {
+            .filter_map(|(m, distinct)| {
                 // A line can be gone if the score was removed between
                 // ranking and judging a stale buffer — skip, don't panic.
                 let line = self.lines.get(&m.id)?;
                 let cost = mean_fit_cost(&ivs, line, m.offset)?;
-                Some((m, cost))
+                Some((m, distinct, cost))
             })
             .collect();
-        judged.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.id.cmp(&b.0.id)));
-        let (best, best_cost) = judged.first()?.clone();
+        judged.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.id.cmp(&b.0.id)));
+        let (best, best_distinct, best_cost) = judged.first()?.clone();
+        if best.coherent_hits < MIN_COHERENT_HITS || best_distinct < MIN_DISTINCT_COHERENT {
+            return None; // A winner without real evidence is a guess.
+        }
         if best_cost > CONFIRM_MAX_MEAN_COST {
             return None; // The playing doesn't align — hedge, don't assert.
         }
-        if let Some((_, rival_cost)) = judged.iter().find(|(m, _)| m.id != best.id) {
+        if let Some((_, _, rival_cost)) = judged.iter().find(|(m, _, _)| m.id != best.id) {
             if rival_cost - best_cost < CONFIRM_MIN_LEAD {
                 return None; // A photo finish is never an assertion.
             }
@@ -798,5 +806,100 @@ mod tests {
         let mut played: Vec<u8> = vec![55, 57, 59];
         played.extend_from_slice(&piece_a()[0..16]);
         assert_eq!(idx.confirm(&played).map(|m| m.id), Some(1));
+    }
+
+    /// S2b review MF1: a rival that aligns nearly as well but shares few
+    /// exact n-grams (a variant with a handful of semitone slips) sits
+    /// UNDER the retrieval evidence floors — it must still reach the
+    /// judge and trip the lead margin. The chip may keep naming the
+    /// original; the assertion must refuse.
+    #[test]
+    fn a_lurking_variant_rival_blocks_the_assertion() {
+        let mut idx = PieceIndex::new();
+        let a = piece_a();
+        let mut variant = a.clone();
+        variant[5] += 1;
+        variant[12] += 1;
+        variant[19] += 1;
+        idx.index_score(1, &model_from(&a));
+        idx.index_score(2, &model_from(&variant));
+        let played = &a[0..20];
+        assert_eq!(
+            idx.identify(played).map(|m| m.id),
+            Some(1),
+            "retrieval still chips — the variant's exact hits are few"
+        );
+        assert_eq!(
+            idx.confirm(played),
+            None,
+            "a rival within the lead margin blocks the assertion"
+        );
+        // Without the rival, the same playing asserts — the refusal
+        // above is the margin working, not a broken judge.
+        idx.remove_score(2);
+        assert_eq!(idx.confirm(played).map(|m| m.id), Some(1));
+    }
+
+    /// S2b: one octave-displaced note (the classic piano slip) perturbs
+    /// two intervals by 12 — the substitution CAP is what keeps that a
+    /// tolerable mistake instead of an automatic refusal. Pins
+    /// SUB_COST_CAP's job: uncapped, this refuses.
+    #[test]
+    fn an_octave_displaced_note_still_confirms() {
+        let idx = library();
+        let mut played = piece_a()[0..20].to_vec();
+        played[10] += 12;
+        assert_eq!(idx.confirm(&played).map(|m| m.id), Some(1));
+    }
+
+    /// S2b: the refuse boundary itself, pinned from both sides — the
+    /// same alien tail (contrary contour) confirms at 5 notes and
+    /// refuses at 8. A meaningful move of CONFIRM_MAX_MEAN_COST or
+    /// GAP_COST relocates this boundary and fails here.
+    #[test]
+    fn the_alien_tail_boundary_is_pinned() {
+        let idx = library();
+        let alien: [u8; 8] = [59, 66, 58, 70, 57, 68, 61, 73];
+        let confirms = |tail: usize| {
+            let mut played = piece_a()[0..20 - tail].to_vec();
+            played.extend_from_slice(&alien[..tail]);
+            idx.confirm(&played).is_some()
+        };
+        assert!(confirms(5), "a 5-note alien tail is within tolerance");
+        assert!(!confirms(8), "an 8-note alien tail must refuse");
+    }
+
+    /// S2b (spec §4's surfaces-agree clause, brain-level invariant):
+    /// wherever BOTH engines speak across the adversarial libraries,
+    /// they name the same piece — the command's id-agreement guard is
+    /// belt-and-suspenders over this, not the only line of defense.
+    #[test]
+    fn identify_and_confirm_never_disagree() {
+        let mut twins = PieceIndex::new();
+        let a = piece_a();
+        let mut twin = a.clone();
+        twin[22] = 60;
+        twins.index_score(1, &model_from(&a));
+        twins.index_score(2, &model_from(&twin));
+        let mut variants = PieceIndex::new();
+        let mut variant = a.clone();
+        variant[5] += 1;
+        variant[12] += 1;
+        variants.index_score(1, &model_from(&a));
+        variants.index_score(2, &model_from(&variant));
+        let library = library();
+        let queries: Vec<Vec<u8>> = vec![
+            a[0..20].to_vec(),
+            a[4..20].to_vec(),
+            piece_b()[4..20].to_vec(),
+            a[6..20].iter().map(|&n| n + 3).collect(),
+        ];
+        for idx in [&twins, &variants, &library] {
+            for q in &queries {
+                if let (Some(i), Some(c)) = (idx.identify(q), idx.confirm(q)) {
+                    assert_eq!(i.id, c.id, "the chip and the card must agree");
+                }
+            }
+        }
     }
 }

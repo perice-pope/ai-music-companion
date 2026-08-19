@@ -214,7 +214,9 @@ describe("RevealCard", () => {
     expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
       "You're playing — Für Elise",
     );
-    // A DIFFERENT score arriving unconfirmed replaces match AND voice.
+    // §5 (review MF3): a DIFFERENT score at chip-tier evidence is a
+    // LOWER-tier signal — it must not displace a judge-confirmed
+    // assertion. The card holds.
     mockInvoke.mockResolvedValueOnce({
       score_id: "id-2",
       title: "Gymnopédie No. 1",
@@ -222,7 +224,21 @@ describe("RevealCard", () => {
       confirmed: false,
     });
     await act(() => usePracticeStore.getState().requestPieceMatch());
-    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Für Elise",
+    );
+    // A different score arriving CONFIRMED is a better ID — it replaces
+    // the assertion in place (§5: replaced, never blinked out).
+    mockInvoke.mockResolvedValueOnce({
+      score_id: "id-2",
+      title: "Gymnopédie No. 1",
+      coherent_hits: 9,
+      confirmed: true,
+    });
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Gymnopédie No. 1",
+    );
   });
 
   // AC7 (render contract): with multiple in the queue only the latest renders.
