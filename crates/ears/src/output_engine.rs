@@ -95,6 +95,9 @@ impl RenderSource for crate::output::Metronome {
 pub struct TempoFedMetronome {
     metronome: crate::output::Metronome,
     tempo_rx: HeapCons<f64>,
+    /// #421 S4a: optional gap-cycle feed — the adaptive-length policy
+    /// (frontend, S4b) re-sizes the gaps mid-play through here.
+    gap_rx: Option<HeapCons<GapCycle>>,
 }
 
 impl TempoFedMetronome {
@@ -102,7 +105,17 @@ impl TempoFedMetronome {
         Self {
             metronome,
             tempo_rx,
+            gap_rx: None,
         }
+    }
+
+    /// #421 S4a: attach the gap-cycle channel (control side keeps the
+    /// producer from [`pocket_gap_channel`]). Builder-style, so the S1/S2
+    /// construction sites don't change.
+    #[must_use]
+    pub fn with_gap_channel(mut self, gap_rx: HeapCons<GapCycle>) -> Self {
+        self.gap_rx = Some(gap_rx);
+        self
     }
 }
 
@@ -121,10 +134,38 @@ impl RenderSource for TempoFedMetronome {
             // cannot fail; a hypothetical error keeps the old tempo.
             let _ = self.metronome.update_config(config);
         }
+        // #421 S4a: same drain-latest discipline for the gap cycle;
+        // `set_gap_cycle` is integer stores only — render-safe.
+        if let Some(rx) = self.gap_rx.as_mut() {
+            let mut latest_gaps = None;
+            while let Some(g) = rx.try_pop() {
+                latest_gaps = Some(g);
+            }
+            if let Some(g) = latest_gaps {
+                self.metronome.set_gap_cycle(g.play_bars, g.gap_bars);
+            }
+        }
         for slot in out.iter_mut() {
             *slot = self.metronome.next_sample();
         }
     }
+}
+
+/// #421 S4a: one gap-cycle update — `play_bars` audible bars, then
+/// `gap_bars` silent bars. The payload of [`pocket_gap_channel`];
+/// `gap_bars == 0` switches gaps off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GapCycle {
+    pub play_bars: u8,
+    pub gap_bars: u8,
+}
+
+/// #421 S4a: build the Pocket's gap-cycle channel (control side keeps the
+/// producer, the render source takes the consumer via
+/// [`TempoFedMetronome::with_gap_channel`]). Same lock-free SPSC pattern
+/// as [`pocket_tempo_channel`].
+pub fn pocket_gap_channel(capacity: usize) -> (HeapProd<GapCycle>, HeapCons<GapCycle>) {
+    HeapRb::<GapCycle>::new(capacity.max(2)).split()
 }
 
 /// #421 S2: build the Pocket's tempo channel (control side keeps the
@@ -513,6 +554,53 @@ fn run_render<S: RenderSource>(mut source: S, mut producer: OutputProducer, stop
 mod tests {
     use super::*;
     use crate::output::{Metronome, MetronomeConfig, TuningDrone};
+
+    /// #421 S4a AC7: the gap channel applies the LATEST pushed cycle.
+    /// The two pushes land AFTER bar 1 has rendered and straddle bar 2's
+    /// audibility: drain-latest applies (1,1) → bar 2 silent; a mutant
+    /// that pops one message per block applies the stale (2,2) at bar 2
+    /// → bar 2 audible. (Bar 1 is audible under ANY cycle, so pushing
+    /// before it would let that mutant pass.)
+    #[test]
+    fn gap_channel_applies_latest_cycle() {
+        let config = MetronomeConfig {
+            bpm: 120.0,
+            time_signature: (4, 4),
+            accent_first_beat: true,
+            volume: 1.0,
+        };
+        let metronome = Metronome::new(config, 48_000).unwrap();
+        let (mut gap_tx, gap_rx) = pocket_gap_channel(8);
+        let (_tempo_tx, tempo_rx) = pocket_tempo_channel(4);
+        let mut source = TempoFedMetronome::new(metronome, tempo_rx).with_gap_channel(gap_rx);
+        // One bar per render block: 4 beats × 24 000 samples at 120 BPM.
+        let mut buf = vec![0.0f32; 96_000];
+        source.render(&mut buf);
+        assert!(buf.iter().any(|s| *s != 0.0), "bar 1 audible, no cycle yet");
+        gap_tx
+            .try_push(GapCycle {
+                play_bars: 2,
+                gap_bars: 2,
+            })
+            .unwrap();
+        gap_tx
+            .try_push(GapCycle {
+                play_bars: 1,
+                gap_bars: 1,
+            })
+            .unwrap();
+        let mut audible = Vec::new();
+        for _ in 0..3 {
+            source.render(&mut buf);
+            audible.push(buf.iter().any(|s| *s != 0.0));
+        }
+        assert_eq!(
+            audible,
+            vec![false, true, false],
+            "bars 2-4 alternate per the LATEST (1,1) cycle — under the \
+             stale (2,2) bar 2 would be audible"
+        );
+    }
 
     #[test]
     fn fill_drains_in_order_mono() {
