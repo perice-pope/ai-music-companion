@@ -132,10 +132,13 @@ function RevealCardItem({
 export default function RevealCard() {
   const revealQueue = usePracticeStore((s) => s.revealQueue);
   const dismissReveal = usePracticeStore((s) => s.dismissReveal);
-  // #214 S2: a confirmed library match upgrades the card's voice from
-  // catalog to identification. Clears with the match (store rule 0 keeps
-  // the MATCH sticky; this only mirrors it).
-  const matchTitle = usePracticeStore((s) => s.pieceMatch?.title ?? null);
+  // #214 S2/S2b: a JUDGE-CONFIRMED library match upgrades the card's
+  // voice from catalog to identification — a retrieval-only match keeps
+  // the hedged framing (the chip's "sounds like" tier). Clears with the
+  // match (store rule 0 keeps the MATCH sticky; this only mirrors it).
+  const matchTitle = usePracticeStore((s) =>
+    s.pieceMatch?.confirmed ? s.pieceMatch.title : null,
+  );
   const collectionCount = usePracticeStore((s) => s.collectionCount);
   const startExplore = usePracticeStore((s) => s.startExplore);
   // Subscribe to the live key's primitives (not the object), so this only

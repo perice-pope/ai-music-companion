@@ -533,8 +533,10 @@ export interface PracticeState {
    */
   /** #214 S1b: the current library match, sticky per rule 0 (replaced
    * in place by a newer match, dimming handled by the chip, dismissal
-   * quiets that score for the session). */
-  pieceMatch: { scoreId: string; title: string } | null;
+   * quiets that score for the session). S2b: `confirmed` is the §3.3
+   * alignment judge's verdict — the reveal card's "You're playing —"
+   * assertion requires it; the chip's hedged voice never does. */
+  pieceMatch: { scoreId: string; title: string; confirmed: boolean } | null;
   /** Score ids the player dismissed this session — stay quiet. */
   dismissedPieceIds: string[];
   requestPieceMatch: () => Promise<void>;
@@ -1192,6 +1194,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         score_id: string;
         title: string;
         coherent_hits: number;
+        confirmed: boolean;
       } | null>("check_piece_match");
       if (!dto) {
         return; // None is the common answer — the chip holds (rule 0).
@@ -1204,8 +1207,19 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         // OPEN" is permanent redundant noise, not identification.
         return;
       }
-      // Replace in place; never clear on a miss.
-      set({ pieceMatch: { scoreId: dto.score_id, title: dto.title } });
+      // Replace in place; never clear on a miss. Rule 0 covers the VOICE
+      // too: once this score's match arrived confirmed, a later
+      // retrieval-only re-sight never steps the assertion back down —
+      // only the live-key contradiction (RevealCard's stale) does.
+      set((s) => ({
+        pieceMatch: {
+          scoreId: dto.score_id,
+          title: dto.title,
+          confirmed:
+            dto.confirmed ||
+            (s.pieceMatch?.scoreId === dto.score_id && s.pieceMatch.confirmed),
+        },
+      }));
     } catch {
       // Identification must never surface an error — silence is normal.
     }

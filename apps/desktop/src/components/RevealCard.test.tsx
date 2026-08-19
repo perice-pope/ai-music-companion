@@ -111,7 +111,7 @@ describe("RevealCard", () => {
   it("a confirmed match upgrades the card: identified, framing retired", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
-      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+      pieceMatch: { scoreId: "id-9", title: "Für Elise", confirmed: true },
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
@@ -130,7 +130,11 @@ describe("RevealCard", () => {
   it("the framing returns verbatim when the match clears", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
-      pieceMatch: { scoreId: "id-9", title: "Preexisting Prelude" },
+      pieceMatch: {
+        scoreId: "id-9",
+        title: "Preexisting Prelude",
+        confirmed: true,
+      },
     });
     render(<RevealCard />);
     expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
@@ -152,7 +156,7 @@ describe("RevealCard", () => {
   it("a confident key contradiction demotes the assertion to the hedge", () => {
     usePracticeStore.setState({
       revealQueue: [queued("r1", 'Miles Davis — "So What"')],
-      pieceMatch: { scoreId: "id-9", title: "Für Elise" },
+      pieceMatch: { scoreId: "id-9", title: "Für Elise", confirmed: true },
       // The reveal is G Dorian (tonic 7); a confident D major reading
       // contradicts it — the card dims AND the assertion retires.
       perception: perceptionWithKey(2, "major") as never,
@@ -162,6 +166,63 @@ describe("RevealCard", () => {
     expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
       "other music that lives in this sound",
     );
+  });
+
+  // #214 S2b AC4: a retrieval-only match (the judge refused — e.g. a
+  // half-right window) must NOT upgrade the card. The hedged 2a framing
+  // stays, exactly as if there were no match. Fails if the assertion
+  // ever rides an unconfirmed match again.
+  it("an unconfirmed match keeps the hedged catalog voice", () => {
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      pieceMatch: { scoreId: "id-9", title: "Für Elise", confirmed: false },
+    });
+    render(<RevealCard />);
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
+    expect(screen.getByTestId("reveal-framing-r1").textContent).toBe(
+      "other music that lives in this sound",
+    );
+  });
+
+  // #214 S2b AC7: the asserted voice is rule-0 sticky per score — a
+  // later retrieval-only re-sight of the SAME score never steps the
+  // card back down (only the key contradiction does, tested above).
+  it("a confirmed voice holds through a retrieval-only re-sight", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      score_id: "id-9",
+      title: "Für Elise",
+      coherent_hits: 9,
+      confirmed: true,
+    });
+    usePracticeStore.setState({
+      revealQueue: [queued("r1", 'Beethoven — "Moonlight Sonata"')],
+      dismissedPieceIds: [],
+    });
+    render(<RevealCard />);
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Für Elise",
+    );
+    // The next ambient check finds the same piece at chip-tier evidence.
+    mockInvoke.mockResolvedValueOnce({
+      score_id: "id-9",
+      title: "Für Elise",
+      coherent_hits: 7,
+      confirmed: false,
+    });
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.getByTestId("reveal-identified-r1").textContent).toBe(
+      "You're playing — Für Elise",
+    );
+    // A DIFFERENT score arriving unconfirmed replaces match AND voice.
+    mockInvoke.mockResolvedValueOnce({
+      score_id: "id-2",
+      title: "Gymnopédie No. 1",
+      coherent_hits: 7,
+      confirmed: false,
+    });
+    await act(() => usePracticeStore.getState().requestPieceMatch());
+    expect(screen.queryByTestId("reveal-identified-r1")).toBeNull();
   });
 
   // AC7 (render contract): with multiple in the queue only the latest renders.
