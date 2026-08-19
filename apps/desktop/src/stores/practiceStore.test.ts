@@ -127,7 +127,7 @@ describe("practiceStore — state machine", () => {
       openerDirection: "reversed",
       openerPreviewedDirection: "reversed",
       // #214 S1b MF5: matches and dismissals are session-scoped too.
-      pieceMatch: { scoreId: "id-1", title: "Für Elise" },
+      pieceMatch: { scoreId: "id-1", title: "Für Elise", confirmed: true },
       dismissedPieceIds: ["id-2"],
       // #421 S2 MF6: the click personality is session-scoped.
       pocketMode: "handoff",

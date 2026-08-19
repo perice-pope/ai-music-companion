@@ -1971,6 +1971,10 @@ pub struct PieceMatchDto {
     pub score_id: String,
     pub title: String,
     pub coherent_hits: usize,
+    /// #214 S2b: true iff the §3.3 alignment judge confirmed THIS score.
+    /// The chip's hedged "sounds like" never needs it; the reveal card's
+    /// "You're playing —" assertion requires it.
+    pub confirmed: bool,
 }
 
 fn emit_accompaniment_status<R: Runtime>(app: &tauri::AppHandle<R>, playing: bool) {
@@ -5874,10 +5878,17 @@ pub fn check_piece_match_impl(state: &AppState) -> Option<PieceMatchDto> {
     let matcher = state.piece_matcher.lock_or_recover();
     let m = matcher.index.identify(&recent)?;
     let (score_id, title) = matcher.titles.get(&m.id)?.clone();
+    // #214 S2b: the assertion voice is earned by the alignment judge.
+    // Agreement with retrieval's pick is structurally expected (pinned by
+    // brain's identify_and_confirm_never_disagree invariant); the id check
+    // is belt-and-suspenders so a future ranking change can never make the
+    // card assert a different title than the chip shows.
+    let confirmed = matcher.index.confirm(&recent).is_some_and(|c| c.id == m.id);
     Some(PieceMatchDto {
         score_id,
         title,
         coherent_hits: m.coherent_hits,
+        confirmed,
     })
 }
 
@@ -9988,6 +9999,8 @@ mod tests {
         let m = check_piece_match_impl(&s).expect("a real excerpt identifies");
         assert_eq!(m.title, "The Lifecycle Tune");
         assert_eq!(m.score_id, entry.id.to_string());
+        // #214 S2b AC1 end-to-end: exact playing earns the assertion.
+        assert!(m.confirmed, "exact playing is judge-confirmed");
 
         // Free noodling: silence (the S1a gates, end to end).
         seed_phrases(
@@ -10050,6 +10063,47 @@ mod tests {
         };
         s.index_entry(&bogus); // must not panic
         assert_eq!(check_piece_match_impl(&s), None);
+    }
+
+    /// #214 S2b AC4 through the command seam: a window whose tail
+    /// diverges from the piece still chips (retrieval passes on the true
+    /// prefix) but the DTO refuses the assertion — the reveal card's
+    /// "You're playing" can never ride a half-right window.
+    #[test]
+    fn a_half_right_window_chips_but_never_asserts() {
+        let s = AppState::with_mocks();
+        let (melody, model) = preexisting_melody_and_model();
+        let xml = brain::score::emit::score_model_to_musicxml(&model);
+        s.import_musicxml("tune.musicxml".into(), xml, 0)
+            .expect("import succeeds");
+
+        let seed = |midis: &[u8]| {
+            let mut phrase = sample_phrase();
+            phrase.pitch_stats.pitches = midis
+                .iter()
+                .flat_map(|&m| {
+                    let hz = 440.0 * 2f64.powf((f64::from(m) - 69.0) / 12.0);
+                    std::iter::repeat_n(hz, 6)
+                })
+                .collect();
+            s.phrase_buffer.lock().unwrap().clear();
+            s.phrase_buffer.lock().unwrap().push(phrase);
+        };
+
+        // Ten true notes, then ten alien ones with contrary contour.
+        let mut played = melody[0..10].to_vec();
+        played.extend_from_slice(&[59, 66, 58, 70, 57, 68, 61, 73, 56, 63]);
+        seed(&played);
+        let m = check_piece_match_impl(&s).expect("the true prefix still chips");
+        assert!(
+            !m.confirmed,
+            "a half-right window must stay in the hedged voice"
+        );
+
+        // The same entry played truly to the end: asserted.
+        seed(&melody[0..16]);
+        let m = check_piece_match_impl(&s).expect("true playing identifies");
+        assert!(m.confirmed, "true playing earns the assertion");
     }
 
     /// The 16-note melody + model both startup-index tests share.

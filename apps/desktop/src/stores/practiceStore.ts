@@ -533,8 +533,10 @@ export interface PracticeState {
    */
   /** #214 S1b: the current library match, sticky per rule 0 (replaced
    * in place by a newer match, dimming handled by the chip, dismissal
-   * quiets that score for the session). */
-  pieceMatch: { scoreId: string; title: string } | null;
+   * quiets that score for the session). S2b: `confirmed` is the §3.3
+   * alignment judge's verdict — the reveal card's "You're playing —"
+   * assertion requires it; the chip's hedged voice never does. */
+  pieceMatch: { scoreId: string; title: string; confirmed: boolean } | null;
   /** Score ids the player dismissed this session — stay quiet. */
   dismissedPieceIds: string[];
   requestPieceMatch: () => Promise<void>;
@@ -1192,6 +1194,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         score_id: string;
         title: string;
         coherent_hits: number;
+        confirmed: boolean;
       } | null>("check_piece_match");
       if (!dto) {
         return; // None is the common answer — the chip holds (rule 0).
@@ -1204,8 +1207,32 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         // OPEN" is permanent redundant noise, not identification.
         return;
       }
-      // Replace in place; never clear on a miss.
-      set({ pieceMatch: { scoreId: dto.score_id, title: dto.title } });
+      // Replace in place; never clear on a miss. Rule 0 covers the VOICE
+      // too (§5: a confirmed ID is sticky — replaced by a BETTER id,
+      // dimmed by contradiction, never blinked out): a retrieval-only
+      // re-sight of the same score keeps the assertion, and a
+      // retrieval-only sighting of a DIFFERENT score cannot displace a
+      // judge-confirmed one — only another confirmed match (or the
+      // live-key contradiction dim) moves the card.
+      set((s) => {
+        const held = s.pieceMatch;
+        if (
+          held?.confirmed &&
+          !dto.confirmed &&
+          held.scoreId !== dto.score_id
+        ) {
+          return {};
+        }
+        return {
+          pieceMatch: {
+            scoreId: dto.score_id,
+            title: dto.title,
+            confirmed:
+              dto.confirmed ||
+              (held?.scoreId === dto.score_id && held.confirmed),
+          },
+        };
+      });
     } catch {
       // Identification must never surface an error — silence is normal.
     }

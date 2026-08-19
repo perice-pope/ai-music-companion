@@ -48,6 +48,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-1",
       title: "Für Elise",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -65,6 +66,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-1",
       title: "Für Elise",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -72,6 +74,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-2",
       title: "Gymnopédie No. 1",
       coherent_hits: 8,
+      confirmed: false,
     });
     await act(() => usePracticeStore.getState().requestPieceMatch());
     await waitFor(() =>
@@ -86,6 +89,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-2",
       title: "Gymnopédie No. 1",
       coherent_hits: 8,
+      confirmed: false,
     });
     await act(() => usePracticeStore.getState().requestPieceMatch());
     expect(screen.queryByTestId("piece-match-chip")).toBeNull();
@@ -93,6 +97,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-1",
       title: "Für Elise",
       coherent_hits: 9,
+      confirmed: false,
     });
     await act(() => usePracticeStore.getState().requestPieceMatch());
     expect(screen.getByTestId("piece-match-title").textContent).toContain(
@@ -115,6 +120,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-open",
       title: "The Open Score",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -133,6 +139,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-other",
       title: "The Other Piece",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -151,6 +158,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-1",
       title: "Für Elise",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -178,6 +186,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       score_id: "id-1",
       title: "Für Elise",
       coherent_hits: 9,
+      confirmed: false,
     });
     render(<PieceMatchChip />);
     await act(() => usePracticeStore.getState().requestPieceMatch());
@@ -216,6 +225,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
           score_id: "id-1",
           title: "Für Elise",
           coherent_hits: 9,
+          confirmed: false,
         });
       }
       if (cmd === "get_score") {
@@ -259,6 +269,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
           score_id: "id-1",
           title: "Für Elise",
           coherent_hits: 9,
+          confirmed: false,
         });
       }
       if (cmd === "get_score") {
@@ -289,6 +300,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
           score_id: "id-2",
           title: "Gymnopédie No. 1",
           coherent_hits: 8,
+          confirmed: false,
         });
       }
       if (cmd === "get_score") {
@@ -297,7 +309,7 @@ describe("PieceMatchChip (#214 S1b)", () => {
       return Promise.resolve(null);
     });
     usePracticeStore.setState({
-      pieceMatch: { scoreId: "id-1", title: "Für Elise" },
+      pieceMatch: { scoreId: "id-1", title: "Für Elise", confirmed: false },
     });
     render(<PieceMatchChip />);
     fireEvent.click(screen.getByTestId("piece-match-open"));
