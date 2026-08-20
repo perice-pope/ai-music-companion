@@ -606,6 +606,7 @@ fn worker_loop<C, F, P, S, V>(
     while !shutdown.load(Ordering::Relaxed) {
         // Drain config updates; we only care about the latest.
         if let Some(new_profile) = drain_latest(&profile_rx) {
+            let voiced_gate = new_profile.voiced_confidence_threshold;
             match PitchDetector::new(new_profile.into_pitch_config(sample_rate)) {
                 Ok(mut d) => {
                     // #349 T3b review M1: ONE session clock. A fresh detector
@@ -614,6 +615,18 @@ fn worker_loop<C, F, P, S, V>(
                     // checks pin wrong slashes, chart timestamps restart).
                     d.set_clock(session_clock);
                     detector = d;
+                    // #521: the voiced gate is per-instrument profile data
+                    // (#185) and must move with the detector — otherwise a
+                    // Trumpet→Voice switch keeps judging breathy singing by
+                    // the old 0.5 gate and the segment records no practice.
+                    // A bad gate keeps the previous one, same contract as a
+                    // rejected detector rebuild below.
+                    if let Err(e) = aggregator.set_voiced_confidence_threshold(voiced_gate) {
+                        tracing::warn!(
+                            error = %e,
+                            "audio_pipeline: voiced-gate update rejected; keeping previous gate"
+                        );
+                    }
                     tracing::debug!("audio_pipeline: detector reconfigured");
                 }
                 Err(e) => {
@@ -1204,6 +1217,239 @@ mod tests {
             Err(other) => panic!("expected the typed phrase-config error, got {other:?}"),
             Ok(_) => panic!("invalid gate must not start a pipeline"),
         }
+    }
+
+    /// The initial detector's per-window (voiced?, confidence) readings on
+    /// `samples` — the same detector the loop builds for [`test_profile`], so
+    /// gates derived from these can't silently drift from what the loop sees.
+    fn probe_confidences(samples: &[f32]) -> Vec<(bool, f64)> {
+        let mut d = PitchDetector::new(test_profile().into_pitch_config(TEST_SAMPLE_RATE))
+            .expect("test profile is valid");
+        let w = d.window_size();
+        samples
+            .chunks_exact(w)
+            .map(|c| {
+                let e = d.detect(c);
+                (e.pitch_hz.is_some(), e.confidence)
+            })
+            .collect()
+    }
+
+    /// Run the real worker loop over `samples`, sending `swap` through the
+    /// production profile channel once `swap_after` events have emitted
+    /// (never, if `swap_after` exceeds the event count). Returns the emitted
+    /// event count and each closed phrase's note count.
+    fn drive_with_reconfigure(
+        samples: Vec<f32>,
+        initial: DetectorProfile,
+        swap: DetectorProfile,
+        swap_after: usize,
+    ) -> (usize, Vec<usize>) {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let capture = ScriptedCapture {
+            samples,
+            cursor: 0,
+            shutdown: Arc::clone(&shutdown),
+            stalls: Cell::new(0),
+            last_cursor: Cell::new(0),
+        };
+        let (profile_tx, profile_rx) = std::sync::mpsc::channel();
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let events = Rc::new(Cell::new(0_usize));
+        let notes = Rc::new(RefCell::new(Vec::new()));
+        let ev = Rc::clone(&events);
+        let ph = Rc::clone(&notes);
+        let mut pending_swap = Some(swap);
+        worker_loop(
+            capture,
+            initial,
+            None,
+            None,
+            None,
+            None,
+            profile_rx,
+            shutdown,
+            startup_tx,
+            move |_event, _chroma| {
+                ev.set(ev.get() + 1);
+                if ev.get() == swap_after {
+                    if let Some(p) = pending_swap.take() {
+                        profile_tx.send(p).expect("worker holds the receiver");
+                    }
+                }
+            },
+            move |phrase| ph.borrow_mut().push(phrase.note_count),
+            |_position| {},
+            |_verdict| {},
+        );
+        assert!(
+            matches!(startup_rx.try_recv(), Ok(Ok(()))),
+            "worker loop must signal successful startup"
+        );
+        let counts = notes.borrow().clone();
+        (events.get(), counts)
+    }
+
+    /// #521 AC1: a mid-session reconfigure must move the #185 voiced gate to
+    /// the aggregator along with the detector. Before the fix the gate rode
+    /// the channel and was dropped by `into_pitch_config` — a Trumpet→Voice
+    /// switch kept judging singing by the old instrument's gate, so the Voice
+    /// segment formed no phrases ("you didn't play", #185's exact failure).
+    #[test]
+    fn reconfigure_moves_the_voiced_gate_with_the_detector() {
+        let window = detector_window();
+        let n_windows = 40;
+        let samples = ears::pitch::generate_sine(440.0, TEST_SAMPLE_RATE, n_windows * window);
+
+        // Derive the two gates from measured confidence so the contrast can't
+        // rot if detector tuning shifts: `strict` sits above every reading
+        // (nothing voiced), `loose` below every voiced reading.
+        let probe = probe_confidences(&samples);
+        let voiced: Vec<f64> = probe
+            .iter()
+            .filter(|(v, c)| *v && *c > 0.0)
+            .map(|(_, c)| *c)
+            .collect();
+        assert!(
+            voiced.len() > n_windows / 2 + 4,
+            "sine fixture must detect as voiced in most windows, got {}",
+            voiced.len()
+        );
+        let cmax = probe.iter().map(|(_, c)| *c).fold(0.0_f64, f64::max);
+        let strict = (cmax + 1.0) / 2.0;
+        let loose = voiced.iter().copied().fold(1.0_f64, f64::min) / 2.0;
+        assert!(loose > 0.0 && strict <= 1.0 && loose < strict);
+
+        // Control: without the reconfigure the strict gate keeps the whole
+        // take unvoiced — proving the contrast below is the gate's doing.
+        let (_, control_notes) = drive_with_reconfigure(
+            samples.clone(),
+            DetectorProfile {
+                voiced_confidence_threshold: strict,
+                ..test_profile()
+            },
+            DetectorProfile {
+                voiced_confidence_threshold: loose,
+                ..test_profile()
+            },
+            n_windows + 1,
+        );
+        assert!(
+            control_notes.is_empty(),
+            "control run: the strict gate must suppress every phrase"
+        );
+
+        // The switch: same audio, reconfigure to the loose gate mid-take.
+        let (events, notes) = drive_with_reconfigure(
+            samples,
+            DetectorProfile {
+                voiced_confidence_threshold: strict,
+                ..test_profile()
+            },
+            DetectorProfile {
+                voiced_confidence_threshold: loose,
+                ..test_profile()
+            },
+            n_windows / 2,
+        );
+        assert_eq!(events, n_windows, "every window becomes an event");
+        assert!(
+            !notes.is_empty(),
+            "after the switch, singing that clears the NEW gate must form \
+             phrases — the voiced gate must move with the detector (#521)"
+        );
+        let total: usize = notes.iter().sum();
+        assert!(
+            total <= n_windows - n_windows / 2,
+            "pre-switch events keep the old gate's verdict: {total} notes \
+             counted from {} post-switch windows",
+            n_windows - n_windows / 2
+        );
+    }
+
+    /// #521 AC3: an invalid gate arriving via reconfigure (bad profile data)
+    /// keeps the previous gate and the worker alive — the same warn-and-keep
+    /// contract as a rejected detector rebuild, never a dead pipeline (#509).
+    #[test]
+    fn invalid_reconfigured_gate_keeps_the_previous_gate() {
+        let window = detector_window();
+        let n_windows = 40;
+        let swap_after = n_windows / 2;
+        let samples = ears::pitch::generate_sine(440.0, TEST_SAMPLE_RATE, n_windows * window);
+        let probe = probe_confidences(&samples);
+        let loose = probe
+            .iter()
+            .filter(|(v, c)| *v && *c > 0.0)
+            .map(|(_, c)| *c)
+            .fold(1.0_f64, f64::min)
+            / 2.0;
+        assert!(loose > 0.0);
+
+        let (events, notes) = drive_with_reconfigure(
+            samples,
+            DetectorProfile {
+                voiced_confidence_threshold: loose,
+                ..test_profile()
+            },
+            DetectorProfile {
+                voiced_confidence_threshold: f64::NAN,
+                ..test_profile()
+            },
+            swap_after,
+        );
+        assert_eq!(events, n_windows, "a bad gate must not kill the worker");
+        let total: usize = notes.iter().sum();
+        assert!(
+            total > swap_after + 2,
+            "the previous gate must keep judging post-switch audio as voiced \
+             (a NaN gate would leave only the ~{swap_after} pre-switch \
+             events; got {total})"
+        );
+    }
+
+    /// #521 AC4: a rejected detector rebuild keeps the WHOLE previous profile
+    /// — gate included. Applying the gate from a profile whose pitch half was
+    /// refused would leave a mixed half-applied profile from one bad message.
+    #[test]
+    fn rejected_detector_rebuild_keeps_the_previous_gate() {
+        let window = detector_window();
+        let n_windows = 40;
+        let samples = ears::pitch::generate_sine(440.0, TEST_SAMPLE_RATE, n_windows * window);
+        let probe = probe_confidences(&samples);
+        let cmax = probe.iter().map(|(_, c)| *c).fold(0.0_f64, f64::max);
+        let strict = (cmax + 1.0) / 2.0;
+        let loose = probe
+            .iter()
+            .filter(|(v, c)| *v && *c > 0.0)
+            .map(|(_, c)| *c)
+            .fold(1.0_f64, f64::min)
+            / 2.0;
+
+        let (events, notes) = drive_with_reconfigure(
+            samples,
+            DetectorProfile {
+                voiced_confidence_threshold: strict,
+                ..test_profile()
+            },
+            // Inverted pitch range → PitchDetector::new refuses → the loose
+            // gate riding the same message must be refused with it.
+            DetectorProfile {
+                freq_min_hz: 2000.0,
+                freq_max_hz: 60.0,
+                voiced_confidence_threshold: loose,
+                ..test_profile()
+            },
+            n_windows / 2,
+        );
+        assert_eq!(
+            events, n_windows,
+            "a rejected rebuild must not kill the worker"
+        );
+        assert!(
+            notes.is_empty(),
+            "the strict gate must survive a rejected reconfigure whole — got \
+             phrases with note counts {notes:?}"
+        );
     }
 
     /// #354's exact symptom: 'score follower installed' with ZERO position
