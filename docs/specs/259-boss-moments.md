@@ -134,6 +134,13 @@ pub fn apply_moment_achieved(
 10. Frontend: on a `boss-moment` event a single `BossMomentCard` renders the `label`, a `ScoreView` of
     the moment, and band controls; a second event replaces (does not stack) the card.
 
+> **S1 shipping note (v1 shape):** S1 ships ONE moment shape — the keys tour (§10's "same variation
+> type across N keys"): the most recent qualifying figure dealt through up to 4 distinct drilled
+> keys in earned order. Composing therefore additionally requires the qualifying material to span
+> **≥ 2 distinct tonics**; an all-one-key history returns `None` (pinned by
+> `tests::single_key_history_returns_none`) until the same-key medley shape lands as the follow-up.
+> AC1's "qualifying items available to compose a coherent moment" reads with that condition in S1.
+
 ## 6. Edge cases & failure modes
 - **Empty / first-run history** (no drills yet) → `maybe_compose_moment` returns `None`; no card.
 - **All recent drills below `min_accuracy`** → `None` (a moment celebrates *well*-drilled material).
@@ -167,7 +174,9 @@ pub fn apply_moment_achieved(
 | AC10 | `BossMomentCard.test.tsx` | renders label + ScoreView + band controls; second event replaces |
 | Edge: empty history | `tests::empty_history_returns_none` | no moment on first run |
 | Edge: boundary count | `tests::exact_threshold_fires` | `>=` boundary fires |
-| Edge: window boundary | `tests::window_boundary_inclusive` | `== window` allowed; one under blocked |
+| Edge: window boundary | `tests::fires_after_window_elapsed` + `tests::rate_limited_within_window` | `== window` allowed; one under blocked |
+| Edge: single-key history (S1 shape) | `tests::single_key_history_returns_none` | all-one-key qualifying material → `None` (v1 keys tour) |
+| Edge: 2-key boundary (S1 shape) | `tests::two_distinct_keys_fire` | exactly 2 distinct keys compose (`>=` 2) |
 | Manual | checklist | drill 3 keys → moment card appears with band; pull audio device → moment still plays bandless |
 
 ## 8. Architecture / approach
