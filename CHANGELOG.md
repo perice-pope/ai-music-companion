@@ -1,3 +1,9 @@
+## [2.52.4](https://github.com/perice-pope/ai-music-companion/compare/v2.52.3...v2.52.4) (2026-08-26)
+
+### Bug Fixes
+
+* **deps:** h2 0.4.19 clears RUSTSEC-2026-0258; WAV decode helpers appease clippy 1.98 ([#524](https://github.com/perice-pope/ai-music-companion/issues/524)) ([314d3c7](https://github.com/perice-pope/ai-music-companion/commit/314d3c7c5c7c01a76acf05f4d2fdee93630b59c3)), closes [#523](https://github.com/perice-pope/ai-music-companion/issues/523)
+
 ## [2.52.3](https://github.com/perice-pope/ai-music-companion/compare/v2.52.2...v2.52.3) (2026-08-10)
 
 ### Bug Fixes
