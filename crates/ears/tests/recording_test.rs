@@ -74,9 +74,11 @@ fn end_to_end_record_and_readback() {
     // bound. i16::MAX scaling means one LSB is ~3.05e-5 in f32 amplitude.
     let data = &bytes[44..44 + data_size];
     let decoded: Vec<f32> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
-            let v = i16::from_le_bytes([c[0], c[1]]);
+            let v = i16::from_le_bytes(*c);
             f32::from(v) / f32::from(i16::MAX)
         })
         .collect();
