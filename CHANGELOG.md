@@ -1,3 +1,9 @@
+## [2.52.5](https://github.com/perice-pope/ai-music-companion/compare/v2.52.4...v2.52.5) (2026-08-26)
+
+### Bug Fixes
+
+* **brain:** recap parse requires an LLM-authored headline — narration flag stops overcounting ([#470](https://github.com/perice-pope/ai-music-companion/issues/470)) ([#526](https://github.com/perice-pope/ai-music-companion/issues/526)) ([2de810c](https://github.com/perice-pope/ai-music-companion/commit/2de810c53cdb83f2cd9ec62609753719e2f9ef9f))
+
 ## [2.52.4](https://github.com/perice-pope/ai-music-companion/compare/v2.52.3...v2.52.4) (2026-08-26)
 
 ### Bug Fixes
