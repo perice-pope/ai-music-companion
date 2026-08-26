@@ -734,8 +734,8 @@ export interface PhraseFactDto {
 
 /**
  * P4: one `fact_tool_event` row. Matches `commands::ToolEventFactDto`.
- * Semantics caveat (#470 option b) documented at the projection site in
- * `syncStore.ts` (`buildFactToolEventRows`).
+ * Narration-flag semantics (#470 option (a)) documented at the projection
+ * site in `syncStore.ts` (`buildFactToolEventRows`).
  */
 export interface ToolEventFactDto {
   device_event_id: number;
