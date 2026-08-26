@@ -2577,14 +2577,13 @@ pub struct PhraseFactDto {
 /// `device_event_id`, `at_secs`, `kind`, `params`). `params_json` is
 /// ids-and-numbers-only by the T1 vocabulary (doc §1a); no content.
 ///
-/// SEMANTICS CAVEAT (#470, option b — documented at the projection site on
-/// purpose): a `narration_used {"kind":"recap"}` event means **an LLM
-/// response parsed**, NOT "the shown recap text was LLM-authored". The
-/// recap parser is all-defaults-forgiving, so a valid-JSON-wrong-keys
-/// response still counts as "used" while every user-visible field is a
-/// canned default. Any dashboard reading of this event must say "narration
-/// requested/parsed", never "AI wrote this recap". Tightening the parser is
-/// #470's option (a), out of scope here.
+/// SEMANTICS (#470, option (a) — documented at the projection site on
+/// purpose): a `narration_used {"kind":"recap"}` event means **the recap's
+/// headline text was LLM-authored**. `parse_recap_json` requires a
+/// non-empty `overall_assessment`; a wrong-keys or blank-headline response
+/// is a parse failure that serves the on-device fallback and journals
+/// nothing. Secondary list fields stay individually forgiving — only the
+/// shown headline is guaranteed LLM-authored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolEventFactDto {
     /// Local `practice_events.id` — the cloud idempotency key

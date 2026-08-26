@@ -1100,6 +1100,23 @@ All text should be written as a teacher would speak — warm, specific, and acti
         let parsed: serde_json::Value = serde_json::from_str(cleaned)
             .map_err(|e| SessionError::RecapFailed(format!("JSON parse error: {}", e)))?;
 
+        // #470 option (a): the headline is the proof of authorship. A body
+        // with no non-empty `overall_assessment` string produced zero
+        // LLM-authored text to show, and "parsing" it into canned defaults
+        // would flip `recap_llm_fired` and journal a narration that never
+        // fired. Missing / non-string / blank → parse failure → the caller
+        // serves the grounded offline fallback instead. The list fields
+        // below stay individually forgiving on purpose.
+        let overall_assessment = parsed
+            .get("overall_assessment")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                SessionError::RecapFailed("recap JSON has no usable overall_assessment".to_owned())
+            })?
+            .to_owned();
+
         // Build the fingerprint once so the persisted fingerprint and the
         // theory-grounded flavour (#209) read from the same measured signal.
         let fingerprint = build_fingerprint(&input.phrases);
@@ -1110,11 +1127,7 @@ All text should be written as a teacher would speak — warm, specific, and acti
                 .score_title
                 .as_deref()
                 .and_then(|t| score_practice_summary(t, &input.note_verdicts)),
-            overall_assessment: parsed
-                .get("overall_assessment")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Great session! Keep building on your progress.")
-                .to_owned(),
+            overall_assessment,
             strengths: parsed
                 .get("strengths")
                 .and_then(|v| v.as_array())
@@ -5247,10 +5260,9 @@ mod tests {
         // into a recap serves the fallback — that is NOT a fired narration.
         // A mutant that flags on any Ok(body) — received-but-malformed —
         // dies here. The input clears the thin bar, so the garbled body
-        // genuinely reaches the parser; the inner text is PROSE (not JSON),
-        // because `parse_recap_json` is deliberately forgiving with
-        // valid-JSON-wrong-keys text (canned defaults) — prose is the shape
-        // that actually errors and falls back.
+        // genuinely reaches the parser; the inner text is PROSE (not JSON).
+        // (Since #470 option (a), valid-JSON-wrong-keys bodies also error —
+        // pinned separately below — so prose is one of two failing shapes.)
         let garbled_body = serde_json::json!({
             "content": [{ "type": "text",
                           "text": "Sorry — I can only reply in prose today." }]
@@ -5267,15 +5279,13 @@ mod tests {
     }
 
     /// #470 (deadline: with T2): for this test's name to mean anything the
-    /// body must ACTUALLY fail to parse. `parse_recap_json` is deliberately
-    /// forgiving with valid-JSON-wrong-keys bodies — the old
-    /// `{"invalid": "json", "structure": true}` payload PARSED into
-    /// all-canned-defaults and this test never exercised the fallback path
-    /// it names. PROSE is the shape that errors (the #453/#454-era garbled
-    /// test above pins the same fact), so the inner text is prose here: the
-    /// parse fails, the engine serves the offline fallback, and the
-    /// narration flag stays honest (`recap_used_llm() == false` — the flag
-    /// means "a response parsed", issue #470 option b).
+    /// body must ACTUALLY fail to parse. The inner text is PROSE, the shape
+    /// that has always errored: the parse fails, the engine serves the
+    /// offline fallback, and the narration flag stays honest
+    /// (`recap_used_llm() == false`). Since #470 option (a), valid-JSON
+    /// bodies without an `overall_assessment` fail the same way — the
+    /// wrong-keys tests below pin that; this one keeps the prose shape
+    /// covered.
     #[tokio::test]
     async fn generate_recap_handles_malformed_response() {
         use crate::session::RecapInput;
@@ -5329,6 +5339,130 @@ mod tests {
         assert!(
             !engine.recap_used_llm(),
             "a malformed body must fall back, not count as a fired narration"
+        );
+    }
+
+    /// A `RecapInput` that clears the thin-session bar (#445-6b), so a mocked
+    /// body genuinely reaches the recap parser instead of short-circuiting to
+    /// the thin recap before any HTTP. 3 phrases × 7 s = 21 s played.
+    fn non_thin_recap_input() -> crate::session::RecapInput {
+        let mut p = sample_phrase();
+        p.duration_secs = 7.0;
+        crate::session::RecapInput {
+            instrument: "trumpet".to_owned(),
+            instrument_family: String::new(),
+            duration_secs: 1800.0,
+            practice_mode: crate::session::PracticeMode::default(),
+            phrases: vec![p; 3],
+            tips: vec![],
+            score_title: None,
+            note_verdicts: Vec::new(),
+            idiom_notes: Vec::new(),
+            taste_profile: None,
+            history_suggestions: Vec::new(),
+            method_book_tip: None,
+        }
+    }
+
+    fn strict_parse_test_config() -> CoachingConfig {
+        CoachingConfig {
+            api_key: "test".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
+            rate_limit_secs: 0.0,
+        }
+    }
+
+    /// #470 option (a), AC1: the issue's original payload — syntactically
+    /// valid JSON with wrong keys — must not "parse" into a recap of canned
+    /// defaults. On the old forgiving code this body parsed, the narration
+    /// flag flipped, and `narration_used` was journaled while every shown
+    /// field was canned; now the engine serves the grounded offline fallback
+    /// and journals nothing.
+    #[tokio::test]
+    async fn wrong_keys_json_recap_falls_back_without_flag() {
+        let body = serde_json::json!({
+            "content": [{ "type": "text",
+                          "text": r#"{"invalid": "json", "structure": true}"# }]
+        });
+        let engine = online_engine(
+            strict_parse_test_config(),
+            Box::new(MockHttpClient::succeeding(&body.to_string())),
+        );
+        let input = non_thin_recap_input();
+        let recap = engine.generate_recap(&input).await.unwrap();
+        assert!(
+            !engine.recap_used_llm(),
+            "a wrong-keys body authored no text — it must not count as a fired narration"
+        );
+        assert_eq!(
+            recap.overall_assessment,
+            grounded_offline_recap(&input).overall_assessment,
+            "the served text must be the grounded fallback, not a canned parse default"
+        );
+    }
+
+    /// #470 option (a), AC2/AC3: a present-but-unusable `overall_assessment`
+    /// (whitespace-only, or not a string at all) is the same lie as a missing
+    /// one — grounded fallback, no narration flag.
+    #[tokio::test]
+    async fn blank_overall_assessment_falls_back_without_flag() {
+        for degenerate in [
+            serde_json::json!({"overall_assessment": "   ", "strengths": ["Tone"]}),
+            serde_json::json!({"overall_assessment": 42, "strengths": ["Tone"]}),
+        ] {
+            let body = serde_json::json!({
+                "content": [{ "type": "text", "text": degenerate.to_string() }]
+            });
+            let engine = online_engine(
+                strict_parse_test_config(),
+                Box::new(MockHttpClient::succeeding(&body.to_string())),
+            );
+            let input = non_thin_recap_input();
+            let recap = engine.generate_recap(&input).await.unwrap();
+            assert!(
+                !engine.recap_used_llm(),
+                "an unusable overall_assessment ({degenerate}) must not count as a fired narration"
+            );
+            assert_eq!(
+                recap.overall_assessment,
+                grounded_offline_recap(&input).overall_assessment,
+                "an unusable overall_assessment ({degenerate}) must serve the grounded fallback"
+            );
+        }
+    }
+
+    /// #470 option (a), AC4 — the guard is surgical: a body with a REAL
+    /// `overall_assessment` and nothing else still parses. The headline is
+    /// the LLM's text (trimmed), the missing lists keep their canned
+    /// defaults, and the narration flag fires — per-field forgiveness for
+    /// the secondary fields is intended and stays. A change that starts
+    /// requiring every field dies here.
+    #[tokio::test]
+    async fn partial_recap_with_real_assessment_still_parses() {
+        let body = serde_json::json!({
+            "content": [{ "type": "text",
+                          "text": r#"{"overall_assessment": "  A focused, honest half hour.  "}"# }]
+        });
+        let engine = online_engine(
+            strict_parse_test_config(),
+            Box::new(MockHttpClient::succeeding(&body.to_string())),
+        );
+        let recap = engine
+            .generate_recap(&non_thin_recap_input())
+            .await
+            .unwrap();
+        assert!(
+            engine.recap_used_llm(),
+            "a real LLM headline IS a fired narration"
+        );
+        assert_eq!(
+            recap.overall_assessment, "A focused, honest half hour.",
+            "the LLM headline is stored trimmed"
+        );
+        assert_eq!(
+            recap.strengths,
+            vec!["Consistent focus during practice.".to_owned()],
+            "missing secondary fields keep their canned defaults"
         );
     }
 

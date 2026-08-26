@@ -577,18 +577,20 @@ describe("dashboard payload builders — the structural privacy pin (AC4/AC9)", 
     expect(rows.map((r) => r.params)).toEqual([{}, {}, {}, {}, { bpm: 92 }]);
   });
 
-  it("documents the #470 narration-flag semantics at the projection site (option b)", () => {
-    // The flag means "an LLM response parsed", NOT "the shown text was
-    // LLM-authored" — the caveat must live where the event is projected,
-    // so T4 dashboard work reads it before phrasing any UI copy.
+  it("documents the #470 narration-flag semantics at the projection site (option a)", () => {
+    // Since #470 option (a) the flag means "the shown headline was
+    // LLM-authored" — the semantics must live where the event is projected,
+    // so T4 dashboard work reads it before phrasing any UI copy. If the
+    // parser's strictness ever changes, this pin forces the wording here to
+    // change with it.
     // vitest runs with cwd = apps/desktop; jsdom's import.meta.url is not a
     // file: URL, so resolve from the working directory instead.
     const src = readFileSync(
       join(process.cwd(), "src", "stores", "syncStore.ts"),
       "utf8",
     );
-    expect(src).toMatch(/an LLM response parsed/);
-    expect(src).toMatch(/NOT "the shown recap text was LLM-authored"/);
+    expect(src).toMatch(/headline text\n \* was LLM-authored/);
+    expect(src).toMatch(/requires a non-empty `overall_assessment`/);
     expect(src).toMatch(/#470/);
   });
 });

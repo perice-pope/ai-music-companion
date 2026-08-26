@@ -134,14 +134,14 @@ export function buildFactPhraseRows(
  * `(session_id, device_event_id)` at L601). `params` is the T1
  * vocabulary — ids-and-numbers-only, no content (doc §1a).
  *
- * SEMANTICS CAVEAT (#470, option b — this is the projection site): a
- * `narration_used {"kind":"recap"}` event means **an LLM response parsed**,
- * NOT "the shown recap text was LLM-authored". The recap parser is
- * all-defaults-forgiving, so a valid-JSON-wrong-keys response still flips
- * the flag while every user-visible field is a canned default. Any
- * dashboard surface reading this event must phrase it as "narration
- * requested/parsed", never "AI wrote this recap". (Tightening the parser
- * is #470 option (a), deliberately not done here.)
+ * SEMANTICS (#470, option (a) — this is the projection site): a
+ * `narration_used {"kind":"recap"}` event means **the recap's headline text
+ * was LLM-authored**. The parser requires a non-empty `overall_assessment`
+ * (a wrong-keys or blank-headline response is a parse failure that serves
+ * the on-device fallback and journals nothing), so a dashboard surface may
+ * phrase this event as "AI narration used". The secondary list fields stay
+ * individually forgiving — only the shown headline is guaranteed
+ * LLM-authored, not every list item.
  */
 export function buildFactToolEventRows(
   cloudSessionId: string,

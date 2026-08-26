@@ -33,6 +33,9 @@ P5 requires **no new work** in this slice and its existing behavior is untouched
   ever, structurally (the payload types do not have the fields).
 - No parser fix for #470 — its option (b) is taken: the `narration_used`
   flag's real semantics are DOCUMENTED at the projection site.
+  (Superseded later by #470 option (a) — see
+  `docs/specs/470-strict-recap-parse.md`; the flag now means the headline
+  was LLM-authored.)
 - No new outbound call sites in Rust (the projection reuses the FE Supabase
   client; `network-call-sites.allowlist` is unchanged).
 - No cloud→device writes (one-way by construction, doc §2).
@@ -152,6 +155,8 @@ withdraws it (same dependency rule as teacher sharing).
 9. The #470 option-(b) note — `narration_used {"kind":"recap"}` means "an LLM
    response parsed", NOT "the shown text was LLM-authored" — is documented at
    the projection site (the `ToolEventFactDto` builder) and asserted present.
+   (Superseded by #470 option (a): the note and its pin test now state the
+   stricter semantics — see `docs/specs/470-strict-recap-parse.md`.)
 10. `get_session_projection` returns thin phrases (start/end/note_count/
     stability/tone/key_name only) and events for exactly the requested session;
     `list_exercise_facts` respects `after_id` and skips NULL-`spec_hash` rows.
