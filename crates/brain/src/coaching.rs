@@ -5409,6 +5409,7 @@ mod tests {
         for degenerate in [
             serde_json::json!({"overall_assessment": "   ", "strengths": ["Tone"]}),
             serde_json::json!({"overall_assessment": 42, "strengths": ["Tone"]}),
+            serde_json::json!({"overall_assessment": null, "strengths": ["Tone"]}),
         ] {
             let body = serde_json::json!({
                 "content": [{ "type": "text", "text": degenerate.to_string() }]

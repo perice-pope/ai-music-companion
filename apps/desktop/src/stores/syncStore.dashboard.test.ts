@@ -589,7 +589,7 @@ describe("dashboard payload builders — the structural privacy pin (AC4/AC9)", 
       join(process.cwd(), "src", "stores", "syncStore.ts"),
       "utf8",
     );
-    expect(src).toMatch(/headline text\n \* was LLM-authored/);
+    expect(src).toMatch(/headline text[\s*]+was LLM-authored/);
     expect(src).toMatch(/requires a non-empty `overall_assessment`/);
     expect(src).toMatch(/#470/);
   });
