@@ -17,6 +17,7 @@ pub mod chord_judge;
 pub mod coach;
 pub mod coaching;
 pub mod connections;
+pub mod ensemble;
 pub mod fingerprint;
 pub mod follower;
 pub mod idiom_recap;
