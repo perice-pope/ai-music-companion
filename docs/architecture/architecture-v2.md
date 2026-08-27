@@ -2,8 +2,28 @@
 
 **Author:** Architecture team
 **Date:** April 16, 2026
-**Status:** Proposed v2.0 (supersedes v1.0)
+**Status:** HISTORICAL (stamped 2026-08-27) — kept, like v1, for decision tracking. Not the current spec.
 **Phase 0:** COMPLETE
+
+> **⚠️ Historical document — do not build your mental model from this file.**
+> This spec describes the April 2026 plan, and consecutive CTO audits
+> ([#363](https://github.com/perice-pope/ai-music-companion/issues/363),
+> [#494](https://github.com/perice-pope/ai-music-companion/issues/494),
+> [#508](https://github.com/perice-pope/ai-music-companion/issues/508)) confirmed the drift
+> — #363 and #494's words: it "describes a different app". The RV method (cells rowed
+> through 12 keys — now the dominant product surface) is absent here, and several named
+> tools were never used or were replaced by better in-house choices (Aubio yinfft →
+> pure-Rust YIN; madmom SuperFlux → a pure-Rust reimplementation; Matchmaker/PyO3 → a
+> pure-Rust Online DTW follower; Audiveris → an oemer sidecar; PESTO, yt-dlp, and midir
+> were never built).
+>
+> **Where current truth lives:**
+> [`rv-methodology.md`](./rv-methodology.md) (the product north star) ·
+> [`../../CLAUDE.md`](../../CLAUDE.md) (house rules and layout) ·
+> [`offline-first-and-network-transparency.md`](./offline-first-and-network-transparency.md)
+> (the network contract) ·
+> [`../design/decisions-log.md`](../design/decisions-log.md) (settled calls) ·
+> the latest `cto-audit`-labeled issue (what is actually built, verified against the code).
 
 ---
 
