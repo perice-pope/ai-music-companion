@@ -1,3 +1,9 @@
+## [2.52.6](https://github.com/perice-pope/ai-music-companion/compare/v2.52.5...v2.52.6) (2026-08-27)
+
+### Bug Fixes
+
+* **deps:** plist 1.10 clears the tauri lockfile's quick-xml RUSTSECs; just audit scans both lockfiles ([#525](https://github.com/perice-pope/ai-music-companion/issues/525)) ([#529](https://github.com/perice-pope/ai-music-companion/issues/529)) ([8c13a40](https://github.com/perice-pope/ai-music-companion/commit/8c13a40cf8e25a2abb064d2c7d13cc03b29e4f27))
+
 ## [2.52.5](https://github.com/perice-pope/ai-music-companion/compare/v2.52.4...v2.52.5) (2026-08-26)
 
 ### Bug Fixes
