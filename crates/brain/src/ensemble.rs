@@ -30,6 +30,11 @@
 //! - Subdivisions faster than the cluster window (16ths above ~187 BPM at
 //!   the default 80 ms) would read as scatter; ensemble section material
 //!   sits well below that, and the window is a config knob.
+//! - A section that switches subdivision (eighths after quarters) doubles
+//!   its attack density without anyone rushing. A candidate outlier whose
+//!   pulse sits near an integer multiple (or divisor) of the median is
+//!   therefore treated as a subdivision change and never accused — the
+//!   spread still reports the raw numbers.
 //!
 //! Pure and deterministic: no clock, no audio. This runs at recap time,
 //! not on the audio thread — allocation is fine here.
@@ -43,7 +48,10 @@ use variations::ChordTarget;
 /// Tuning constants for the group-level analysis. Defaults are the shipped
 /// calibration; every gate that could accuse the band is deliberately
 /// generous (coach, don't judge — an outlier call must be earned).
+/// `serde(default)` so a future partially-persisted config falls back to
+/// the shipped values instead of hard-failing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EnsembleConfig {
     /// Onsets within this many seconds of a cluster's first onset count as
     /// the same ensemble attack.
@@ -141,7 +149,10 @@ pub struct SectionTempo {
     pub attack_count: u32,
 }
 
+// Both enums serialize snake_case to match the embedded `Verdict`
+// ("hit"/"near"/"missed") — one casing per report on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TempoDirection {
     Rushed,
     Dragged,
@@ -149,15 +160,24 @@ pub enum TempoDirection {
 
 /// The one section (if any) that earned a tempo accusation: the largest
 /// deviation from the median section tempo, beyond the config margin.
+/// Named only when at least three sections carry a tempo — with two, the
+/// midpoint median makes rushed-vs-dragged an arbitrary tie-break, not a
+/// verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TempoOutlier {
+    /// A labeled TIME SPAN of the take (`Section.label`) — never an
+    /// instrument section. Surfaces must render it so it cannot read as
+    /// calling out the trombones (the group-only wording rule).
     pub section: String,
     pub direction: TempoDirection,
-    /// Signed BPM distance from the median section tempo.
+    /// Signed BPM distance from the median section tempo. The direction is
+    /// the trustworthy signal; the magnitude is attack-density arithmetic
+    /// over a merged multi-player train, not a metronome reading.
     pub delta_bpm: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BalanceDirection {
     Rising,
     Falling,
@@ -217,8 +237,15 @@ pub struct EnsembleInput<'a> {
 
 /// Analyze one ensemble take, group-level only.
 pub fn analyze_ensemble(input: &EnsembleInput, config: &EnsembleConfig) -> EnsembleReport {
-    let mut onsets = input.onsets_secs.to_vec();
-    onsets.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Non-finite timestamps would scramble a partial-ord sort and poison
+    // every downstream gap; they carry no musical meaning — drop them.
+    let mut onsets: Vec<f64> = input
+        .onsets_secs
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite())
+        .collect();
+    onsets.sort_by(f64::total_cmp);
     let clusters = cluster_attacks(&onsets, config.cluster_window_secs);
 
     let section_tempos = section_tempos(&clusters, input.sections, config);
@@ -371,16 +398,20 @@ fn tempo_spread(
     let min = values.iter().cloned().fold(f64::MAX, f64::min);
     let spread = (max - min) as f32;
 
+    // Two tempo'd sections put the median at their midpoint: both deltas
+    // clear any margin symmetrically and rushed-vs-dragged becomes an
+    // iterator tie-break. An accusation needs three or more.
+    if tempos.len() < 3 {
+        return (Some(spread), None);
+    }
+
     let median = median(&values);
     let outlier = tempos
         .iter()
         .map(|&(i, t)| (i, t - median))
         .filter(|&(_, delta)| delta.abs() > config.outlier_margin_bpm as f64)
-        .max_by(|a, b| {
-            a.1.abs()
-                .partial_cmp(&b.1.abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .filter(|&(_, delta)| !is_subdivision_ratio(median + delta, median))
+        .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
         .map(|(i, delta)| TempoOutlier {
             section: section_tempos[i].label.clone(),
             direction: if delta > 0.0 {
@@ -394,6 +425,30 @@ fn tempo_spread(
     (Some(spread), outlier)
 }
 
+/// Integer pulse multiples a section can honestly reach by changing
+/// subdivision, not tempo (eighths after quarters, triplet→sixteenth
+/// figures), with the relative tolerance a real band's drift stays inside.
+const SUBDIVISION_RATIOS: [f64; 3] = [2.0, 3.0, 4.0];
+const SUBDIVISION_RATIO_TOLERANCE: f64 = 0.12;
+
+/// True when one pulse is a near-integer multiple of the other — a
+/// subdivision change, which must never read as a tempo accusation.
+fn is_subdivision_ratio(tempo: f64, reference: f64) -> bool {
+    let (hi, lo) = if tempo > reference {
+        (tempo, reference)
+    } else {
+        (reference, tempo)
+    };
+    if lo <= 0.0 {
+        // A degenerate reference can't support an accusation either.
+        return true;
+    }
+    let ratio = hi / lo;
+    SUBDIVISION_RATIOS
+        .iter()
+        .any(|&k| (ratio - k).abs() <= k * SUBDIVISION_RATIO_TOLERANCE)
+}
+
 fn median(xs: &[f64]) -> f64 {
     let mut v = xs.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -405,14 +460,22 @@ fn median(xs: &[f64]) -> f64 {
     }
 }
 
+/// Below this mean amplitude a half of the take is silence: it carries no
+/// loudness baseline, so no direction can honestly be read from it.
+const AMPLITUDE_SILENCE_FLOOR: f32 = 1e-3;
+
 /// Band-level dynamics direction: mean amplitude of the take's first half
 /// (by time) against the second.
 fn balance_trend(samples: &[(f64, f32)], config: &EnsembleConfig) -> Option<BalanceTrend> {
-    if samples.len() < config.min_balance_samples {
+    let mut sorted: Vec<(f64, f32)> = samples
+        .iter()
+        .copied()
+        .filter(|(t, a)| t.is_finite() && a.is_finite())
+        .collect();
+    if sorted.len() < config.min_balance_samples {
         return None;
     }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
     let t0 = sorted.first().map(|s| s.0).unwrap_or(0.0);
     let t1 = sorted.last().map(|s| s.0).unwrap_or(0.0);
     if t1 <= t0 {
@@ -435,18 +498,18 @@ fn balance_trend(samples: &[(f64, f32)], config: &EnsembleConfig) -> Option<Bala
     }
     let early_mean = (early_sum / early_n as f64) as f32;
     let late_mean = (late_sum / late_n as f64) as f32;
-    let direction = if early_mean <= f32::EPSILON {
-        // A silent first half has no baseline to compare against.
-        BalanceDirection::Steady
+    if early_mean <= AMPLITUDE_SILENCE_FLOOR {
+        // A silent first half has no baseline: reporting any direction
+        // next to a 0.0 mean would contradict itself on the surface.
+        return None;
+    }
+    let change = (late_mean - early_mean) / early_mean;
+    let direction = if change >= config.balance_trend_ratio {
+        BalanceDirection::Rising
+    } else if change <= -config.balance_trend_ratio {
+        BalanceDirection::Falling
     } else {
-        let change = (late_mean - early_mean) / early_mean;
-        if change >= config.balance_trend_ratio {
-            BalanceDirection::Rising
-        } else if change <= -config.balance_trend_ratio {
-            BalanceDirection::Falling
-        } else {
-            BalanceDirection::Steady
-        }
+        BalanceDirection::Steady
     };
     Some(BalanceTrend {
         direction,
@@ -650,6 +713,21 @@ mod tests {
         );
     }
 
+    /// Non-finite timestamps are dropped, not sorted: a stray NaN must not
+    /// scramble the order of the real onsets around it.
+    #[test]
+    fn non_finite_onsets_are_dropped() {
+        let clean = band(&[0.0, 0.02], 0.6, 20);
+        let mut dirty = clean.clone();
+        dirty.insert(7, f64::NAN);
+        dirty.insert(3, f64::INFINITY);
+        let cfg = EnsembleConfig::default();
+        assert_eq!(
+            analyze_ensemble(&input(&dirty, &[]), &cfg).togetherness,
+            analyze_ensemble(&input(&clean, &[]), &cfg).togetherness
+        );
+    }
+
     // ── Sections and tempo gates ─────────────────────────────────────────
 
     /// A section with too few attacks gets no tempo and is excluded from
@@ -679,6 +757,101 @@ mod tests {
         let spread = report.tempo_spread_bpm.expect("three tempo'd sections");
         assert!(spread < 2.0, "steady take must not spread: {spread}");
         assert!(report.tempo_outlier.is_none());
+    }
+
+    /// A real-but-small drift (~4 BPM in the ending) stays below the
+    /// accusation margin: the spread reports it, nobody is named. Fails if
+    /// the margin collapses toward zero.
+    #[test]
+    fn a_small_deviation_stays_unaccused() {
+        let sections = default_sections(30.0);
+        let mut onsets: Vec<f64> = (0..34).map(|i| i as f64 * 0.6).collect(); // 100 BPM to 19.8
+        let mut t = 20.4;
+        while t < 30.0 {
+            onsets.push(t);
+            t += 0.577; // ≈104 BPM
+        }
+        let report = analyze_ensemble(&input(&onsets, &sections), &EnsembleConfig::default());
+        let spread = report.tempo_spread_bpm.expect("three tempo'd sections");
+        assert!(
+            (2.0..8.0).contains(&spread),
+            "the drift is real and visible in the spread: {spread}"
+        );
+        assert!(report.tempo_outlier.is_none());
+    }
+
+    /// Switching to eighths at the SAME tempo doubles the attack density
+    /// without anyone rushing: the near-integer ratio reads as a
+    /// subdivision change and earns no accusation — the spread still
+    /// carries the raw numbers.
+    #[test]
+    fn a_subdivision_change_is_not_a_rushing_accusation() {
+        let sections = default_sections(30.0);
+        let mut onsets: Vec<f64> = (0..34).map(|i| i as f64 * 0.6).collect(); // quarters at 100
+        let mut t = 20.4;
+        while t < 30.0 {
+            onsets.push(t);
+            t += 0.3; // eighths, same 100 BPM
+        }
+        let report = analyze_ensemble(&input(&onsets, &sections), &EnsembleConfig::default());
+        let ending = report.section_tempos[2].tempo_bpm.expect("dense ending");
+        assert!(
+            (ending - 200.0).abs() < 5.0,
+            "eighths read double density: {ending}"
+        );
+        assert!(
+            report.tempo_spread_bpm.expect("spread present") > 50.0,
+            "the raw spread still shows the density change"
+        );
+        assert!(
+            report.tempo_outlier.is_none(),
+            "a subdivision change must never be called rushing: {:?}",
+            report.tempo_outlier
+        );
+    }
+
+    /// With exactly two tempo'd sections the median sits at their
+    /// midpoint, so rushed-vs-dragged would be an iterator tie-break:
+    /// no accusation below three, while the spread still reports.
+    #[test]
+    fn two_tempod_sections_never_earn_an_accusation() {
+        let sections = vec![
+            Section {
+                label: "the head".to_string(),
+                start_secs: 0.0,
+                end_secs: 10.0,
+            },
+            Section {
+                label: "the solos".to_string(),
+                start_secs: 10.0,
+                end_secs: 20.0,
+            },
+        ];
+        let mut onsets: Vec<f64> = (0..17).map(|i| i as f64 * 0.6).collect(); // 100 BPM
+        onsets.extend((0..20).map(|i| 10.2 + i as f64 * 0.5)); // 120 BPM
+        let report = analyze_ensemble(&input(&onsets, &sections), &EnsembleConfig::default());
+        let spread = report.tempo_spread_bpm.expect("both sections tempo'd");
+        assert!(
+            (spread - 20.0).abs() < 2.0,
+            "spread reports the gap: {spread}"
+        );
+        assert!(report.tempo_outlier.is_none());
+    }
+
+    /// A section holding 2–7 attacks is below the evidence gate: no tempo,
+    /// even though groove could compute one from two onsets. Fails if the
+    /// gate is deleted or lowered to groove's own ≥2 minimum.
+    #[test]
+    fn a_thin_middle_earns_no_tempo() {
+        let sections = default_sections(30.0);
+        let mut onsets: Vec<f64> = (0..17).map(|i| i as f64 * 0.6).collect(); // opening
+        onsets.extend((0..5).map(|i| 10.2 + i as f64 * 0.6)); // 5 attacks
+        onsets.extend((0..16).map(|i| 20.4 + i as f64 * 0.6)); // ending
+        let report = analyze_ensemble(&input(&onsets, &sections), &EnsembleConfig::default());
+        assert_eq!(report.section_tempos[1].attack_count, 5);
+        assert!(report.section_tempos[1].tempo_bpm.is_none());
+        assert!(report.section_tempos[0].tempo_bpm.is_some());
+        assert!(report.section_tempos[2].tempo_bpm.is_some());
     }
 
     /// default_sections covers the take in labeled thirds and the final
@@ -745,8 +918,10 @@ mod tests {
         assert_eq!(b.direction, BalanceDirection::Steady);
     }
 
-    /// Too few samples, or a take with no time span, stays silent; a
-    /// silent first half cannot be a crescendo baseline.
+    /// Too few samples, or a take with no time span, stays silent — and a
+    /// silent first half is an evidence failure, not a `Steady` verdict: a
+    /// surface rendering "steady" next to means of 0.0 and 0.6 would
+    /// contradict itself.
     #[test]
     fn balance_gates_on_evidence() {
         let cfg = EnsembleConfig::default();
@@ -758,13 +933,23 @@ mod tests {
             .balance
             .is_none());
 
-        // Silence then sound: Steady, not a fabricated crescendo ratio.
         let silent_start: Vec<(f64, f32)> = (0..20)
             .map(|i| (i as f64, if i < 10 { 0.0 } else { 0.6 }))
             .collect();
-        let b = analyze_ensemble(&amp_input(&silent_start), &cfg)
+        assert!(analyze_ensemble(&amp_input(&silent_start), &cfg)
             .balance
-            .unwrap();
+            .is_none());
+    }
+
+    /// The direction margin is real: a +12% step reads Steady under the
+    /// default ±15% ratio. Fails if the margin collapses toward zero.
+    #[test]
+    fn a_small_loudness_step_reads_steady() {
+        let cfg = EnsembleConfig::default();
+        let step12: Vec<(f64, f32)> = (0..20)
+            .map(|i| (i as f64, if i < 10 { 0.50 } else { 0.56 }))
+            .collect();
+        let b = analyze_ensemble(&amp_input(&step12), &cfg).balance.unwrap();
         assert_eq!(b.direction, BalanceDirection::Steady);
     }
 
