@@ -13,7 +13,7 @@ This folder holds the living architecture for Musa / AI Music Companion.
 4. [`../design/decisions-log.md`](../design/decisions-log.md) — settled product + engineering
    calls. Silence there means "not decided yet."
 5. The latest `cto-audit`-labeled issue — a code-verified map of what is actually built,
-   refreshed weekly.
+   refreshed on a weekly schedule (check its date; the cadence sometimes skips a week).
 
 Do **not** start from `architecture-v2.md` — it is stamped historical (see below).
 
@@ -48,7 +48,7 @@ Do **not** start from `architecture-v2.md` — it is stamped historical (see bel
 
 | File | What it is |
 |------|------------|
-| [`architecture-v2.md`](./architecture-v2.md) | The April 2026 "coach, don't judge" spec. **Stamped HISTORICAL 2026-08-27**: consecutive CTO audits (#363, #494, #508) found it describes a different app — the RV method it never mentions is now the dominant product surface, and several named tools were replaced or never built. The audits are the accurate map. |
+| [`architecture-v2.md`](./architecture-v2.md) | The April 2026 "coach, don't judge" spec. **Stamped HISTORICAL 2026-08-27**: CTO audits #363 and #494 found it "describes a different app" (#508 confirmed the drift) — the RV method it never mentions is now the dominant product surface, and several named tools were replaced or never built. The audits are the accurate map. |
 | [`architecture-v1.md`](./architecture-v1.md) | Original pre-pivot architecture. Kept for diff / decision tracking. |
 | [`research-notes.md`](./research-notes.md) | Early product + market research that fed into v1/v2. |
 

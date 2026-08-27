@@ -9,12 +9,13 @@
 > This spec describes the April 2026 plan, and consecutive CTO audits
 > ([#363](https://github.com/perice-pope/ai-music-companion/issues/363),
 > [#494](https://github.com/perice-pope/ai-music-companion/issues/494),
-> [#508](https://github.com/perice-pope/ai-music-companion/issues/508)) found it
-> "describes a different app": the RV method (cells rowed through 12 keys — now the
-> dominant product surface) is absent here, and several named tools were never used or
-> were replaced by better in-house choices (Aubio/PESTO → pure-Rust YIN + SuperFlux,
-> Matchmaker/PyO3 → a pure-Rust Online DTW follower, Audiveris → an oemer sidecar;
-> yt-dlp and midir were never built).
+> [#508](https://github.com/perice-pope/ai-music-companion/issues/508)) confirmed the drift
+> — #363 and #494's words: it "describes a different app". The RV method (cells rowed
+> through 12 keys — now the dominant product surface) is absent here, and several named
+> tools were never used or were replaced by better in-house choices (Aubio yinfft →
+> pure-Rust YIN; madmom SuperFlux → a pure-Rust reimplementation; Matchmaker/PyO3 → a
+> pure-Rust Online DTW follower; Audiveris → an oemer sidecar; PESTO, yt-dlp, and midir
+> were never built).
 >
 > **Where current truth lives:**
 > [`rv-methodology.md`](./rv-methodology.md) (the product north star) ·
