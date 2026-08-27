@@ -44,9 +44,10 @@ lint:
     cd apps/desktop && pnpm lint || true
     cd apps/dashboard && pnpm lint || true
 
-# Run security audits
+# Run security audits (both lockfiles — the tauri shell is its own workspace, #525)
 audit:
     cargo audit
+    cargo audit --file apps/desktop/src-tauri/Cargo.lock
     cd apps/desktop && pnpm audit --audit-level=high || true
     cd apps/dashboard && pnpm audit --audit-level=high || true
 
