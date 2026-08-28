@@ -97,7 +97,7 @@ const MOCK_INSTRUMENTS = [
   {
     name: "Piano",
     family: "Keyboard",
-    freqMinHz: 27,
+    freqMinHz: 27.5,
     freqMaxHz: 4186,
     emoji: "🎹",
     polyphonic: true,

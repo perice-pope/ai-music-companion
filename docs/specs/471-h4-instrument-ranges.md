@@ -37,7 +37,7 @@ cleanly separates rounding noise (every profile boundary note lands within
 | Flute | woodwind | 262–2093 | 60.025..96.000 | **60..96** (C4..C7) | 36 |
 | French Horn | brass | 87–880 | 40.939..81.000 | **41..81** (F2..A5) | 40 |
 | Guitar | strings | 82–1319 | 39.914..88.006 | **40..88** (E2..E6) | 48 |
-| Piano | keyboard | 28–4186 | 21.312..108.000 | **22..108** (Bb0..C8) | 86 |
+| Piano | keyboard | 27.5–4186 | 21.000..108.000 | **21..108** (A0..C8) | 87 |
 | Trombone | brass | 58–587 | 33.919..73.990 | **34..74** (Bb1..D5) | 40 |
 | Trumpet | brass | 165–1047 | 52.020..84.008 | **52..84** (E3..C6) | 32 |
 | Violin | strings | 196–3136 | 55.000..103.000 | **55..103** (G3..G7) | 48 |

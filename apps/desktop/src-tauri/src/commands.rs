@@ -60,7 +60,7 @@ use tokio::sync::Mutex;
 /// YIN's window scales as `2 × sample_rate / freq_min_hz`; at 44.1 kHz
 /// a 60 Hz floor is ~1470 samples (~33 ms), which fits alongside the
 /// rest of the pipeline inside the project's latency budget. Lower
-/// floors (e.g. Piano's 28 Hz) would explode the window and miss the
+/// floors (e.g. Piano's 27.5 Hz) would explode the window and miss the
 /// budget on exactly the instruments that need the widest UI range.
 /// Matches the `PitchConfig::default()` floor shipped by the `ears`
 /// crate — keep them in sync.
@@ -1032,8 +1032,8 @@ impl AppState {
     /// The detector's `freq_min_hz` is *clamped up* from the catalog's
     /// absolute floor to a realtime-safe minimum. Rationale: YIN's
     /// `window_size ≈ 2 × sample_rate / freq_min_hz`, so letting
-    /// Piano's 28 Hz floor through would give a 3150-sample window
-    /// (~71 ms at 44.1 kHz) per detect — blowing past the project's
+    /// Piano's 27.5 Hz floor through would give a 3207-sample window
+    /// (~73 ms at 44.1 kHz) per detect — blowing past the project's
     /// <25 ms latency budget for exactly the instruments with the
     /// widest ranges. The UI catalog still shows the full instrument
     /// range; only the detector gets the clamped floor. Notes below
@@ -1756,7 +1756,7 @@ fn test_instrument_catalog() -> Vec<InstrumentInfo> {
         ("Flute", "Woodwind", 262.0, 2093.0),
         ("Clarinet", "Woodwind", 147.0, 1568.0),
         ("Voice", "Voice", 82.0, 1047.0),
-        ("Piano", "Keyboard", 28.0, 4186.0),
+        ("Piano", "Keyboard", 27.5, 4186.0),
         // Plucked → polyphonic like the real profiles (profile_to_info),
         // but Strings family: the case where polyphonic and grand-staff
         // genuinely diverge (review MF1).
@@ -8171,8 +8171,8 @@ mod tests {
 
     #[test]
     fn detector_profile_clamps_low_floor_instruments_to_realtime_minimum() {
-        // Piano's 28 Hz catalog floor would give the YIN detector a
-        // ~71 ms window at 44.1 kHz — blowing the project's 25 ms
+        // Piano's 27.5 Hz catalog floor would give the YIN detector a
+        // ~73 ms window at 44.1 kHz — blowing the project's 25 ms
         // latency budget. The clamp pulls the *detector* floor up to
         // DETECTOR_MIN_HZ without narrowing the UI catalog range.
         let s = state();
@@ -8218,7 +8218,7 @@ mod tests {
             ("Flute", 60, 96),
             ("French Horn", 41, 81),
             ("Guitar", 40, 88),
-            ("Piano", 22, 108),
+            ("Piano", 21, 108),
             ("Trombone", 34, 74),
             ("Violin", 55, 103),
         ] {
