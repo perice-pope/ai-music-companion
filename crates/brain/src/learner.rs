@@ -446,7 +446,8 @@ pub fn apply_reveal(
 ///
 /// `concept` is the moment's stable collection key (S1's `BossMoment.concept`,
 /// trimmed here so a caller can't split one concept with stray whitespace);
-/// `label` its human title; `score` the 0..1 grade earned. A **novel** concept
+/// `label` its human title (trimmed on store, same hygiene as
+/// [`apply_reveal`]'s connection); `score` the 0..1 grade earned. A **novel** concept
 /// adds exactly one entry (`count = 1`, `first_achieved` = `now`); a **repeat**
 /// leaves the map size unchanged and bumps that entry's `count`, keeps its
 /// `first_achieved`, raises `best_score` to the best attempt ever (a worse
@@ -479,10 +480,10 @@ pub fn apply_moment_achieved(
                 m.best_score
             };
             m.best_score = score.max(prior);
-            m.label = label.to_owned();
+            m.label = label.trim().to_owned();
         })
         .or_insert_with(|| MomentAchieved {
-            label: label.to_owned(),
+            label: label.trim().to_owned(),
             best_score: score,
             first_achieved_epoch_secs: now_epoch_secs,
             count: 1,
@@ -706,6 +707,8 @@ mod tests {
         assert_eq!(out["moments"]["keys-tour"]["confetti_seen"], true);
         assert_eq!(out["moments"]["keys-tour"]["count"], 2);
         assert_eq!(out["moments"]["keys-tour"]["best_score"], 0.5);
+        // The newer blob's schema version survives every transition above.
+        assert_eq!(out["version"], 2);
     }
 
     /// The dedup separator (`\u{1f}`) is an internal contract: concepts and
@@ -1152,13 +1155,16 @@ mod tests {
         let entry = &m2.moments["keys-tour"];
         assert_eq!(entry.count, 2);
         assert_eq!(entry.first_achieved_epoch_secs, 60, "first_achieved kept");
+        assert_eq!(m2.updated_at_epoch_secs, 70, "the repeat stamps time too");
 
         // Additive: nothing else in the model moved across both transitions.
+        assert_eq!(m2.version, m0.version);
         assert_eq!(m2.collection, m0.collection);
         assert_eq!(m2.key_mastery, m0.key_mastery);
         assert_eq!(m2.streak, m0.streak);
         assert_eq!(m2.last_warmup, m0.last_warmup);
         assert_eq!(m2.difficulty, m0.difficulty);
+        assert_eq!(m2.sound_profile, m0.sound_profile);
     }
 
     /// A repeat keeps the best score ever — a better run raises it, a worse
@@ -1205,6 +1211,10 @@ mod tests {
     /// self-heals instead of poisoning every later max().
     #[test]
     fn moment_score_is_sanitized_and_nan_prior_self_heals() {
+        // The insert path clamps too, not just the repeat path.
+        let over = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", 7.0, 1);
+        assert_eq!(over.moments["keys-tour"].best_score, 1.0, "insert clamps");
+
         let m1 = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", f32::NAN, 1);
         assert_eq!(m1.moments["keys-tour"].best_score, 0.0);
         assert_eq!(m1.moments["keys-tour"].count, 1, "NaN still counts the win");
