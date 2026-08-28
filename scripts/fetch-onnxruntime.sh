@@ -41,7 +41,9 @@ fetch_into() {
   tmp="$(mktemp -d)"
   TMP_DIRS+=("$tmp")
   echo "fetching ${pkg}.${ext} → ${dest}/${lib}"
-  curl -fsSL -o "$tmp/ort.$ext" "$url"
+  # --retry-all-errors: curl's default retry set excludes connection resets
+  # (exit 35), the flake that turns CI red on a single dropped transfer.
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$tmp/ort.$ext" "$url"
   if [ "$ext" = "zip" ]; then
     python3 -m zipfile -e "$tmp/ort.$ext" "$tmp/" 2>/dev/null \
       || python -m zipfile -e "$tmp/ort.$ext" "$tmp/"

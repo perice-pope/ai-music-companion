@@ -72,10 +72,12 @@ jobs:
       # and point ort at it via ORT_DYLIB_PATH. TRANSCRIBE_REQUIRE_ORT=1 makes a
       # missing runtime a hard test failure (no silent skips in CI). The version
       # must match the C API ort 2.0.0-rc.10 targets (ONNX Runtime 1.24.x).
+      # --retry-all-errors: curl's default retry set excludes connection resets
+      # (exit 35), which is exactly the flake that has turned main red.
       - name: Vendor ONNX Runtime (transcribe tests)
         run: |
           ORT_VERSION=1.24.2
-          curl -fsSL -o /tmp/onnxruntime.tgz \
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/onnxruntime.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
           tar xzf /tmp/onnxruntime.tgz -C /tmp
           echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"
@@ -233,7 +235,7 @@ jobs:
       - name: Vendor ONNX Runtime (audio import test)
         run: |
           ORT_VERSION=1.24.2
-          curl -fsSL -o /tmp/onnxruntime.tgz \
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/onnxruntime.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
           tar xzf /tmp/onnxruntime.tgz -C /tmp
           echo "ORT_DYLIB_PATH=/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> "$GITHUB_ENV"

@@ -44,7 +44,9 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Downloading $OMR_ENGINE_URL"
-curl -fsSL -o "$tmp/omr.tgz" "$OMR_ENGINE_URL"
+# --retry-all-errors: curl's default retry set excludes connection resets
+# (exit 35), the flake that turns CI red on a single dropped transfer.
+curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$tmp/omr.tgz" "$OMR_ENGINE_URL"
 tar xzf "$tmp/omr.tgz" -C "$tmp"
 
 # Locate the engine executable inside the archive (allow a top-level dir) and
