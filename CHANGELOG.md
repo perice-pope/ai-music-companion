@@ -1,3 +1,9 @@
+## [2.53.0](https://github.com/perice-pope/ai-music-companion/compare/v2.52.6...v2.53.0) (2026-08-28)
+
+### Features
+
+* **learner:** the boss-moment marker — achieved payoffs join the Learner Model ([#259](https://github.com/perice-pope/ai-music-companion/issues/259) S2) ([#530](https://github.com/perice-pope/ai-music-companion/issues/530)) ([9658c6a](https://github.com/perice-pope/ai-music-companion/commit/9658c6ae4416351b8e9c4bddbd20cf2d78f1459b)), closes [#256](https://github.com/perice-pope/ai-music-companion/issues/256)
+
 ## [2.52.6](https://github.com/perice-pope/ai-music-companion/compare/v2.52.5...v2.52.6) (2026-08-27)
 
 ### Bug Fixes

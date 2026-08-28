@@ -1,6 +1,6 @@
 [package]
 name = "ai-music-companion"
-version = "2.52.6"
+version = "2.53.0"
 description = "AI Music Companion — your intelligent practice partner"
 edition = "2021"
 
