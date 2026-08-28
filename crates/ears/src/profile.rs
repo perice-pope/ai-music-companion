@@ -240,15 +240,6 @@ mod tests {
         assert_eq!(profile.tuning_corrections.len(), 1);
     }
 
-    /// Locks the real-file invariant for every workspace-shipped profile.
-    ///
-    /// The repo's `profiles/` directory is the source of truth for which
-    /// instruments the product supports. If a JSON file is malformed, its
-    /// frequency range nonsensical, or its family enum unknown, this test
-    /// fails with the offending filename — preventing a silent regression
-    /// where a new profile is checked in but fails to parse at runtime.
-    ///
-    /// Update the expected count below when you add or remove a profile.
     /// The repo's `profiles/` directory, resolved from this crate's location.
     fn workspace_profiles_dir() -> std::path::PathBuf {
         // CARGO_MANIFEST_DIR is crates/ears — profiles/ lives at the workspace root.
@@ -260,6 +251,15 @@ mod tests {
             .join("profiles")
     }
 
+    /// Locks the real-file invariant for every workspace-shipped profile.
+    ///
+    /// The repo's `profiles/` directory is the source of truth for which
+    /// instruments the product supports. If a JSON file is malformed, its
+    /// frequency range nonsensical, or its family enum unknown, this test
+    /// fails with the offending filename — preventing a silent regression
+    /// where a new profile is checked in but fails to parse at runtime.
+    ///
+    /// Update the expected count below when you add or remove a profile.
     #[test]
     fn all_workspace_profiles_load_cleanly() {
         let profiles_dir = workspace_profiles_dir();
