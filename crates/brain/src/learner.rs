@@ -8,8 +8,8 @@
 //!
 //! Today the blob carries the **collection** (unlocked reveals, #253 S3),
 //! **per-key mastery** and the **adaptive difficulty step** (both for the
-//! guided coach, #254), the **sound profile** (#258), and the **daily streak**
-//! (#257). The blob is forward-compatible by construction (`version` field +
+//! guided coach, #254), the **sound profile** (#258), the **daily streak**
+//! (#257), and the **achieved boss moments** (#259). The blob is forward-compatible by construction (`version` field +
 //! unknown fields at both the top level and inside entries are preserved on a
 //! read→write roundtrip), so additions need no migration of stored rows.
 
@@ -52,6 +52,28 @@ pub struct Collected {
     /// Forward-compatibility, same contract as [`LearnerModel::extra`]: per-entry
     /// fields added by a newer build survive an older build's read→write
     /// roundtrip instead of being silently stripped.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One achieved boss moment (#259 S2): a payoff composed from drilled RV
+/// material that the player completed, deduped by the moment's stable
+/// `concept`. Read by the collection (#256) and identity (#258) surfaces.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MomentAchieved {
+    /// The human title of the most recent achievement of this concept, e.g.
+    /// `"ii–V–I in three keys"`. Refreshed on repeat: the same concept can be
+    /// re-earned with different material, and the label describes the latest.
+    pub label: String,
+    /// Best grade (0..1) ever earned on this concept. A worse retry never
+    /// lowers it. Achievement is recorded regardless of score — the marker
+    /// celebrates completion; any score bar is the consumers' call (#258).
+    pub best_score: f32,
+    /// When this concept was first achieved (Unix seconds, injected).
+    pub first_achieved_epoch_secs: i64,
+    /// How many times this concept has been achieved (1 on the first).
+    pub count: u32,
+    /// Forward-compatibility, same contract as [`LearnerModel::extra`].
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -171,6 +193,11 @@ pub struct LearnerModel {
     /// first-ever completion.
     #[serde(default)]
     pub last_warmup: Option<DailyWarmup>,
+    /// Boss moments achieved (#259), keyed by the moment's stable `concept`
+    /// and advanced by [`apply_moment_achieved`]. Additive: blobs from before
+    /// this field existed load as the empty map.
+    #[serde(default)]
+    pub moments: BTreeMap<String, MomentAchieved>,
     /// Last transition time (Unix seconds, injected).
     pub updated_at_epoch_secs: i64,
     /// Forward-compatibility: top-level fields this build doesn't know yet
@@ -190,6 +217,7 @@ impl Default for LearnerModel {
             key_mastery: BTreeMap::new(),
             streak: Streak::default(),
             last_warmup: None,
+            moments: BTreeMap::new(),
             updated_at_epoch_secs: 0,
             extra: serde_json::Map::new(),
         }
@@ -414,6 +442,57 @@ pub fn apply_reveal(
     next
 }
 
+/// Pure transition: record an achieved boss moment (#259 S2).
+///
+/// `concept` is the moment's stable collection key (S1's `BossMoment.concept`,
+/// trimmed here so a caller can't split one concept with stray whitespace);
+/// `label` its human title (trimmed on store, same hygiene as
+/// [`apply_reveal`]'s connection); `score` the 0..1 grade earned. A **novel** concept
+/// adds exactly one entry (`count = 1`, `first_achieved` = `now`); a **repeat**
+/// leaves the map size unchanged and bumps that entry's `count`, keeps its
+/// `first_achieved`, raises `best_score` to the best attempt ever (a worse
+/// retry can't lower it), and refreshes `label` to the latest achievement.
+/// Every other model field is preserved (additive, F2 invariant).
+///
+/// Deterministic, no I/O; `score` is clamped to `0.0..=1.0` (NaN counts as 0,
+/// same sanitization as [`apply_drill_result`]), and a NaN `best_score`
+/// smuggled in via a synced blob self-heals to the incoming score.
+pub fn apply_moment_achieved(
+    model: &LearnerModel,
+    concept: &str,
+    label: &str,
+    score: f32,
+    now_epoch_secs: i64,
+) -> LearnerModel {
+    let mut next = model.clone();
+    let score = if score.is_nan() {
+        0.0
+    } else {
+        score.clamp(0.0, 1.0)
+    };
+    next.moments
+        .entry(concept.trim().to_owned())
+        .and_modify(|m| {
+            m.count = m.count.saturating_add(1);
+            let prior = if m.best_score.is_nan() {
+                0.0
+            } else {
+                m.best_score
+            };
+            m.best_score = score.max(prior);
+            m.label = label.trim().to_owned();
+        })
+        .or_insert_with(|| MomentAchieved {
+            label: label.trim().to_owned(),
+            best_score: score,
+            first_achieved_epoch_secs: now_epoch_secs,
+            count: 1,
+            extra: serde_json::Map::new(),
+        });
+    next.updated_at_epoch_secs = now_epoch_secs;
+    next
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +652,15 @@ mod tests {
             "updated_at_epoch_secs": 5,
             "sound_profile": { "mode_lean": "minor" },
             "streak": { "count": 7, "freeze_tokens": 2 },
+            "moments": {
+                "keys-tour": {
+                    "label": "Your lick in three keys",
+                    "best_score": 0.5,
+                    "first_achieved_epoch_secs": 2,
+                    "count": 1,
+                    "confetti_seen": true
+                }
+            },
             "warmup_history": [ { "day": 3, "score": 0.5 } ]
         }"#;
         let model: LearnerModel = serde_json::from_str(json).expect("newer blob parses");
@@ -593,6 +681,10 @@ mod tests {
             },
             7,
         );
+        // Re-achieve the SAME moment concept so the per-MomentAchieved unknown
+        // field survives the entry-update path too (#259 S2). The worse retry
+        // (0.25 < 0.5) also pins that best-of-ever math ran on the parsed entry.
+        let after = apply_moment_achieved(&after, "keys-tour", "Your lick in three keys", 0.25, 8);
         let out = serde_json::to_value(&after).expect("serializes");
         // Top-level unknown fields preserved.
         assert_eq!(out["sound_profile"]["mode_lean"], "minor");
@@ -610,6 +702,13 @@ mod tests {
         assert_eq!(out["key_mastery"]["7:dorian"]["streak_in_key"], 5);
         assert_eq!(after.key_mastery["7:dorian"].attempts, 3);
         assert_eq!(after.collection_size(), 2);
+        // Per-MomentAchieved unknown fields preserved through the repeat path,
+        // and the repeat's arithmetic ran on the parsed entry (#259 S2).
+        assert_eq!(out["moments"]["keys-tour"]["confetti_seen"], true);
+        assert_eq!(out["moments"]["keys-tour"]["count"], 2);
+        assert_eq!(out["moments"]["keys-tour"]["best_score"], 0.5);
+        // The newer blob's schema version survives every transition above.
+        assert_eq!(out["version"], 2);
     }
 
     /// The dedup separator (`\u{1f}`) is an internal contract: concepts and
@@ -1022,5 +1121,155 @@ mod tests {
             (w.score - 0.4).abs() < 1e-6,
             "an old day's 1.0 must not masquerade as today's best"
         );
+    }
+
+    // ── #259 S2: boss-moment marker ───────────────────────────────────
+
+    /// #259 AC9: a first achievement inserts exactly one entry (`count = 1`,
+    /// the injected timestamp, the given label/score); repeating the same
+    /// concept never duplicates — the one entry's count bumps and its
+    /// `first_achieved` is preserved. Every other model field survives
+    /// untouched (additive F2 transition). Fails if dedup, the insert shape,
+    /// or field preservation regresses.
+    #[test]
+    fn moment_marker_dedupes_and_counts() {
+        let m0 = apply_reveal(
+            &apply_daily_completion(&streaked(3, 100), LocalDay(101), 0.9),
+            "Dorian",
+            "Miles Davis — \"So What\"",
+            50,
+        );
+        let m1 = apply_moment_achieved(&m0, "keys-tour", "Your lick in three keys", 0.7, 60);
+        assert_eq!(m1.moments.len(), 1);
+        let entry = &m1.moments["keys-tour"];
+        assert_eq!(entry.count, 1);
+        assert_eq!(entry.label, "Your lick in three keys");
+        assert!((entry.best_score - 0.7).abs() < 1e-6);
+        assert_eq!(entry.first_achieved_epoch_secs, 60);
+        assert_eq!(m1.updated_at_epoch_secs, 60);
+        // Pure: the input model is untouched.
+        assert!(m0.moments.is_empty());
+
+        let m2 = apply_moment_achieved(&m1, "keys-tour", "Your lick in three keys", 0.9, 70);
+        assert_eq!(m2.moments.len(), 1, "repeat must not add an entry");
+        let entry = &m2.moments["keys-tour"];
+        assert_eq!(entry.count, 2);
+        assert_eq!(entry.first_achieved_epoch_secs, 60, "first_achieved kept");
+        assert_eq!(m2.updated_at_epoch_secs, 70, "the repeat stamps time too");
+
+        // Additive: nothing else in the model moved across both transitions.
+        assert_eq!(m2.version, m0.version);
+        assert_eq!(m2.collection, m0.collection);
+        assert_eq!(m2.key_mastery, m0.key_mastery);
+        assert_eq!(m2.streak, m0.streak);
+        assert_eq!(m2.last_warmup, m0.last_warmup);
+        assert_eq!(m2.difficulty, m0.difficulty);
+        assert_eq!(m2.sound_profile, m0.sound_profile);
+    }
+
+    /// A repeat keeps the best score ever — a better run raises it, a worse
+    /// retry can't lower it — and refreshes the label to the latest
+    /// achievement (the same concept can be re-earned with fresh material).
+    #[test]
+    fn moment_repeat_keeps_best_score_and_latest_label() {
+        let m1 = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "First tour", 0.4, 1);
+        let m2 = apply_moment_achieved(&m1, "keys-tour", "Bigger tour", 0.9, 2);
+        assert!((m2.moments["keys-tour"].best_score - 0.9).abs() < 1e-6);
+        assert_eq!(m2.moments["keys-tour"].label, "Bigger tour");
+        let m3 = apply_moment_achieved(&m2, "keys-tour", "Off-day tour", 0.1, 3);
+        assert!(
+            (m3.moments["keys-tour"].best_score - 0.9).abs() < 1e-6,
+            "a worse retry must not lower the best"
+        );
+        assert_eq!(m3.moments["keys-tour"].label, "Off-day tour");
+        assert_eq!(m3.moments["keys-tour"].count, 3);
+    }
+
+    /// Distinct concepts are distinct achievements — no cross-concept merging.
+    #[test]
+    fn distinct_moment_concepts_do_not_merge() {
+        let m1 = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", 0.5, 1);
+        let m2 = apply_moment_achieved(&m1, "same-key-medley", "Medley", 0.6, 2);
+        assert_eq!(m2.moments.len(), 2);
+        assert_eq!(m2.moments["keys-tour"].count, 1);
+        assert_eq!(m2.moments["same-key-medley"].count, 1);
+    }
+
+    /// The concept key is trimmed on write: stray whitespace from a caller
+    /// can't split one concept into two entries.
+    #[test]
+    fn moment_concept_is_trimmed() {
+        let m1 = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", 0.5, 1);
+        let m2 = apply_moment_achieved(&m1, " keys-tour ", "Tour", 0.6, 2);
+        assert_eq!(m2.moments.len(), 1, "whitespace variants must not split");
+        assert_eq!(m2.moments["keys-tour"].count, 2);
+    }
+
+    /// Garbage grades can't corrupt the marker: NaN counts as 0 (and still
+    /// records the achievement — the moment celebrates completion), values
+    /// clamp into 0..=1, and a NaN `best_score` smuggled in via a synced blob
+    /// self-heals instead of poisoning every later max().
+    #[test]
+    fn moment_score_is_sanitized_and_nan_prior_self_heals() {
+        // The insert path clamps too, not just the repeat path.
+        let over = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", 7.0, 1);
+        assert_eq!(over.moments["keys-tour"].best_score, 1.0, "insert clamps");
+
+        let m1 = apply_moment_achieved(&LearnerModel::default(), "keys-tour", "Tour", f32::NAN, 1);
+        assert_eq!(m1.moments["keys-tour"].best_score, 0.0);
+        assert_eq!(m1.moments["keys-tour"].count, 1, "NaN still counts the win");
+        let m2 = apply_moment_achieved(&m1, "keys-tour", "Tour", 7.0, 2);
+        assert_eq!(m2.moments["keys-tour"].best_score, 1.0, "clamped to 1");
+        let m3 = apply_moment_achieved(&m2, "keys-tour", "Tour", -3.0, 3);
+        assert_eq!(m3.moments["keys-tour"].best_score, 1.0, "negative clamps");
+
+        // A poisoned prior (possible via a synced blob) heals on the next win.
+        let mut poisoned = m3;
+        poisoned.moments.get_mut("keys-tour").unwrap().best_score = f32::NAN;
+        let healed = apply_moment_achieved(&poisoned, "keys-tour", "Tour", 0.5, 4);
+        assert!(
+            (healed.moments["keys-tour"].best_score - 0.5).abs() < 1e-6,
+            "NaN prior must not swallow a real score"
+        );
+    }
+
+    /// Deterministic: identical inputs produce identical models.
+    #[test]
+    fn apply_moment_achieved_is_deterministic() {
+        let m0 = LearnerModel::default();
+        assert_eq!(
+            apply_moment_achieved(&m0, "keys-tour", "Tour", 0.7, 42),
+            apply_moment_achieved(&m0, "keys-tour", "Tour", 0.7, 42),
+        );
+    }
+
+    /// Edge: the count saturates instead of overflowing u32.
+    #[test]
+    fn moment_count_saturates_at_u32_max() {
+        let mut m0 = LearnerModel::default();
+        m0.moments.insert(
+            "keys-tour".to_owned(),
+            MomentAchieved {
+                label: "Tour".to_owned(),
+                best_score: 1.0,
+                first_achieved_epoch_secs: 1,
+                count: u32::MAX,
+                extra: serde_json::Map::new(),
+            },
+        );
+        let m1 = apply_moment_achieved(&m0, "keys-tour", "Tour", 0.5, 2);
+        assert_eq!(m1.moments["keys-tour"].count, u32::MAX);
+    }
+
+    /// Edge (forward-compat): a blob saved before #259 loads with the empty
+    /// moments map, and the first achievement on it behaves as first-ever.
+    /// Fails if the additive field breaks old-blob parsing.
+    #[test]
+    fn model_without_moments_field_loads_and_starts_fresh() {
+        let json = r#"{ "version": 1, "collection": {}, "updated_at_epoch_secs": 4 }"#;
+        let model: LearnerModel = serde_json::from_str(json).expect("pre-#259 blob parses");
+        assert!(model.moments.is_empty());
+        let m1 = apply_moment_achieved(&model, "keys-tour", "Tour", 0.8, 10);
+        assert_eq!(m1.moments["keys-tour"].count, 1);
     }
 }
