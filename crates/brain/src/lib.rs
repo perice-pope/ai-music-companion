@@ -33,6 +33,7 @@ pub mod session;
 pub mod starter;
 pub mod stats;
 pub mod store;
+pub mod tempo_ladder;
 pub mod wheel;
 
 #[cfg(test)]
