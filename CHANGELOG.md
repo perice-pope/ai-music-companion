@@ -1,3 +1,9 @@
+## [2.53.1](https://github.com/perice-pope/ai-music-companion/compare/v2.53.0...v2.53.1) (2026-08-28)
+
+### Bug Fixes
+
+* **profiles:** piano floor is A0's true 27.5 Hz — the fold window reaches the bottom key ([#532](https://github.com/perice-pope/ai-music-companion/issues/532)) ([5d6bfb5](https://github.com/perice-pope/ai-music-companion/commit/5d6bfb5960b5a1e3c1a1c563936a7057d8af982c)), closes [#471-4](https://github.com/perice-pope/ai-music-companion/issues/471-4)
+
 ## [2.53.0](https://github.com/perice-pope/ai-music-companion/compare/v2.52.6...v2.53.0) (2026-08-28)
 
 ### Features
