@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::follower::{NoteVerdict, Verdict};
 
-/// The Pocket click's supported range — the same law as the desktop shell's
-/// `clamp_pocket_params`. Wiring (S5b) should import these rather than keep
-/// its own literals.
+/// The Pocket click's supported range — the same bounds as the desktop
+/// shell's `clamp_pocket_params`. Wiring (S5b) should import these rather
+/// than keep its own literals. (One deliberate divergence: the ladder sends
+/// EVERY non-finite tempo to the floor, where the shell's clamp maps +∞ to
+/// the ceiling — a garbage score tempo should slow the click, never max it.)
 pub const POCKET_MIN_BPM: f64 = 40.0;
 pub const POCKET_MAX_BPM: f64 = 220.0;
 
@@ -109,15 +111,28 @@ pub struct TempoLadder {
 }
 
 impl TempoLadder {
-    /// Degenerate configs are sanitized rather than trusted: zero
-    /// step/max are raised to 1 and the start is clamped into the ladder,
-    /// so the state machine can never divide by zero, step by nothing,
-    /// or start above its own top.
+    /// Degenerate configs are sanitized rather than trusted: zero step/max
+    /// are raised to 1, the start is clamped into the ladder, and the
+    /// cleanliness fractions are forced into [0, 1] with NaN falling back
+    /// to the default (NaN thresholds would make every comparison false and
+    /// grade an all-miss run "clean" — the exact inversion of "we KNOW when
+    /// it was clean").
     pub fn new(config: LadderConfig) -> Self {
+        fn frac(value: f32, default: f32) -> f32 {
+            if value.is_nan() {
+                default
+            } else {
+                value.clamp(0.0, 1.0)
+            }
+        }
+        let defaults = LadderConfig::default();
         let mut config = config;
         config.max_percent = config.max_percent.max(1);
         config.step_percent = config.step_percent.max(1);
         config.start_percent = config.start_percent.clamp(1, config.max_percent);
+        config.min_coverage = frac(config.min_coverage, defaults.min_coverage);
+        config.max_miss_frac = frac(config.max_miss_frac, defaults.max_miss_frac);
+        config.min_hit_frac = frac(config.min_hit_frac, defaults.min_hit_frac);
         Self {
             percent: config.start_percent,
             config,
@@ -130,8 +145,8 @@ impl TempoLadder {
     }
 
     /// The BPM the click should play: the rung applied to the score's tempo,
-    /// clamped into the Pocket's range. Wild imported tempi (NaN, zero,
-    /// negative) produce the floor — same as `clamp_pocket_params`.
+    /// clamped into the Pocket's range. Wild imported tempi (NaN, ±∞, zero,
+    /// negative) all produce the floor.
     pub fn practice_bpm(&self, score_tempo_bpm: f64) -> f64 {
         let raw = score_tempo_bpm * f64::from(self.percent) / 100.0;
         if raw.is_finite() {
@@ -250,6 +265,19 @@ mod tests {
         // Clean at the top: acknowledged, not climbed.
         assert_eq!(ladder.complete_pass(&all_hits(50), 50), PassOutcome::AtTop);
         assert_eq!(ladder.percent(), 100);
+        // AtTop is an EARNED acknowledgment: a garbage run at the top must
+        // still read as held, never as a pat on the back.
+        let all_misses = PassTally {
+            hits: 0,
+            nears: 0,
+            misses: 50,
+        };
+        assert_eq!(
+            ladder.complete_pass(&all_misses, 50),
+            PassOutcome::Held {
+                reason: HoldReason::TooManyMisses
+            }
+        );
     }
 
     #[test]
@@ -322,12 +350,17 @@ mod tests {
         assert_eq!(ladder.practice_bpm(40.0), POCKET_MIN_BPM);
         // At the top of the ladder a fast score still clamps to the ceiling.
         let mut topped = TempoLadder::default();
-        while topped.percent() < 100 {
+        for _ in 0..7 {
             topped.complete_pass(&all_hits(10), 10);
         }
+        assert_eq!(topped.percent(), 100, "70 + 6×5 + a capped step reach 100");
         assert_eq!(topped.practice_bpm(300.0), POCKET_MAX_BPM);
-        // Wild imported tempi never leak NaN or nonsense into the click.
+        // Wild imported tempi never leak NaN or nonsense into the click —
+        // and +∞ goes to the FLOOR, not the ceiling (a garbage tempo must
+        // slow the click, never max it).
         assert_eq!(ladder.practice_bpm(f64::NAN), POCKET_MIN_BPM);
+        assert_eq!(ladder.practice_bpm(f64::INFINITY), POCKET_MIN_BPM);
+        assert_eq!(ladder.practice_bpm(f64::NEG_INFINITY), POCKET_MIN_BPM);
         assert_eq!(ladder.practice_bpm(0.0), POCKET_MIN_BPM);
         assert_eq!(ladder.practice_bpm(-60.0), POCKET_MIN_BPM);
     }
@@ -377,23 +410,26 @@ mod tests {
 
     #[test]
     fn tally_counts_each_verdict_bucket() {
+        // Distinct counts per bucket, so swapping any two arms of the
+        // `from_verdicts` match cannot survive this test.
         let verdicts = vec![
             verdict(Verdict::Hit),
             verdict(Verdict::Near),
             verdict(Verdict::Hit),
             verdict(Verdict::Missed),
             verdict(Verdict::Hit),
+            verdict(Verdict::Near),
         ];
         let tally = PassTally::from_verdicts(&verdicts);
         assert_eq!(
             tally,
             PassTally {
                 hits: 3,
-                nears: 1,
+                nears: 2,
                 misses: 1
             }
         );
-        assert_eq!(tally.judged(), 5);
+        assert_eq!(tally.judged(), 6);
     }
 
     #[test]
@@ -425,6 +461,79 @@ mod tests {
             PassOutcome::Stepped {
                 from_percent: 70,
                 to_percent: 71
+            }
+        );
+    }
+
+    #[test]
+    fn nan_and_wild_thresholds_cannot_bless_a_dirty_pass() {
+        // NaN thresholds make every guard comparison false — unsanitized,
+        // an all-miss run would grade "clean" and step the ladder.
+        let mut nan_cfg = TempoLadder::new(LadderConfig {
+            min_coverage: f32::NAN,
+            max_miss_frac: f32::NAN,
+            min_hit_frac: f32::NAN,
+            ..LadderConfig::default()
+        });
+        let all_misses = PassTally {
+            hits: 0,
+            nears: 0,
+            misses: 100,
+        };
+        assert_eq!(
+            nan_cfg.complete_pass(&all_misses, 100),
+            PassOutcome::Held {
+                reason: HoldReason::TooManyMisses
+            }
+        );
+        assert_eq!(nan_cfg.percent(), 70);
+        // Out-of-range fractions clamp into [0, 1]: a >1 coverage bar would
+        // otherwise hold a full flawless run forever.
+        let mut strict = TempoLadder::new(LadderConfig {
+            min_coverage: 2.0,
+            min_hit_frac: 5.0,
+            ..LadderConfig::default()
+        });
+        assert_eq!(
+            strict.complete_pass(&all_hits(100), 100),
+            PassOutcome::Stepped {
+                from_percent: 70,
+                to_percent: 75
+            }
+        );
+    }
+
+    #[test]
+    fn pass_outcome_wire_shape_is_pinned() {
+        // S5b's TypeScript will match on this exact tagged shape; renaming
+        // the tag or a variant must go red here, not in the app.
+        let stepped = serde_json::to_value(PassOutcome::Stepped {
+            from_percent: 80,
+            to_percent: 85,
+        })
+        .expect("serializes");
+        assert_eq!(
+            stepped,
+            serde_json::json!({
+                "outcome": "stepped",
+                "from_percent": 80,
+                "to_percent": 85
+            })
+        );
+        let held = serde_json::to_value(PassOutcome::Held {
+            reason: HoldReason::LowCoverage,
+        })
+        .expect("serializes");
+        assert_eq!(
+            held,
+            serde_json::json!({ "outcome": "held", "reason": "low_coverage" })
+        );
+        // And it round-trips.
+        let back: PassOutcome = serde_json::from_value(held).expect("deserializes");
+        assert_eq!(
+            back,
+            PassOutcome::Held {
+                reason: HoldReason::LowCoverage
             }
         );
     }

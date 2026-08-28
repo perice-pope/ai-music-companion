@@ -31,8 +31,11 @@ IPC or UI.
 New module `crates/brain/src/tempo_ladder.rs` (`pub mod tempo_ladder` in `lib.rs`).
 
 ```rust
-/// Same click law as the Pocket's `clamp_pocket_params` (commands.rs);
-/// S5b should import these instead of keeping its own literals.
+/// Same bounds as the Pocket's `clamp_pocket_params` (commands.rs);
+/// S5b should import these instead of keeping its own literals. Deliberate
+/// divergence: the ladder sends EVERY non-finite tempo to the floor, while
+/// the shell's clamp maps +∞ to the ceiling — a garbage score tempo should
+/// slow the click, never max it.
 pub const POCKET_MIN_BPM: f64 = 40.0;
 pub const POCKET_MAX_BPM: f64 = 220.0;
 
@@ -84,15 +87,21 @@ the founder-fixed numbers are 70 / +5 / tally-driven.
    `Held { LowCoverage }` even if every judged note was a hit.
 5. Zero judged notes or a zero-note score returns `Held { NoNotes }` — no panic, no division
    by zero, no step.
-6. `practice_bpm` is `score_tempo × percent/100`, clamped into 40–220 BPM; non-finite or
-   non-positive score tempi produce the 40 BPM floor (the `clamp_pocket_params` law).
+6. `practice_bpm` is `score_tempo × percent/100`, clamped into 40–220 BPM; non-finite
+   (NaN, ±∞) or non-positive score tempi all produce the 40 BPM floor.
 7. Threshold boundaries are inclusive as specified: coverage exactly at `min_coverage`, miss
    fraction exactly at `max_miss_frac`, and hit fraction exactly at `min_hit_frac` all count
    toward clean.
 8. `PassTally::from_verdicts` counts each `Verdict` variant into the right bucket.
-9. A degenerate config is sanitized at construction: `start_percent` above `max_percent`
-   clamps to it, and zero `step_percent`/`max_percent` are raised to 1 (the ladder still
-   functions, it never divides by zero or steps by nothing forever at 0%).
+9. A degenerate config is sanitized at construction: `start_percent` clamps into
+   `1..=max_percent`, zero `step_percent`/`max_percent` are raised to 1 (the ladder still
+   functions, it never divides by zero or steps by nothing forever at 0%), and the three
+   cleanliness fractions clamp into `[0, 1]` with NaN falling back to the default — NaN
+   thresholds would otherwise make every comparison false and grade an all-miss run "clean".
+10. `AtTop` is earned: a dirty pass with the ladder already at `max_percent` still returns
+   `Held` with its reason, never `AtTop`.
+11. `PassOutcome`'s serialized shape (the `outcome` tag + snake_case variants) is pinned by
+   test — S5b's TypeScript will match on it.
 
 ## 6. Edge cases & failure modes
 - Empty verdict slice / empty score → AC5 (`NoNotes`).
@@ -116,8 +125,11 @@ Inline `#[cfg(test)]` in `tempo_ladder.rs` (pure unit logic, repo convention).
 | AC5 | `empty_pass_and_empty_score_hold_no_notes` | `NoNotes` for judged==0 and score_note_count==0 |
 | AC6 | `practice_bpm_scales_and_clamps` | 100→70 @70%; 40→40; 300→220 @100%; NaN/0/-5 → 40 |
 | AC7 | `threshold_boundaries_are_inclusive` | exact-boundary tallies step; one miss past holds |
-| AC8 | `tally_counts_each_verdict_bucket` | mixed verdict slice → exact hit/near/miss counts |
+| AC8 | `tally_counts_each_verdict_bucket` | mixed slice → exact counts, distinct per bucket (arm-swap mutations die) |
 | AC9 | `degenerate_config_is_sanitized` | start>max clamps; zero step/max raised to 1 |
+| AC9 | `nan_and_wild_thresholds_cannot_bless_a_dirty_pass` | NaN thresholds → all-miss still holds; >1 fractions clamp |
+| AC10 | `ladder_clamps_at_top_and_reports_at_top` | all-miss pass at 100% → `Held`, not `AtTop` |
+| AC11 | `pass_outcome_wire_shape_is_pinned` | exact tagged JSON for `Stepped`/`Held` + round-trip |
 
 ## 8. Architecture / approach
 Pure state machine beside its consumers' peers (`wheel.rs`, `chord_judge.rs` shape): no I/O,
