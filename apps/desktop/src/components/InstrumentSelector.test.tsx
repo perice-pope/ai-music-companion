@@ -87,7 +87,7 @@ const TEST_INSTRUMENTS: InstrumentInfo[] = [
   {
     name: "Piano",
     family: "Keyboard",
-    freqMinHz: 28,
+    freqMinHz: 27.5,
     freqMaxHz: 4186,
     vibratoToleranceCents: 10,
     emoji: "\uD83C\uDFB9",

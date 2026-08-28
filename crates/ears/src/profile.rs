@@ -249,15 +249,20 @@ mod tests {
     /// where a new profile is checked in but fails to parse at runtime.
     ///
     /// Update the expected count below when you add or remove a profile.
-    #[test]
-    fn all_workspace_profiles_load_cleanly() {
+    /// The repo's `profiles/` directory, resolved from this crate's location.
+    fn workspace_profiles_dir() -> std::path::PathBuf {
         // CARGO_MANIFEST_DIR is crates/ears — profiles/ lives at the workspace root.
-        let profiles_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("ears crate has a parent")
             .parent()
             .expect("workspace root exists")
-            .join("profiles");
+            .join("profiles")
+    }
+
+    #[test]
+    fn all_workspace_profiles_load_cleanly() {
+        let profiles_dir = workspace_profiles_dir();
 
         let loaded =
             ProfileLoader::load_all(&profiles_dir).expect("every checked-in profile must parse");
@@ -314,5 +319,37 @@ mod tests {
                 names
             );
         }
+    }
+
+    /// A piano has 88 keys, A0 (27.5 Hz) to C8 (4186 Hz). The shipped
+    /// profile's floor must admit A0 — it was 28 Hz for a while, which
+    /// silently excluded the bottom key from every range check and from
+    /// the #471-4 fold window (the row could never reach the real A0).
+    /// The floor is also pinned snug: a floor deeper than A0 would let
+    /// the range claim notes no piano has.
+    #[test]
+    fn piano_profile_spans_the_full_88_keys() {
+        let loaded = ProfileLoader::load_all(&workspace_profiles_dir())
+            .expect("workspace profiles must load");
+        let piano = loaded
+            .iter()
+            .find(|p| p.name == "Piano")
+            .expect("Piano profile ships with the workspace");
+
+        assert!(
+            piano.is_in_frequency_range(27.5),
+            "A0 (27.5 Hz) must be in the piano's range; floor is {} Hz",
+            piano.freq_min_hz
+        );
+        assert!(
+            piano.is_in_frequency_range(4186.0),
+            "C8 (4186 Hz) must be in the piano's range; ceiling is {} Hz",
+            piano.freq_max_hz
+        );
+        assert!(
+            !piano.is_in_frequency_range(27.4),
+            "below A0 is not a piano note; floor is {} Hz",
+            piano.freq_min_hz
+        );
     }
 }
