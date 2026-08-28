@@ -89,6 +89,18 @@ pub fn apply_moment_achieved(
 ) -> LearnerModel;
 ```
 
+> **S2 shipping note.** The landed signature is
+> `apply_moment_achieved(model, concept: &str, label: &str, score: f32, now_epoch_secs: i64)` —
+> the sketch's `&BossMoment` unbundles into the two fields the marker persists, so S2 lands in
+> parallel with S1 (disjoint footprints, no dependency on the unmerged type); S3 passes
+> `moment.concept` / `moment.label`. The marker lives in its own additive
+> `LearnerModel.moments: BTreeMap<concept, MomentAchieved>` map (label, best score,
+> first-achieved, count), NOT inside the reveal `collection` — reveals key by
+> `(concept, connection)` and feed `collection_size()`, so a moment entry there would inflate
+> the "N in your collection" surfaces (#256). Repeat semantics: count bumps, `first_achieved`
+> kept, `best_score` = best ever (a worse retry can't lower it), `label` refreshed to the
+> latest achievement.
+
 ### IPC / commands (`apps/desktop/src-tauri/src/commands.rs`)
 - New event `boss-moment` (payload: `label`, MusicXML or `ticks` for `ScoreView`, `key`, `tempo_bpm`,
   `concept`, `band_available: bool`) emitted at most once per window when `maybe_compose_moment`
