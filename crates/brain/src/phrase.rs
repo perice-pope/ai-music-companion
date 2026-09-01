@@ -265,6 +265,21 @@ impl PhraseAggregator {
         })
     }
 
+    /// Swap the voiced-confidence gate mid-session — the per-instrument half
+    /// of a profile reconfigure (#521). The gate judges subsequent `push`es
+    /// only; events already buffered in the open phrase keep the verdict they
+    /// got. On an invalid value the previous gate stays in force, mirroring
+    /// the pipeline's keep-previous-detector contract for bad profile data.
+    pub fn set_voiced_confidence_threshold(&mut self, threshold: f64) -> Result<(), PhraseError> {
+        let candidate = PhraseConfig {
+            voiced_confidence_threshold: threshold,
+            ..self.config.clone()
+        };
+        candidate.validate()?;
+        self.config = candidate;
+        Ok(())
+    }
+
     /// Set a score follower to enable score-based phrase boundaries.
     ///
     /// When a score is loaded, phrase boundaries are also triggered at measure
@@ -1054,6 +1069,120 @@ mod tests {
             "a lower voice gate counts the singing as practice"
         );
         assert_eq!(voice.phrases()[0].note_count, 5);
+    }
+
+    #[test]
+    fn loosened_gate_counts_previously_subvoiced_events() {
+        // #521: a Trumpet→Voice switch mid-session. Same breathy 0.4-confidence
+        // singing throughout; only the gate changes. Events before the switch
+        // must NOT be retroactively re-judged — the Voice segment starts
+        // counting, the Trumpet segment's verdicts stand.
+        let breathy = |t: f64| AudioEvent {
+            pitch_hz: Some(220.0),
+            confidence: 0.4,
+            amplitude: 0.3,
+            timestamp_secs: t,
+            is_onset: false,
+            note_info: None,
+        };
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            voiced_confidence_threshold: 0.5,
+            ..PhraseConfig::default()
+        })
+        .unwrap();
+        for i in 0..5 {
+            agg.push(&breathy(i as f64 * 0.05));
+        }
+        agg.set_voiced_confidence_threshold(0.3).unwrap();
+        for i in 0..5 {
+            agg.push(&breathy(1.0 + i as f64 * 0.05));
+        }
+        agg.flush();
+        assert_eq!(
+            agg.phrases().len(),
+            1,
+            "singing after the switch must form a phrase under the new gate"
+        );
+        assert_eq!(
+            agg.phrases()[0].note_count,
+            5,
+            "only post-switch events count — the old gate's verdicts stand"
+        );
+        assert!(
+            agg.phrases()[0].start_time >= 1.0,
+            "the phrase must start at the first post-switch event, not be \
+             back-dated to pre-switch audio"
+        );
+    }
+
+    #[test]
+    fn tightened_gate_stops_counting_borderline_events_as_voiced() {
+        // The reverse switch (Voice→Trumpet, #521): the loose 0.3 gate must not
+        // survive and keep counting low-confidence noise as practice.
+        let breathy = |t: f64| AudioEvent {
+            pitch_hz: Some(220.0),
+            confidence: 0.4,
+            amplitude: 0.3,
+            timestamp_secs: t,
+            is_onset: false,
+            note_info: None,
+        };
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            voiced_confidence_threshold: 0.3,
+            ..PhraseConfig::default()
+        })
+        .unwrap();
+        for i in 0..5 {
+            agg.push(&breathy(i as f64 * 0.05));
+        }
+        agg.set_voiced_confidence_threshold(0.5).unwrap();
+        for i in 0..5 {
+            agg.push(&breathy(1.0 + i as f64 * 0.05));
+        }
+        agg.flush();
+        assert_eq!(agg.phrases().len(), 1, "only the pre-switch phrase exists");
+        assert_eq!(
+            agg.phrases()[0].note_count,
+            5,
+            "post-switch 0.4-confidence events must not extend the phrase \
+             once the gate is 0.5"
+        );
+    }
+
+    #[test]
+    fn set_voiced_gate_rejects_invalid_values_and_keeps_the_old_gate() {
+        let breathy = |t: f64| AudioEvent {
+            pitch_hz: Some(220.0),
+            confidence: 0.4,
+            amplitude: 0.3,
+            timestamp_secs: t,
+            is_onset: false,
+            note_info: None,
+        };
+        let mut agg = PhraseAggregator::new(PhraseConfig {
+            voiced_confidence_threshold: 0.3,
+            ..PhraseConfig::default()
+        })
+        .unwrap();
+        for bad in [0.0, -0.2, 1.5, f64::NAN] {
+            match agg.set_voiced_confidence_threshold(bad) {
+                Err(PhraseError::InvalidConfidenceThreshold(got)) => assert!(
+                    got == bad || (got.is_nan() && bad.is_nan()),
+                    "error must carry the offending value: got {got}, fed {bad}"
+                ),
+                other => panic!("expected typed rejection for {bad}, got {other:?}"),
+            }
+        }
+        // The 0.3 gate is still in force: borderline singing still counts.
+        for i in 0..3 {
+            agg.push(&breathy(i as f64 * 0.05));
+        }
+        agg.flush();
+        assert_eq!(
+            agg.phrases().len(),
+            1,
+            "a rejected gate must leave the previous gate judging events"
+        );
     }
 
     // --- Phrase timing ---
