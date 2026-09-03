@@ -1327,18 +1327,6 @@ pub fn theory_flavour(fp: &MusicalFingerprint) -> Option<String> {
     }
 }
 
-/// Build a grounded, fully offline [`SessionRecap`] from the session's measured
-/// [`MusicalFingerprint`], reusing the same `describe_*` helpers the online
-/// prompt uses. Deterministic and network-free — the prose varies with the
-/// numbers, never with a clock or RNG.
-///
-/// The contract is honesty over filler: every claim is sourced from a
-/// fingerprint dimension that passed its evidence gate. A dimension that is
-/// absent (its gate failed) contributes nothing — we never invent a tempo, a
-/// cents figure, or a key that wasn't measured. A quiet session with no signal
-/// therefore degrades to engagement-level encouragement with **no fabricated
-/// numeric claims**, and `fingerprint` is carried through (`None` only when
-/// nothing was measured), never thrown away.
 /// #417-4/#389: families whose pitch the PLAYER cannot bend. Intonation
 /// critique and tuner/drone advice are meaningless on these — measured
 /// pitch deviation is the INSTRUMENT's tuning and is phrased as such,
@@ -1438,6 +1426,18 @@ pub fn thin_session_recap(input: &RecapInput) -> SessionRecap {
     }
 }
 
+/// Build a grounded, fully offline [`SessionRecap`] from the session's measured
+/// [`MusicalFingerprint`], reusing the same `describe_*` helpers the online
+/// prompt uses. Deterministic and network-free — the prose varies with the
+/// numbers, never with a clock or RNG.
+///
+/// The contract is honesty over filler: every claim is sourced from a
+/// fingerprint dimension that passed its evidence gate. A dimension that is
+/// absent (its gate failed) contributes nothing — we never invent a tempo, a
+/// cents figure, or a key that wasn't measured. A quiet session with no signal
+/// therefore degrades to engagement-level encouragement with **no fabricated
+/// numeric claims**, and `fingerprint` is carried through (`None` only when
+/// nothing was measured), never thrown away.
 pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     // #445-6b: a quick touch earns the short form, not the full essay.
     if is_thin_session(input) {
@@ -1446,12 +1446,46 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     let fixed_pitch = fixed_pitch_family(&input.instrument_family);
     let fingerprint = build_fingerprint(&input.phrases);
     let flavour = theory_flavour(&fingerprint);
+
+    SessionRecap {
+        overall_assessment: offline_overall_assessment(input, &fingerprint, fixed_pitch),
+        strengths: offline_strengths(&fingerprint, fixed_pitch),
+        areas_to_improve: offline_areas_to_improve(input, &fingerprint, fixed_pitch),
+        next_session_suggestions: offline_next_suggestions(input, &fingerprint, fixed_pitch),
+        score_summary: input
+            .score_title
+            .as_deref()
+            .and_then(|t| score_practice_summary(t, &input.note_verdicts)),
+        duration_secs: input.duration_secs,
+        phrase_count: input.phrases.len(),
+        instrument: input.instrument.clone(),
+        // Persist the measured fingerprint instead of throwing it away —
+        // `None` only when nothing cleared a gate, so "nothing measured" stays
+        // distinct from "some dimensions measured".
+        fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
+        // Theory-grounded flavour from mode + swing (#209) — hedged, and `None`
+        // when there's no clear signal. Replaces the placeholder idiom corpus
+        // (#208) as the *displayed* flavour.
+        flavour,
+        // Offline idiom matches are computed independently of any LLM, so carry
+        // them through — the frontend hedges the "reminds me of" phrasing.
+        idiom_notes: input.idiom_notes.clone(),
+        // The offline path never reached the model, so there is no grounded
+        // cross-genre reference to surface — empty, by design.
+        connections: Vec::new(),
+    }
+}
+
+/// The full recap's opening line: the session frame (always honest), then the
+/// single strongest measured read woven in so the line reflects *this*
+/// session.
+fn offline_overall_assessment(
+    input: &RecapInput,
+    fingerprint: &MusicalFingerprint,
+    fixed_pitch: bool,
+) -> String {
     let duration_mins = (input.duration_secs / 60.0).round().max(1.0) as i32;
     let phrase_count = input.phrases.len();
-
-    // --- Overall assessment ------------------------------------------------
-    // Open with the session frame (always honest), then weave in the single
-    // strongest measured read so the line reflects *this* session.
     let mut overall = format!(
         "You practiced for about {duration_mins} minute{} on {} across {phrase_count} phrase{}.",
         if duration_mins == 1 { "" } else { "s" },
@@ -1496,9 +1530,12 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
              time, but showing up and playing is what moves you forward.",
         );
     }
+    overall
+}
 
-    // --- Strengths ---------------------------------------------------------
-    // Each is gated on a dimension that actually cleared its evidence bar.
+/// Strengths: each is gated on a dimension that actually cleared its evidence
+/// bar.
+fn offline_strengths(fingerprint: &MusicalFingerprint, fixed_pitch: bool) -> Vec<String> {
     let mut strengths: Vec<String> = Vec::new();
     if let Some(s) = &fingerprint.intonation {
         // #389: an in-tune ratio on a fixed-pitch instrument measures the
@@ -1541,8 +1578,14 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
         // inventing a measured win.
         strengths.push("You showed up and played — that consistency is what builds.".to_owned());
     }
+    strengths
+}
 
-    // --- Areas to improve --------------------------------------------------
+fn offline_areas_to_improve(
+    input: &RecapInput,
+    fingerprint: &MusicalFingerprint,
+    fixed_pitch: bool,
+) -> Vec<String> {
     let mut areas: Vec<String> = Vec::new();
     // #389 acceptance: a fixed-pitch recap contains NO player-intonation
     // critique — the whole block is the player-controllable path.
@@ -1553,12 +1596,7 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                 s.in_tune_ratio * 100.0,
             ));
         }
-        if let Some(worst) = s
-            .tendencies
-            .iter()
-            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
-            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-        {
+        if let Some(worst) = worst_tendency(s) {
             let degree = degree_name(worst.semitones_from_tonic);
             let dir = if worst.mean_cents >= 0.0 {
                 "sharp"
@@ -1610,9 +1648,16 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     if let Some(tip) = &input.method_book_tip {
         areas.push(format!("{} ({})", tip.guidance, tip.source_line()));
     }
+    areas
+}
 
-    // --- Next-session suggestions ------------------------------------------
-    // Targeted to the weakest measured read, with safe defaults when quiet.
+/// Next-session suggestions: targeted to the weakest measured read, with safe
+/// defaults when quiet.
+fn offline_next_suggestions(
+    input: &RecapInput,
+    fingerprint: &MusicalFingerprint,
+    fixed_pitch: bool,
+) -> Vec<String> {
     let mut suggestions: Vec<String> = Vec::new();
     if let Some(k) = &fingerprint.key {
         if k.confidence >= 0.5 {
@@ -1666,12 +1711,7 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
                     if s.mean_cents > 0.0 { "sharp" } else { "flat" },
                 ));
             }
-        } else if let Some(worst) = s
-            .tendencies
-            .iter()
-            .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
-            .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-        {
+        } else if let Some(worst) = worst_tendency(s) {
             suggestions.push(format!(
                 "Play a slow scale against a drone, listening for the {}.",
                 degree_name(worst.semitones_from_tonic),
@@ -1706,34 +1746,18 @@ pub fn grounded_offline_recap(input: &RecapInput) -> SessionRecap {
     if let Some(h) = input.history_suggestions.first() {
         suggestions.push(h.text.clone());
     }
+    suggestions
+}
 
-    SessionRecap {
-        overall_assessment: overall,
-        strengths,
-        areas_to_improve: areas,
-        next_session_suggestions: suggestions,
-        score_summary: input
-            .score_title
-            .as_deref()
-            .and_then(|t| score_practice_summary(t, &input.note_verdicts)),
-        duration_secs: input.duration_secs,
-        phrase_count,
-        instrument: input.instrument.clone(),
-        // Persist the measured fingerprint instead of throwing it away —
-        // `None` only when nothing cleared a gate, so "nothing measured" stays
-        // distinct from "some dimensions measured".
-        fingerprint: (!fingerprint.is_empty()).then_some(fingerprint),
-        // Theory-grounded flavour from mode + swing (#209) — hedged, and `None`
-        // when there's no clear signal. Replaces the placeholder idiom corpus
-        // (#208) as the *displayed* flavour.
-        flavour,
-        // Offline idiom matches are computed independently of any LLM, so carry
-        // them through — the frontend hedges the "reminds me of" phrasing.
-        idiom_notes: input.idiom_notes.clone(),
-        // The offline path never reached the model, so there is no grounded
-        // cross-genre reference to surface — empty, by design.
-        connections: Vec::new(),
-    }
+/// The single most out-of-tune scale degree with real evidence (≥ 2 notes,
+/// ≥ 5 cents off) — the shared bar for the areas line, the drone suggestion,
+/// and the prompt's intonation line, so they never disagree about which
+/// degree needs work.
+fn worst_tendency(s: &theory::IntonationSummary) -> Option<&theory::DegreeTendency> {
+    s.tendencies
+        .iter()
+        .filter(|t| t.count >= 2 && t.mean_cents.abs() >= 5.0)
+        .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
 }
 
 /// Render a tone descriptor as a compact, label-led line for the LLM prompt.
@@ -1766,24 +1790,17 @@ fn describe_intonation(s: &theory::IntonationSummary) -> String {
     );
     // Surface the single worst degree, when we have per-degree tendencies — a
     // concrete, teacher-style observation ("the 3rd ran sharp").
-    if let Some(worst) = s
-        .tendencies
-        .iter()
-        .filter(|t| t.count >= 2)
-        .max_by(|a, b| a.mean_cents.abs().total_cmp(&b.mean_cents.abs()))
-    {
-        if worst.mean_cents.abs() >= 5.0 {
-            let degree = degree_name(worst.semitones_from_tonic);
-            let dir = if worst.mean_cents >= 0.0 {
-                "sharp"
-            } else {
-                "flat"
-            };
-            line.push_str(&format!(
-                "; the {degree} ran {:+.0} cents ({dir})",
-                worst.mean_cents
-            ));
-        }
+    if let Some(worst) = worst_tendency(s) {
+        let degree = degree_name(worst.semitones_from_tonic);
+        let dir = if worst.mean_cents >= 0.0 {
+            "sharp"
+        } else {
+            "flat"
+        };
+        line.push_str(&format!(
+            "; the {degree} ran {:+.0} cents ({dir})",
+            worst.mean_cents
+        ));
     }
     line
 }
@@ -5835,6 +5852,68 @@ mod tests {
         assert!(recap.strengths.is_empty());
         assert!(recap.areas_to_improve.is_empty());
         assert_eq!(recap.next_session_suggestions.len(), 1);
+    }
+
+    /// §6: a score session the follower never judged says so — the player may
+    /// have been on a different piece, and silently showing nothing would
+    /// read as "all fine". The line is gated three ways: a score was open,
+    /// zero notes were judged, and real playing happened.
+    #[test]
+    fn unjudged_score_session_asks_about_the_piece() {
+        let follow_line = "was this the right piece?";
+        let phrases = settled_phrases(
+            vec![
+                261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 261.63, 329.63, 392.00,
+                440.00, 261.63,
+            ],
+            vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            4.0,
+        );
+
+        // Score open, playing heard, nothing judged → the recap asks.
+        let mut unjudged = offline_input(phrases.clone());
+        unjudged.score_title = Some("Haydn".to_owned());
+        let recap = grounded_offline_recap(&unjudged);
+        assert!(
+            recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains(follow_line)),
+            "an unjudged score session must ask about the piece, got: {:?}",
+            recap.areas_to_improve
+        );
+        assert!(
+            recap.score_summary.is_none(),
+            "nothing judged → no accuracy panel (silence > lies)"
+        );
+
+        // The same session with judged notes earns the accuracy panel
+        // instead — the question would then be a false accusation.
+        let mut judged = unjudged.clone();
+        judged.note_verdicts = vec![crate::follower::NoteVerdict {
+            measure_number: 1,
+            beat: 0.0,
+            verdict: crate::follower::Verdict::Hit,
+        }];
+        let recap = grounded_offline_recap(&judged);
+        assert!(
+            !recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains(follow_line)),
+            "a judged session must not be accused of playing the wrong piece"
+        );
+
+        // No score open → nothing to follow, so nothing to ask about.
+        let free_play = offline_input(phrases);
+        let recap = grounded_offline_recap(&free_play);
+        assert!(
+            !recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains(follow_line)),
+            "free play never mentions score-following"
+        );
     }
 
     // -----------------------------------------------------------------------
