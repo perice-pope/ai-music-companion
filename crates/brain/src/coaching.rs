@@ -5914,6 +5914,20 @@ mod tests {
                 .any(|a| a.contains(follow_line)),
             "free play never mentions score-following"
         );
+
+        // Score open but NOTHING played: a zero-phrase session bypasses the
+        // thin bar (thin requires some phrases) and takes the full path —
+        // it must not accuse a player who never played.
+        let mut silent = offline_input(Vec::new());
+        silent.score_title = Some("Haydn".to_owned());
+        let recap = grounded_offline_recap(&silent);
+        assert!(
+            !recap
+                .areas_to_improve
+                .iter()
+                .any(|a| a.contains(follow_line)),
+            "a silent session has no take to question"
+        );
     }
 
     // -----------------------------------------------------------------------
