@@ -1806,8 +1806,9 @@ fn describe_intonation(s: &theory::IntonationSummary) -> String {
 }
 
 /// Human name for a scale degree given its distance in semitones from the
-/// tonic. Used only for grounded recap phrasing.
-fn degree_name(semitones_from_tonic: u8) -> &'static str {
+/// tonic. Used only for grounded recap phrasing — and by the daily pick
+/// (#216), so both surfaces name a leaning degree identically.
+pub(crate) fn degree_name(semitones_from_tonic: u8) -> &'static str {
     match semitones_from_tonic {
         0 => "tonic",
         1 => "flat 2nd",

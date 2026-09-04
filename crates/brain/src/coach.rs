@@ -962,8 +962,9 @@ fn push_history(next: &mut ExploreState, prev: &ExploreState) {
 
 /// Map a live-detected mode label onto the generator's scale space; `None`
 /// when the label names no scale we generate (caller falls back to the
-/// difficulty ladder's scale).
-fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
+/// difficulty ladder's scale). Shared with the daily pick (#216), which
+/// skips mastery keys it can't deal.
+pub(crate) fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
     let l = label.trim().to_lowercase();
     Some(match l.as_str() {
         "major" | "ionian" => ScaleType::Major,
