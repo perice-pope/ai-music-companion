@@ -23,6 +23,7 @@ pub mod idiom_recap;
 pub mod insights;
 pub mod learner;
 pub mod mirror;
+pub mod one_thing;
 pub mod pedagogy;
 pub mod perception;
 pub mod phrase;

@@ -960,19 +960,28 @@ fn push_history(next: &mut ExploreState, prev: &ExploreState) {
     }
 }
 
-/// Map a live-detected mode label onto the generator's scale space; `None`
-/// when the label names no scale we generate (caller falls back to the
-/// difficulty ladder's scale).
-fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
+/// Map a mode/scale label onto the generator's scale space; `None` when the
+/// label names no scale we generate (caller falls back to the difficulty
+/// ladder's scale). Covers both the live-detected mode labels AND every
+/// lowercased [`ScaleType::label`] that [`mastery_scale`] writes into
+/// `key_mastery` — the daily pick (#216) reads those keys back through this
+/// mapper, so a hole here silences its KeyTrend source for that scale.
+pub(crate) fn scale_for_mode_label(label: &str) -> Option<ScaleType> {
     let l = label.trim().to_lowercase();
     Some(match l.as_str() {
         "major" | "ionian" => ScaleType::Major,
-        "minor" | "aeolian" => ScaleType::NaturalMinor,
+        "minor" | "aeolian" | "natural minor" => ScaleType::NaturalMinor,
         "dorian" => ScaleType::Dorian,
         "mixolydian" => ScaleType::Mixolydian,
         "lydian" => ScaleType::Lydian,
         "phrygian" => ScaleType::Phrygian,
         "locrian" => ScaleType::Locrian,
+        "harmonic minor" => ScaleType::HarmonicMinor,
+        "melodic minor" => ScaleType::MelodicMinor,
+        "blues" => ScaleType::Blues,
+        "major pentatonic" => ScaleType::MajorPentatonic,
+        "minor pentatonic" => ScaleType::MinorPentatonic,
+        "chromatic" => ScaleType::Chromatic,
         _ => return None,
     })
 }

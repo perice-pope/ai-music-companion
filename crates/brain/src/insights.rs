@@ -226,8 +226,9 @@ fn days_phrase(days: i64) -> String {
 
 /// `"3:major"` → `"Eb major"`, through the same signature-driven spelling
 /// voice everything else uses (#335). Unparseable keys return `None` — a
-/// key we can't name honestly is a key we don't make claims about.
-fn mastery_key_display(key: &str) -> Option<String> {
+/// key we can't name honestly is a key we don't make claims about. Shared
+/// with the daily pick (#216) so both surfaces spell a weak key identically.
+pub(crate) fn mastery_key_display(key: &str) -> Option<String> {
     let (tonic_str, mode) = key.split_once(':')?;
     let tonic: u8 = tonic_str.parse().ok()?;
     if tonic >= 12 || mode.is_empty() {
