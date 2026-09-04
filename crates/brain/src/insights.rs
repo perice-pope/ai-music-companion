@@ -148,6 +148,8 @@ pub enum SuggestionKind {
     Neglect,
     /// A cell of yours that jumped — push it.
     Momentum,
+    /// A catalog shape whose grades are climbing — deal it again (#303).
+    Working,
 }
 
 /// One history-grounded suggestion. `text` is the human sentence and embeds
@@ -407,11 +409,169 @@ fn momentum_suggestions(
     out
 }
 
+// ---------------------------------------------------------------------------
+// #303 S1: shape verdicts — the coach-selection contract. Per CATALOG shape
+// (player cells are the Momentum rule's beat; score-reference and unparseable
+// rows earn no call), the log's recent window answers: is this material
+// WORKING (grades climbing — deal it again), or does it keep getting dealt
+// and BAILED on (selection should rest it)? Selection wiring (S2/S3)
+// consumes these; the Working call also speaks one recap line below.
+// ---------------------------------------------------------------------------
+
+/// A verdict is about the shape's recent life, not its lifetime — the same
+/// 12-row discipline as [`MOMENTUM_WINDOW_ROWS`].
+pub const SHAPE_WINDOW_ROWS: usize = 12;
+/// Working bar (K): ≥6 graded rows in the window so each half rests on ≥3 —
+/// the halving discipline of [`MOMENTUM_MIN_GRADED`].
+pub const WORKING_MIN_GRADED: usize = 6;
+/// Working bar (delta): 15 points clears normal grade jitter, the same bar
+/// as [`MOMENTUM_MIN_DELTA`] — one climb standard, two materials.
+pub const WORKING_MIN_DELTA: f32 = 0.15;
+/// Both calls demand a row this recent — a verdict on abandoned material is
+/// history, not guidance.
+pub const SHAPE_RECENT_DAYS: i64 = 14;
+/// Bailing bar: below this many deals in the window, "repeatedly dealt" is
+/// an overclaim.
+pub const BAILING_MIN_DEALT: usize = 6;
+
+/// The call on one shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeCall {
+    /// Grades rising inside the window — deal it again.
+    Working { early: f32, late: f32, graded: u32 },
+    /// Dealt repeatedly, rarely played to a grade — rest it.
+    Bailing { dealt: u32, graded: u32 },
+}
+
+/// One shape's verdict. `newest` is the stamp the recency bar accepted
+/// (newest graded row for Working, newest row for Bailing).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeVerdict {
+    pub shape: String,
+    pub call: ShapeCall,
+    pub newest: DateTime<FixedOffset>,
+}
+
+/// The catalog gate: `Some(shape)` only for material the coach itself deals.
+/// Player cells stay Momentum's claim (one material, one voice), a score
+/// reference is a piece rather than a shape, and junk earns no call.
+fn catalog_shape(spec_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(spec_json).ok()?;
+    if v.get("score_title").and_then(|t| t.as_str()).is_some() {
+        return None;
+    }
+    let spec: VariationSpec = serde_json::from_str(spec_json).ok()?;
+    if spec.cell.as_ref().is_some_and(|c| !c.is_empty()) {
+        return None;
+    }
+    Some(shape_of(spec_json))
+}
+
+/// Judge every catalog shape in the log. Pure and deterministic — shapes in
+/// first-appearance order, `now` injected; corrupt stamps feed no verdict.
+/// The two calls are mutually exclusive by arithmetic: Working needs ≥6
+/// graded rows, Bailing allows at most window/3 (12/3 = 4).
+pub fn shape_verdicts(log: &[TimedExerciseLogEntry], now: DateTime<Utc>) -> Vec<ShapeVerdict> {
+    // One log row of a shape: (write stamp, grade if played through).
+    type ShapeRow = (DateTime<FixedOffset>, Option<f32>);
+    let mut shapes: Vec<(String, Vec<ShapeRow>)> = Vec::new();
+    for r in log {
+        let Some(t) = parse_stamp(&r.logged_at) else {
+            continue;
+        };
+        let Some(shape) = catalog_shape(&r.entry.spec_json) else {
+            continue;
+        };
+        let acc = r.entry.accuracy.map(|a| a as f32);
+        match shapes.iter_mut().find(|(s, _)| *s == shape) {
+            Some((_, rows)) => rows.push((t, acc)),
+            None => shapes.push((shape, vec![(t, acc)])),
+        }
+    }
+    let mut out = Vec::new();
+    for (shape, rows) in shapes {
+        let window = &rows[rows.len().saturating_sub(SHAPE_WINDOW_ROWS)..];
+        let graded: Vec<f32> = window.iter().filter_map(|(_, a)| *a).collect();
+        if graded.len() >= WORKING_MIN_GRADED {
+            let newest_graded = window
+                .iter()
+                .rev()
+                .find_map(|(t, a)| a.map(|_| *t))
+                .expect("graded is non-empty");
+            if now.signed_duration_since(newest_graded).num_days() > SHAPE_RECENT_DAYS {
+                continue;
+            }
+            let mid = graded.len() / 2;
+            let (early, late) = (mean(&graded[..mid]), mean(&graded[mid..]));
+            if late - early >= WORKING_MIN_DELTA {
+                out.push(ShapeVerdict {
+                    shape,
+                    call: ShapeCall::Working {
+                        early,
+                        late,
+                        graded: graded.len() as u32,
+                    },
+                    newest: newest_graded,
+                });
+            }
+            // Enough grades but no climb: neither call — grading a lot
+            // isn't bailing, and a plateau isn't progress.
+        } else if window.len() >= BAILING_MIN_DEALT && graded.len() * 3 <= window.len() {
+            let newest = window.last().map(|(t, _)| *t).expect("window non-empty");
+            if now.signed_duration_since(newest).num_days() <= SHAPE_RECENT_DAYS {
+                out.push(ShapeVerdict {
+                    shape,
+                    call: ShapeCall::Bailing {
+                        dealt: window.len() as u32,
+                        graded: graded.len() as u32,
+                    },
+                    newest,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The founder's recap line (#303): each Working verdict, spoken. Bailing
+/// stays out of the recap — retirement is selection's business (S2), not a
+/// nag.
+fn working_suggestions(
+    log: &[TimedExerciseLogEntry],
+    now: DateTime<Utc>,
+) -> Vec<PracticeSuggestion> {
+    shape_verdicts(log, now)
+        .into_iter()
+        .filter_map(|v| match v.call {
+            ShapeCall::Working {
+                early,
+                late,
+                graded,
+            } => Some(PracticeSuggestion {
+                kind: SuggestionKind::Working,
+                text: format!(
+                    "Your {} rows climbed from {}% to {}% across the last {graded} graded — that material is working for you, deal it again.",
+                    v.shape,
+                    pct(early),
+                    pct(late),
+                ),
+                evidence: format!(
+                    "shape '{}': older-half mean {early:.2} → newer-half mean {late:.2} over {graded} graded rows, newest {}",
+                    v.shape,
+                    v.newest.format("%Y-%m-%d"),
+                ),
+            }),
+            ShapeCall::Bailing { .. } => None,
+        })
+        .collect()
+}
+
 /// The #453 S1 analyzer: evidence-cited suggestions from the timed exercise
 /// log + `key_mastery`. Pure and deterministic — `now` is injected. Rows
 /// whose `logged_at` doesn't parse as RFC3339 feed no rule (a corrupt stamp
 /// must never invent a claim). Order is pinned: Trend (by mastery key),
-/// Neglect (fixed group order), Momentum (cell first-appearance).
+/// Neglect (fixed group order), Momentum (cell first-appearance), Working
+/// (shape first-appearance, #303).
 pub fn practice_suggestions(
     log: &[TimedExerciseLogEntry],
     key_mastery: &BTreeMap<String, Mastery>,
@@ -424,6 +584,7 @@ pub fn practice_suggestions(
     let mut out = trend_suggestions(key_mastery, now);
     out.extend(neglect_suggestions(&rows, now));
     out.extend(momentum_suggestions(&rows, now));
+    out.extend(working_suggestions(log, now));
     out
 }
 
@@ -853,13 +1014,17 @@ mod tests {
             (0..8).map(|i| timed(&cell_spec(), 0, None, i)).collect();
         assert!(practice_suggestions(&ungraded, &no_mastery, now).is_empty());
 
-        // Catalog drills (no cell) with the same rise → not "your" cell.
+        // Catalog drills (no cell) with the same rise → not "your" cell:
+        // never Momentum. (The rise IS claimed — by #303's Working rule,
+        // whose own tests pin it.)
         let catalog: Vec<TimedExerciseLogEntry> = rising
             .iter()
             .enumerate()
             .map(|(i, &a)| timed(&scale_spec(), 0, Some(a), (rising.len() - 1 - i) as i64))
             .collect();
-        assert!(practice_suggestions(&catalog, &no_mastery, now).is_empty());
+        assert!(practice_suggestions(&catalog, &no_mastery, now)
+            .iter()
+            .all(|s| s.kind != SuggestionKind::Momentum));
     }
 
     /// AC4: empty history → empty vec; garbage `logged_at` stamps and junk
@@ -922,18 +1087,20 @@ mod tests {
         );
     }
 
-    /// AC5: identical inputs → identical output, order pinned Trend →
-    /// Neglect → Momentum, and every suggestion carries digit-bearing text
-    /// AND evidence. Fails if iteration order becomes nondeterministic or a
-    /// rule stops citing.
+    /// AC5 (#453) + AC6 (#303): identical inputs → identical output, order
+    /// pinned Trend → Neglect → Momentum → Working, and every suggestion
+    /// carries digit-bearing text AND evidence. Fails if iteration order
+    /// becomes nondeterministic or a rule stops citing.
     #[test]
     fn suggestions_are_deterministic_and_ordered() {
         let now = test_now();
         let mastery = km(&[("3:major", mastery_row(6, 0.5, 2))]);
-        // Momentum cell + flat-key neglect (contrast = the cell rows, tonic 7).
+        // Momentum cell + flat-key neglect (contrast = the recent rows,
+        // tonic 7) + a rising catalog scale for Working.
         let mut log: Vec<TimedExerciseLogEntry> = vec![timed(&scale_spec(), 10, None, 20)];
         for (i, a) in [0.5, 0.5, 0.5, 0.5, 0.8, 0.8, 0.8, 0.8].iter().enumerate() {
             log.push(timed(&cell_spec(), 7, Some(*a), 8 - i as i64));
+            log.push(timed(&scale_spec(), 7, Some(*a), 8 - i as i64));
         }
         let a = practice_suggestions(&log, &mastery, now);
         let b = practice_suggestions(&log, &mastery, now);
@@ -944,7 +1111,8 @@ mod tests {
             vec![
                 SuggestionKind::Trend,
                 SuggestionKind::Neglect,
-                SuggestionKind::Momentum
+                SuggestionKind::Momentum,
+                SuggestionKind::Working
             ]
         );
         for s in &a {
@@ -954,5 +1122,185 @@ mod tests {
                 "every suggestion embeds its numbers: {s:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // #303 S1: shape verdicts + the Working recap line.
+    // -----------------------------------------------------------------
+
+    /// One graded catalog row per accuracy, newest last, `newest_days_ago`
+    /// for the final row — the Working twin of momentum's `cell_log`.
+    fn catalog_log(accs: &[f64], newest_days_ago: i64) -> Vec<TimedExerciseLogEntry> {
+        accs.iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                let days = newest_days_ago + (accs.len() - 1 - i) as i64;
+                timed(&scale_spec(), 0, Some(a), days)
+            })
+            .collect()
+    }
+
+    /// AC1: a rising catalog shape earns exactly one Working line whose text
+    /// embeds the shape, both halves, and the graded count, and whose
+    /// evidence cites the halves and newest date. Fails if the bars loosen,
+    /// the halves miscompute, or the line stops citing.
+    #[test]
+    fn working_fires_on_a_rising_catalog_shape() {
+        let now = test_now();
+        let rising = [0.5, 0.5, 0.5, 0.55, 0.75, 0.8, 0.8, 0.85];
+        let out = practice_suggestions(&catalog_log(&rising, 1), &BTreeMap::new(), now);
+        assert_eq!(out.len(), 1, "exactly the Working line: {out:?}");
+        assert_eq!(out[0].kind, SuggestionKind::Working);
+        assert!(
+            out[0].text.contains("major up-down")
+                && out[0].text.contains("51%")
+                && out[0].text.contains("80%")
+                && out[0].text.contains("8 graded"),
+            "text embeds shape, halves, count: {}",
+            out[0].text
+        );
+        assert!(
+            out[0].evidence.contains("major up-down") && out[0].evidence.contains("2026-06-30"),
+            "evidence cites the shape and newest date: {}",
+            out[0].evidence
+        );
+    }
+
+    /// AC2: each Working bar individually silences — below-K grades, a
+    /// sub-0.15 delta, a stale newest grade, and ungraded rows never
+    /// counting toward K. Fails if any bar loosens.
+    #[test]
+    fn working_needs_k_delta_and_recency() {
+        let now = test_now();
+        let no_mastery = BTreeMap::new();
+        let rising = [0.5, 0.5, 0.5, 0.55, 0.75, 0.8, 0.8, 0.85];
+
+        // 5 graded rows → below K.
+        assert!(practice_suggestions(&catalog_log(&rising[3..], 1), &no_mastery, now).is_empty());
+
+        // Delta 0.14 → below the bar; flat → nothing at all.
+        let shy = [0.5, 0.5, 0.5, 0.5, 0.64, 0.64, 0.64, 0.64];
+        assert!(practice_suggestions(&catalog_log(&shy, 1), &no_mastery, now).is_empty());
+        assert!(practice_suggestions(&catalog_log(&[0.6; 8], 1), &no_mastery, now).is_empty());
+
+        // Newest grade 15 days old → ancient history.
+        assert!(practice_suggestions(&catalog_log(&rising, 15), &no_mastery, now).is_empty());
+
+        // 5 graded rising + 3 ungraded deals = 8 rows but K counts GRADES —
+        // and 5-of-8 graded is no bailing either. Total silence.
+        let mut mixed = catalog_log(&rising[3..], 1);
+        mixed.extend((0..3).map(|i| timed(&scale_spec(), 0, None, i)));
+        assert!(practice_suggestions(&mixed, &no_mastery, now).is_empty());
+    }
+
+    /// AC3: the 12-row window — ancient lows before a recent plateau must
+    /// not fake a climb (over the lifetime the halves would read a false
+    /// rise). The tonic-0 20-day log legitimately earns neglect, so pin the
+    /// absence of WORKING only. Fails if the window leaks lifetime rows.
+    #[test]
+    fn working_window_excludes_lifetime() {
+        let now = test_now();
+        let mut plateau = vec![0.2; 8];
+        plateau.extend(vec![0.7; 12]);
+        assert!(
+            practice_suggestions(&catalog_log(&plateau, 1), &BTreeMap::new(), now)
+                .iter()
+                .all(|s| s.kind != SuggestionKind::Working),
+            "ancient lows before a recent plateau must not read as working"
+        );
+    }
+
+    /// AC4: the catalog gate. A rising player CELL is Momentum's claim, not
+    /// Working's; score-reference and junk rows earn no call at all. Fails
+    /// if the gate drops and one history speaks with two voices.
+    #[test]
+    fn cells_scores_and_junk_never_earn_working() {
+        let now = test_now();
+        let no_mastery = BTreeMap::new();
+        let rising = [0.5, 0.5, 0.5, 0.55, 0.75, 0.8, 0.8, 0.85];
+
+        let cells: Vec<TimedExerciseLogEntry> = rising
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| timed(&cell_spec(), 0, Some(a), (rising.len() - 1 - i) as i64))
+            .collect();
+        let out = practice_suggestions(&cells, &no_mastery, now);
+        assert!(
+            out.iter().any(|s| s.kind == SuggestionKind::Momentum)
+                && out.iter().all(|s| s.kind != SuggestionKind::Working),
+            "a rising cell speaks once, as Momentum: {out:?}"
+        );
+
+        let scores: Vec<TimedExerciseLogEntry> = rising
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                timed(
+                    r#"{"score_title":"Autumn Leaves"}"#,
+                    0,
+                    Some(a),
+                    (rising.len() - 1 - i) as i64,
+                )
+            })
+            .collect();
+        assert!(
+            shape_verdicts(&scores, now).is_empty(),
+            "scores earn no call"
+        );
+
+        let junk: Vec<TimedExerciseLogEntry> = rising
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| timed("{not json", 0, Some(a), (rising.len() - 1 - i) as i64))
+            .collect();
+        assert!(shape_verdicts(&junk, now).is_empty(), "junk earns no call");
+    }
+
+    /// AC5: Bailing — dealt ≥6 in the window, graded×3 ≤ dealt, recent →
+    /// the verdict carries both counts; one fewer deal, a 3-of-6 grade
+    /// ratio, or a stale window each silence it; and no shape ever carries
+    /// both calls. Bailing never becomes a recap line. Fails if a bar
+    /// loosens or the exclusivity breaks.
+    #[test]
+    fn bailing_fires_on_dealt_and_abandoned() {
+        let now = test_now();
+        let deals = |dealt: usize, graded: usize, days: i64| -> Vec<TimedExerciseLogEntry> {
+            (0..dealt)
+                .map(|i| {
+                    let acc = (i < graded).then_some(0.5);
+                    timed(&scale_spec(), 0, acc, days + i as i64)
+                })
+                .collect()
+        };
+
+        let out = shape_verdicts(&deals(8, 2, 1), now);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shape, "major up-down");
+        assert_eq!(
+            out[0].call,
+            ShapeCall::Bailing {
+                dealt: 8,
+                graded: 2
+            }
+        );
+        // …and it stays out of the recap.
+        assert!(practice_suggestions(&deals(8, 2, 1), &BTreeMap::new(), now)
+            .iter()
+            .all(|s| s.kind != SuggestionKind::Working));
+
+        // Boundary: 6 deals / 2 grades fires; 6 deals / 3 grades doesn't.
+        assert_eq!(shape_verdicts(&deals(6, 2, 1), now).len(), 1);
+        assert!(shape_verdicts(&deals(6, 3, 1), now).is_empty());
+        // Below the deal bar.
+        assert!(shape_verdicts(&deals(5, 0, 1), now).is_empty());
+        // Stale window.
+        assert!(shape_verdicts(&deals(8, 0, 15), now).is_empty());
+
+        // Exclusivity: a rising fully-graded shape is Working, never also
+        // Bailing — one shape, one call.
+        let rising = [0.5, 0.5, 0.5, 0.55, 0.75, 0.8, 0.8, 0.85];
+        let verdicts = shape_verdicts(&catalog_log(&rising, 1), now);
+        assert_eq!(verdicts.len(), 1);
+        assert!(matches!(verdicts[0].call, ShapeCall::Working { .. }));
     }
 }
