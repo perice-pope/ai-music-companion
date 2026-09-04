@@ -256,7 +256,7 @@ fn key_candidates(key_mastery: &BTreeMap<String, Mastery>, now: DateTime<Utc>) -
         {
             continue;
         }
-        let age_secs = now.timestamp() - m.last_epoch_secs;
+        let age_secs = now.timestamp().saturating_sub(m.last_epoch_secs);
         if age_secs > TREND_RECENT_DAYS * 86_400 {
             continue; // not a live trend
         }
@@ -511,6 +511,13 @@ mod tests {
         for pass in pick.spec.roots.chunks(12) {
             assert_chromatic_permutation(pass);
         }
+        // "Independently shuffled passes" — three copies of one permutation
+        // would defeat the muscle-memory scramble.
+        let passes: Vec<&[u8]> = pick.spec.roots.chunks(12).collect();
+        assert!(
+            passes[0] != passes[1] || passes[1] != passes[2],
+            "the three passes must not all share one permutation"
+        );
         assert_eq!(pick.spec.rhythm.tempo_bpm, DEGREE_TEMPO_BPM);
         assert_eq!(pick.spec.rhythm.notes_per_beat, 1);
         assert_eq!(pick.spec.direction, DirectionMode::Forward);
@@ -546,9 +553,9 @@ mod tests {
     fn weak_key_deals_its_mode_with_tonic_first() {
         let mut km = BTreeMap::new();
         km.insert("3:dorian".to_owned(), mastery(6, 0.4, 0));
-        // Worse stats, but "blues" maps to no generator scale — it must be
+        // Worse stats, but "bebop" maps to no generator scale — it must be
         // skipped before ranking, not deal an exercise it can't name.
-        km.insert("0:blues".to_owned(), mastery(10, 0.0, 0));
+        km.insert("0:bebop".to_owned(), mastery(10, 0.0, 0));
         let pick = daily_pick(&[], &km, "Trumpet", false, now(), 7)
             .expect("a qualifying key trend must fire");
         assert_eq!(pick.kind, FocusKind::KeyTrend);
@@ -675,6 +682,132 @@ mod tests {
         assert_eq!(k1.spec.roots[0], 63);
         assert_eq!(k2.spec.roots[0], 63);
         assert_ne!(k1.spec.roots, k2.spec.roots);
+    }
+
+    #[test]
+    fn recency_decays_with_evidence_age() {
+        // Newest testifying session 7 days old = one half-life: leverage is
+        // 3/3 frequency × (12/25) severity × 0.5 recency.
+        let history = vec![
+            sess(7, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(10, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(13, "Trumpet", vec![(5, -12.0, 6)]),
+        ];
+        let pick = daily_pick(&history, &BTreeMap::new(), "Trumpet", false, now(), 42).unwrap();
+        assert!(
+            (pick.leverage - 0.24).abs() < 1e-6,
+            "week-old evidence must carry half the recency weight, got {}",
+            pick.leverage
+        );
+    }
+
+    #[test]
+    fn future_session_counts_age_zero() {
+        // Clock skew: a future-dated session reads as age 0, so recency caps
+        // at 1.0 — leverage must equal AC1's 0.48, never exceed it.
+        let history = vec![
+            sess(-1, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(3, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(6, "Trumpet", vec![(5, -12.0, 6)]),
+        ];
+        let pick = daily_pick(&history, &BTreeMap::new(), "Trumpet", false, now(), 42).unwrap();
+        assert!(
+            (pick.leverage - 0.48).abs() < 1e-6,
+            "a future session must not inflate recency past 1.0, got {}",
+            pick.leverage
+        );
+    }
+
+    #[test]
+    fn corrupt_negative_ewma_severity_is_clamped() {
+        // A corrupt negative-but-finite EWMA saturates severity at 1.0
+        // instead of outranking everything (spec §4.2).
+        let mut km = BTreeMap::new();
+        km.insert("2:major".to_owned(), mastery(10, -5.0, 0));
+        let pick = daily_pick(&[], &km, "Trumpet", false, now(), 42).unwrap();
+        assert_eq!(
+            pick.leverage, 1.0,
+            "severity must clamp at 1.0 for a corrupt EWMA"
+        );
+    }
+
+    #[test]
+    fn newest_cap_applies_after_dropping_absent_rows() {
+        // 20 newer sessions with intonation but no qualifying tendency push
+        // the three testifiers past the MAX_SESSIONS cap → silence.
+        let mut crowded: Vec<SessionEvidence> =
+            (0..20).map(|i| sess(i % 3, "Trumpet", vec![])).collect();
+        crowded.extend([
+            sess(5, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(6, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(7, "Trumpet", vec![(5, -12.0, 6)]),
+        ]);
+        assert_eq!(
+            daily_pick(&crowded, &BTreeMap::new(), "Trumpet", false, now(), 42),
+            None,
+            "capped-out testimony must not fire"
+        );
+
+        // But 20 newer rows WITHOUT intonation are dropped before the cap —
+        // a silent session must not displace real evidence.
+        let mut silent: Vec<SessionEvidence> = (0..20)
+            .map(|i| SessionEvidence {
+                started_at: now() - chrono::Duration::days(i % 3),
+                instrument: "Trumpet".to_owned(),
+                intonation: None,
+            })
+            .collect();
+        silent.extend([
+            sess(5, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(6, "Trumpet", vec![(5, -12.0, 6)]),
+            sess(7, "Trumpet", vec![(5, -12.0, 6)]),
+        ]);
+        assert!(
+            daily_pick(&silent, &BTreeMap::new(), "Trumpet", false, now(), 42).is_some(),
+            "intonation-less rows must be dropped before the newest-20 cap"
+        );
+    }
+
+    #[test]
+    fn degree_tie_prefers_lower_semitone() {
+        // Two degrees with identical stats → the lower semitone wins.
+        let history = vec![
+            sess(0, "Trumpet", vec![(5, -25.0, 6), (7, -25.0, 6)]),
+            sess(0, "Trumpet", vec![(5, -25.0, 6), (7, -25.0, 6)]),
+            sess(0, "Trumpet", vec![(5, -25.0, 6), (7, -25.0, 6)]),
+        ];
+        let pick = daily_pick(&history, &BTreeMap::new(), "Trumpet", false, now(), 42).unwrap();
+        assert_eq!(pick.spec.cell, Some(vec![0, 5, 5, 0]));
+        assert!(pick.headline.contains("4th"), "got: {}", pick.headline);
+    }
+
+    #[test]
+    fn exact_cents_bar_testifies() {
+        // A consistent lean of exactly 10¢ IS a tendency (the bar is ≥).
+        let history = vec![
+            sess(0, "Trumpet", vec![(5, -10.0, 5)]),
+            sess(3, "Trumpet", vec![(5, -10.0, 5)]),
+            sess(6, "Trumpet", vec![(5, -10.0, 5)]),
+        ];
+        assert!(
+            daily_pick(&history, &BTreeMap::new(), "Trumpet", false, now(), 42).is_some(),
+            "a 10¢ lean sits exactly on DEGREE_CENTS_BAR and must testify"
+        );
+    }
+
+    #[test]
+    fn production_mastery_labels_are_dealable() {
+        // finish_lesson writes lowercased ScaleType labels ("harmonic
+        // minor", …) into key_mastery — the ladder's own scales must round-
+        // trip back into a deal, or weak keys at high difficulty go silent.
+        let mut km = BTreeMap::new();
+        km.insert("2:harmonic minor".to_owned(), mastery(8, 0.3, 0));
+        let pick = daily_pick(&[], &km, "Trumpet", false, now(), 42)
+            .expect("a ladder-written scale label must be dealable");
+        assert_eq!(
+            pick.spec.scale.map(|s| s.scale),
+            Some(ScaleType::HarmonicMinor)
+        );
     }
 
     #[test]
