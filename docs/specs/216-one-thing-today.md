@@ -36,7 +36,8 @@ New module `crates/brain/src/one_thing.rs` (+ `pub mod` line in
 
 ```rust
 /// One session's evidence row, extracted by the caller from
-/// `Store::list_recent` + `load_recap` (fingerprint rides the recap).
+/// `Store::list_by_instrument` + `load_recap` (the fingerprint rides
+/// the recap).
 pub struct SessionEvidence {
     pub started_at: DateTime<Utc>,
     pub instrument: String,
@@ -51,11 +52,16 @@ pub struct DailyPick {
     pub headline: String,
     /// Compact citation (#453 style): sessions/dates/raw values.
     pub evidence: String,
-    /// Final rank score — surfaced so tests and telemetry can assert
-    /// the ranking, never shown to the user.
+    /// Final rank score — surfaced so tests (and local diagnostics)
+    /// can assert the ranking, never shown to the user.
     pub leverage: f32,
     /// The dealt fix: cell × row, ready for `variations::generate`.
     /// Tempo rides where it already lives: `spec.rhythm.tempo_bpm`.
+    /// The row order is FINAL here: `daily_pick` shuffles `roots`
+    /// with `day_seed` itself and emits `randomize_roots: false`, so
+    /// the pick fully determines the deal — `generate`'s own seed
+    /// parameter only feeds `DirectionMode::RandomPerRoot`, which
+    /// these deals don't use (`DirectionMode::Forward`, pinned).
     pub spec: variations::VariationSpec,
 }
 
@@ -77,9 +83,10 @@ back to the existing roulette warmup. Silence over lies (the
 
 **DegreeTendency** — the flagship ("your 4th runs flat"). From
 `IntonationSummary.tendencies` across recent sessions:
-- Consider `history` rows matching `instrument`, `started_at` within
-  `EVIDENCE_WINDOW_DAYS = 21` of `now`, newest `MAX_SESSIONS = 20`,
-  with `intonation: Some`.
+- Consider `history` rows matching `instrument`, `started_at` at most
+  `EVIDENCE_WINDOW_DAYS = 21` days before `now` (inclusive; future
+  timestamps count as age 0), newest `MAX_SESSIONS = 20`, with
+  `intonation: Some`.
 - A session *testifies* for `(semitones_from_tonic, sign)` when that
   degree has `count >= DEGREE_MIN_COUNT (5)` and
   `|mean_cents| >= DEGREE_CENTS_BAR (10.0)` (bar sits below the 15¢
@@ -108,8 +115,10 @@ founder's formula, made exact)
   `severity` = `min(1.0, mean of |mean_cents| over testifying / 25.0)`;
   `recency` = `0.5^(days since newest testifying session / 7.0)`.
 - Key: `frequency` = `min(1.0, attempts as f32 / 10.0)`; `severity` =
-  `(TREND_ACCURACY_BAR − accuracy_ewma) / TREND_ACCURACY_BAR`;
-  `recency` = `0.5^(days since last_epoch_secs / 7.0)`.
+  `((TREND_ACCURACY_BAR − accuracy_ewma) / TREND_ACCURACY_BAR)
+  .clamp(0.0, 1.0)` (a corrupt negative-but-finite EWMA must not
+  outrank everything); `recency` = `0.5^(days since last_epoch_secs
+  / 7.0)`.
 - `leverage = frequency × severity × recency`; argmax wins.
 - Ties (exact `f32` equality): DegreeTendency beats KeyTrend (more
   specific coaching); among degrees, lower `semitones_from_tonic`;
@@ -118,29 +127,43 @@ founder's formula, made exact)
 ### 4.3 The dealt exercise (cell-first — the RV north star)
 
 The fix is a **cell rowed through 12 keys**, never a key-drill:
-- DegreeTendency on semitone `s`: `cell = Some(vec![0, s, s, 0])` —
-  approach, sit on the problem tone twice, resolve — over all 12
-  chromatic roots, `randomize_roots: true` with `day_seed`, on the
-  quarter grid (`notes_per_beat: 1`) at `DEGREE_TEMPO_BPM = 60.0`
-  (slow enough to hear the lean).
-- KeyTrend on `tonic:mode`: the mode's own scale pattern
-  (`scale: Some(ScaleModifier)` from the mode's `ScaleType`), 12
-  roots with the **weak tonic first** (RV
-  keeps the first root fixed; the row still shuffles the rest via
-  `day_seed`), `KEY_TEMPO_BPM = 80`. The weak key gets its reps *and*
-  its eleven siblings — difficulty is row exposure, not "harder
-  keys". Grid: `notes_per_beat: 1` at `KEY_TEMPO_BPM = 80.0`.
+Both deals pin `direction: Forward` and `randomize_roots: false` —
+`daily_pick` owns the shuffle (below), so the emitted spec is the
+whole deal.
 
-~5 minutes is a sizing intention, not a graded property: 12 roots × a
-short cell at these tempos lands in the 3–6 minute band.
+- DegreeTendency on semitone `s`: `cell = Some(vec![0, s, s, 0])` —
+  approach, sit on the problem tone twice, resolve — on the quarter
+  grid (`notes_per_beat: 1`) at `DEGREE_TEMPO_BPM = 60.0` (slow
+  enough to hear the lean). `roots` = `DEGREE_ROW_PASSES (3)`
+  independently `day_seed`-shuffled passes of the 12 chromatic roots
+  concatenated (36 entries). `s = 0` (a leaning tonic) deliberately
+  degenerates to the repeated-note cell — a long-tone sit on the
+  tonic, which is exactly the classical fix.
+- KeyTrend on `tonic:mode`: the mode's own scale
+  (`ScaleModifier { scale: <mode's ScaleType>, pattern: UpDown }` —
+  the `pattern` precedent is `warmup.rs`'s roulette), one pass of 12
+  roots with the **weak tonic pinned first** and the remaining eleven
+  `day_seed`-shuffled (the RV first-root-fixed rule, done by
+  `daily_pick` itself). The weak key gets its reps *and* its eleven
+  siblings — difficulty is row exposure, not "harder keys". Grid:
+  `notes_per_beat: 1` at `KEY_TEMPO_BPM = 80.0`.
+
+Sizing, honestly: on the RV grid (4-beat measures, figures start on a
+measure boundary) the degree deal is 36 one-measure figures at 60 BPM
+≈ 2.4 min of material; the key deal is ~4 measures × 12 roots at
+80 BPM ≈ 2.4 min. The card's "5-min fix" is the practice intention —
+one repeat pass, which the drill flow already invites, lands there.
+Duration is never graded.
 
 ## 5. Acceptance criteria (numbered, testable)
 1. Three recent same-instrument sessions each showing degree 5 with
    ≥5 observations at mean ≤ −10¢ (and no opposite-sign testimony) →
    `daily_pick` returns a `DegreeTendency` pick whose headline names
    the degree and direction, whose evidence cites the session count
-   and mean cents, and whose spec is the `[0,5,5,0]` cell over 12
-   randomized roots at 60 BPM.
+   and mean cents, and whose spec is the `[0,5,5,0]` cell over 36
+   day-seed-shuffled root entries (3 row passes, each a permutation
+   of the 12 chromatic roots) at 60 BPM, `randomize_roots: false`,
+   `direction: Forward`.
 2. Only two testifying sessions → `None` (below
    `DEGREE_MIN_SESSIONS`); the card stays silent rather than guess.
 3. Three flat-testifying plus one sharp-testifying session on the same
@@ -154,12 +177,14 @@ short cell at these tempos lands in the 3–6 minute band.
    equal leverage the degree wins (tie-break pinned by test).
 6. `fixed_pitch = true` with AC1's history → no `DegreeTendency` pick
    (a qualifying KeyTrend may still fire).
-7. Sessions of another instrument, sessions older than 21 days, and
+7. Sessions of another instrument, sessions older than the window
+   (age > 21 days; exactly 21 days is IN — the test uses 22), and
    rows with `intonation: None` contribute nothing (AC1's evidence
    minus one qualifying row via each exclusion → `None`).
-8. Same inputs and `day_seed` → byte-identical pick, including the
-   generated root order; a different `day_seed` reorders the row but
-   not the pick itself.
+8. Same inputs and `day_seed` → byte-identical pick, including
+   `spec.roots` order; for a pinned seed pair known to permute
+   differently, only `spec.roots` changes — kind, headline, evidence,
+   and leverage are seed-independent.
 9. Empty history and empty `key_mastery` → `None`.
 10. A non-finite `accuracy_ewma` or `mean_cents` never panics and
     never produces a candidate.
@@ -208,8 +233,8 @@ deal; key/degree evidence only *aims* it.
 ## 9. Slice breakdown (ordered, each a shippable PR)
 | # | Slice (goal) | Footprint | Depends on |
 |---|---|---|---|
-| S1 | `one_thing::daily_pick` — types, bars, ranking, dealt spec, the full test table above | `crates/brain/src/one_thing.rs`, `lib.rs` mod line | nothing in flight |
-| S2 | IPC `get_daily_pick`: load evidence rows (`list_recent(20)` + `load_recap`), pass `fixed_pitch` via `coaching::fixed_pitch_family` (promoted from `pub(crate)` to `pub` here), DTO out; store failure → `None`, never an error | `commands.rs` (+ registration) | S1; **after** the in-flight `commands.rs` PRs (#490/#507/#519/#487) merge |
+| S1 | `one_thing::daily_pick` — types, bars, ranking, dealt spec, the full test table above | `crates/brain/src/one_thing.rs`, `lib.rs` mod line | trivial `lib.rs` mod-line conflict with in-flight #533/#527; resolve on merge |
+| S2 | IPC `get_daily_pick`: load evidence rows (`list_by_instrument` + `load_recap` — never `list_recent`, so a multi-instrument history can't crowd out the current instrument), pass `fixed_pitch` via `coaching::fixed_pitch_family` (promoted from `pub(crate)` to `pub` here), DTO out; store failure → `None`, never an error | `commands.rs` (+ registration; post-#507 this likely lands in the `commands/` module instead) | S1; **after** the in-flight `commands.rs` PRs (#490/#507/#519/#487/#416) merge |
 | S3 | The card on the Daily Warmup surface: pick present → "Today: …" + **Start today** (deals `spec` through the existing drill flow); pick absent or **Surprise me** → the #257 roulette, unchanged | `DailyWarmupPanel.tsx`, warmup store | S2, PR #490 merged |
 | S4+ | Later: timing-weakness source (post-#421 S3), opt-in LLM phrasing variety | — | founder priority |
 
