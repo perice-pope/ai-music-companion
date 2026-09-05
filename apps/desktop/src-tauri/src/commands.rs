@@ -5731,8 +5731,8 @@ pub fn my_patterns(state: State<'_, AppState>) -> Vec<MyPatternDto> {
 }
 
 /// #453 S1: one evidence-cited practice suggestion over the wire. `kind` is
-/// the lowercase rule name ("trend" | "neglect" | "momentum"); `text` embeds
-/// its numbers; `evidence` is the compact citation.
+/// the lowercase rule name ("trend" | "neglect" | "momentum" | "working");
+/// `text` embeds its numbers; `evidence` is the compact citation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PracticeSuggestionDto {
     pub kind: String,
@@ -5746,6 +5746,7 @@ impl From<brain::insights::PracticeSuggestion> for PracticeSuggestionDto {
             brain::insights::SuggestionKind::Trend => "trend",
             brain::insights::SuggestionKind::Neglect => "neglect",
             brain::insights::SuggestionKind::Momentum => "momentum",
+            brain::insights::SuggestionKind::Working => "working",
         };
         PracticeSuggestionDto {
             kind: kind.to_owned(),
@@ -10340,6 +10341,47 @@ mod tests {
             out[1].text.contains("50%") && out[1].text.contains("80%"),
             "momentum carries both halves: {}",
             out[1].text
+        );
+    }
+
+    /// #303 S1 AC7: a rising CATALOG history surfaces as exactly one
+    /// `"working"` DTO whose text and evidence carry numbers — the store →
+    /// analyzer → wire path for the new kind. Fails if the DTO mapping,
+    /// the catalog gate, or the Working bars break at the command layer.
+    #[test]
+    fn working_suggestion_reaches_the_wire() {
+        let s = AppState::with_mocks();
+        let model = brain::learner::LearnerModel::default();
+        let (explore, _) = brain::coach::start_explore(0, "major", &model, 1);
+        {
+            let store = s.session_store.lock_or_recover();
+            // 8 graded deals of the same catalog shape, older half 0.5,
+            // newer 0.8 — stamped now, so recency holds and neglect (a
+            // zero-day log) cannot fire.
+            for accuracy in [0.5, 0.5, 0.5, 0.5, 0.8, 0.8, 0.8, 0.8] {
+                log_exercise_best_effort(
+                    &store,
+                    ExerciseOutcome {
+                        source: "explore",
+                        label: "t",
+                        spec: &explore.spec,
+                        seed: 1,
+                        difficulty: 0,
+                        tonic: 0,
+                        accuracy: Some(accuracy),
+                    },
+                );
+            }
+        }
+        let out = practice_suggestions_impl(&s);
+        let kinds: Vec<&str> = out.iter().map(|d| d.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["working"], "only the Working line: {out:?}");
+        assert!(
+            out[0].text.contains("50%")
+                && out[0].text.contains("80%")
+                && out[0].evidence.chars().any(|c| c.is_ascii_digit()),
+            "the line cites its numbers on the wire: {:?}",
+            out[0]
         );
     }
 

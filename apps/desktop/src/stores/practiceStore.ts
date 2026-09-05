@@ -74,7 +74,7 @@ export interface QueuedReveal {
  * #453 S3: one evidence-cited practice suggestion from the local history
  * analyzer (the `practice_suggestions` command). `text` embeds its own
  * numbers; `evidence` is the compact citation; `kind` is the lowercase
- * rule name ("trend" | "neglect" | "momentum").
+ * rule name ("trend" | "neglect" | "momentum" | "working").
  */
 export interface PracticeSuggestion {
   kind: string;
