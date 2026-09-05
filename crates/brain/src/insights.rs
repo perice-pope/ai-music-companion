@@ -434,7 +434,8 @@ pub const SHAPE_RECENT_DAYS: i64 = 14;
 /// an overclaim.
 pub const BAILING_MIN_DEALT: usize = 6;
 
-/// The call on one shape.
+/// The call on one shape. All counts are WINDOW counts (the shape's most
+/// recent ≤ [`SHAPE_WINDOW_ROWS`] rows), never lifetime totals.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShapeCall {
     /// Grades rising inside the window — deal it again.
@@ -453,15 +454,19 @@ pub struct ShapeVerdict {
 }
 
 /// The catalog gate: `Some(shape)` only for material the coach itself deals.
-/// Player cells stay Momentum's claim (one material, one voice), a score
-/// reference is a piece rather than a shape, and junk earns no call.
+/// Player material — a lifted cell (Momentum's claim) or a lifted
+/// progression — earns no shape verdict (one material, one voice; and S2's
+/// seeded catalog dealer couldn't re-deal it anyway), a score reference is a
+/// piece rather than a shape, and junk earns no call.
 fn catalog_shape(spec_json: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(spec_json).ok()?;
     if v.get("score_title").and_then(|t| t.as_str()).is_some() {
         return None;
     }
     let spec: VariationSpec = serde_json::from_str(spec_json).ok()?;
-    if spec.cell.as_ref().is_some_and(|c| !c.is_empty()) {
+    if spec.cell.as_ref().is_some_and(|c| !c.is_empty())
+        || spec.progression.as_ref().is_some_and(|p| !p.is_empty())
+    {
         return None;
     }
     Some(shape_of(spec_json))
@@ -1191,6 +1196,39 @@ mod tests {
         let mut mixed = catalog_log(&rising[3..], 1);
         mixed.extend((0..3).map(|i| timed(&scale_spec(), 0, None, i)));
         assert!(practice_suggestions(&mixed, &no_mastery, now).is_empty());
+
+        // NaN grades (spec §6) feed no claim: the delta comparison is false.
+        assert!(practice_suggestions(&catalog_log(&[f64::NAN; 8], 1), &no_mastery, now).is_empty());
+    }
+
+    /// AC1's inclusive boundaries, pinned so the bars can't drift with
+    /// green CI: EXACTLY 6 graded rows, a delta of EXACTLY +0.15 (0.25 and
+    /// 0.4 are chosen so the f32 half-means and their difference are
+    /// bit-exact), and a newest grade EXACTLY 14 days old still fire.
+    /// Fails if K rises, `>=` becomes `>`, or the recency window shrinks.
+    #[test]
+    fn working_bars_are_inclusive() {
+        let now = test_now();
+        let no_mastery = BTreeMap::new();
+
+        // 6 graded, delta == 0.15 exactly → still evidence.
+        let at_the_bar = [0.25, 0.25, 0.25, 0.4, 0.4, 0.4];
+        let out = practice_suggestions(&catalog_log(&at_the_bar, 1), &no_mastery, now);
+        assert_eq!(out.len(), 1, "6 grades at a +0.15 delta fire: {out:?}");
+        assert_eq!(out[0].kind, SuggestionKind::Working);
+        assert!(
+            out[0].text.contains("6 graded"),
+            "the count is the window's: {}",
+            out[0].text
+        );
+
+        // Newest grade 14 days old → still recent. (The older rows sit
+        // 15–21 days back, so no neglect contrast exists and the Working
+        // line is the only voice.)
+        let rising = [0.5, 0.5, 0.5, 0.55, 0.75, 0.8, 0.8, 0.85];
+        let aged = practice_suggestions(&catalog_log(&rising, 14), &no_mastery, now);
+        assert_eq!(aged.len(), 1, "14 days is still evidence: {aged:?}");
+        assert_eq!(aged[0].kind, SuggestionKind::Working);
     }
 
     /// AC3: the 12-row window — ancient lows before a recent plateau must
@@ -1211,8 +1249,10 @@ mod tests {
     }
 
     /// AC4: the catalog gate. A rising player CELL is Momentum's claim, not
-    /// Working's; score-reference and junk rows earn no call at all. Fails
-    /// if the gate drops and one history speaks with two voices.
+    /// Working's; a lifted PROGRESSION is player material too (S2's catalog
+    /// dealer couldn't re-deal it); score-reference and junk rows earn no
+    /// call at all. Fails if the gate drops and one history speaks with two
+    /// voices — or claims material it can't deal.
     #[test]
     fn cells_scores_and_junk_never_earn_working() {
         let now = test_now();
@@ -1254,6 +1294,24 @@ mod tests {
             .map(|(i, &a)| timed("{not json", 0, Some(a), (rising.len() - 1 - i) as i64))
             .collect();
         assert!(shape_verdicts(&junk, now).is_empty(), "junk earns no call");
+
+        // A lifted progression, played to rising grades → no verdict.
+        let mut prog_spec: variations::VariationSpec = serde_json::from_str(&scale_spec()).unwrap();
+        prog_spec.scale = None;
+        prog_spec.progression = Some(vec![variations::ProgressionStep {
+            offset: 0,
+            chord: variations::ChordType::Minor7,
+        }]);
+        let prog_json = serde_json::to_string(&prog_spec).unwrap();
+        let progs: Vec<TimedExerciseLogEntry> = rising
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| timed(&prog_json, 0, Some(a), (rising.len() - 1 - i) as i64))
+            .collect();
+        assert!(
+            shape_verdicts(&progs, now).is_empty(),
+            "a lifted progression is the player's material, not the catalog's"
+        );
     }
 
     /// AC5: Bailing — dealt ≥6 in the window, graded×3 ≤ dealt, recent →
@@ -1264,11 +1322,13 @@ mod tests {
     #[test]
     fn bailing_fires_on_dealt_and_abandoned() {
         let now = test_now();
-        let deals = |dealt: usize, graded: usize, days: i64| -> Vec<TimedExerciseLogEntry> {
+        // Rows oldest → newest, like the store returns them (ORDER BY id);
+        // the grades land on the OLDEST rows so recent deals read as bails.
+        let deals = |dealt: usize, graded: usize, newest_days: i64| -> Vec<TimedExerciseLogEntry> {
             (0..dealt)
                 .map(|i| {
                     let acc = (i < graded).then_some(0.5);
-                    timed(&scale_spec(), 0, acc, days + i as i64)
+                    timed(&scale_spec(), 0, acc, newest_days + (dealt - 1 - i) as i64)
                 })
                 .collect()
         };
@@ -1288,13 +1348,27 @@ mod tests {
             .iter()
             .all(|s| s.kind != SuggestionKind::Working));
 
-        // Boundary: 6 deals / 2 grades fires; 6 deals / 3 grades doesn't.
+        // Boundary: 6 deals / 2 grades fires; 6 deals / 3 grades doesn't;
+        // and at the full window the inclusive bar is 4-of-12 (12 ≤ 12) —
+        // a fifth grade silences it.
         assert_eq!(shape_verdicts(&deals(6, 2, 1), now).len(), 1);
         assert!(shape_verdicts(&deals(6, 3, 1), now).is_empty());
+        assert_eq!(shape_verdicts(&deals(12, 4, 1), now).len(), 1);
+        assert!(shape_verdicts(&deals(12, 5, 1), now).is_empty());
         // Below the deal bar.
         assert!(shape_verdicts(&deals(5, 0, 1), now).is_empty());
         // Stale window.
         assert!(shape_verdicts(&deals(8, 0, 15), now).is_empty());
+
+        // Recency reads the NEWEST row: a window whose oldest deals sit 22
+        // days back still fires while its last deal is a day old. Fails if
+        // the recency bar ever checks the window's oldest stamp.
+        let spread: Vec<TimedExerciseLogEntry> = (0..8)
+            .map(|i| timed(&scale_spec(), 0, None, 22 - i * 3))
+            .collect();
+        let out = shape_verdicts(&spread, now);
+        assert_eq!(out.len(), 1, "old window, fresh bail still calls: {out:?}");
+        assert!(matches!(out[0].call, ShapeCall::Bailing { .. }));
 
         // Exclusivity: a rising fully-graded shape is Working, never also
         // Bailing — one shape, one call.

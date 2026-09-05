@@ -47,9 +47,10 @@ pub fn shape_verdicts(log: &[TimedExerciseLogEntry], now: DateTime<Utc>) -> Vec<
 last (pinned order becomes Trend → Neglect → Momentum → Working). The DTO maps it to
 `"working"`. Additive: no existing signature changes.
 
-Verdicts cover **catalog shapes only** — player cells are the Momentum rule's beat (one
-material, one claim), and score-reference / unparseable rows feed no verdict (a shape we
-can't name honestly earns no call).
+Verdicts cover **catalog shapes only** — player material (a lifted cell, which is the
+Momentum rule's beat, or a lifted progression) earns no verdict (one material, one claim,
+and S2's seeded catalog dealer couldn't re-deal it), and score-reference / unparseable rows
+feed no verdict (a shape we can't name honestly earns no call).
 
 Bars, mirroring the shipped #453 discipline:
 
@@ -66,16 +67,20 @@ Bars, mirroring the shipped #453 discipline:
 1. A catalog shape with ≥6 graded rows in its last ≤12 rows, half-delta ≥ +0.15, and a
    graded row ≤14 days old yields exactly one `Working` suggestion whose text embeds the
    shape name, both percentages, and the graded count, and whose evidence cites the halves
-   and newest date.
+   and newest date. All three bars are inclusive: exactly 6 graded rows, a delta of exactly
+   +0.15, and a newest grade exactly 14 days old still fire.
 2. Each Working bar individually silences: 5 graded rows, delta 0.14, newest grade 15 days
    old, and ungraded rows never counting toward the graded bar.
 3. Rows outside the 12-row window never fabricate a climb: ancient lows before a recent
    flat plateau stay silent.
-4. Player-cell rows never earn `Working` (the same rising history still earns Momentum);
-   score-reference and unparseable rows produce no verdict of either call.
+4. Player material never earns `Working`: a rising player-cell history still earns Momentum
+   (one voice), a rising lifted-progression history earns no verdict, and score-reference /
+   unparseable rows produce no verdict of either call.
 5. A shape dealt ≥6 times in its window with graded×3 ≤ dealt and a row ≤14 days old yields
-   a `Bailing` verdict carrying both counts; 5 deals, a 4-of-12 graded ratio, or a stale
-   window each silence it. No shape ever carries both calls.
+   a `Bailing` verdict carrying both window counts. The ratio bar is inclusive (2-of-6 and
+   4-of-12 fire; 3-of-6 and 5-of-12 stay silent); 5 deals or a stale window silence it;
+   recency reads the window's NEWEST row (old deals with a fresh bail still call). No shape
+   ever carries both calls.
 6. `practice_suggestions` order is pinned Trend → Neglect → Momentum → Working and is
    deterministic (identical inputs → identical output).
 7. The command layer surfaces a seeded rising catalog history as one `"working"` DTO whose
@@ -86,7 +91,8 @@ Bars, mirroring the shipped #453 discipline:
 - Empty log → no verdicts, no suggestions (existing AC holds).
 - Corrupt `logged_at` stamps → the row feeds no verdict (same defensive parse as #453).
 - Garbage `spec_json` → no verdict (catalog gate returns `None`).
-- NaN accuracy → comparisons are false, no Working claim fires.
+- NaN accuracy → comparisons are false, no Working claim fires (NaN rows still count as
+  graded, so they suppress Bailing too — a graded row is a graded row).
 - A shape with ≥6 grades but a flat trend → NEITHER call (grading a lot isn't bailing).
 
 ## 7. Test plan
@@ -94,10 +100,11 @@ Bars, mirroring the shipped #453 discipline:
 | AC / edge | Test | Asserts |
 |---|---|---|
 | AC1 | `insights::tests::working_fires_on_a_rising_catalog_shape` | one Working line, numbers in text + evidence |
-| AC2 | `insights::tests::working_needs_k_delta_and_recency` | each bar individually silences |
+| AC1 (inclusive bars) | `insights::tests::working_bars_are_inclusive` | 6 grades / +0.15 exactly / 14 days still fire |
+| AC2 | `insights::tests::working_needs_k_delta_and_recency` | each bar individually silences; NaN silent |
 | AC3 | `insights::tests::working_window_excludes_lifetime` | plateau after ancient lows stays silent |
-| AC4 | `insights::tests::cells_scores_and_junk_never_earn_working` | Momentum fires, Working doesn't; score/junk silent |
-| AC5 | `insights::tests::bailing_fires_on_dealt_and_abandoned` | counts carried; bars pinned; exclusivity |
+| AC4 | `insights::tests::cells_scores_and_junk_never_earn_working` | Momentum fires, Working doesn't; progression/score/junk silent |
+| AC5 | `insights::tests::bailing_fires_on_dealt_and_abandoned` | counts carried; both ratio boundaries; newest-row recency; exclusivity |
 | AC6 | `insights::tests::suggestions_are_deterministic_and_ordered` (extended) | 4-kind pinned order |
 | AC7 | `commands::tests::working_suggestion_reaches_the_wire` | `"working"` DTO with cited numbers |
 | edges | `insights::tests::empty_and_garbage_history_stay_silent` (existing) + AC2/AC4 tests | silence on empty/corrupt |
